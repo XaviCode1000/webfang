@@ -52,6 +52,7 @@
 //! ```
 
 use std::future::Future;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -661,8 +662,18 @@ impl SemanticCleanerImpl {
 pub(crate) async fn resolve_model_assets(
     config: &ModelConfig,
 ) -> Result<(std::path::PathBuf, std::path::PathBuf), SemanticError> {
+    // #1316: name the model-resolve operation up front so a slow (cold)
+    // download is attributable in the trace file instead of looking like a
+    // hang, and time the whole resolution for the summary event below.
+    let started = std::time::Instant::now();
+    info!(
+        repo = %config.repo,
+        offline_mode = config.offline_mode,
+        "resolving AI model assets"
+    );
+
     // Resolve model + tokenizer paths through the hf_hub cache.
-    let (model_path, tokenizer_path) = if config.offline_mode {
+    let (model_path, tokenizer_path, cached) = if config.offline_mode {
         let cache = HfCache::from_env();
         let cache_repo = cache.repo(Repo::new(config.repo.clone(), RepoType::Model));
 
@@ -680,8 +691,26 @@ pub(crate) async fn resolve_model_assets(
                 })?;
 
         debug!("Resolved model and tokenizer from offline cache");
-        (model_path, tokenizer_path)
+        (model_path, tokenizer_path, true)
     } else {
+        // #1316: cache-only probe (pure fs lookup, no network) BEFORE touching
+        // the API, so the cold-download hint can fire before the pull starts.
+        let cache = HfCache::from_env();
+        let probe = cache.repo(Repo::new(config.repo.clone(), RepoType::Model));
+        let cached = probe.get(&config.model_file).is_some()
+            && probe.get("tokenizer.json").is_some();
+
+        // #1316: when stderr is piped, hf_hub's indicatif progress bar renders
+        // nothing and a multi-minute cold pull looks like a hang. A plain
+        // eprintln! reaches the user on the non-TTY path (a TTY already gets
+        // the built-in progress bar). User-facing, so Spanish.
+        if !cached && !std::io::stderr().is_terminal() {
+            eprintln!(
+                "Descargando modelo AI (~{} MB, primera vez); puede tardar varios minutos.",
+                config.model_variant.approx_download_mb()
+            );
+        }
+
         let api = ApiBuilder::from_env()
             .with_progress(true)
             .build()
@@ -709,13 +738,27 @@ pub(crate) async fn resolve_model_assets(
                 })?;
 
         debug!("Resolved model and tokenizer via hf_hub (cache-first)");
-        (model_path, tokenizer_path)
+        (model_path, tokenizer_path, cached)
     };
 
     // Stream-validate the SHA256 of the model file on disk. The file itself
     // (not a byte copy) feeds the inference pool via `commit_from_file`, so
     // the model is never fully resident in RAM (#1315).
     stream_validate_model_hash(&model_path, config.model_variant.sha256(), &config.repo).await?;
+
+    // #1316: structured summary for the long-running resolve — emitted for
+    // both branches, visible in `--trace-file` JSONL regardless of TTY.
+    let bytes = tokio::fs::metadata(&model_path)
+        .await
+        .map_err(SemanticError::ModelLoad)?
+        .len();
+    info!(
+        repo = %config.repo,
+        bytes,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        cached,
+        "AI model assets resolved"
+    );
 
     Ok((model_path, tokenizer_path))
 }

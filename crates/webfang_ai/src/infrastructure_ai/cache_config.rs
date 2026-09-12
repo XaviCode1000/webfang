@@ -97,6 +97,19 @@ impl AiModel {
         }
     }
 
+    /// Approximate ONNX blob size in MB, used for the cold-download hint (#1316).
+    ///
+    /// Deliberately approximate: the exact blob size drifts with upstream
+    /// revisions, and the hint only needs an order of magnitude ("may take
+    /// several minutes").
+    #[must_use]
+    pub fn approx_download_mb(&self) -> u64 {
+        match self {
+            AiModel::Granite97M => 390,
+            AiModel::Granite311M => 1_200,
+        }
+    }
+
     /// Parse model ID from environment variable or CLI flag
     ///
     /// Valid values: `granite-97m` (default), `granite-311m`
@@ -238,6 +251,18 @@ mod tests {
         assert!(!AiModel::Granite311M.sha256().is_empty());
         assert_eq!(AiModel::Granite97M.sha256().len(), 64);
         assert_eq!(AiModel::Granite311M.sha256().len(), 64);
+    }
+
+    #[test]
+    fn test_ai_model_approx_download_mb_orders_tiers() {
+        // #1316: the hint only needs an order of magnitude, but the 311m tier
+        // must always report a larger blob than the 97m default.
+        assert_eq!(AiModel::Granite97M.approx_download_mb(), 390);
+        assert_eq!(AiModel::Granite311M.approx_download_mb(), 1_200);
+        assert!(
+            AiModel::Granite311M.approx_download_mb() > AiModel::Granite97M.approx_download_mb(),
+            "311m blob must be reported larger than 97m"
+        );
     }
 
     #[test]
