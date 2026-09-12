@@ -25,7 +25,7 @@
 //! | `WEBFANG_DISABLE_SSRF_REDIRECT_GUARD` | `webfang_core::domain::ssrf_guard::DISABLE_REDIRECT_GUARD_ENV` | Client redirect policy's literal-IP stop |
 //! | `WEBFANG_DISABLE_SSRF_RESOLVER` | `webfang_core::domain::ssrf_guard::DISABLE_VALIDATING_RESOLVER_ENV` | Connect-time validating DNS resolver |
 //! | `WEBFANG_DISABLE_SSRF` (presence) | — (literal in `llm_extraction::ssrf_gate`, #703) | LLM base-URL SSRF gate |
-//! | `WEBFANG_MCP_DISABLE_SSRF` | named const lands with #1348 | MCP entry validator |
+//! | `WEBFANG_MCP_DISABLE_SSRF` | `webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV` (#1348) | MCP entry validator |
 //!
 //! Tests that exercise the robots chain must use
 //! [`EnvGuard::wiremock_robots`], which arms the entry-guard and MCP
@@ -131,9 +131,10 @@ impl EnvGuard {
     ///    `webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV`), read
     ///    once per chain inside `RobotsFetcher` and again at CLI/MCP entry
     ///    points;
-    /// 2. `WEBFANG_MCP_DISABLE_SSRF` — the MCP validator's hatch (named
-    ///    const lands with #1348; until then the literal lives here and in
-    ///    the MCP handler tests).
+    /// 2. `WEBFANG_MCP_DISABLE_SSRF` — the MCP validator's hatch (canonical
+    ///    const:
+    ///    `webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV`,
+    ///    landed with #1348 and adopted here with #1370).
     ///
     /// The #1308 lesson: a robots test that arms only ONE hatch leaves the
     /// other chain layer armed, so the test can pass on a phantom denial
@@ -146,7 +147,10 @@ impl EnvGuard {
     pub fn wiremock_robots() -> Self {
         Self::with(&[
             ("WEBFANG_DISABLE_SSRF_ENTRY_GUARD", "1"),
-            ("WEBFANG_MCP_DISABLE_SSRF", "1"),
+            (
+                webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+                "1",
+            ),
         ])
     }
 
