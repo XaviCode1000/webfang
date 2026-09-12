@@ -13,7 +13,7 @@
   *Landing notes* #2)
 - **Issues:** #1270 (P6-1 → "P6-2 persistence"), #1282 (RC-1), #1279 (F-52-a), #1229,
   #1234 (F-39), #1214, #501 / #519 / #1119 (observability + async precedents),
-  #1288 (slice index), #1343 (MCP run-parity, open)
+  #1288 (slice index, reconciled 2026-09-12), #1343 (MCP run-parity, closed by PR #1353)
 - **Supersedes:** —
 
 ## Context
@@ -180,8 +180,9 @@ notes were each checked against the code, not inferred from issue titles.
    | (3) MCP run-parity (mandatory) | #1290 → **MCP *export* parity** (F-16) | closed |
    | (4) deprecate `EngineOptions` + merge entries | #1291 → **legacy removal** | closed |
 
-   Every child issue is closed and #1288's checklist still shows slices 2-4 unchecked.
+   Every child issue is closed and #1288's checklist still showed slices 2-4 unchecked.
    The umbrella's checkbox state is not a reliable indicator of what landed.
+   Reconciled 2026-09-12: the checklist now matches the merged reality.
 
 4. **The context table is historical.** `Engine::new` and `Engine::build_task_ctx` no
    longer exist (`60766e31` retired the legacy build; `from_session` is the only
@@ -189,12 +190,18 @@ notes were each checked against the code, not inferred from issue titles.
    hand-assembled by CLI discovery, batch, the MCP crawl tool and the benchmark runner —
    so the *problem* this ADR describes persists on the MCP plane even though the seam is in.
 
-5. **The mandatory follow-up is still open and now tracked.** #1290 delivered export
-   parity, which is a different axis: `git grep -c CrawlSession crates/webfang_mcp/` is
+5. **The mandatory follow-up landed.** #1290 delivered export parity, which is a different
+   axis: `git grep -c CrawlSession crates/webfang_mcp/` is
    **0**. The run facts the P2 signature promised to make reachable over MCP — checkpoint,
-   session pool, `JsStrategy` / post-load wait, content capture — are still unreachable
-   from the crawl tool, which is the exact failure mode behind #1229 and #1279.
-   Follow-up: **#1343**.
+   session pool, `JsStrategy` / post-load wait, content capture — were unreachable from the
+   crawl tool when this note was written, the exact failure mode behind #1229 and #1279.
+   Follow-up: **#1343**, landed 2026-09-12 (PR #1353): MCP `crawl_site` assembles its
+   `EngineOptions` from the new `js_strategy` / `session_pool` / `checkpoint_dir` params and
+   runs through the public `crawl_site_with_options` seam; `crawl_with_sitemap` is left as
+   stateless XML discovery on purpose. The landing is seam-parity, not builder-parity —
+   `CrawlSession` itself still appears nowhere in `crates/webfang_mcp/`, so P2's parity
+   promise is satisfied at the public-entry level and `EngineOptions` deprecation (decision
+   9 item 4) remains the open destination with no child issue.
 
 6. **Deviation from decision 3.** The transitional `From<EngineOptions>` impls were never
    written; see the inline note on decision 3 for the substitute that did land.
