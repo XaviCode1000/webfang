@@ -273,15 +273,19 @@ EOF
 # ones warn-skip (never silently dropped: the skip is logged).
 
 # run_guard <name> <script> <cmd...>: run_step when the guard script
-# exists, else a logged skip (never a silent drop). Avoids the
+# exists and is readable, else a logged skip (never a silent drop).
+# Readability, NOT executability (#1302): every wrapped command invokes
+# the script through `bash`, exactly like CI does, so a missing exec bit
+# (e.g. check_dependency_direction.sh is -rw-r--r-- in main) must not
+# skip the guard locally while CI still runs it. Avoids the
 # `A && B || C` idiom (shellcheck SC2015).
 run_guard() {
   local name="$1" script="$2"
   shift 2
-  if [[ -x "$script" ]]; then
+  if [[ -f "$script" && -r "$script" ]]; then
     run_step "$name" "$@"
   else
-    skip_step "$name" "script absent ($script)"
+    skip_step "$name" "script absent or unreadable ($script)"
   fi
 }
 
@@ -300,6 +304,8 @@ lane_fmt_and_guards() {
     env INTRA_CRATE_MODE=strict bash scripts/check_intra_crate_direction.sh
   run_guard "ignored-test inventory guard" scripts/check_ignored_guard.sh \
     bash scripts/check_ignored_guard.sh
+  run_guard "ignored-test guard semantics harness (#1328)" scripts/test_ignored_guard.sh \
+    bash scripts/test_ignored_guard.sh
   # Phase 3: same guard as the docs lane — blocking here because every
   # surrounding repo-guard step is blocking (fail-closed on findings,
   # warn-skip only when the script itself is absent).

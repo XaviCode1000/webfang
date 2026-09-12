@@ -37,6 +37,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$SCRIPT_DIR/..")"
+# The JSON's ignored_count is a per-file MENTION signal over crates/*/tests/
+# only. It is deliberately not reconciled with the frozen budget enforced by
+# scripts/check_ignored_guard.sh, which also covers src/ test modules and
+# compares attributes vs doc/comment mentions per category (#1328). The
+# inventory of record is docs/test-inventory.md; do not read a sum mismatch
+# here as drift.
 INVENTORY="$ROOT/docs/test-inventory.json"
 
 CLASS_OUT=""

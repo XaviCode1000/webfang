@@ -18,6 +18,13 @@ Test counting heuristic: ``test_count`` counts ``#[test]`` plus
 attributes over-count by design — the file is a budget signal, and
 ``scripts/check_ignored_guard.sh`` remains the exact ``#[ignore]`` budget.
 
+Scope note (#1328): this JSON walks ``crates/*/tests/`` only and counts
+mentions, so its ``ignored_count`` sum is NOT reconciled with the guard's
+budget by design — the guard also covers ``src/`` test modules and compares
+attributes vs doc/comment mentions per category. The two sums differ
+structurally (e.g. 28 here vs 32 there); the inventory of record for the
+frozen budget is ``docs/test-inventory.md``.
+
 ``snapshot_usage`` is true when the file references insta
 (``insta`` word-boundary or ``assert_snapshot``) OR a sibling
 ``snapshots/`` dir exists next to the file.

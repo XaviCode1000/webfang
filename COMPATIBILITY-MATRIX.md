@@ -37,7 +37,7 @@ Exhaustive `2^10` / `--feature-powerset` (1024) is **not** run in CI by design.
 
 ## Sitemap correction
 
-Roadmap stale claim "7 sitemap tests ignored" is **incorrect**. Reality: **1 ignored** at `crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs:1218` (`#[ignore = "requires network — hits real DNS for invalid-host-xyz-12345.com"]`, by design) + **18 active** tests.
+Roadmap stale claim "7 sitemap tests ignored" is **incorrect**. Reality: **1 ignored** — `test_parse_from_url_depth_one_attempts_fetch` in `crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs` (`#[ignore = "requires network — hits real DNS for invalid-host-xyz-12345.com"]`, by design) + **18 active** tests.
 
 ## Versioning note (StateStore)
 
@@ -52,7 +52,7 @@ bash scripts/check_compatibility.sh --all           # +2 pairwise (local/nightly
 
 ## Inventory
 
-Full 37-row `#[ignore]` catalog: [`docs/test-inventory.md`](docs/test-inventory.md) (generated via `rg -n "#\[ignore" crates/ --glob '!target'`).
+Full 32-row `#[ignore]` catalog (26 test attributes + 6 doc/comment mentions): [`docs/test-inventory.md`](docs/test-inventory.md) (generated via `rg -n "#\[ignore" crates/ --glob '!target'`).
 
 ## CI integration
 
