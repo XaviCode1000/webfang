@@ -28,7 +28,7 @@ use wreq::Client;
 use wreq_util::Profile;
 
 use crate::domain::body_cap::read_body_capped;
-use crate::domain::crawler_port::RobotsPort;
+use crate::domain::crawler_port::{RobotsDecision, RobotsPort};
 use crate::infrastructure::error::InfraError;
 
 /// Maximum robots.txt body size (decompressed bytes). robots.txt files are
@@ -368,13 +368,19 @@ impl RobotsFetcher {
         }
     }
 
-    /// Check if a URL is allowed by the site's robots.txt.
+    /// Check `url` against the site's robots.txt and return the typed verdict.
     ///
     /// Fetches robots.txt on first encounter (cached per domain, including
     /// failed outcomes — see [`RobotsCacheEntry`]). Uses the `robotstxt` crate's
     /// `DefaultMatcher` for path matching. Fail-open: if robots.txt cannot be
-    /// fetched, the URL is allowed, and that decision is cached so later calls
-    /// do not re-fetch (#794).
+    /// fetched, the verdict is [`RobotsDecision::Allowed`], and that decision
+    /// is cached so later calls do not re-fetch (#794).
+    ///
+    /// When the SSRF literal-IP entry guard (F-06 + F-32, #1217) rejects the
+    /// URL, the verdict is [`RobotsDecision::PolicyRefused`] carrying the
+    /// guard's cause (#1301, #1329): no socket ever opens and robots.txt was
+    /// never consulted, so this is NOT a robots-rules denial. The guard
+    /// itself emits the WARN with host+ip so the refusal stays traceable.
     ///
     /// # Arguments
     ///
@@ -383,7 +389,10 @@ impl RobotsFetcher {
     ///
     /// # Returns
     ///
-    /// `true` if the URL is allowed by robots.txt (or if robots.txt is unavailable).
+    /// [`RobotsDecision::Allowed`] if the URL is allowed by robots.txt (or if
+    /// robots.txt is unavailable — fail-open), [`RobotsDecision::RulesDenied`]
+    /// on a genuine rules denial, [`RobotsDecision::PolicyRefused`] when the
+    /// SSRF entry guard cut the URL before robots was consulted.
     ///
     /// # Examples
     ///
@@ -393,26 +402,32 @@ impl RobotsFetcher {
     /// # #[tokio::main]
     /// # async fn main() {
     /// let fetcher = RobotsFetcher::new(wreq_util::Profile::Chrome145, 30).unwrap();
-    /// assert!(fetcher.is_allowed("https://example.com/page", "example.com").await);
+    /// assert!(fetcher.is_allowed("https://example.com/page", "example.com").await.allows());
     /// # }
     /// ```
-    pub async fn is_allowed(&self, url: &str, domain: &str) -> bool {
+    pub async fn is_allowed(&self, url: &str, domain: &str) -> RobotsDecision {
         // SSRF entry guard (F-06 + F-32, #1217): deny literal-IP targets BEFORE
-        // the robots.txt fetch opens a socket. Deny (not error): this port
-        // returns `bool` by design (fail-open unavailable-robots); the guard
-        // itself emits the WARN with host+ip so the denial stays traceable.
+        // the robots.txt fetch opens a socket. The typed verdict (#1329) carries
+        // the guard's own cause so callers name the real refusal without
+        // re-validating the URL — this is the ONLY guard call in the
+        // `enforce_robots_policy → RobotsPort` chain.
         if let Ok(parsed) = Url::parse(url) {
-            if crate::domain::ssrf_guard::reject_forbidden_literal_url(&parsed).is_err() {
-                return false;
+            if let Err(rejection) = crate::domain::ssrf_guard::reject_forbidden_literal_url(&parsed)
+            {
+                return RobotsDecision::PolicyRefused(rejection);
             }
         }
         let entry = self.resolve_entry(domain, url).await;
         match entry.as_ref() {
             RobotsCacheEntry::Rules(rules) => {
                 let mut matcher = DefaultMatcher::default();
-                matcher.one_agent_allowed_by_robots(&rules.content, "*", url)
+                if matcher.one_agent_allowed_by_robots(&rules.content, "*", url) {
+                    RobotsDecision::Allowed
+                } else {
+                    RobotsDecision::RulesDenied
+                }
             },
-            RobotsCacheEntry::AllowAll => true,
+            RobotsCacheEntry::AllowAll => RobotsDecision::Allowed,
         }
     }
 
@@ -441,7 +456,7 @@ impl RobotsFetcher {
 }
 
 impl RobotsPort for RobotsFetcher {
-    fn is_allowed<'a>(&'a self, url: &'a str, domain: &'a str) -> BoxFuture<'a, bool> {
+    fn is_allowed<'a>(&'a self, url: &'a str, domain: &'a str) -> BoxFuture<'a, RobotsDecision> {
         // UFCS selects the inherent async method (inherent impls take
         // precedence over trait methods), avoiding trait recursion.
         Box::pin(RobotsFetcher::is_allowed(self, url, domain))
@@ -548,17 +563,15 @@ Disallow: /tmp/";
         );
 
         // Should allow public URL
-        assert!(
-            fetcher
-                .is_allowed("https://example.com/public", "example.com")
-                .await
-        );
+        assert!(fetcher
+            .is_allowed("https://example.com/public", "example.com")
+            .await
+            .allows());
         // Should disallow private URL
-        assert!(
-            !fetcher
-                .is_allowed("https://example.com/private/secret", "example.com")
-                .await
-        );
+        assert!(!fetcher
+            .is_allowed("https://example.com/private/secret", "example.com")
+            .await
+            .allows());
     }
 
     #[cfg_attr(miri, ignore)] // btls/wreq FFI (BoringSSL TLS_method) not supported by Miri
@@ -596,11 +609,10 @@ Disallow: /tmp/";
             init_cache_cell(RobotsCacheEntry::AllowAll),
         );
 
-        assert!(
-            fetcher
-                .is_allowed("http://dead.example/anything", "dead.example")
-                .await
-        );
+        assert!(fetcher
+            .is_allowed("http://dead.example/anything", "dead.example")
+            .await
+            .allows());
     }
 
     #[test]

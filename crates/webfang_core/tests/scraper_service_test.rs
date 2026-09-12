@@ -1405,7 +1405,9 @@ async fn test_batch_without_pacing_runs_unthrottled() {
 // =====================================================================
 
 /// Fixed-answer robots port for `enforce_robots_policy` tests: hermetic,
-/// no network, no env hatches.
+/// no network, no env hatches. The `allowed` flag maps to the typed
+/// verdict (#1329): `true` → `Allowed`, `false` → a genuine `RulesDenied`
+/// (a rules denial, never a policy refusal).
 struct StubRobotsPort {
     allowed: bool,
 }
@@ -1415,9 +1417,14 @@ impl webfang_core::domain::crawler_port::RobotsPort for StubRobotsPort {
         &'a self,
         url: &'a str,
         domain: &'a str,
-    ) -> futures::future::BoxFuture<'a, bool> {
+    ) -> futures::future::BoxFuture<'a, webfang_core::domain::crawler_port::RobotsDecision> {
         let _ = (url, domain);
-        Box::pin(async move { self.allowed })
+        let verdict = if self.allowed {
+            webfang_core::domain::crawler_port::RobotsDecision::Allowed
+        } else {
+            webfang_core::domain::crawler_port::RobotsDecision::RulesDenied
+        };
+        Box::pin(async move { verdict })
     }
 }
 
@@ -1496,4 +1503,61 @@ async fn robots_allow_flows_through() {
     enforce_robots_policy(&url, Some(&stub), false)
         .await
         .expect("allowed URL must pass the gate");
+}
+
+// =====================================================================
+// #1329: the typed verdict removes the duplicated guard call
+// =====================================================================
+
+/// Robots port that always reports a policy refusal (#1301 shape) with the
+/// guard's own cause. Hermetic, no network, no env hatches.
+struct RefusingRobotsPort;
+
+impl webfang_core::domain::crawler_port::RobotsPort for RefusingRobotsPort {
+    fn is_allowed<'a>(
+        &'a self,
+        url: &'a str,
+        _domain: &'a str,
+    ) -> futures::future::BoxFuture<'a, webfang_core::domain::crawler_port::RobotsDecision> {
+        use std::net::IpAddr;
+        let cause = webfang_core::domain::ssrf_guard::ForbiddenLiteral {
+            host: url.to_owned(),
+            ip: IpAddr::from([127, 0, 0, 1]),
+        };
+        Box::pin(
+            async move { webfang_core::domain::crawler_port::RobotsDecision::PolicyRefused(cause) },
+        )
+    }
+}
+
+/// #1329: once the port reports `PolicyRefused`, the gate must trust the
+/// verdict — it may NOT re-validate the URL to label the denial. The stub
+/// refuses a plain hostname the literal-IP guard itself would pass
+/// (`example.com`), so a `Network` error carrying the guard's cause can
+/// only come from the carried verdict, never from a re-run guard. This is
+/// the single-guard-call-site contract: the refusal is named once, inside
+/// `RobotsFetcher`, and every caller downstream only reads the verdict.
+#[tokio::test]
+async fn robots_policy_refusal_needs_no_revalidation() {
+    let stub = RefusingRobotsPort;
+    let url = url::Url::parse("https://example.com/private/page").unwrap();
+
+    let err = enforce_robots_policy(&url, Some(&stub), false)
+        .await
+        .expect_err("a policy-refused verdict must fail the gate");
+
+    match &err {
+        ScraperError::Network(_) => {},
+        other => panic!("policy refusal must be Network, got: {other:?}"),
+    }
+    let msg = err.to_string();
+    assert!(
+        msg.contains("SSRF detectado"),
+        "the carried guard cause must surface verbatim, got: {msg}"
+    );
+    assert!(!msg.contains("WAF/CAPTCHA"), "no phantom WAF, got: {msg}");
+    assert!(
+        !msg.contains("robots.txt"),
+        "robots never consulted, got: {msg}"
+    );
 }
