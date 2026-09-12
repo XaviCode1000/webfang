@@ -370,16 +370,19 @@ mod tests {
     static ENV_GUARD: std::sync::Once = std::sync::Once::new();
     fn clean_env() {
         ENV_GUARD.call_once(|| {
-            // Permanent, process-wide removal (no restore-on-drop), so this
-            // uses `env_lock` directly instead of `EnvGuard` — but the lock
-            // invariant still holds: every mutation is serialized (#1126).
-            let _lock = webfang_test_utils::env_lock();
-            let poisoned: Vec<String> = std::env::vars()
-                .filter(|(k, _)| k.starts_with("WEBFANG_") || k == "AI_MODEL_ID")
-                .map(|(k, _)| k)
-                .collect();
+            // Snapshot the poisoned keys under ENV_LOCK so the iteration
+            // cannot race a concurrent mutation, then drop the lock before
+            // mutating: `env_remove` acquires ENV_LOCK itself (permanent,
+            // process-wide removal — no restore-on-drop; #1126).
+            let poisoned: Vec<String> = {
+                let _lock = webfang_test_utils::env_lock();
+                std::env::vars()
+                    .filter(|(k, _)| k.starts_with("WEBFANG_") || k == "AI_MODEL_ID")
+                    .map(|(k, _)| k)
+                    .collect()
+            };
             for key in poisoned {
-                std::env::remove_var(&key);
+                webfang_test_utils::env_remove(&key);
             }
         });
     }

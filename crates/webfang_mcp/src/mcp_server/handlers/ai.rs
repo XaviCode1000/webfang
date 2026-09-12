@@ -404,7 +404,10 @@ mod tests {
         // the robots gate is already a no-op in `test_handler`. EnvGuard
         // restores the original on drop, so the "1" cannot leak into sibling
         // tests in a shared process (#1126).
-        let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_MCP_DISABLE_SSRF", "1")]);
+        let _guard = webfang_test_utils::EnvGuard::with(&[(
+            webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+            "1",
+        )]);
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .semantic_cleaner(Parameters(ScrapeUrlParams {
@@ -441,7 +444,10 @@ mod tests {
         // restores the originals on drop, so the "1"s cannot leak into sibling
         // tests in a shared process (#1126).
         let _guard = webfang_test_utils::EnvGuard::with(&[
-            ("WEBFANG_MCP_DISABLE_SSRF", "1"),
+            (
+                webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+                "1",
+            ),
             (
                 webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
                 "1",
