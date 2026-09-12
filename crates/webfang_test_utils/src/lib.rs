@@ -5,6 +5,25 @@
 //!
 //! Provides RAII environment isolation, output redaction for deterministic
 //! snapshots, and binary path resolution for integration tests.
+//!
+//! # SSRF test hatches — the ONE place they are documented (#1329)
+//!
+//! Test harnesses driving the production network path against wiremock
+//! (127.0.0.1) must disarm the SSRF layers the path consults. Each hatch is
+//! read with a distinct convention; all are test-only — production never
+//! sets them:
+//!
+//! | Hatch | Canonical const | Layer it disarms |
+//! |---|---|---|
+//! | `WEBFANG_DISABLE_SSRF_ENTRY_GUARD` (exact `"1"`) | `webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV` | Literal-IP entry guard (SSRF choke point, #1217) |
+//! | `WEBFANG_DISABLE_SSRF_REDIRECT_GUARD` | `webfang_core::domain::ssrf_guard::DISABLE_REDIRECT_GUARD_ENV` | Client redirect policy's literal-IP stop |
+//! | `WEBFANG_DISABLE_SSRF_RESOLVER` | `webfang_core::domain::ssrf_guard::DISABLE_VALIDATING_RESOLVER_ENV` | Connect-time validating DNS resolver |
+//! | `WEBFANG_DISABLE_SSRF` (presence) | — (literal in `llm_extraction::ssrf_gate`, #703) | LLM base-URL SSRF gate |
+//! | `WEBFANG_MCP_DISABLE_SSRF` | named const lands with #1348 | MCP entry validator |
+//!
+//! Tests that exercise the robots chain must use
+//! [`EnvGuard::wiremock_robots`], which arms the entry-guard and MCP
+//! hatches together — never a single hatch by hand (#1308).
 
 use regex::Regex;
 use std::env;
@@ -52,6 +71,32 @@ pub struct EnvGuard {
 // this guard, and the guard restores the original state on drop.
 #[allow(unsafe_code)]
 impl EnvGuard {
+    /// Arm BOTH SSRF hatches the robots chain can consult in tests (#1329):
+    ///
+    /// 1. `WEBFANG_DISABLE_SSRF_ENTRY_GUARD` — core's literal-IP entry guard
+    ///    (canonical const:
+    ///    `webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV`), read
+    ///    once per chain inside `RobotsFetcher` and again at CLI/MCP entry
+    ///    points;
+    /// 2. `WEBFANG_MCP_DISABLE_SSRF` — the MCP validator's hatch (named
+    ///    const lands with #1348; until then the literal lives here and in
+    ///    the MCP handler tests).
+    ///
+    /// The #1308 lesson: a robots test that arms only ONE hatch leaves the
+    /// other chain layer armed, so the test can pass on a phantom denial
+    /// label instead of the robots rules it means to exercise. Always use
+    /// this constructor for tests that drive the robots path against a
+    /// wiremock loopback literal — never arm a single hatch by hand.
+    ///
+    /// The guard restores both variables on drop.
+    #[must_use]
+    pub fn wiremock_robots() -> Self {
+        Self::with(&[
+            ("WEBFANG_DISABLE_SSRF_ENTRY_GUARD", "1"),
+            ("WEBFANG_MCP_DISABLE_SSRF", "1"),
+        ])
+    }
+
     /// Remove the given variables from the environment, saving originals for
     /// restoration on drop.
     #[must_use]
