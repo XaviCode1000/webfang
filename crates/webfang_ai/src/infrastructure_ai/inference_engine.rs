@@ -1,7 +1,9 @@
 //! Inference engine — ONNX model execution with ort (ONNX Runtime)
 //!
 //! Handles loading and executing ONNX models for sentence embedding generation:
-//! - Thread-safe model bytes sharing with `Arc<Vec<u8>>` (`own-arc-shared`)
+//! - Session built ONCE from the model FILE via `commit_from_file` — ORT
+//!   memory-maps the ONNX blob (weights paged on demand), so the ~1.2 GB
+//!   Granite-311M model is never fully resident in RAM (#1315)
 //! - Async inference via `spawn_blocking` (`async-spawn-blocking`)
 //! - Clone Arc before await (`async-clone-before-await`)
 //! - 384-dimensional embedding output for IBM Granite models
@@ -13,7 +15,8 @@
 //! # Design Decisions
 //!
 //! - **One shared session**: the pool builds a single `ort::Session` before spawning
-//!   workers and shares it as `Arc<Mutex<Session>>`. `Session::run` takes `&mut self`
+//!   workers and shares it as `Arc<Mutex<Session>>`; that Arc is the ONLY shared
+//!   model state. `Session::run` takes `&mut self`
 //!   in ort 2.0, so the `Mutex` is required — it costs nothing because the request
 //!   channel already serializes work per worker. Building one session per worker
 //!   duplicated the whole model graph in RSS on every CPU core (#648).
@@ -23,6 +26,7 @@
 //!   starving async runtime.
 //! - **No locks across await**: Clone Arc before async operations.
 
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use ort::session::{builder::GraphOptimizationLevel, Session};
@@ -240,19 +244,25 @@ pub struct InferencePool {
 impl InferencePool {
     /// Create a new inference pool with dedicated worker threads.
     ///
-    /// The `ort::Session` is built ONCE with `intra_threads(1)` and shared by
-    /// every worker through `Arc<Mutex<Session>>`, so the model graph is
-    /// resident in memory a single time instead of once per CPU core (#648).
-    /// Spawns `(num_cpus - 1).max(1)` OS threads.
+    /// The `ort::Session` is built ONCE from `model_path` with
+    /// `intra_threads(1)` and shared by every worker through
+    /// `Arc<Mutex<Session>>`, so the model graph is resident in memory a
+    /// single time instead of once per CPU core (#648). The session is
+    /// committed via `commit_from_file`, so ORT memory-maps the ONNX file
+    /// (weights paged on demand) instead of taking a full in-RAM copy
+    /// (#1315). Spawns `(num_cpus - 1).max(1)` OS threads.
     ///
-    /// When the session cannot be built (invalid model bytes), the pool is still
-    /// created: a drainer thread consumes pending requests so callers get a
-    /// prompt error instead of blocking forever.
+    /// When the session cannot be built (missing or invalid model file), the
+    /// pool is still created: a drainer thread consumes pending requests so
+    /// callers get a prompt error instead of blocking forever.
     ///
     /// # Errors
     ///
     /// Returns `SemanticError::Inference` if a thread fails to spawn.
-    pub fn new(model_bytes: Arc<Vec<u8>>, model_variant: AiModel) -> Result<Self, SemanticError> {
+    pub fn new(
+        model_path: std::path::PathBuf,
+        model_variant: AiModel,
+    ) -> Result<Self, SemanticError> {
         // Canonical detector seam (Q2, via core dependency): process-wide "auto".
         let worker_count =
             (webfang_core::domain::budget::detector::system_parallelism().get() - 1).max(1);
@@ -262,7 +272,7 @@ impl InferencePool {
         let (request_tx, receiver) = mpsc::channel::<WorkerRequest>(worker_count);
         let receiver: SharedReceiver = Arc::new(Mutex::new(receiver));
 
-        let (shared_session, worker_handles) = match prepare_shared_session(&model_bytes) {
+        let (shared_session, worker_handles) = match prepare_shared_session(&model_path) {
             Ok((session, plan)) => {
                 let session: SharedSession = Arc::new(Mutex::new(session));
                 let handles =
@@ -369,8 +379,12 @@ impl Drop for InferencePool {
     }
 }
 
-/// Builds a single-threaded ONNX session from model bytes in memory.
-fn build_session(bytes: &[u8]) -> Result<Session, SemanticError> {
+/// Builds a single-threaded ONNX session from the model file on disk.
+///
+/// `commit_from_file` makes ORT memory-map the ONNX blob: the weights stay
+/// in the page cache and are paged in on demand, so peak RSS no longer
+/// includes a full copy of the ~1.2 GB Granite-311M model (#1315).
+fn build_session(model_path: &Path) -> Result<Session, SemanticError> {
     let mut builder = Session::builder().map_err(|e| {
         SemanticError::Inference(format!("Failed to create ONNX session builder: {e}"))
     })?;
@@ -380,8 +394,8 @@ fn build_session(bytes: &[u8]) -> Result<Session, SemanticError> {
     builder = builder
         .with_intra_threads(1)
         .map_err(|e| SemanticError::Inference(format!("Failed to set intra threads: {e}")))?;
-    builder.commit_from_memory(bytes).map_err(|e| {
-        SemanticError::Inference(format!("Failed to create ONNX session from memory: {e}"))
+    builder.commit_from_file(model_path).map_err(|e| {
+        SemanticError::Inference(format!("Failed to create ONNX session from file: {e}"))
     })
 }
 
@@ -400,8 +414,8 @@ fn recv_request(receiver: &SharedReceiver) -> Option<WorkerRequest> {
 }
 
 /// Build the single shared session and resolve its input plan once.
-fn prepare_shared_session(bytes: &[u8]) -> Result<(Session, InputPlan), SemanticError> {
-    let session = build_session(bytes)?;
+fn prepare_shared_session(model_path: &Path) -> Result<(Session, InputPlan), SemanticError> {
+    let session = build_session(model_path)?;
     let plan = InputPlan::from_session(&session)?;
     Ok((session, plan))
 }
@@ -584,6 +598,11 @@ mod tests {
     use super::*;
     use crate::infrastructure_ai::cache_config::AiModel;
 
+    /// A model path that can never build a session (deterministic, no fs
+    /// writes): `InferencePool::new` must still construct the pool and spawn
+    /// the drainer, exercising the graceful-degradation contract (#1315).
+    const FAKE_MODEL_PATH: &str = "/nonexistent/webfang-fake-model.onnx";
+
     // --- InferencePool tests ---
 
     /// Test that InferencePool type exists and compiles
@@ -671,11 +690,10 @@ mod tests {
     /// dropped. Now no clone can exist, so the drop is bounded by construction.
     #[test]
     fn test_inference_pool_drop_returns_in_bounded_time() {
-        let fake_bytes = Arc::new(b"fake model bytes".to_vec());
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let owner = thread::spawn(move || {
-            let pool = InferencePool::new(fake_bytes, AiModel::Granite97M)
-                .expect("pool creation must succeed even with invalid model bytes");
+            let pool = InferencePool::new(std::path::PathBuf::from(FAKE_MODEL_PATH), AiModel::Granite97M)
+                .expect("pool creation must succeed even with an unloadable model file");
             drop(pool);
             let _ = done_tx.send(());
         });
@@ -688,16 +706,15 @@ mod tests {
         owner.join().expect("owner thread must not panic");
     }
 
-    /// Test InferencePool::new with fake model bytes
+    /// Test InferencePool::new with an unloadable model path
     ///
-    /// Uses invalid model bytes — workers will fail to build sessions but
-    /// the pool itself should still be created. The workers drain the
-    /// channel and exit cleanly.
+    /// Uses a model path that cannot build a session — workers will fail to
+    /// build sessions but the pool itself should still be created. The
+    /// workers drain the channel and exit cleanly.
     #[test]
     fn test_inference_pool_creation() {
-        let fake_bytes = Arc::new(b"not a real onnx model".to_vec());
-        let pool = InferencePool::new(fake_bytes, AiModel::Granite97M)
-            .expect("Pool should create even with invalid model bytes");
+        let pool = InferencePool::new(std::path::PathBuf::from(FAKE_MODEL_PATH), AiModel::Granite97M)
+            .expect("Pool should create even with an unloadable model file");
 
         assert_eq!(pool.model_variant(), AiModel::Granite97M);
         assert_eq!(pool.worker_count(), (num_cpus::get() - 1).max(1));
@@ -707,8 +724,8 @@ mod tests {
     /// Test that dropping the pool causes all workers to exit cleanly
     #[test]
     fn test_inference_pool_graceful_shutdown() {
-        let fake_bytes = Arc::new(b"fake model bytes".to_vec());
-        let pool = InferencePool::new(fake_bytes, AiModel::Granite97M).expect("Pool should create");
+        let pool = InferencePool::new(std::path::PathBuf::from(FAKE_MODEL_PATH), AiModel::Granite97M)
+            .expect("Pool should create");
 
         let worker_count = pool.worker_count();
         drop(pool);
@@ -719,16 +736,17 @@ mod tests {
 
     /// Test that infer() returns an error when channel has no workers
     ///
-    /// Creates a pool with invalid model bytes. Workers fail to build sessions,
-    /// drain the channel, and exit. The pool is then dropped (clean shutdown).
-    /// This validates the full lifecycle: creation → worker failure → shutdown.
+    /// Creates a pool with an unloadable model path. Workers fail to build
+    /// sessions, drain the channel, and exit. The pool is then dropped (clean
+    /// shutdown). This validates the full lifecycle: creation → worker
+    /// failure → shutdown.
     #[test]
     fn test_inference_pool_worker_failure_lifecycle() {
-        let fake_bytes = Arc::new(b"fake model bytes".to_vec());
-        let pool = InferencePool::new(fake_bytes, AiModel::Granite97M).expect("Pool should create");
+        let pool = InferencePool::new(std::path::PathBuf::from(FAKE_MODEL_PATH), AiModel::Granite97M)
+            .expect("Pool should create");
 
-        // Workers fail to build sessions with invalid bytes, drain channel, and exit.
-        // Give workers time to fail and exit.
+        // Workers fail to build sessions with the missing file, drain
+        // channel, and exit. Give workers time to fail and exit.
         thread::sleep(std::time::Duration::from_millis(100));
 
         // Drop the pool — workers should already be exited, join succeeds

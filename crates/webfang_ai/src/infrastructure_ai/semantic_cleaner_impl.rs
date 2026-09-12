@@ -52,6 +52,7 @@
 //! ```
 
 use std::future::Future;
+use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
@@ -59,6 +60,7 @@ use futures::future::{try_join, try_join_all};
 use hf_hub::api::tokio::ApiBuilder;
 use hf_hub::{Cache as HfCache, Repo, RepoType};
 use sha2::{Digest, Sha256};
+use tokio::io::AsyncReadExt;
 use tracing::{debug, info, warn, Instrument};
 
 use crate::infrastructure_ai::cache_config::AiModel;
@@ -269,7 +271,9 @@ impl SemanticCleanerImpl {
     ///
     /// - **First call**: Model download (~90MB) + load (~100-500ms)
     /// - **Subsequent calls**: Cache hit, ~10-50ms per page
-    /// - **Memory**: Memory-mapped files, ~90MB virtual memory
+    /// - **Memory**: the ONNX session is committed from the model file
+    ///   (`commit_from_file`), so ORT memory-maps the blob and pages weights
+    ///   in on demand — the model is not copied into RAM (#1315)
     #[tracing::instrument(skip(config), fields(repo = %config.repo, model_file = %config.model_file, offline_mode = config.offline_mode))]
     pub async fn new(config: ModelConfig) -> Result<Self, SemanticError> {
         info!(
@@ -281,17 +285,15 @@ impl SemanticCleanerImpl {
         );
 
         // Resolve and validate model + tokenizer assets (hf_hub cache-first,
-        // in-memory SHA256 integrity check). Shared with `EmbeddingAdapter::from_config`
-        // so both pipelines resolve and validate models identically.
-        let (model_bytes, tokenizer_path) = resolve_model_assets(&config).await?;
+        // streamed SHA256 integrity check). Shared with
+        // `EmbeddingAdapter::from_config` so both pipelines resolve and
+        // validate models identically.
+        let (model_path, tokenizer_path) = resolve_model_assets(&config).await?;
 
         // Initialize all pipeline components. The tokenizer is `Arc`-wrapped so
         // `shared_inference` can hand the SAME instance to the embedding adapter.
         let tokenizer = Arc::new(MiniLmTokenizer::from_file(&tokenizer_path).await?);
-        let inference_pool = Arc::new(InferencePool::new(
-            Arc::clone(&model_bytes),
-            config.model_variant,
-        )?);
+        let inference_pool = Arc::new(InferencePool::new(model_path, config.model_variant)?);
         let chunker = HtmlChunker::new();
         let scorer = RelevanceScorer::new(config.relevance_threshold);
 
@@ -653,12 +655,12 @@ impl SemanticCleanerImpl {
 ///
 /// Returns [`SemanticError::OfflineMode`] when offline and an asset is uncached,
 /// [`SemanticError::Download`] on hf_hub client/API failure,
-/// [`SemanticError::ModelLoad`] on read failure, or
-/// [`SemanticError::CacheValidation`] on SHA256 mismatch.
+/// [`SemanticError::ModelLoad`] when the model file cannot be opened for
+/// validation, or [`SemanticError::CacheValidation`] on SHA256 mismatch.
 #[tracing::instrument(skip(config), fields(repo = %config.repo, model_file = %config.model_file, offline_mode = config.offline_mode))]
 pub(crate) async fn resolve_model_assets(
     config: &ModelConfig,
-) -> Result<(Arc<Vec<u8>>, std::path::PathBuf), SemanticError> {
+) -> Result<(std::path::PathBuf, std::path::PathBuf), SemanticError> {
     // Resolve model + tokenizer paths through the hf_hub cache.
     let (model_path, tokenizer_path) = if config.offline_mode {
         let cache = HfCache::from_env();
@@ -710,36 +712,53 @@ pub(crate) async fn resolve_model_assets(
         (model_path, tokenizer_path)
     };
 
-    // Load the model bytes once and validate SHA256 on the in-memory buffer
-    // (zero extra I/O — the same bytes feed the caller's inference pool).
-    let model_bytes = Arc::new(
-        tokio::fs::read(&model_path)
-            .await
-            .map_err(SemanticError::ModelLoad)?,
-    );
+    // Stream-validate the SHA256 of the model file on disk. The file itself
+    // (not a byte copy) feeds the inference pool via `commit_from_file`, so
+    // the model is never fully resident in RAM (#1315).
+    stream_validate_model_hash(&model_path, config.model_variant.sha256(), &config.repo).await?;
 
-    validate_model_hash(
-        model_bytes.as_slice(),
-        config.model_variant.sha256(),
-        &config.repo,
-    )?;
-
-    Ok((model_bytes, tokenizer_path))
+    Ok((model_path, tokenizer_path))
 }
 
-/// Validate the SHA256 hash of in-memory model bytes against an expected value.
+/// Stream-validate the SHA256 of the model file on disk (constant memory:
+/// 1 MiB chunks — the ~1.2 GB 311m blob must never be fully resident).
 ///
-/// Extracted from [`SemanticCleanerImpl::new`] so the integrity check is
-/// unit-testable without downloading a model or loading the ONNX runtime.
+/// Streaming computes the actual digest without ever buffering the whole
+/// file, so the "buffer in RAM if the hash fails" alternative is not needed:
+/// a mismatch simply yields the computed digest in the
+/// [`SemanticError::CacheValidation`] payload.
 ///
 /// # Errors
 ///
-/// Returns [`SemanticError::CacheValidation`] when the computed hash does not
-/// match `expected`.
-#[tracing::instrument(skip(bytes), fields(repo = %repo, expected = %expected))]
-fn validate_model_hash(bytes: &[u8], expected: &str, repo: &str) -> Result<(), SemanticError> {
-    debug!("Validating model integrity...");
-    let actual = format!("{:x}", Sha256::digest(bytes));
+/// Returns [`SemanticError::ModelLoad`] when the file cannot be opened or
+/// read, and [`SemanticError::CacheValidation`] when the computed hash does
+/// not match `expected`.
+#[tracing::instrument(skip(model_path), fields(repo = %repo, expected = %expected))]
+async fn stream_validate_model_hash(
+    model_path: &Path,
+    expected: &str,
+    repo: &str,
+) -> Result<(), SemanticError> {
+    debug!("Validating model integrity (streaming)...");
+    let mut file = tokio::fs::File::open(model_path)
+        .await
+        .map_err(SemanticError::ModelLoad)?;
+
+    const CHUNK_BYTES: usize = 1024 * 1024; // 1 MiB
+    let mut buffer = vec![0u8; CHUNK_BYTES];
+    let mut hasher = Sha256::new();
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .await
+            .map_err(SemanticError::ModelLoad)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+
+    let actual = format!("{:x}", hasher.finalize());
     if actual != expected {
         return Err(SemanticError::CacheValidation {
             repo: repo.to_string(),
@@ -747,7 +766,7 @@ fn validate_model_hash(bytes: &[u8], expected: &str, repo: &str) -> Result<(), S
             actual,
         });
     }
-    debug!(sha = %actual, "SHA256 validation passed");
+    debug!(sha = %actual, "SHA256 validation passed (streamed)");
     Ok(())
 }
 
@@ -877,14 +896,21 @@ mod tests {
         // The method is tested indirectly through integration tests.
     }
 
-    #[test]
-    fn test_validate_model_hash_mismatch_returns_cache_validation() {
-        // Exercises the REAL validation path: known content plus a WRONG
-        // expected hash must yield CacheValidation carrying both hashes + repo.
-        let bytes = b"webfang deterministic test payload";
-        let wrong_expected = "0000000000000000000000000000000000000000000000000000000000000000";
+    #[tokio::test]
+    async fn test_stream_validate_model_hash_mismatch_returns_cache_validation() {
+        // Exercises the REAL streaming validation path: known file content
+        // plus a WRONG expected hash must yield CacheValidation carrying both
+        // hashes + repo, with the actual digest computed from disk in chunks.
+        let dir = tempfile::tempdir().expect("create temp dir for hash test");
+        let model_path = dir.path().join("model.onnx");
+        tokio::fs::write(&model_path, b"webfang deterministic test payload")
+            .await
+            .expect("write temp model file");
+        let wrong_expected =
+            "0000000000000000000000000000000000000000000000000000000000000000";
 
-        let result = validate_model_hash(bytes, wrong_expected, "test/repo");
+        let result =
+            stream_validate_model_hash(&model_path, wrong_expected, "test/repo").await;
 
         match result {
             Err(SemanticError::CacheValidation {
@@ -897,19 +923,50 @@ mod tests {
                 // The actual hash is the real SHA256 of the payload (64 hex
                 // chars), never the bogus expected value.
                 assert_ne!(actual, wrong_expected);
-                assert_eq!(actual.len(), 64);
+                assert_eq!(actual.len(), 64, "SHA256 digest must be 64 hex chars");
             },
             other => panic!("expected CacheValidation, got {other:?}"),
         }
     }
 
-    #[test]
-    fn test_validate_model_hash_match_passes() {
-        // Success path: feeding back the real SHA256 must validate cleanly,
-        // proving the helper round-trips the digest correctly.
-        let bytes = b"webfang deterministic test payload";
-        let real_hash = format!("{:x}", Sha256::digest(bytes));
+    #[tokio::test]
+    async fn test_stream_validate_model_hash_match_passes_across_chunk_boundary() {
+        // Success path: feeding back the real SHA256 must validate cleanly.
+        // The payload spans several 1 MiB chunks (plus a non-multiple tail)
+        // to prove the chunk loop reassembles the full digest and the final
+        // partial chunk is not dropped.
+        let dir = tempfile::tempdir().expect("create temp dir for hash test");
+        let model_path = dir.path().join("model.onnx");
+        // 2 MiB + 37 bytes: forces two full chunks and one partial one.
+        let payload: Vec<u8> = (0..2 * 1024 * 1024 + 37).map(|i| (i % 251) as u8).collect();
+        tokio::fs::write(&model_path, &payload)
+            .await
+            .expect("write temp model file");
+        let real_hash = format!("{:x}", Sha256::digest(&payload));
 
-        assert!(validate_model_hash(bytes, &real_hash, "test/repo").is_ok());
+        assert!(
+            stream_validate_model_hash(&model_path, &real_hash, "test/repo")
+                .await
+                .is_ok(),
+            "streamed digest across chunk boundaries must match the single-shot digest"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_validate_model_hash_missing_file_returns_model_load() {
+        // Opening a nonexistent path must surface as ModelLoad (io::Error),
+        // NOT as a hash mismatch or a panic.
+        let dir = tempfile::tempdir().expect("create temp dir for hash test");
+        let missing = dir.path().join("does-not-exist.onnx");
+
+        let result =
+            stream_validate_model_hash(&missing, "00", "test/repo").await;
+
+        match result {
+            Err(SemanticError::ModelLoad(_)) => {
+                // Expected
+            },
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
     }
 }

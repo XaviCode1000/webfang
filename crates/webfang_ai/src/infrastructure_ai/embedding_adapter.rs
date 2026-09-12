@@ -98,8 +98,8 @@ impl EmbeddingAdapter {
     ///
     /// Mirrors `SemanticCleanerImpl::new`: resolves the model and tokenizer
     /// through the hf_hub cache (cache-first online, strict offline), validates
-    /// the model SHA256 in memory, then loads the tokenizer and builds the
-    /// inference pool.
+    /// the model SHA256 by streaming the file on disk, then loads the
+    /// tokenizer and builds the inference pool.
     ///
     /// # Errors
     ///
@@ -107,9 +107,9 @@ impl EmbeddingAdapter {
     /// validation, tokenizer loading, or pool construction fails.
     #[tracing::instrument(skip(config), fields(repo = %config.repo, offline_mode = config.offline_mode))]
     pub async fn from_config(config: &ModelConfig) -> Result<Self, SemanticError> {
-        let (model_bytes, tokenizer_path) = resolve_model_assets(config).await?;
+        let (model_path, tokenizer_path) = resolve_model_assets(config).await?;
         let tokenizer = Arc::new(MiniLmTokenizer::from_file(&tokenizer_path).await?);
-        let pool = Arc::new(InferencePool::new(model_bytes, config.model_variant)?);
+        let pool = Arc::new(InferencePool::new(model_path, config.model_variant)?);
         debug!(dim = pool.embedding_dim(), "EmbeddingAdapter initialized");
         Ok(Self { pool, tokenizer })
     }
@@ -193,16 +193,16 @@ mod tests {
         tokenizers::Tokenizer::new(model)
     }
 
-    /// Adapter backed by fake model bytes (workers fail async but the pool still
-    /// reports its configured dimension) and an in-memory tokenizer — no ONNX
-    /// model download, fully deterministic.
+    /// Adapter backed by a model path that cannot build a session (workers
+    /// fail async but the pool still reports its configured dimension) and an
+    /// in-memory tokenizer — no ONNX model download, fully deterministic.
     fn fake_adapter() -> EmbeddingAdapter {
         let pool = Arc::new(
             InferencePool::new(
-                Arc::new(b"not a real onnx model".to_vec()),
+                std::path::PathBuf::from("/nonexistent/webfang-fake-model.onnx"),
                 AiModel::Granite97M,
             )
-            .expect("pool creation must succeed even with invalid model bytes"),
+            .expect("pool creation must succeed even with an unloadable model file"),
         );
         let tokenizer = Arc::new(MiniLmTokenizer::new(in_memory_tokenizer(), 512));
         EmbeddingAdapter::new(pool, tokenizer)
