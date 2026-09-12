@@ -19,6 +19,7 @@ mod robots_test;
 mod signal_lifecycle_test;
 mod single_page_test;
 mod sitemap_exit_code_test;
+mod sitemap_observability_test;
 mod sitemap_test;
 mod trace_correlation_test;
 mod transactional_store_test;
