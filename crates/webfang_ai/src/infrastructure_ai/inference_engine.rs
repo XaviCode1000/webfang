@@ -1,9 +1,10 @@
 //! Inference engine — ONNX model execution with ort (ONNX Runtime)
 //!
 //! Handles loading and executing ONNX models for sentence embedding generation:
-//! - Session built ONCE from the model FILE via `commit_from_file` — ORT
-//!   memory-maps the ONNX blob (weights paged on demand), so the ~1.2 GB
-//!   Granite-311M model is never fully resident in RAM (#1315)
+//! - Session built ONCE from the model FILE via `commit_from_file` — the
+//!   application never holds model bytes; ORT keeps the single copy of the
+//!   weights in its session representation instead of app buffer + ORT copy,
+//!   halving the ~1.2 GB Granite-311M footprint (#1315: 3.2 → 2.05 GiB measured)
 //! - Async inference via `spawn_blocking` (`async-spawn-blocking`)
 //! - Clone Arc before await (`async-clone-before-await`)
 //! - 384-dimensional embedding output for IBM Granite models
@@ -248,9 +249,9 @@ impl InferencePool {
     /// `intra_threads(1)` and shared by every worker through
     /// `Arc<Mutex<Session>>`, so the model graph is resident in memory a
     /// single time instead of once per CPU core (#648). The session is
-    /// committed via `commit_from_file`, so ORT memory-maps the ONNX file
-    /// (weights paged on demand) instead of taking a full in-RAM copy
-    /// (#1315). Spawns `(num_cpus - 1).max(1)` OS threads.
+    /// committed via `commit_from_file`: the application never materializes
+    /// model bytes, and ORT holds the only copy of the weights in its
+    /// session representation (#1315). Spawns `(num_cpus - 1).max(1)` OS threads.
     ///
     /// When the session cannot be built (missing or invalid model file), the
     /// pool is still created: a drainer thread consumes pending requests so
@@ -381,9 +382,10 @@ impl Drop for InferencePool {
 
 /// Builds a single-threaded ONNX session from the model file on disk.
 ///
-/// `commit_from_file` makes ORT memory-map the ONNX blob: the weights stay
-/// in the page cache and are paged in on demand, so peak RSS no longer
-/// includes a full copy of the ~1.2 GB Granite-311M model (#1315).
+/// `commit_from_file` hands the path straight to ONNX Runtime: no ~1.2 GB
+/// Granite-311M byte buffer ever exists in the application, so peak RSS
+/// includes ORT's single session-internal copy instead of two copies
+/// (#1315; warm measurement: 2.05 GiB vs 3.2 GiB pre-fix).
 fn build_session(model_path: &Path) -> Result<Session, SemanticError> {
     let mut builder = Session::builder().map_err(|e| {
         SemanticError::Inference(format!("Failed to create ONNX session builder: {e}"))

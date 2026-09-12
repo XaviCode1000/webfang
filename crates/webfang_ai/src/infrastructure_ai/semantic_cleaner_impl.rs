@@ -273,8 +273,8 @@ impl SemanticCleanerImpl {
     /// - **First call**: Model download (~90MB) + load (~100-500ms)
     /// - **Subsequent calls**: Cache hit, ~10-50ms per page
     /// - **Memory**: the ONNX session is committed from the model file
-    ///   (`commit_from_file`), so ORT memory-maps the blob and pages weights
-    ///   in on demand — the model is not copied into RAM (#1315)
+    ///   (`commit_from_file`) — model bytes never pass through application
+    ///   memory, and the process holds only ORT's single session copy (#1315)
     #[tracing::instrument(skip(config), fields(repo = %config.repo, model_file = %config.model_file, offline_mode = config.offline_mode))]
     pub async fn new(config: ModelConfig) -> Result<Self, SemanticError> {
         info!(
@@ -743,7 +743,7 @@ pub(crate) async fn resolve_model_assets(
 
     // Stream-validate the SHA256 of the model file on disk. The file itself
     // (not a byte copy) feeds the inference pool via `commit_from_file`, so
-    // the model is never fully resident in RAM (#1315).
+    // no application-side duplicate of the blob ever exists (#1315).
     stream_validate_model_hash(&model_path, config.model_variant.sha256(), &config.repo).await?;
 
     // #1316: structured summary for the long-running resolve — emitted for
@@ -764,7 +764,8 @@ pub(crate) async fn resolve_model_assets(
 }
 
 /// Stream-validate the SHA256 of the model file on disk (constant memory:
-/// 1 MiB chunks — the ~1.2 GB 311m blob must never be fully resident).
+/// 1 MiB chunks — the integrity check itself never pulls the ~1.2 GB 311m
+/// blob into the process).
 ///
 /// Streaming computes the actual digest without ever buffering the whole
 /// file, so the "buffer in RAM if the hash fails" alternative is not needed:
