@@ -27,18 +27,18 @@ use webfang_mcp::mcp_server::state::McpState;
 fn init_ssrf_disabled() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        // Process-wide, permanent setup (no restore-on-drop), so this uses
-        // `env_lock` directly — but the mutation is still serialized under
-        // the workspace ENV_LOCK invariant (issue #1126).
+        // Process-wide, permanent setup (no restore-on-drop): `env_set`
+        // acquires ENV_LOCK itself, so each mutation stays serialized under
+        // the workspace ENV_LOCK invariant (issue #1126) without a manual
+        // `env_lock` binding.
         // Both SSRF layers are lifted: the MCP entry validator and the
         // shared core literal-IP entry guard (F-06 + F-32, #1217), since
         // every tool under test fetches wiremock loopback literals.
-        let _lock = webfang_test_utils::env_lock();
-        std::env::set_var(
+        webfang_test_utils::env_set(
             webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
             "1",
         );
-        std::env::set_var(
+        webfang_test_utils::env_set(
             webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
             "1",
         );
