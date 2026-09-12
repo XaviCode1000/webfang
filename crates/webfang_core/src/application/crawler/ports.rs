@@ -155,7 +155,11 @@ pub(crate) struct ProductionRobotsChecker {
 impl RobotsChecker for ProductionRobotsChecker {
     fn is_robots_allowed<'a>(&'a self, url: &'a str, domain: &'a str) -> BoxFuture<'a, bool> {
         // The domain port already returns a boxed future — delegate directly.
-        self.fetcher.is_allowed(url, domain)
+        // #1329: the typed verdict collapses to the crawler's skip semantics:
+        // `RulesDenied` and `PolicyRefused` both skip the URL (same behavior
+        // as the old bool port, where a guard cut also read as `false`).
+        // Naming the cause is the page-fetch chain's job, not the engine's.
+        Box::pin(async move { self.fetcher.is_allowed(url, domain).await.allows() })
     }
 }
 

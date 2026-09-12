@@ -33,11 +33,14 @@ use webfang_mcp::mcp_server::state::McpState;
 fn init_ssrf_disabled() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
-        // Process-wide, permanent setup (no restore-on-drop), so this uses
-        // `env_lock` directly — but the mutation is still serialized under
-        // the workspace ENV_LOCK invariant (issue #1126).
-        let _lock = webfang_test_utils::env_lock();
-        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
+        // Process-wide, permanent setup (no restore-on-drop): `env_set`
+        // acquires ENV_LOCK itself, so the mutation stays serialized under
+        // the workspace ENV_LOCK invariant (issue #1126) without a manual
+        // `env_lock` binding.
+        webfang_test_utils::env_set(
+            webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+            "1",
+        );
     });
 }
 
@@ -94,12 +97,12 @@ pub async fn start_server(
     downloader: Option<std::sync::Arc<webfang_core::adapters::downloader::Downloader>>,
 ) -> (String, tokio::task::JoinHandle<()>) {
     // Disable SSRF protection for tests (uses 127.0.0.1 for wiremock).
-    // Serialized under ENV_LOCK — see `init_ssrf_disabled` for the rationale
-    // of the permanent set (issue #1126).
-    {
-        let _lock = webfang_test_utils::env_lock();
-        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
-    }
+    // Permanent set (no restore-on-drop): `env_set` acquires ENV_LOCK
+    // itself — see `init_ssrf_disabled` for the rationale (issue #1126).
+    webfang_test_utils::env_set(
+        webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+        "1",
+    );
 
     let config = Config::default();
     let container = Container::new(config.crawler, config.scraper)
@@ -174,11 +177,12 @@ pub async fn start_seeded_server(
     let state = McpState::new(container);
 
     // Disable SSRF protection for tests (uses 127.0.0.1 for wiremock).
-    // Serialized under ENV_LOCK — see `init_ssrf_disabled` (issue #1126).
-    {
-        let _lock = webfang_test_utils::env_lock();
-        std::env::set_var("WEBFANG_MCP_DISABLE_SSRF", "1");
-    }
+    // Permanent set serialized under ENV_LOCK by `env_set` — see
+    // `init_ssrf_disabled` (issue #1126).
+    webfang_test_utils::env_set(
+        webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+        "1",
+    );
 
     let app = build_mcp_router(state, &ServerOptions::default());
 
@@ -196,13 +200,10 @@ pub async fn start_seeded_server(
 /// needed. Also actively removes the disable flag in case a shared CI/parent
 /// environment exported it.
 pub async fn start_test_server_ssrf_enabled() -> (String, tokio::task::JoinHandle<()>) {
-    // Actively remove the disable flag (serialized under ENV_LOCK — see
-    // `init_ssrf_disabled`) in case a shared CI/parent environment exported
-    // it (issue #1126).
-    {
-        let _lock = webfang_test_utils::env_lock();
-        std::env::remove_var("WEBFANG_MCP_DISABLE_SSRF");
-    }
+    // Actively remove the disable flag (serialized under ENV_LOCK by
+    // `env_remove` — see `init_ssrf_disabled`) in case a shared CI/parent
+    // environment exported it (issue #1126).
+    webfang_test_utils::env_remove(webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV);
 
     let config = Config::default();
     let container = Container::new(config.crawler, config.scraper)

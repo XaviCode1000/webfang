@@ -9,6 +9,7 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
+use webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV;
 use webfang_mcp::mcp_server::server::{
     require_auth_for_external_bind, start_mcp_server, ServerOptions, DEFAULT_MCP_ADDR,
 };
@@ -124,7 +125,7 @@ async fn main() -> Result<()> {
     };
 
     // Disable SSRF for testing with env var, otherwise use default (enabled)
-    if std::env::var("WEBFANG_MCP_DISABLE_SSRF").is_ok() {
+    if std::env::var(WEBFANG_MCP_DISABLE_SSRF_ENV).is_ok() {
         tracing::debug!("SSRF protection disabled (test mode)");
     }
 

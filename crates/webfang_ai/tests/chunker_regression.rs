@@ -1,8 +1,10 @@
 //! Regression tests for the AI chunker pipeline (webfang_ai).
 //!
-//! The chunker pipeline chains: strip_html_tags (naive + '\n' on '>') →
-//! split by '\n\n' for paragraphs. Key behavior: pushes '\n' on '>' to
-//! create sentence boundaries for AI chunking. NO normalize_whitespace.
+//! The chunker pipeline chains: strip_html_tags (block-aware: '\n' emitted only
+//! at block-tag edges; inline edges emit nothing and source newlines collapse
+//! to spaces) → split by '\n' for paragraphs. Key behavior (#1313): a soft
+//! source-line wrap around an inline link can never fabricate a paragraph
+//! break mid-sentence. NO normalize_whitespace beyond that.
 //!
 //! Split from `cleaning_pipelines_regression.rs` to avoid circular dependency
 //! (webfang_core cannot depend on webfang_ai as a dev-dep since webfang_ai
@@ -120,4 +122,92 @@ fn plain_text_without_tags() {
             chunk.content
         );
     }
+}
+
+/// Fixture: the lead-section paragraph from the Wikipedia "Rust (programming
+/// language)" article that reproduced issue #1313, reconstructed with the
+/// page's real markup shape: soft-wrapped source lines ending right before an
+/// inline `<a>` link, plus `<sup>` reference nodes wedged between inline tags.
+///
+/// The historical chunker injected a '\n' after every '>' (naive tag strip), so
+/// a source newline + one inline tag edge fabricated a "\n\n" paragraph break
+/// INSIDE a sentence. 35 of 95 chunks on this page ended mid-sentence — e.g.
+/// `… (i.e., that all \nreferences` / next chunk `point to valid memory) …`.
+const WIKIPEDIA_RUST_LEAD_HTML: &str = r##"<p><a href="/wiki/Rust_(programming_language)" title="Rust (programming language)">Rust</a> is a high-level, <a href="/wiki/General-purpose_programming_language">general-purpose</a>
+<a href="/wiki/Programming_language">programming language</a> emphasizing <a href="/wiki/Computer_performance">performance</a>,
+<a href="/wiki/Type_safety">type safety</a>, and <a href="/wiki/Concurrency_(computer_science)">concurrency</a>.
+First appearing in 2006, it was developed by <a href="/wiki/Graydon_Hoare">Graydon Hoare</a> as a
+personal project while employed at <a href="/wiki/Mozilla_Research">Mozilla Research</a>. Rust
+enforces memory safety (i.e., that all
+<a href="/wiki/Reference_(computer_science)">references</a> point to valid
+<a href="/wiki/Memory_safety">memory</a>) without a conventional
+<a href="/wiki/Garbage_collection_(computer_science)">garbage collector</a><sup class="reference"><a href="#cite_note-1">[1]</a></sup>;
+instead, memory is managed through the ownership system, which provides
+compile-time guarantees for resource deallocation. Rust also provides
+zero-cost abstractions through generics and trait-based polymorphism that
+compile down to monomorphized code without runtime dispatch cost.</p>
+<p>Designed for safety and concurrency, Rust is frequently used for
+<a href="/wiki/Systems_programming">systems programming</a>,
+<a href="/wiki/Embedded_system">embedded</a> targets, and browser
+<a href="/wiki/Browser_engine">engine</a> components. Its type system provides
+<a href="/wiki/Function_(computing)">functions</a> with arguments and return
+values, along with <a href="/wiki/Tuple">tuples</a>, algebraic data types,
+generics, pattern matching, and closures. Rust omits a garbage collector by
+design, trading some flexibility for predictable runtime behavior that suits
+latency-sensitive systems and bare-metal embedded targets without an operating
+system. The type system includes
+<a href="/wiki/Pointer_(computer_science)">pointers</a> with ownership
+transfers, lifetimes, and borrowing semantics checked at compile time.</p>
+"##;
+
+/// #1313: the chunker must never cut inside a sentence, and it must not
+/// smuggle stray newlines into chunk content. The cut sites on the real page
+/// were exactly where markdown-style source line wraps put a newline around
+/// inline links; the paragraph text there continues mid-sentence.
+#[test]
+fn wikipedia_rust_no_mid_sentence_cuts() {
+    // Mirrors the `--clean-ai` production path: SemanticCleanerImpl builds the
+    // chunker with HtmlChunker::new() (min=100, max=512).
+    let chunker = HtmlChunker::new();
+    let chunks = chunker
+        .chunk(WIKIPEDIA_RUST_LEAD_HTML)
+        .expect("chunking must succeed");
+    assert!(!chunks.is_empty(), "fixture must produce chunks");
+
+    let terminal = |content: &str| {
+        matches!(
+            content.trim_end().chars().next_back(),
+            Some('.' | '!' | '?' | ':' | '"' | ')' | ']')
+        )
+    };
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        // (a) No mid-sentence ends: issue checker used `[.!?:")\]]$` after
+        //     trimming — every chunk of this fixture ends a block sentence,
+        //     because the source has no real paragraph breaks inside blocks.
+        assert!(
+            terminal(&chunk.content),
+            "chunk {i} ends mid-sentence: {:?}",
+            &chunk.content[chunk.content.len().saturating_sub(48)..]
+        );
+        // (b) No newline contamination inside a chunk (the `\nreferences`
+        //     residue from the naive tag strip).
+        assert!(
+            !chunk.content.contains('\n'),
+            "chunk {i} contains raw newlines: {:?}",
+            chunk.content
+        );
+    }
+
+    // (c) The exact phrase the issue observed split across chunks 6→7 must now
+    //     live inside a single chunk.
+    assert!(
+        chunks.iter().any(|c| {
+            let one_line = c.content.replace('\n', " ");
+            one_line.contains("references point to valid memory) without a conventional garbage collector")
+        }),
+        "the sentence fragmented by the inline-link wrap must stay intact in one chunk; got {} chunks: {:?}",
+        chunks.len(),
+        chunks.iter().map(|c| &c.content).collect::<Vec<_>>()
+    );
 }

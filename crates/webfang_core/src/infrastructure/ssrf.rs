@@ -350,7 +350,7 @@ mod tests {
             let (mut guard, resolver) = validation_on();
             // Flip the escape hatch while the guard already holds ENV_LOCK —
             // `set` mutates under the held lock and restores on drop, so no
-            // raw `env::set_var` is needed here (issue #1126).
+            // raw `set_var` is needed here (issue #1126).
             guard.set(DISABLE_VALIDATING_RESOLVER_ENV, "1");
 
             let outcome = resolver.resolve(Name::from("127.0.0.1")).await;
