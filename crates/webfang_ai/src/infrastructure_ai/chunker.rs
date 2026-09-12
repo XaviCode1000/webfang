@@ -526,3 +526,323 @@ mod tests {
         }
     }
 }
+
+/// One-off measurement harness for #1368 (phase 1: quantify the text lost by
+/// the pass-1 `< min_chunk_size` drop in [`HtmlChunker::chunk`], before
+/// `merge_small_chunks` ever sees it). It replicates production's exact
+/// enumeration — `strip_html_tags` → `split('\n')` → non-empty-trim filter →
+/// `trim()` — and measures byte length with `str::len()` (the same metric as
+/// production). It adds zero behaviour: it only reads crate-internal items
+/// that are already visible to this descendant module, and the test is
+/// `#[ignore]`d, so it stays dormant in CI.
+#[cfg(all(test, feature = "ai"))]
+mod short_para_measurement {
+    use super::HtmlChunker;
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    /// Dropped-paragraph length buckets under the 100-byte threshold.
+    const BUCKETS: [(&str, usize, usize); 6] = [
+        ("1-9", 1, 9),
+        ("10-29", 10, 29),
+        ("30-49", 30, 49),
+        ("50-69", 50, 69),
+        ("70-84", 70, 84),
+        ("85-99", 85, 99),
+    ];
+
+    /// Literal maximum length of a reported sample (chars, not bytes).
+    const SAMPLE_MAX_CHARS: usize = 90;
+
+    struct Dropped {
+        len: usize,
+        text: String,
+    }
+
+    struct PageOutcome {
+        file: String,
+        url: String,
+        paras: usize,
+        chars_total: usize,
+        dropped: Vec<Dropped>,
+    }
+
+    impl PageOutcome {
+        fn chars_dropped(&self) -> usize {
+            self.dropped.iter().map(|d| d.len).sum()
+        }
+        fn chars_lost_frac(&self) -> f64 {
+            safe_frac(self.chars_dropped(), self.chars_total)
+        }
+    }
+
+    fn safe_frac(num: usize, den: usize) -> f64 {
+        if den == 0 {
+            0.0
+        } else {
+            num as f64 / den as f64
+        }
+    }
+
+    fn list_html(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
+        let mut files: Vec<PathBuf> = fs::read_dir(dir)?
+            .filter_map(|entry| entry.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|ext| ext == "html"))
+            .collect();
+        files.sort();
+        if files.is_empty() {
+            return Err(std::io::Error::other(format!("no *.html files under {dir:?}")).into());
+        }
+        Ok(files)
+    }
+
+    fn load_urls(dir: &Path) -> BTreeMap<String, String> {
+        let mut map = BTreeMap::new();
+        let Ok(manifest) = fs::read_to_string(dir.join("manifest.tsv")) else {
+            return map;
+        };
+        for line in manifest.lines().skip(1) {
+            let cols: Vec<&str> = line.split('\t').collect();
+            if cols.len() >= 5 {
+                map.insert(cols[0].to_string(), cols[4].to_string());
+            }
+        }
+        map
+    }
+
+    /// Replicates `chunk()` pass-1 exactly, keeping the dropped pieces.
+    fn measure_page(
+        chunker: &HtmlChunker,
+        path: &Path,
+        urls: &BTreeMap<String, String>,
+    ) -> anyhow::Result<PageOutcome> {
+        let html = fs::read_to_string(path)?;
+        let file = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let min = chunker.min_chunk_size();
+        let text = chunker.strip_html_tags(&html);
+        let mut outcome = PageOutcome {
+            url: urls.get(&file).cloned().unwrap_or_default(),
+            file,
+            paras: 0,
+            chars_total: 0,
+            dropped: Vec::new(),
+        };
+        for paragraph in text.split('\n').filter(|p| !p.trim().is_empty()) {
+            let trimmed = paragraph.trim();
+            outcome.paras += 1;
+            outcome.chars_total += trimmed.len();
+            if trimmed.len() < min {
+                outcome.dropped.push(Dropped {
+                    len: trimmed.len(),
+                    text: trimmed.to_string(),
+                });
+            }
+        }
+        Ok(outcome)
+    }
+
+    fn dropped_in_bucket(outcomes: &[PageOutcome], (lo, hi): (usize, usize)) -> Vec<&Dropped> {
+        outcomes
+            .iter()
+            .flat_map(|p| p.dropped.iter())
+            .filter(|d| d.len >= lo && d.len <= hi)
+            .collect()
+    }
+
+    /// Deterministic even spread of `want` picks over `items` (endpoints
+    /// included); takes all items when fewer than `want`.
+    fn take_evenly<'a, T>(items: &[&'a T], want: usize) -> Vec<&'a T> {
+        let n = items.len().min(want);
+        if n == 0 {
+            return Vec::new();
+        }
+        if n == 1 || items.len() == n {
+            return items.iter().copied().take(n).collect();
+        }
+        (0..n)
+            .map(|k| items[k * (items.len() - 1) / (n - 1)])
+            .collect()
+    }
+
+    fn truncate_chars(text: &str, max_chars: usize) -> String {
+        text.chars().take(max_chars).collect()
+    }
+
+    fn json_escape(out: &mut String, s: &str) {
+        for ch in s.chars() {
+            match ch {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+                c => out.push(c),
+            }
+        }
+    }
+
+    fn json_per_page(out: &mut String, outcomes: &[PageOutcome]) {
+        out.push_str("  \"per_page\": [\n");
+        for (i, p) in outcomes.iter().enumerate() {
+            out.push_str("    {\"file\": \"");
+            json_escape(out, &p.file);
+            out.push_str("\", \"url\": \"");
+            json_escape(out, &p.url);
+            out.push_str(&format!(
+                "\", \"paras\": {}, \"paras_dropped\": {}, \"paras_dropped_frac\": {:.6}, \
+                 \"chars_total\": {}, \"chars_dropped\": {}, \"chars_lost_frac\": {:.6}}}",
+                p.paras,
+                p.dropped.len(),
+                safe_frac(p.dropped.len(), p.paras),
+                p.chars_total,
+                p.chars_dropped(),
+                p.chars_lost_frac(),
+            ));
+            if i + 1 < outcomes.len() {
+                out.push_str(",\n");
+            } else {
+                out.push('\n');
+            }
+        }
+        out.push_str("  ],\n");
+    }
+
+    fn json_global(out: &mut String, outcomes: &[PageOutcome]) {
+        let paras_total: usize = outcomes.iter().map(|p| p.paras).sum();
+        let paras_dropped: usize = outcomes.iter().map(|p| p.dropped.len()).sum();
+        let chars_total: usize = outcomes.iter().map(|p| p.chars_total).sum();
+        let chars_dropped: usize = outcomes.iter().map(PageOutcome::chars_dropped).sum();
+        out.push_str(&format!(
+            "  \"global\": {{\"pages_ok\": {}, \"paras_total\": {}, \"paras_dropped\": {}, \
+             \"paras_dropped_frac\": {:.6}, \"chars_total\": {}, \"chars_dropped\": {}, \
+             \"chars_dropped_frac\": {:.6}}},\n",
+            outcomes.len(),
+            paras_total,
+            paras_dropped,
+            safe_frac(paras_dropped, paras_total),
+            chars_total,
+            chars_dropped,
+            safe_frac(chars_dropped, chars_total),
+        ));
+    }
+
+    fn json_histogram(out: &mut String, outcomes: &[PageOutcome]) {
+        out.push_str("  \"histogram\": {");
+        for (i, (name, lo, hi)) in BUCKETS.iter().enumerate() {
+            let items = dropped_in_bucket(outcomes, (*lo, *hi));
+            let chars: usize = items.iter().map(|d| d.len).sum();
+            out.push_str(&format!(
+                "\"{name}\": {{\"count\": {}, \"chars\": {}}}",
+                items.len(),
+                chars
+            ));
+            if i + 1 < BUCKETS.len() {
+                out.push_str(", ");
+            }
+        }
+        out.push_str("},\n");
+    }
+
+    fn json_worst5(out: &mut String, outcomes: &[PageOutcome]) {
+        let mut ranked: Vec<&PageOutcome> = outcomes.iter().collect();
+        ranked.sort_by(|a, b| b.chars_lost_frac().total_cmp(&a.chars_lost_frac()));
+        out.push_str("  \"worst5\": [\n");
+        for (i, p) in ranked.iter().take(5).enumerate() {
+            out.push_str("    {\"file\": \"");
+            json_escape(out, &p.file);
+            out.push_str("\", \"url\": \"");
+            json_escape(out, &p.url);
+            out.push_str(&format!(
+                "\", \"chars_lost_frac\": {:.6}}}",
+                p.chars_lost_frac()
+            ));
+            if i + 1 < ranked.len().min(5) {
+                out.push_str(",\n");
+            } else {
+                out.push('\n');
+            }
+        }
+        out.push_str("  ],\n");
+    }
+
+    fn json_samples(out: &mut String, outcomes: &[PageOutcome]) {
+        out.push_str("  \"samples\": [\n");
+        let mut all: Vec<(&str, &Dropped)> = Vec::new();
+        for bucket in ["1-9", "50-69", "85-99"] {
+            let (lo, hi) = BUCKETS
+                .iter()
+                .find(|(name, _, _)| *name == bucket)
+                .map(|&(_, lo, hi)| (lo, hi))
+                .unwrap_or((0, 0));
+            for d in take_evenly(&dropped_in_bucket(outcomes, (lo, hi)), 5) {
+                all.push((bucket, d));
+            }
+        }
+        for (i, (bucket, d)) in all.iter().enumerate() {
+            out.push_str("    {\"text\": \"");
+            json_escape(out, &truncate_chars(&d.text, SAMPLE_MAX_CHARS));
+            out.push_str(&format!(
+                "\", \"len_bytes\": {}, \"bucket\": \"{bucket}\", \"class\": \"pending_manual\"}}",
+                d.len
+            ));
+            if i + 1 < all.len() {
+                out.push_str(",\n");
+            } else {
+                out.push('\n');
+            }
+        }
+        out.push_str("  ]\n");
+    }
+
+    fn render_json(outcomes: &[PageOutcome], dir: &Path, min_chunk_size: usize) -> String {
+        let mut out = String::from("{\n");
+        out.push_str("  \"corpus_dir\": \"");
+        json_escape(&mut out, &dir.display().to_string());
+        out.push_str(&format!("\",\n  \"min_chunk_size\": {min_chunk_size},\n"));
+        json_per_page(&mut out, outcomes);
+        json_global(&mut out, outcomes);
+        json_histogram(&mut out, outcomes);
+        json_worst5(&mut out, outcomes);
+        json_samples(&mut out, outcomes);
+        out.push('}');
+        out
+    }
+
+    #[test]
+    #[ignore = "one-off quantification #1368; needs WEBFANG_1368_CORPUS dir"]
+    fn measure_short_paragraph_loss_on_real_corpus() -> anyhow::Result<()> {
+        let dir = PathBuf::from(std::env::var("WEBFANG_1368_CORPUS")?);
+        let urls = load_urls(&dir);
+        let chunker = HtmlChunker::new();
+        let min = chunker.min_chunk_size();
+        let mut outcomes = Vec::new();
+        for path in list_html(&dir)? {
+            outcomes.push(measure_page(&chunker, &path, &urls)?);
+        }
+        let json = render_json(&outcomes, &dir, min);
+        println!("{json}");
+        if let Ok(target) = std::env::var("WEBFANG_1368_OUT") {
+            let target = PathBuf::from(target);
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&target, json.as_bytes())?;
+            println!("wrote {target:?}");
+        }
+        // Sanity: the harness must at least never lose more than it counts.
+        for p in &outcomes {
+            assert!(
+                p.chars_dropped() <= p.chars_total,
+                "inconsistent page {}",
+                p.file
+            );
+        }
+        Ok(())
+    }
+}
