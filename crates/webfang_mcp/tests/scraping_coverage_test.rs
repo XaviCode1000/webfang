@@ -244,10 +244,14 @@ async fn call_single_url_tool_result(
 }
 
 /// Mount a static page served with a `200` response (shared page fixture).
+/// `text/html` is load-bearing for the chromium plane: wiremock's
+/// `set_body_string` answers with `text/plain`, and Chrome renders that as
+/// an inert source dump — scripts never execute, so network-driven settle
+/// tests silently test the delivery, not the render path (#1354).
 async fn mount_page_200(mock: &MockServer, route: &str, body: &str) {
     Mock::given(method("GET"))
         .and(path(route))
-        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .respond_with(ResponseTemplate::new(200).set_body_raw(body, "text/html"))
         .mount(mock)
         .await;
 }
@@ -1257,11 +1261,11 @@ async fn mcp_crawl_js_strategy_reaches_render() {
         <script>document.getElementById('slot').innerHTML = '{marker_body}';</script>\
         </article></main></body></html>"
     );
-    Mock::given(method("GET"))
-        .and(path("/js"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(page))
-        .mount(&mock)
-        .await;
+    // text/html is load-bearing (#1354): the old `set_body_string` mount
+    // served this page as text/plain, Chrome dumped it inert, and the
+    // marker assertion below passed off the script SOURCE text — never
+    // proving the render path. mount_page_200 carries the honest MIME.
+    mount_page_200(&mock, "/js", &page).await;
     // The API round-trip responds after a server-side delay, keeping the
     // request in flight long past any CDP round-trip latency (mirrors the
     // downloader settle E2E).
@@ -1275,6 +1279,17 @@ async fn mcp_crawl_js_strategy_reaches_render() {
         full.contains("SYNC RENDERED MARKER"),
         "js_strategy=full over MCP must render the sync marker into the export"
     );
+    // Honesty rule imported from the downloader settle E2E (#1354): the
+    // marker string also lives inside the page's own <script>, so an
+    // export served inert (e.g. as text/plain, whose Chrome dump keeps
+    // the script text) would satisfy contains(marker) without ANY JS
+    // execution. Only the placeholder's absence proves the script ran.
+    assert!(
+        !full.contains("PLACEHOLDER_INNER_HTML_STATIC_TEXT"),
+        "the rendered DOM must show the slot replaced: marker present with \
+         placeholder intact means JS never ran and the export is an inert \
+         source dump, not a render (#1354)"
+    );
 
     let static_text = crawl_then_export_text(
         json!({ "url": format!("{}/js", mock.uri()), "max_depth": 0 }),
@@ -1284,6 +1299,67 @@ async fn mcp_crawl_js_strategy_reaches_render() {
     assert!(
         !static_text.contains("SYNC RENDERED MARKER"),
         "default (static) crawl must not contain the rendered marker"
+    );
+}
+
+/// #1354: an MCP `js_strategy=full` crawl over the network-driven hydration
+/// fixture (`evidence/mode-d/fixtures/f52/dnet.html`, `/api/data` delayed
+/// 800ms server-side) must export the HYDRATED document — the `DNETM`
+/// marker present and the static `PLACEHOLDER_INNER_HTML_STATIC_TEXT` gone.
+/// The same fixture + delay passes at the downloader plane
+/// (`settle_modes_capture_delayed_mutation`); the defect this test pins is
+/// engine-plane only: the idle drain declared quiet (`idle_reached=true` at
+/// ~505ms) while the hydration round-trip was still in flight, so the
+/// capture predated the fetch's response.
+#[tokio::test]
+#[cfg(feature = "chromium")]
+async fn mcp_crawl_full_network_hydration_settles_before_capture() {
+    if !chrome_present_for_e2e() {
+        eprintln!("skipping MCP network-hydration E2E: no Chrome binary on PATH");
+        return;
+    }
+    // Full renders through the guarded FetchRouter: loopback wiremock needs
+    // the entry-guard hatch (same contract as the sync-marker render E2E).
+    let _env = ssrf_guards_off().await;
+    let mock = MockServer::start().await;
+    mount_page_200(
+        &mock,
+        "/js",
+        include_str!("../../../evidence/mode-d/fixtures/f52/dnet.html"),
+    )
+    .await;
+    // The API round-trip responds after a server-side delay, keeping the
+    // request in flight long past any CDP round-trip latency (mirrors the
+    // downloader settle E2E verbatim).
+    Mock::given(method("GET"))
+        .and(path("/api/data"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_raw(
+                    "DNETM RENDERED MARKER content fetched over the network after load.",
+                    "text/plain",
+                )
+                .set_delay(std::time::Duration::from_millis(800)),
+        )
+        .mount(&mock)
+        .await;
+
+    let full = crawl_then_export_text(
+        json!({ "url": format!("{}/js", mock.uri()), "max_depth": 0, "js_strategy": "full" }),
+        "dnet-full",
+    )
+    .await;
+    // Mutation signal (same honesty rule as the downloader E2E): the
+    // placeholder is gone from the live DOM only once hydration replaced
+    // the slot — the marker string also lives inside the fixture's own
+    // <script>, so asserting on its absence would be vacuous.
+    assert!(
+        full.contains("DNETM"),
+        "idle settle must capture the network-driven hydration, got export:\n{full}"
+    );
+    assert!(
+        !full.contains("PLACEHOLDER_INNER_HTML_STATIC_TEXT"),
+        "the export must not carry the pre-hydration placeholder, got:\n{full}"
     );
 }
 
