@@ -396,6 +396,9 @@ fn crawl_site_params_rejects_oversize_max_depth() {
         url: vu("https://example.com"),
         max_depth: Some(11),
         max_pages: None,
+        js_strategy: None,
+        session_pool: None,
+        checkpoint_dir: None,
     };
     let err = p.validate().unwrap_err();
     assert!(matches!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS));
@@ -407,6 +410,9 @@ fn crawl_site_params_rejects_oversize_max_pages() {
         url: vu("https://example.com"),
         max_depth: None,
         max_pages: Some(100_001),
+        js_strategy: None,
+        session_pool: None,
+        checkpoint_dir: None,
     };
     let err = p.validate().unwrap_err();
     assert!(matches!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS));
@@ -448,4 +454,49 @@ fn deny_unknown_fields_rejects_extra_on_clean_html() {
     let json = r#"{"html": "<p>hi</p>", "magic": true}"#;
     let result: Result<CleanHtmlParams, _> = serde_json::from_str(json);
     assert!(result.is_err());
+}
+
+// ===========================================================================
+// crawl_site run-parity params (#1343)
+// ===========================================================================
+
+#[test]
+fn crawl_site_params_rejects_unknown_js_strategy() {
+    let p = CrawlSiteParams {
+        url: vu("https://example.com"),
+        max_depth: None,
+        max_pages: None,
+        js_strategy: Some("turbo".to_string()),
+        session_pool: None,
+        checkpoint_dir: None,
+    };
+    let err = p.validate().unwrap_err();
+    assert!(matches!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS));
+}
+
+#[test]
+fn crawl_site_params_rejects_empty_checkpoint_dir() {
+    let p = CrawlSiteParams {
+        url: vu("https://example.com"),
+        max_depth: None,
+        max_pages: None,
+        js_strategy: None,
+        session_pool: None,
+        checkpoint_dir: Some("   ".to_string()),
+    };
+    let err = p.validate().unwrap_err();
+    assert!(matches!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS));
+}
+
+#[test]
+fn crawl_site_params_accepts_run_parity_knobs() {
+    let p = CrawlSiteParams {
+        url: vu("https://example.com"),
+        max_depth: None,
+        max_pages: None,
+        js_strategy: Some("FULL".to_string()),
+        session_pool: Some(true),
+        checkpoint_dir: Some("/tmp/webfang-checkpoints".to_string()),
+    };
+    assert!(p.validate().is_ok(), "valid run knobs must validate");
 }

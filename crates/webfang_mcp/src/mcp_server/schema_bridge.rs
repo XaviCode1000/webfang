@@ -63,6 +63,11 @@ pub const CRAWL_SITE_PROPERTIES: &[SpecProperty] = &[
     prop("url", &crawler::URL),
     prop("max_depth", &crawler::MAX_DEPTH),
     prop("max_pages", &crawler::MAX_PAGES),
+    // P6-2 run parity (#1343): the tool forwards the strategy to the engine;
+    // spec default (static) matches the handler's `unwrap_or_default`, so no
+    // advertised-default override is needed. `session_pool`/`checkpoint_dir`
+    // stay MCP-only (schemars shape, like `concurrency`).
+    prop("js_strategy", &crawler::JS_STRATEGY),
 ];
 
 /// `scrape_with_options`: every parameter overlaps the crawler spec group.

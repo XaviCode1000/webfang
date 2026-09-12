@@ -192,6 +192,9 @@ mod ssot_tests {
             url: vu("https://example.com"),
             max_depth: None,
             max_pages: Some(0),
+            js_strategy: None,
+            session_pool: None,
+            checkpoint_dir: None,
         }
         .validate();
         assert!(crawl.is_err(), "crawl_site max_pages 0 must be rejected");
@@ -246,6 +249,9 @@ mod ssot_tests {
                 url: vu("https://example.com"),
                 max_depth: Some(0),
                 max_pages: None,
+                js_strategy: None,
+                session_pool: None,
+                checkpoint_dir: None,
             }
             .validate(),
             Ok(())
@@ -438,6 +444,14 @@ pub struct CrawlSiteParams {
     pub max_depth: Option<u8>,
     /// Maximum pages to crawl (default: 100)
     pub max_pages: Option<u32>,
+    /// JS rendering strategy: static (default), hybrid, full (P6-2 run parity,
+    /// #1343 — reaches the engine instead of being dropped at the tool boundary)
+    pub js_strategy: Option<String>,
+    /// Enable the per-domain session pool for rate limiting (default: false)
+    pub session_pool: Option<bool>,
+    /// Directory for crawl checkpoints: enables write on truncated runs and
+    /// resume on subsequent calls with the same directory (default: none)
+    pub checkpoint_dir: Option<String>,
 }
 
 impl CrawlSiteParams {
@@ -445,7 +459,8 @@ impl CrawlSiteParams {
     /// Returns `McpError::invalid_params` if `url` is not a valid http(s) URL,
     /// `max_depth` violates the shared spec cap (`crawler::MAX_DEPTH`, 0..=10),
     /// or `max_pages` violates the shared spec bounds
-    /// (`crawler::MAX_PAGES`, 1..=100_000).
+    /// (`crawler::MAX_PAGES`, 1..=100_000), `js_strategy` is not a known
+    /// strategy, or `checkpoint_dir` is empty.
     pub fn validate(&self) -> Result<(), McpError> {
         // `url` is parsed+hardened at the boundary by `McpUrl` (#1116).
         if let Some(d) = self.max_depth {
@@ -453,6 +468,22 @@ impl CrawlSiteParams {
         }
         if let Some(p) = self.max_pages {
             validate_max_pages(p)?;
+        }
+        if let Some(s) = &self.js_strategy {
+            s.parse::<webfang_core::domain::JsStrategy>().map_err(|e| {
+                McpError::invalid_params(
+                    format!("estrategia JS no soportada '{s}': {e}"),
+                    Some(serde_json::Value::String("js_strategy".to_string())),
+                )
+            })?;
+        }
+        if let Some(d) = &self.checkpoint_dir {
+            if d.trim().is_empty() {
+                return Err(McpError::invalid_params(
+                    "checkpoint_dir no puede estar vacío".to_string(),
+                    Some(serde_json::Value::String("checkpoint_dir".to_string())),
+                ));
+            }
         }
         Ok(())
     }
