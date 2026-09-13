@@ -207,7 +207,7 @@ mod spec_parity_tests {
 
         // Explicit values, including the unprefixed `AI_MODEL_ID` env
         // (#827) and the floating-point range.
-        let parsed = parse_args(&[
+        let parsed = parse_args_hermetic(&[
             "--threshold",
             "0.5",
             "--max-tokens",

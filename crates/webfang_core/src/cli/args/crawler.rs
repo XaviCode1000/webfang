@@ -527,8 +527,10 @@ mod tests {
     #[test]
     fn rate_limit_burst_flag_parses_through_clap() {
         use clap::Parser as _;
-        let args = crate::Args::try_parse_from(["webfang", "--rate-limit-burst", "9"])
-            .expect("valid flag combination");
+        let args = crate::cli::args::test_support::with_clap_env_cleared(|| {
+            crate::Args::try_parse_from(["webfang", "--rate-limit-burst", "9"])
+        })
+        .expect("valid flag combination");
         assert_eq!(args.crawler.rate_limit_burst.as_deref(), Some("9"));
     }
 
@@ -637,6 +639,10 @@ mod spec_parity_tests {
         clap::Parser::try_parse_from(argv).map_err(|e| e.to_string())
     }
 
+    fn parse_args_hermetic(extra: &[&str]) -> Result<crate::Args, String> {
+        crate::cli::args::test_support::with_clap_env_cleared(|| parse_args(extra))
+    }
+
     #[test]
     fn deferred_list_is_honest_about_its_reasons() {
         assert_eq!(spec::crawler::GROUP.len() + DEFERRED_FROM_SPEC.len(), 48);
@@ -739,8 +745,8 @@ mod spec_parity_tests {
         assert!(!defaults.crawler.resume);
 
         // Short forms in isolation (`--url` may only appear once per parse).
-        let shorts =
-            parse_args(&["-u", "https://example.org", "-s", "main"]).expect("shorts must parse");
+        let shorts = parse_args_hermetic(&["-u", "https://example.org", "-s", "main"])
+            .expect("shorts must parse");
         assert_eq!(
             shorts.crawler.url.as_ref().map(ValidUrl::as_str),
             Some("https://example.org/")
@@ -750,7 +756,7 @@ mod spec_parity_tests {
 
     #[test]
     fn target_discovery_behavior_and_display_flags_parse_identically() {
-        let parsed = parse_args(&[
+        let parsed = parse_args_hermetic(&[
             "--url",
             "https://example.com",
             "--selector",
@@ -804,7 +810,7 @@ mod spec_parity_tests {
 
     #[test]
     fn crawler_http_download_and_feature_flags_parse_identically() {
-        let parsed = parse_args(&[
+        let parsed = parse_args_hermetic(&[
             "--max-depth",
             "4",
             "--timeout-secs",
