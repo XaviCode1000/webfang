@@ -29,7 +29,10 @@ const SSRF_BYPASS: [(&str, &str); 2] = [
         webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
         "1",
     ),
-    ("WEBFANG_DISABLE_SSRF_RESOLVER", "1"),
+    (
+        webfang_core::domain::ssrf_guard::DISABLE_VALIDATING_RESOLVER_ENV,
+        "1",
+    ),
 ];
 
 /// Filler prose so every fixture page clears the 50-char minimum-content

@@ -70,7 +70,7 @@ pub use domain::{
 pub use application::{
     batch::{BatchJob, BatchProcessor, BatchProgress, BatchResult},
     crawl_options::CrawlOptions,
-    crawl_site, crawl_site_with_options, crawl_with_sitemap, create_http_client,
+    crawl_site_with_options, crawl_with_sitemap, create_http_client,
     create_http_client_with_config, detect_spa_content, discover_urls_single_fetch,
     extract_content, extract_domain,
     http_client::{HttpClient, HttpClientConfig, HttpError},
@@ -78,6 +78,11 @@ pub use application::{
     scrape_single_url, scrape_with_config, scrape_with_readability, EngineOptions,
     SpaDetectionResult,
 };
+// #1369: the deprecated shim stays exported at its historical path until
+// removal — the lint on the `pub use` itself is inherent to that contract
+// (callers must still see the warning at their own use sites).
+#[allow(deprecated)]
+pub use application::crawl_site;
 
 // Adaptive selector types (feature-gated)
 #[cfg(feature = "adaptive-selectors")]
