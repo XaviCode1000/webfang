@@ -105,7 +105,8 @@ const BLOCK_TAGS: &[&str] = &[
 ///
 /// Chunks HTML content into semantic segments using a two-pass approach:
 /// 1. **Structural boundaries**: Split by paragraphs and HTML elements
-/// 2. **Size-based merge/split**: Merge small chunks, split large ones
+/// 2. **Size-based pack/split**: Pack every block into chunks of at most
+///    `max_chunk_size` (nothing is discarded, #1368), split oversized chunks
 ///
 /// # Examples
 ///
@@ -136,7 +137,8 @@ impl HtmlChunker {
     ///
     /// # Defaults
     ///
-    /// - `min_chunk_size`: 100 characters
+    /// - `min_chunk_size`: 100 characters — a packing preference only: shorter
+    ///   blocks are merged with their neighbours, never discarded (#1368)
     /// - `max_chunk_size`: 512 characters (model token limit safe zone)
     #[must_use]
     pub fn new() -> Self {
@@ -151,7 +153,10 @@ impl HtmlChunker {
     ///
     /// # Arguments
     ///
-    /// * `min_chunk_size` - Minimum characters per chunk
+    /// * `min_chunk_size` - Packing preference in characters: blocks shorter
+    ///   than this are merged with their neighbours up to `max_chunk_size`.
+    ///   Since #1368 it is NOT a filter — no content below it is ever
+    ///   discarded; short final runs are emitted as their own chunks.
     /// * `max_chunk_size` - Maximum characters per chunk
     ///
     /// # Returns
@@ -166,7 +171,8 @@ impl HtmlChunker {
         }
     }
 
-    /// Set the minimum chunk size
+    /// Set the minimum chunk size (packing preference; since #1368 it never
+    /// filters content out — see [`HtmlChunker::with_config`])
     #[must_use]
     pub fn with_min_chunk_size(mut self, size: usize) -> Self {
         self.min_chunk_size = size;
@@ -206,9 +212,13 @@ impl HtmlChunker {
     ///
     /// # Process
     ///
-    /// 1. **Strip HTML tags**: Extract plain text
-    /// 2. **Split by structural boundaries**: Paragraphs, sentences
-    /// 3. **Merge small chunks**: Combine chunks below min_chunk_size
+    /// 1. **Strip HTML tags**: Extract plain text ('\n' only at block edges, #1313)
+    /// 2. **Split by structural boundaries**: Every non-empty block is kept —
+    ///    pass 1 applies no size filter (#1368)
+    /// 3. **Pack by size**: Blocks are merged greedily in order up to
+    ///    `max_chunk_size`; `min_chunk_size` is only a packing preference, so
+    ///    a short run is either merged with its neighbours or emitted as its
+    ///    own chunk — the pipeline discards nothing (#1368)
     /// 4. **Split large chunks**: Break chunks above max_chunk_size
     ///
     /// # Examples
@@ -232,13 +242,14 @@ impl HtmlChunker {
         let text = self.strip_html_tags(html);
         let paragraphs: Vec<&str> = text.split('\n').filter(|p| !p.trim().is_empty()).collect();
 
-        // Convert to DocumentChunks
+        // Convert to DocumentChunks. Pass 1 keeps EVERY non-empty block: the
+        // old `len < min_chunk_size` filter dropped short legitimate prose
+        // (forum replies, doc sentences) before the merge could rescue it
+        // (#1368, pruned-corpus baseline: 10.85% of chars). `min_chunk_size`
+        // now only steers packing in `merge_small_chunks`, never filtering.
         let mut chunks: SmallVec<[DocumentChunk; 8]> = SmallVec::new();
         for paragraph in paragraphs.into_iter() {
             let trimmed = paragraph.trim();
-            if trimmed.len() < self.min_chunk_size {
-                continue; // Skip too-small chunks for now
-            }
 
             let chunk = DocumentChunk::new(
                 Uuid::new_v4(),
@@ -341,15 +352,26 @@ impl HtmlChunker {
         result
     }
 
-    /// Merge chunks smaller than min_chunk_size
+    /// Greedily pack blocks, in order, into chunks of at most `max_chunk_size`.
+    ///
+    /// `min_chunk_size` is a packing preference only: hitting the max boundary
+    /// flushes the accumulator even when it is shorter than `min_chunk_size`,
+    /// and a short final run is emitted as its own chunk. The overflow block
+    /// that triggered the flush starts the next accumulator — blocks are never
+    /// re-parsed or duplicated. Nothing is discarded: #1368 removed the two
+    /// `>= min_chunk_size` discard guards, whose only "legal" survivor — a
+    /// final accumulator below a discard floor F — stays possible ONLY if F
+    /// were raised above zero. F is deliberately **0**: the post-prune 1-9
+    /// bucket is a minority of its own bytes (47/199 chrome) and 0.32% of the
+    /// corpus, so no floor had data support (see the pinned zero-loss tests).
     ///
     /// # Arguments
     ///
-    /// * `chunks` - Input chunks to merge
+    /// * `chunks` - Input blocks in document order
     ///
     /// # Returns
     ///
-    /// Merged chunks meeting minimum size requirement
+    /// Packed chunks; every input block appears verbatim in some output chunk
     fn merge_small_chunks(
         &self,
         chunks: SmallVec<[DocumentChunk; 8]>,
@@ -364,28 +386,29 @@ impl HtmlChunker {
                 current_content = chunk.content;
                 current_url = chunk.url;
                 current_title = chunk.title;
-            } else if current_content.len() + chunk.content.len() <= self.max_chunk_size {
-                // Merge if under max size
+            } else if current_content.len() + 1 + chunk.content.len() <= self.max_chunk_size {
+                // Merge if under max size; the +1 costs the joining space so
+                // a packed chunk never exceeds `max_chunk_size` (#1368).
                 current_content.push(' ');
                 current_content.push_str(&chunk.content);
             } else {
-                // Push current and start new
-                if current_content.len() >= self.min_chunk_size {
-                    merged.push(DocumentChunk::new(
-                        Uuid::new_v4(),
-                        current_url.clone(),
-                        current_title.clone(),
-                        current_content.clone(),
-                    ));
-                }
+                // Max boundary: flush as-is, even below `min_chunk_size`
+                // (#1368 — the old guard here discarded the accumulator).
+                merged.push(DocumentChunk::new(
+                    Uuid::new_v4(),
+                    current_url.clone(),
+                    current_title.clone(),
+                    current_content.clone(),
+                ));
                 current_content = chunk.content;
                 current_url = chunk.url;
                 current_title = chunk.title;
             }
         }
 
-        // Don't forget the last chunk
-        if !current_content.is_empty() && current_content.len() >= self.min_chunk_size {
+        // Don't forget the last chunk — a short final run is emitted as its
+        // own chunk instead of being dropped (#1368; F = 0 keeps this lossless).
+        if !current_content.is_empty() {
             merged.push(DocumentChunk::new(
                 Uuid::new_v4(),
                 current_url,
@@ -530,11 +553,17 @@ mod tests {
 /// One-off measurement harness for #1368 (phase 1: quantify the text lost by
 /// the pass-1 `< min_chunk_size` drop in [`HtmlChunker::chunk`], before
 /// `merge_small_chunks` ever sees it). It replicates production's exact
-/// enumeration — `strip_html_tags` → `split('\n')` → non-empty-trim filter →
-/// `trim()` — and measures byte length with `str::len()` (the same metric as
-/// production). It adds zero behaviour: it only reads crate-internal items
-/// that are already visible to this descendant module, and the test is
-/// `#[ignore]`d, so it stays dormant in CI.
+/// enumeration — optional `LegibleContentPruner` step (env
+/// `WEBFANG_1368_PRUNE=1`, the shape production really feeds `chunk()`), then
+/// `strip_html_tags` → `split('\n')` → non-empty-trim filter → `trim()` — and
+/// measures byte length with `str::len()` (the same metric as production).
+/// Since the phase-2 fix, pass 1 drops nothing (F = 0), so the replica's
+/// drop set is empty; the added `production_retention` section runs the REAL
+/// `chunk()` per page and counts trimmed source blocks missing from the
+/// concatenated chunk output — the exact end-to-end loss, no replica needed.
+/// It adds zero behaviour: it only reads crate-internal items that are
+/// already visible to this descendant module, and its tests are `#[ignore]`d,
+/// so it stays dormant in CI.
 #[cfg(all(test, feature = "ai"))]
 mod short_para_measurement {
     use super::HtmlChunker;
@@ -576,6 +605,12 @@ mod short_para_measurement {
         paras_raw: usize,
         chars_total_raw: usize,
         dropped: Vec<Dropped>,
+        /// Trimmed source blocks missing from the REAL `chunk()` output
+        /// (end-to-end retention, computed via concatenated chunk contents —
+        /// packing joins with ' ' and the sentence bounder keeps whitespace,
+        /// so untouched content is always contiguous inside the concat).
+        blocks_missing: usize,
+        chars_missing: usize,
     }
 
     /// True when `NAME=1` in the environment.
@@ -767,7 +802,11 @@ mod short_para_measurement {
         map
     }
 
-    /// Replicates `chunk()` pass-1 exactly, keeping the dropped pieces.
+    /// Replicates `chunk()` pass-1 exactly, keeping the dropped pieces — since
+    /// the phase-2 fix pass 1 keeps EVERY non-empty block and the packer has
+    /// no discard floor (F = 0, #1368), so after the fix the drop replica is
+    /// legitimately empty for every page and the honest end-to-end number is
+    /// `production_retention`, measured through the REAL `chunk()`.
     ///
     /// With a pruner, feeds the pass-1 replica the EXACT input production
     /// feeds it: `LegibleContentPruner::prune(html)`, falling back to the raw
@@ -785,7 +824,6 @@ mod short_para_measurement {
             .and_then(|n| n.to_str())
             .unwrap_or_default()
             .to_string();
-        let min = chunker.min_chunk_size();
         let pruned = pruner.map(|p| {
             let out = p.prune(&raw);
             if out.is_empty() {
@@ -803,6 +841,8 @@ mod short_para_measurement {
             paras_raw: 0,
             chars_total_raw: 0,
             dropped: Vec::new(),
+            blocks_missing: 0,
+            chars_missing: 0,
         };
         if pruner.is_some() {
             for paragraph in chunker
@@ -814,19 +854,25 @@ mod short_para_measurement {
                 outcome.chars_total_raw += paragraph.trim().len();
             }
         }
-        for paragraph in chunker
-            .strip_html_tags(html)
-            .split('\n')
-            .filter(|p| !p.trim().is_empty())
-        {
+        // End-to-end retention through the real public API (works pre- and
+        // post-fix identically): a trimmed block is "missing" when it is not
+        // contiguous inside the concatenation of the chunk outputs. Packing
+        // joins with a plain space and `split_sentence_bounds` keeps the
+        // source whitespace, so retained content is always contiguous.
+        let emitted: String = chunker
+            .chunk(html)?
+            .into_iter()
+            .map(|c| c.content)
+            .collect::<Vec<String>>()
+            .concat();
+        let stripped = chunker.strip_html_tags(html);
+        for paragraph in stripped.split('\n').filter(|p| !p.trim().is_empty()) {
             let trimmed = paragraph.trim();
             outcome.paras += 1;
             outcome.chars_total += trimmed.len();
-            if trimmed.len() < min {
-                outcome.dropped.push(Dropped {
-                    len: trimmed.len(),
-                    text: trimmed.to_string(),
-                });
+            if !emitted.contains(trimmed) {
+                outcome.blocks_missing += 1;
+                outcome.chars_missing += trimmed.len();
             }
         }
         Ok(outcome)
@@ -1073,6 +1119,7 @@ mod short_para_measurement {
         }
         json_per_page(&mut out, outcomes);
         json_global(&mut out, outcomes);
+        json_retention(&mut out, outcomes);
         json_histogram(&mut out, outcomes);
         json_worst5(&mut out, outcomes);
         json_samples(&mut out, outcomes, prune);
@@ -1081,6 +1128,22 @@ mod short_para_measurement {
         }
         out.push('}');
         out
+    }
+
+    /// End-to-end truth through the real public `chunk()`: trimmed source
+    /// blocks that did not survive contiguously into the concatenated chunk
+    /// output (#1368 post-fix headline metric).
+    fn json_retention(out: &mut String, outcomes: &[PageOutcome]) {
+        let blocks_total: usize = outcomes.iter().map(|p| p.paras).sum();
+        let blocks_missing: usize = outcomes.iter().map(|p| p.blocks_missing).sum();
+        let chars_total: usize = outcomes.iter().map(|p| p.chars_total).sum();
+        let chars_missing: usize = outcomes.iter().map(|p| p.chars_missing).sum();
+        out.push_str(&format!(
+            "  \"production_retention\": {{\"blocks_total\": {blocks_total}, \
+             \"blocks_missing\": {blocks_missing}, \"chars_total\": {chars_total}, \
+             \"chars_missing\": {chars_missing}, \"missing_frac\": {:.6}}},\n",
+            safe_frac(chars_missing, chars_total),
+        ));
     }
 
     /// Phase-2 review aid: with prune mode on, print EVERY post-prune 1-9 byte
@@ -1104,7 +1167,7 @@ mod short_para_measurement {
         let urls = load_urls(&dir);
         let chunker = HtmlChunker::new();
         let min = chunker.min_chunk_size();
-        let pruner = prune.then(|| LegibleContentPruner::standard());
+        let pruner = prune.then(LegibleContentPruner::standard);
         let mut outcomes = Vec::new();
         for path in list_html(&dir)? {
             outcomes.push(measure_page(&chunker, pruner.as_ref(), &path, &urls)?);
