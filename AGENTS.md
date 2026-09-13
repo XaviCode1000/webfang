@@ -799,12 +799,26 @@ Closes #B
 ## Summary
 ..."
 
-# 5. Close the original PRs as superseded
+# 5. Merge ONLY when the batch PR itself is green — see "Merge method" below
+scripts/merge-when-green.sh <batch-PR> --merge
+
+# 6. ONLY AFTER the merge landed: close the original PRs as superseded
+#    Verify first: gh pr view <batch-PR> --json state,mergeCommit
 for pr in <N1> <N2>; do gh pr close $pr --comment "Superseded by #<batch-PR>"; done
 
-# 6. Delete the now-orphan remote branches (gh pr close does NOT delete them)
+# 7. ONLY AFTER the merge landed: delete the now-orphan remote branches
+#    (gh pr close does NOT delete them)
 git push origin --delete <branch1> <branch2>
 ```
+
+> ⚠️ **Steps 6-7 are cleanup, not part of the batch at all — never run them before step 5
+> merges.** Closing the constituent PRs and deleting their remote branches is what removes the
+> fallback: if the batch's own CI then goes red there is no PR to fall back to, and the slices
+> survive only as local refs that a later `worktree remove` can erase. Observed 2026-09-13 with
+> the 5-slice batch (PR #1397): steps 6-7 were executed while `Coverage` was still `pending`, per
+> the previous wording of this very list, which placed them right after PR creation. Recovery cost
+> one `git push origin <SHA>:refs/heads/<branch>` per slice from refs that happened to still exist.
+> The order is the fix: green → merge → close → delete.
 
 **Merge method:** use `scripts/merge-when-green.sh <batch-PR> --merge` (merge commit),
 NOT `--squash`. Squash would crush N independent fixes into one commit, losing per-fix
