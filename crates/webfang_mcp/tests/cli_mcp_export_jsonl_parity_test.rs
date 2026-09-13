@@ -42,6 +42,13 @@ use webfang_mcp::mcp_server::server::build_mcp_router;
 use webfang_mcp::mcp_server::server::ServerOptions;
 use webfang_mcp::mcp_server::state::McpState;
 
+// Canonical HTML page fixture, shared across the MCP test binaries (#1371).
+// Imported by name, not `use common::*`: this file keeps its own local
+// server/session harness (a glob would collide with `mcp_request`,
+// `init_session`, `call_tool`, `tool_text`, `is_tool_error`).
+mod common;
+use common::mount_page_200;
+
 // ============================================================================
 // JSON-RPC harness — local copies (each integration test binary is standalone)
 // ============================================================================
@@ -339,31 +346,25 @@ fn normalized_records(path: &std::path::Path) -> Vec<Value> {
 // ============================================================================
 
 /// Mount the shared fixture site: permissive robots.txt, a seed with two
-/// internal links, and the two leaf pages.
+/// internal links, and the two leaf pages. The pages go through
+/// [`mount_page_200`] so an HTML fixture cannot drift back to wiremock's
+/// `text/plain` default (#1354, #1371); robots.txt keeps its own mount,
+/// where text/plain is the honest MIME. Both surfaces of the parity read
+/// the same server, so the wire change applies to CLI and MCP alike.
 async fn mount_parity_site(site: &MockServer) {
     Mock::given(method("GET"))
         .and(path("/robots.txt"))
         .respond_with(ResponseTemplate::new(200).set_body_string("User-agent: *\nAllow: /\n"))
         .mount(site)
         .await;
-    Mock::given(method("GET"))
-        .and(path("/"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(page("seed", r#"<a href="/a">a</a> <a href="/b">b</a>"#)),
-        )
-        .mount(site)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/a"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(page("alpha", "")))
-        .mount(site)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/b"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(page("beta", "")))
-        .mount(site)
-        .await;
+    mount_page_200(
+        site,
+        "/",
+        &page("seed", r#"<a href="/a">a</a> <a href="/b">b</a>"#),
+    )
+    .await;
+    mount_page_200(site, "/a", &page("alpha", "")).await;
+    mount_page_200(site, "/b", &page("beta", "")).await;
 }
 
 /// MCP surface: `crawl_site` + `export_jsonl` over the session buffer,

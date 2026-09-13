@@ -13,8 +13,8 @@
 //! BatchResult (output)
 //! ```
 //!
-//! The [`BatchProcessor`] wraps the existing `crawl_site()` function to process
-//! multiple URLs concurrently while respecting concurrency limits via
+//! The [`BatchProcessor`] wraps the existing `crawl_site_with_options()` entry
+//! to process multiple URLs concurrently while respecting concurrency limits via
 //! [`tokio::sync::Semaphore`].
 
 pub mod manager;
