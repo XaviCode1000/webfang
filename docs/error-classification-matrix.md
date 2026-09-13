@@ -122,6 +122,7 @@ failure. Treatment:
 | All URLs blocked by robots.txt / WAF | 77 | Caller lacks permission, not a service fault |
 | ExtractionFailed (typed `matches!`) | 65 | Content-quality failure, not network |
 | Sitemap empty / empty discovery | 2 | Technical success, null result |
+| `--dry-run` whose seed the SSRF entry guard refuses | 2 | Policy refusal, not an empty site (#1381) — the refusal is pre-socket, so discovery still returns `Ok` with zero URLs |
 | Config errors | 78 | EX_CONFIG |
 | Io permanent | 74 | EX_IOERR |
 | InternalFatal | 3 | Job failure — NOT user usage error |
