@@ -19,13 +19,49 @@ The CLI and MCP both consume it. They differ in how many layers consult it.
 | # | Layer | Lives in | Sees | CLI | MCP |
 | :-- | :--- | :--- | :--- | :--- | :--- |
 | 1 | Entry pre-check (resolves the host itself) | `webfang_mcp/src/mcp_server/ssrf.rs` → `validate_url_no_ssrf` | literals **and** hostnames | — (CLI has no equivalent: it validates literals only) | armed by default |
-| 2 | Literal entry guard | `webfang_core/src/domain/ssrf_guard.rs` → `reject_forbidden_literal_url`, called from `cli/scrape_flow.rs`, `infrastructure/downloader/fetch_router.rs`, and — since #1301 — the MCP scrape path (`application/scraper_service.rs` pre-check) | IP literals only | armed by default | **armed by default** |
+| 2 | Literal entry guard | `webfang_core/src/domain/ssrf_guard.rs` → `reject_forbidden_literal_url`, called from `cli/scrape_flow.rs`, `infrastructure/downloader/fetch_router.rs`, the engine's robots gate (`infrastructure/crawler/robots_utils.rs`), and — since #1301 — the MCP scrape path (`application/scraper_service.rs` pre-check) | IP literals only | armed by default | **armed by default** |
 | 3 | Connect-time validating resolver | `webfang_core/src/infrastructure/ssrf.rs` → `ValidatingResolver`, installed by `SsrfGuard::secure_client` | hostnames only — wreq short-circuits literal hosts and never calls a resolver | armed by default | armed by default |
 | 4 | Redirect guard | `domain/ssrf_guard.rs::redirect_policy` | literal redirect targets (belt-and-suspenders; hostname hops go through layer 3) | armed by default | armed by default |
 
 Layer 2 and layer 3 are complementary, not redundant: a literal never reaches the
 resolver, and a hostname's answer set is only visible at resolution time. That is why
-`#1217` added layer 2 instead of widening layer 3.
+`#1217` added layer 2 instead of widening layer 3. The practical consequence is that the
+hatch a local target needs depends on how the target is *spelled*: an IP literal is cut by
+layer 2 (`WEBFANG_DISABLE_SSRF_ENTRY_GUARD`), a name like `localhost` by layer 3
+(`WEBFANG_DISABLE_SSRF_RESOLVER`), and a target reachable by both spellings needs both.
+
+**One call site is not covered: the sitemap auto-discovery probes.**
+`application/crawler/sitemap_discovery.rs::build_discovery_client` goes through
+`application/http_client/factory.rs`, which installs layers 3 and 4 only. A loopback
+*sitemap* probe therefore opens real sockets (measured: `--use-sitemap` against a local
+server produced 18 requests with every guard armed) while the same address is refused
+before dialing on the engine and scrape paths. That is an asymmetry against the AGENTS.md
+guard-chain order, not a supported opt-out; fixing it means calling
+`reject_forbidden_literal_url` at the discovery-client boundary.
+
+## What a refusal looks like from the outside
+
+Every layer refuses **before a socket exists**, so there is no connection error to read and
+nothing to retry. What the caller sees depends on who was holding the URL — same seed, same
+policy, three different-looking outcomes:
+
+| Surface | Outcome | Exit |
+| :--- | :--- | :--- |
+| CLI crawl / scrape / `--single-page`, loopback seed | `URL inválida: SSRF detectado: la IP 127.0.0.1 … está prohibida …` | 69 |
+| `--dry-run`, loopback seed | `Dry-run: 0 URL(s) would be scraped:` — the engine counts the refused seed (`crawl completed … errors: 1`), the preview prints only the URL list | 0 |
+| MCP crawl/scrape tools, loopback seed | layer 1 answers first: `-32602` / `isError` carrying `SSRF detectado` | — |
+| `discover_urls_unified` / `discover_urls_recursive` (library) | `Ok` with an empty `Vec` | — |
+
+The `--dry-run` row is the one that surprises operators, and it is deliberate policy since
+#1369: plain DOM discovery used to ride a knobless engine entry that built no downloader and
+never paid the guard chain, which is why the same seed produced output before and nothing
+after. The refusal itself is never hidden — `reject_forbidden_literal_url` logs a `WARN`
+(`SSRF literal-IP target rejected at entry (no socket opened)`) at default verbosity — but
+the *result line* is a success with zero URLs. Pinned by
+`discovery_plain_run_rejects_loopback_seed_with_ssrf_guard_on`
+(`crates/webfang_core/tests/engine_options_1369.rs`), which asserts `Ok`, zero URLs and
+**zero requests** reaching the mock. User-facing copy: `docs/src/troubleshooting.md` →
+"A local or internal target discovers nothing".
 
 ## Kill-switches
 

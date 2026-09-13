@@ -1,0 +1,51 @@
+{
+  "corpus_dir": "/home/xavi/.cache/webfang-1368/corpus",
+  "min_chunk_size": 100,
+  "per_page": [
+    {"file": "01-enwiki-web-scraping.html", "url": "https://en.wikipedia.org/wiki/Web_scraping", "paras": 321, "paras_dropped": 235, "paras_dropped_frac": 0.732087, "chars_total": 44147, "chars_dropped": 4950, "chars_lost_frac": 0.112125},
+    {"file": "02-enwiki-full-text-search.html", "url": "https://en.wikipedia.org/wiki/Full_text_search", "paras": 236, "paras_dropped": 190, "paras_dropped_frac": 0.805085, "chars_total": 29794, "chars_dropped": 3343, "chars_lost_frac": 0.112204},
+    {"file": "03-mdn-http.html", "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP", "paras": 649, "paras_dropped": 585, "paras_dropped_frac": 0.901387, "chars_total": 71621, "chars_dropped": 10418, "chars_lost_frac": 0.145460},
+    {"file": "04-pydocs-functions.html", "url": "https://docs.python.org/3/library/functions.html", "paras": 714, "paras_dropped": 437, "paras_dropped_frac": 0.612045, "chars_total": 80433, "chars_dropped": 13754, "chars_lost_frac": 0.170999},
+    {"file": "05-rustbook-control-flow.html", "url": "https://doc.rust-lang.org/book/ch03-05-control-flow.html", "paras": 120, "paras_dropped": 53, "paras_dropped_frac": 0.441667, "chars_total": 20064, "chars_dropped": 1918, "chars_lost_frac": 0.095594},
+    {"file": "06-man7-socket.html", "url": "https://man7.org/linux/man-pages/man7/socket.7.html", "paras": 26, "paras_dropped": 16, "paras_dropped_frac": 0.615385, "chars_total": 41719, "chars_dropped": 692, "chars_lost_frac": 0.016587},
+    {"file": "07-guardian-anthropic-ai.html", "url": "https://www.theguardian.com/technology/2026/sep/10/anthropic-researchers-warn-ai-musk", "paras": 261, "paras_dropped": 214, "paras_dropped_frac": 0.819923, "chars_total": 276346, "chars_dropped": 3640, "chars_lost_frac": 0.013172},
+    {"file": "08-guardian-instagram-algorithm.html", "url": "https://www.theguardian.com/media/2026/sep/11/i-turned-off-my-instagram-algorithm-opt-out-social-media-reforms-australia", "paras": 268, "paras_dropped": 214, "paras_dropped_frac": 0.798507, "chars_total": 319581, "chars_dropped": 3521, "chars_lost_frac": 0.011018},
+    {"file": "09-npr-hiv-brazil.html", "url": "https://www.npr.org/2026/09/12/g-s1-142404/hiv-aids-brazil-stigma", "paras": 179, "paras_dropped": 123, "paras_dropped_frac": 0.687151, "chars_total": 28545, "chars_dropped": 1992, "chars_lost_frac": 0.069785},
+    {"file": "10-dw-gold-banks.html", "url": "https://www.dw.com/en/why-are-european-banks-moving-gold-out-of-united-states/a-79213013", "paras": 124, "paras_dropped": 84, "paras_dropped_frac": 0.677419, "chars_total": 153771, "chars_dropped": 1767, "chars_lost_frac": 0.011491},
+    {"file": "11-hn-thread-49619848.html", "url": "https://news.ycombinator.com/item?id=49619848", "paras": 47, "paras_dropped": 29, "paras_dropped_frac": 0.617021, "chars_total": 5024, "chars_dropped": 1046, "chars_lost_frac": 0.208201},
+    {"file": "12-hn-thread-49625056.html", "url": "https://news.ycombinator.com/item?id=49625056", "paras": 78, "paras_dropped": 54, "paras_dropped_frac": 0.692308, "chars_total": 8211, "chars_dropped": 1866, "chars_lost_frac": 0.227256},
+    {"file": "13-rustforum-capture-syntax.html", "url": "https://users.rust-lang.org/t/understanding-precise-capture-syntax-and-constraints", "paras": 177, "paras_dropped": 117, "paras_dropped_frac": 0.661017, "chars_total": 22468, "chars_dropped": 3587, "chars_lost_frac": 0.159649},
+    {"file": "14-github-tokio.html", "url": "https://github.com/tokio-rs/tokio", "paras": 307, "paras_dropped": 281, "paras_dropped_frac": 0.915309, "chars_total": 67602, "chars_dropped": 5850, "chars_lost_frac": 0.086536},
+    {"file": "15-github-reqwest.html", "url": "https://github.com/seanmonstar/reqwest", "paras": 219, "paras_dropped": 207, "paras_dropped_frac": 0.945205, "chars_total": 38937, "chars_dropped": 3635, "chars_lost_frac": 0.093356},
+    {"file": "16-overreacted-useeffect.html", "url": "https://overreacted.io/a-complete-guide-to-useeffect/", "paras": 373, "paras_dropped": 149, "paras_dropped_frac": 0.399464, "chars_total": 513372, "chars_dropped": 7227, "chars_lost_frac": 0.014078},
+    {"file": "17-eswiki-nlp.html", "url": "https://es.wikipedia.org/wiki/Procesamiento_de_lenguajes_naturales", "paras": 263, "paras_dropped": 219, "paras_dropped_frac": 0.832700, "chars_total": 25404, "chars_dropped": 4798, "chars_lost_frac": 0.188868},
+    {"file": "18-jvns-django.html", "url": "https://jvns.ca/blog/2026/07/21/more-nice-django-things/", "paras": 82, "paras_dropped": 39, "paras_dropped_frac": 0.475610, "chars_total": 14962, "chars_dropped": 1373, "chars_lost_frac": 0.091766},
+    {"file": "19-enwiki-info-retrieval.html", "url": "https://en.wikipedia.org/wiki/Information_retrieval", "paras": 560, "paras_dropped": 418, "paras_dropped_frac": 0.746429, "chars_total": 65470, "chars_dropped": 10302, "chars_lost_frac": 0.157355}
+  ],
+  "global": {"pages_ok": 19, "paras_total": 5004, "paras_dropped": 3664, "paras_dropped_frac": 0.732214, "chars_total": 1827471, "chars_dropped": 85679, "chars_dropped_frac": 0.046884},
+  "histogram": {"1-9": {"count": 1096, "chars": 6536}, "10-29": {"count": 1659, "chars": 27772}, "30-49": {"count": 402, "chars": 15234}, "50-69": {"count": 233, "chars": 13675}, "70-84": {"count": 168, "chars": 12748}, "85-99": {"count": 106, "chars": 9714}},
+  "worst5": [
+    {"file": "12-hn-thread-49625056.html", "url": "https://news.ycombinator.com/item?id=49625056", "chars_lost_frac": 0.227256},
+    {"file": "11-hn-thread-49619848.html", "url": "https://news.ycombinator.com/item?id=49619848", "chars_lost_frac": 0.208201},
+    {"file": "17-eswiki-nlp.html", "url": "https://es.wikipedia.org/wiki/Procesamiento_de_lenguajes_naturales", "chars_lost_frac": 0.188868},
+    {"file": "04-pydocs-functions.html", "url": "https://docs.python.org/3/library/functions.html", "chars_lost_frac": 0.170999},
+    {"file": "13-rustforum-capture-syntax.html", "url": "https://users.rust-lang.org/t/understanding-precise-capture-syntax-and-constraints", "chars_lost_frac": 0.159649}
+  ],
+  "samples": [
+    {"text": "Main menu", "len_bytes": 9, "bucket": "1-9", "class": "boilerplate"},
+    {"text": "This page", "len_bytes": 9, "bucket": "1-9", "class": "boilerplate"},
+    {"text": "Money", "len_bytes": 5, "bucket": "1-9", "class": "boilerplate"},
+    {"text": "tokio.rs", "len_bytes": 8, "bucket": "1-9", "class": "boilerplate"},
+    {"text": "Search", "len_bytes": 6, "bucket": "1-9", "class": "boilerplate"},
+    {"text": "2 \t\t\t\tTechniques \t\t\t \t\t \t\t \t\t\t \t\t\t\t \t\t\t\tToggle Techniques subsection", "len_bytes": 68, "bucket": "50-69", "class": "boilerplate"},
+    {"text": "Return a new sorted list from the items in iterable.", "len_bytes": 52, "bucket": "50-69", "class": "legitimate"},
+    {"text": "Understanding precise capture syntax and constraints", "len_bytes": 52, "bucket": "50-69", "class": "boilerplate"},
+    {"text": "A classic data fetching example with classes might look like this:", "len_bytes": 66, "bucket": "50-69", "class": "legitimate"},
+    {"text": "This page was last edited on 3 July 2026, at 00:43&#160;(UTC).", "len_bytes": 62, "bucket": "50-69", "class": "boilerplate"},
+    {"text": "In December 1993, the first crawler-based web search engine, JumpStation, was launched.", "len_bytes": 87, "bucket": "85-99", "class": "legitimate"},
+    {"text": "Changed in version 3.8: Falls back to __index__() if __complex__() and __float__() are not", "len_bytes": 99, "bucket": "85-99", "class": "legitimate"},
+    {"text": "As an example, change the src/main.rs file in your loops directory to look like this:", "len_bytes": 85, "bucket": "85-99", "class": "legitimate"},
+    {"text": "Quinedot beat me to all the interesting stuff and better, but to address a couple minor po", "len_bytes": 95, "bucket": "85-99", "class": "legitimate"},
+    {"text": "↑ Shaw, Joseph A; Fox, Edward A. (1994) Combination of Multiple Searches. TREC 1994: 105-1", "len_bytes": 94, "bucket": "85-99", "class": "legitimate"}
+  ]
+}

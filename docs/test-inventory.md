@@ -1,7 +1,7 @@
 # Test Inventory — `#[ignore]` Catalog (Gate 0)
 
-**Source of truth:** `rg -n "#\[ignore" crates/ --glob '!target'` — **35 rows** (29 test attributes + 6 doc/comment mentions).
-Generated: `2026-08-21`, updated `2026-09-07`, re-baselined `2026-09-12` (#1328: composition corrected from the stale 27+5 claim to the on-disk 26+6; rows re-keyed from drifting `file:line` to stable `file` + test name). Linked to `COMPATIBILITY-MATRIX.md`.
+**Source of truth:** `rg -n "#\[ignore" crates/ --glob '!target'` — **37 rows** (30 test attributes + 7 doc/comment mentions).
+Generated: `2026-08-21`, updated `2026-09-07`, re-baselined `2026-09-12` (#1328: composition corrected from the stale 27+5 claim to the on-disk 26+6; rows re-keyed from drifting `file:line` to stable `file` + test name). Catalogued #1368 measurement rows `2026-09-13` (#1384 decision: retain + catalogue — the corpus lives outside the repo, so the ignore is legitimate). Linked to `COMPATIBILITY-MATRIX.md`.
 
 **CI enforcement:** this baseline is a frozen budget — `scripts/check_ignored_guard.sh` runs in the CI `repo-guards` job and fails on any drift between this inventory and the live scan, **per category**: each group's declared count, the file+test-name pair set, and the per-file doc/comment counts are all checked, so a composition swap with an equal total fails even when the sum matches (the totals-only blind spot that #1328 killed). Update this file in the same PR when adding/removing an ignored test or a doc/comment mention.
 
@@ -13,9 +13,10 @@ Generated: `2026-08-21`, updated `2026-09-07`, re-baselined `2026-09-12` (#1328:
 | Network | 4 | `requires network` / DNS / client | #542, #1316 | Keep ignored; wiremock alternative in behavioral |
 | Tracing | 1 | `tracing global subscriber` | #501 | Keep ignored; subscriber race |
 | Reproduction | 1 | race window too narrow to force from a fixture | #1230 | Keep ignored; the deterministic pin is the seam test |
-| Comments/docs | 6 | doc comment mentions `#[ignore]` | #386 | Not tests — counted as their own checked category |
+| Quantification | 1 | `one-off quantification #1368; needs WEBFANG_1368_CORPUS dir` | #1368 | Keep ignored; corpus is out-of-repo by design (#1384) — re-run by hand for loss evidence |
+| Comments/docs | 7 | doc comment mentions `#[ignore]` | #386 | Not tests — counted as their own checked category |
 
-Total: 23+4+1+1+6 = **35**.
+Total: 23+4+1+1+1+7 = **37**.
 
 > The former **WAF** group (1 row, `waf_gauntlet` at `waf_gauntlet_test.rs:126`, #337) is gone:
 > `waf_gauntlet_observability_trace` was un-ignored — the mock is counter-based and deterministic,
@@ -32,7 +33,7 @@ Stale roadmap claim "7 sitemap tests ignored" is **false**. Reality:
 
 Matrix: [`COMPATIBILITY-MATRIX.md`](../COMPATIBILITY-MATRIX.md).
 
-## Full catalog (35 rows)
+## Full catalog (37 rows)
 
 Rows are keyed by **file + identifier**, never by line number — inserting code above an ignored
 test must not invalidate its row. `Identifier` is the test function name for attributes and `doc`
@@ -75,6 +76,8 @@ for doc/comment mentions (compared per file by count). `Line` is not recorded on
 | 33 | Comments/docs | `crates/webfang_core/tests/behavioral/cli/error_path_test.rs` | `doc` | `/// No #[ignore]: the gate fires before any ONNX model could load.` | #386 | docs only |
 | 34 | Comments/docs | `crates/webfang_core/tests/behavioral/cli/error_path_test.rs` | `doc` | `/// No #[ignore]: the gate fires before any ONNX model could load.` | #386 | docs only |
 | 35 | Comments/docs | `crates/webfang_core/tests/behavioral/cli/waf_gauntlet_test.rs` | `doc` | `/// ... the historical wiremock-FIFO flakiness that motivated #[ignore] no longer applies.` | #386 | docs only |
+| 36 | Quantification | `crates/webfang_ai/src/infrastructure_ai/chunker.rs` | `measure_short_paragraph_loss_on_real_corpus` | `one-off quantification #1368; needs WEBFANG_1368_CORPUS dir` | #1368 | Keep ignored; corpus out-of-repo (#1384) — run by hand with WEBFANG_1368_CORPUS to reproduce the loss measurement |
+| 37 | Comments/docs | `crates/webfang_ai/src/infrastructure_ai/chunker.rs` | `doc` | `/// ... its tests are #[ignore]d, so it stays dormant in CI.` | #1368 | docs only |
 
 > **Guard contract (since #1328, 2026-09-12):** `check_ignored_guard.sh` compares this catalog to
 > the live scan per category — group counts, the file+test-name pair set, and per-file doc/comment
