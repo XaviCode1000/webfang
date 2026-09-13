@@ -876,6 +876,63 @@ mod tests {
         );
     }
 
+    /// #1375 drift guard: the transport scalars the batch does NOT source
+    /// explicitly ride `..Default::default()` in
+    /// [`build_batch_engine_options`]. That equivalence was audited against
+    /// the old hardcoded `crawl_site_inner` policy when #1369 migrated the
+    /// batch; this pin re-derives the same values from independent literals
+    /// (never from `EngineOptions::default()` itself), so a future evolution
+    /// of the default breaks THIS test with a named knob instead of silently
+    /// re-policing every `--batch` transport knob.
+    ///
+    /// If this test fails after an intentional default change, the batch
+    /// policy must be re-audited and the new values pinned here — the fix is
+    /// never to delete the pin (that reintroduces silent drift, #1375).
+    #[test]
+    fn batch_engine_options_transport_scalars_pin_the_audited_policy() {
+        let base = CrawlerConfig::new(Url::parse("https://example.com").unwrap());
+        let options = build_batch_engine_options(&base, None);
+
+        // Expected values are literals copied from the audited
+        // `crawl_site_inner` TransportPolicy (engine.rs #1369 migration),
+        // NOT reads of `EngineOptions::default()`.
+        assert_eq!(
+            options.checkpoint_interval, 100,
+            "checkpoint interval the old entry hardcoded"
+        );
+        assert_eq!(
+            options.tls_emulation,
+            wreq_util::Profile::Chrome145,
+            "TLS fingerprint the old entry hardcoded"
+        );
+        assert!(!options.ignore_waf, "WAF bypass stays off in batch");
+        assert_eq!(
+            options.max_retries, 3,
+            "retry ceiling the old entry hardcoded"
+        );
+        assert_eq!(
+            options.backoff_base_ms, 1000,
+            "backoff base the old entry hardcoded"
+        );
+        assert_eq!(
+            options.backoff_max_ms, 10_000,
+            "backoff ceiling the old entry hardcoded"
+        );
+        assert_eq!(
+            options.obscura_binary, "obscura",
+            "hybrid layer-2 binary default the old entry hardcoded"
+        );
+        assert_eq!(
+            options.post_load_wait,
+            crate::domain::PostLoadWait::Idle,
+            "chromium settlement default the old entry hardcoded"
+        );
+        assert!(
+            !options.autoscale_enabled,
+            "RAM autoscaling stays off in batch"
+        );
+    }
+
     /// Shared in-flight gauge + six-node star topology (seed + 5 leaves) for
     /// the R2-1 diagnostics: counts every request and the high-water mark of
     /// concurrent responses so the scheduler bound derived from the operator
