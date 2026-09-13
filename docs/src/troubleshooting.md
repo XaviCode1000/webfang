@@ -49,47 +49,66 @@ scripts/analyze-trace.sh debug.jsonl urls-failed  # unique failed URLs
 ## A local or internal target discovers nothing
 
 **Symptom.** You point WebFang at a `localhost`, `127.0.0.1`, `10.x`, `192.168.x` or
-`169.254.169.254` target and get an empty result:
+`169.254.169.254` target and get nothing back. How loud that is depends on how the target
+is *spelled*:
 
 ```bash
-$ webfang http://127.0.0.1:8080/ --dry-run
-Dry-run: 0 URL(s) would be scraped:
-$
+$ webfang http://127.0.0.1:8080/ --dry-run     # an IP literal
+Warning: SSRF detectado: la IP 127.0.0.1 del host '127.0.0.1' está prohibida (acceso a
+red interna/cloud metadata bloqueado). La vista previa no descubrió URLs porque el guard
+cortó la semilla antes de abrir conexión. Para un destino interno de confianza: …
+$ echo $?
+2
 ```
 
-Exit `0`, and the summary reads as an empty site. The guard's own complaint is on stderr as
-a log line, not in the result — see "How to tell a refusal" below. The same target in a
-real crawl *does* fail loudly, and that asymmetry is the part that confuses people.
+```bash
+$ webfang http://localhost:8080/ --dry-run     # a name that resolves into the same range
+Dry-run: 0 URL(s) would be scraped:
+$ echo $?
+0
+```
+
+The literal case names its own cause (since #1391): exit 2, the code a null discovery result
+already uses, with no `Dry-run:` line to misread. The hostname case still reads as an empty
+site, because the layer that refuses it — the connect-time resolver — answers with what
+looks like a DNS failure, and the preview cannot tell that from a broken name. Either way,
+the same target in a real crawl fails loudly.
 
 **What happened.** The SSRF guard refused the target **before any socket opened**: zero
-packets leave the process, so nothing is retried and nothing can time out. The engine
-counts the refused seed as a page error, but discovery returns only the URL list, so that
-count never reaches the summary — an empty result is reported as a technical success. It is
-the same policy the scrape path has always paid, and the MCP crawl tools have paid since
-#1355; plain DOM discovery joined it with #1369, which retired the last entry point that
-fetched without the full guard chain.
+packets leave the process, so nothing is retried and nothing can time out. Discovery itself
+still answers `Ok` with an empty URL list — inside a crawl, one refused URL is a legitimate
+skip, not a failed run — and the engine's own page-error count (`crawl completed … errors: 1`)
+is not part of that list. What changed in #1391 is that the preview asks the guard its own
+question before calling the result a success. The guard policy is the long-standing one: the
+scrape path has always paid it, the MCP crawl tools since #1355, and plain DOM discovery
+since #1369 retired the last entry point that fetched without the full guard chain.
 
-**What you see, by surface.** Same refused target, four different-looking outcomes:
+**What you see, by surface.** The same refusal, spelled two ways, produces five
+different-looking outcomes:
 
 | You ran | What you see | Exit |
 | :--- | :--- | :--- |
-| `webfang <target> --dry-run` | `Dry-run: 0 URL(s) would be scraped:` | 0 |
+| `webfang <literal-target> --dry-run` | `Warning: SSRF detectado: la IP … está prohibida …`, naming both hatches — and no `Dry-run:` line (#1391) | 2 |
+| `webfang <hostname-target> --dry-run` | `Dry-run: 0 URL(s) would be scraped:` | 0 |
 | `webfang <target>` (crawl) | `Failed to scrape <target>: URL inválida: SSRF detectado: la IP 127.0.0.1 del host '127.0.0.1' está prohibida (acceso a red interna/cloud metadata bloqueado)` | 69 |
 | `webfang <target> --single-page` | the same `SSRF detectado` line — the scrape path carries the same guard | 69 |
 | `discover_urls_unified` / `discover_urls_recursive` (library) | `Ok` with an empty `Vec` | — |
 
-The crawl row is loud for a different reason than the dry-run row is quiet: discovery
-returns nothing, then `plan_urls` re-injects the seed into the scrape plan and the guard
-refuses it a second time, in a path that reports refusals as errors. `--single-page` never
-runs discovery at all, so it only ever shows the loud half. Do not read exit 69 as "a network
-problem" and exit 0 as "the same network problem that went away" — both are one refusal,
-reported by whoever happens to be holding the URL. Whether a given path is seed-guarded at
-all depends on which of the four SSRF layers it wires; the layer map lives in
-`docs/ssrf-layers.md`.
+Two exit codes for one refusal, and both are right. The crawl is loud because discovery
+returns nothing, `plan_urls` re-injects the seed, and the scrape path refuses it a second
+time — a scrape that produced no page is a network-class failure, so it leaves at 69. The
+preview is the other case: nothing failed to *run*, there was simply no URL to schedule,
+which is the null result the sitemap arms already report as 2 — now with its cause named, so
+the code stops reading as "the site is empty". `--single-page` never runs discovery, so it
+only ever shows the loud half. Do not read either code as "retry me and it might work": both
+are one policy refusal. Whether a path is seed-guarded at all depends on which of the four
+SSRF layers it wires; the layer map lives in `docs/ssrf-layers.md`.
 
 **How to tell a refusal from a genuinely empty site.** The refusal is logged, never
-hidden. At default verbosity the guard's own `WARN` line is already on stderr — that line
-is the tip-off that an empty result is a policy refusal, not an empty site:
+hidden — and for an IP-literal seed the exit code now says it too (2, with the cause
+named). A hostname that resolves into a forbidden range is the case that still looks
+silent, so the `WARN` line is the discriminator: at default verbosity it is already on
+stderr.
 
 ```text
 WARN webfang_core::domain::ssrf_guard: SSRF literal-IP target rejected at entry (no socket opened), host: 127.0.0.1, ip: 127.0.0.1
@@ -104,11 +123,11 @@ jq -c 'select((.message // "") | test("SSRF|crawl completed"))' debug.jsonl
 scripts/analyze-trace.sh debug.jsonl errors
 ```
 
-One trap: a target written as a **hostname** that resolves to a forbidden address
-(`localhost`, an internal DNS name) is refused by the connect-time resolver instead of the
-literal guard, and reports `download error: DNS error: name resolution failed`. That DNS
-message means *the guard refused to return the address* — it is not a typo and not
-something `/etc/hosts` will fix. Literals and hostnames are checked by different layers;
+One trap inside the trap: the hostname row above is not a bug waiting to be fixed, and
+its `download error: DNS error: name resolution failed` is not a typo. The validating
+resolver refused to hand back the address, and at this boundary that is indistinguishable
+from a name that genuinely does not exist — which is why the preview keeps exiting 0 for
+`localhost` and 2 for `127.0.0.1`. Literals and hostnames are checked by different layers;
 see `docs/ssrf-layers.md`.
 
 **Opting out, for a target you trust.** There is no per-target allowlist flag; the
