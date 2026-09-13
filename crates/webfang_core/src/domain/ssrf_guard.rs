@@ -400,6 +400,32 @@ impl std::fmt::Display for ForbiddenLiteral {
 
 impl std::error::Error for ForbiddenLiteral {}
 
+/// Pure, non-logging verdict of the literal entry guard (layer 2 of
+/// `docs/ssrf-layers.md`).
+///
+/// Returns the [`ForbiddenLiteral`] the guard would raise for `url` — same host
+/// parsing ([`parse_ip_literal`], every `inet_aton`/WHATWG encoding), same deny
+/// list ([`is_forbidden_ip`]), same [`DISABLE_ENTRY_GUARD_ENV`] exact-`"1"` hatch
+/// — without the `WARN`. [`reject_forbidden_literal_url`] is this verdict plus the
+/// log line, so the two can never disagree.
+///
+/// Diagnostic callers need exactly that: a run whose seed was already cut must be
+/// able to name the refusal after the fact without emitting a second identical
+/// warning (#1381). Hostnames return `None` — the layer that refuses them is the
+/// connect-time validating resolver, not this one.
+#[must_use]
+pub fn seed_guard_refusal(url: &url::Url) -> Option<ForbiddenLiteral> {
+    if std::env::var(DISABLE_ENTRY_GUARD_ENV).as_deref() == Ok("1") {
+        return None;
+    }
+    let host = url.host_str().unwrap_or("");
+    let ip = parse_ip_literal(host).filter(is_forbidden_ip)?;
+    Some(ForbiddenLiteral {
+        host: host.to_owned(),
+        ip,
+    })
+}
+
 /// Shared literal-IP entry guard (F-06 + F-32, #1217): the ONE choke point for
 /// CLI and MCP.
 ///
@@ -414,23 +440,16 @@ impl std::error::Error for ForbiddenLiteral {}
 /// Production never sets it.
 #[tracing::instrument(skip(url), fields(host = %url.host_str().unwrap_or("")))]
 pub fn reject_forbidden_literal_url(url: &url::Url) -> Result<(), ForbiddenLiteral> {
-    if std::env::var(DISABLE_ENTRY_GUARD_ENV).as_deref() == Ok("1") {
-        return Ok(());
-    }
-    let host = url.host_str().unwrap_or("");
-    match parse_ip_literal(host) {
-        Some(ip) if is_forbidden_ip(&ip) => {
+    match seed_guard_refusal(url) {
+        Some(rejection) => {
             tracing::warn!(
-                host = %host,
-                ip = %ip,
+                host = %rejection.host,
+                ip = %rejection.ip,
                 "SSRF literal-IP target rejected at entry (no socket opened)"
             );
-            Err(ForbiddenLiteral {
-                host: host.to_owned(),
-                ip,
-            })
+            Err(rejection)
         },
-        _ => Ok(()),
+        None => Ok(()),
     }
 }
 
@@ -800,6 +819,51 @@ mod tests {
                 reject_forbidden_literal_url(&url).is_ok(),
                 "non-literal {raw} must pass the entry guard"
             );
+        }
+    }
+
+    /// The pure verdict `#1381` diagnoses with must never drift from the guard that
+    /// enforces. Same deny list, same host parser, same exact-`"1"` hatch — a
+    /// diagnostic that disagrees with the enforcement is worse than no diagnostic,
+    /// because it points an operator at a layer that was never armed.
+    #[test]
+    fn seed_guard_refusal_agrees_with_the_enforcing_guard_on_every_form() {
+        for raw in [
+            "http://127.0.0.1/",
+            "http://0x7f000001:18888/article",
+            "http://2130706433:18888/article",
+            "http://127.1:18888/article",
+            "http://169.254.169.254/latest/meta-data/",
+            "http://10.0.0.1/",
+            "http://[::ffff:127.0.0.1]/",
+            "https://example.com/",
+            "http://8.8.8.8/",
+            "http://93.184.216.34/",
+            "http://[2606:4700::1111]/",
+        ] {
+            let url: url::Url = raw.parse().expect("test URLs always parse");
+
+            // One EnvGuard at a time: ENV_LOCK is not reentrant (#1126).
+            {
+                let _armed = webfang_test_utils::EnvGuard::clean(&[DISABLE_ENTRY_GUARD_ENV]);
+                assert_eq!(
+                    seed_guard_refusal(&url).is_some(),
+                    reject_forbidden_literal_url(&url).is_err(),
+                    "guards-armed verdict must match enforcement for {raw}"
+                );
+            }
+            {
+                let _hatched =
+                    webfang_test_utils::EnvGuard::with(&[(DISABLE_ENTRY_GUARD_ENV, "1")]);
+                assert!(
+                    seed_guard_refusal(&url).is_none(),
+                    "hatched verdict must stay silent for {raw}"
+                );
+                assert!(
+                    reject_forbidden_literal_url(&url).is_ok(),
+                    "hatched enforcement must stay silent for {raw}"
+                );
+            }
         }
     }
 
