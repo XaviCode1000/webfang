@@ -18,10 +18,11 @@
 //!
 //! Wiremock loopbacks are literal-IP URLs, which production rejects at the
 //! SSRF entry guard — bypass entry + resolver exactly as
-//! `discovery_capture_1229` does. The single exception is the #1369
-//! guard-armed pin at the bottom: it must observe the production default, so
-//! it clears both hatches via `EnvGuard::clean` instead (which also holds
-//! `ENV_LOCK`, keeping sibling bypass setters out of its window, #1389).
+//! `discovery_capture_1229` does. The exceptions are the two guard-armed
+//! pins at the bottom (#1369 plain-run and #1381 refused-preview): they must
+//! observe the production default, so each clears both hatches via a scoped
+//! `EnvGuard::clean` instead (which also holds `ENV_LOCK`, keeping sibling
+//! bypass setters out of the window, #1389).
 
 use std::process::{ExitCode, Termination};
 use std::sync::Arc;
@@ -379,8 +380,14 @@ async fn discovery_plain_run_rejects_loopback_seed_with_ssrf_guard_on() {
 /// (exit 2, the null-result code the sitemap arms already use) instead of the
 /// success it used to report.
 ///
-/// No `EnvGuard` on the first half — both bypass envs stay at their production
-/// default (unset → guards armed), which is what makes the refusal real.
+/// The first half needs the bypass envs at their production default (unset →
+/// guards armed), so it runs inside a scoped `EnvGuard::clean` of both hatches
+/// (#1389): the clear is explicit and the guard holds the workspace `ENV_LOCK`
+/// for the whole library call and CLI-boundary read, so no sibling
+/// `EnvGuard::with(&SSRF_BYPASS)` can be live concurrently under the
+/// cargo-test runner (one process, shared threads — the Coverage lane shape).
+/// The scope closes BEFORE the opted-out block below, whose own
+/// `EnvGuard::with` must take the (non-reentrant) lock itself.
 #[tokio::test]
 async fn issue_1381_guard_refused_preview_maps_to_exit_2_while_the_library_stays_ok() {
     let server = MockServer::start().await;
@@ -395,43 +402,51 @@ async fn issue_1381_guard_refused_preview_maps_to_exit_2_while_the_library_stays
         .timeout_secs(5)
         .build();
 
-    let output = discover_urls_unified(
-        config,
-        &plain_opts(&seed_str),
-        &PersistenceMode::Disabled,
-        None,
-    )
-    .await
-    .expect("the armed guard cuts the seed pre-socket, so the run still completes Ok");
+    {
+        let _guards_off = webfang_test_utils::EnvGuard::clean(&[
+            DISABLE_ENTRY_GUARD_ENV,
+            DISABLE_VALIDATING_RESOLVER_ENV,
+        ]);
+        let output = discover_urls_unified(
+            config,
+            &plain_opts(&seed_str),
+            &PersistenceMode::Disabled,
+            None,
+        )
+        .await
+        .expect("the armed guard cuts the seed pre-socket, so the run still completes Ok");
 
-    assert!(
-        output.urls.is_empty(),
-        "the library contract is unchanged: Ok with zero URLs, got {:?}",
-        output.urls
-    );
+        assert!(
+            output.urls.is_empty(),
+            "the library contract is unchanged: Ok with zero URLs, got {:?}",
+            output.urls
+        );
 
-    // The CLI boundary reads the same verdict and reports the null result.
-    let exit = empty_discovery_exit_when_seed_refused(&seed_url)
-        .expect("a guard-refused seed must not be previewed as a clean zero");
-    let CliExit::EmptyDiscovery(reason) = &exit else {
-        panic!("a policy refusal is a null result (2), never a network failure: {exit:?}");
+        // The CLI boundary reads the same verdict and reports the null result.
+        let exit = empty_discovery_exit_when_seed_refused(&seed_url)
+            .expect("a guard-refused seed must not be previewed as a clean zero");
+        let CliExit::EmptyDiscovery(reason) = &exit else {
+            panic!("a policy refusal is a null result (2), never a network failure: {exit:?}");
+        };
+        assert!(
+            reason.contains("prohibida")
+                && reason.contains(webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV)
+                // The resolver hatch is still `pub(crate)` in the domain guard, so this
+                // target names its canonical string the way `SSRF_BYPASS` above does.
+                && reason.contains("WEBFANG_DISABLE_SSRF_RESOLVER"),
+            "the refusal must name its cause and both hatches, got: {reason}"
+        );
+        assert_eq!(
+            exit.report(),
+            ExitCode::from(EXIT_EMPTY_DISCOVERY),
+            "exit-code contract for a guard-refused preview"
+        );
     };
-    assert!(
-        reason.contains("prohibida")
-            && reason.contains(webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV)
-            // The resolver hatch is still `pub(crate)` in the domain guard, so this
-            // target names its canonical string the way `SSRF_BYPASS` above does.
-            && reason.contains("WEBFANG_DISABLE_SSRF_RESOLVER"),
-        "the refusal must name its cause and both hatches, got: {reason}"
-    );
-    assert_eq!(
-        exit.report(),
-        ExitCode::from(EXIT_EMPTY_DISCOVERY),
-        "exit-code contract for a guard-refused preview"
-    );
 
     // And it stays silent for an operator who already armed the documented hatch:
     // there the guard never refused anything, so exit 2 would be a new lie.
+    // Outside the scope above: this `EnvGuard::with` acquires the (non-reentrant)
+    // ENV_LOCK itself, which the scoped guard must already have released.
     {
         let _env = webfang_test_utils::EnvGuard::with(&SSRF_BYPASS);
         assert_eq!(
