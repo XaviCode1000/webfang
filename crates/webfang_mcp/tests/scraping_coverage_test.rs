@@ -1080,6 +1080,13 @@ async fn test_crawl_site_output_excludes_external_links() {
 /// host); the listed pages are never fetched (discovery-only crawl).
 #[tokio::test]
 async fn test_crawl_with_sitemap_response_excludes_external_and_forbidden_urls() {
+    // #1382: the sitemap path now pays the core entry guard, and the seed is
+    // a loopback wiremock literal. This test pins the MCP post-hoc output
+    // filter (external + forbidden-literal exclusion), not the entry layer —
+    // disarm it for the fetches via the canonical helper (it primes the
+    // process-wide ONCE init BEFORE taking the env lock, avoiding the
+    // reentrancy deadlock documented on `ssrf_guards_off`).
+    let _guards_off = ssrf_guards_off().await;
     let mock = MockServer::start().await;
 
     let sitemap = format!(

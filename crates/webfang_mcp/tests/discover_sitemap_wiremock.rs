@@ -11,6 +11,18 @@
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+/// Entry-hatch posture for the loopback mock seed (#1382/#1369): the
+/// production entry guard now cuts literal-IP targets on the sitemap path
+/// exactly as on every other fetch surface, so these contract tests —
+/// whose subject is the response shape, not the guard — run with the
+/// documented one-layer disarmer.
+fn entry_guard_off() -> webfang_test_utils::EnvGuard {
+    webfang_test_utils::EnvGuard::with(&[(
+        webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+        "1",
+    )])
+}
+
 /// Fake sitemap XML with exactly 2 `<loc>` entries.
 const SITEMAP_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
@@ -26,6 +38,7 @@ const SITEMAP_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 /// strings matching the sitemap `<loc>` values.
 #[tokio::test]
 async fn discover_sitemap_returns_urls_from_fake_sitemap() {
+    let _entry_off = entry_guard_off();
     let mock = MockServer::start().await;
 
     // Serve the sitemap at the expected location
@@ -93,6 +106,7 @@ async fn discover_sitemap_returns_urls_from_fake_sitemap() {
 /// (mod.rs:385 passes `None`).
 #[tokio::test]
 async fn discover_sitemap_auto_discovers_via_robots_txt() {
+    let _entry_off = entry_guard_off();
     let mock = MockServer::start().await;
 
     // Mock robots.txt with Sitemap directive
@@ -153,6 +167,7 @@ async fn discover_sitemap_auto_discovers_via_robots_txt() {
 /// This is the current behavior; the MCP tool surfaces it as an error response.
 #[tokio::test]
 async fn discover_sitemap_errors_on_empty_sitemap() {
+    let _entry_off = entry_guard_off();
     let mock = MockServer::start().await;
 
     let empty_sitemap = r#"<?xml version="1.0" encoding="UTF-8"?>

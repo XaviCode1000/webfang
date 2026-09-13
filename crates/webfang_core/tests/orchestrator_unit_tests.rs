@@ -9,6 +9,16 @@
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+/// One-layer entry disarmer for the loopback mock (#1382/#1369): these smoke
+/// tests pin the public parser API against wiremock, not the entry guard
+/// (pinned separately in `sitemap_ssrf_e2e_test`).
+fn entry_guard_off() -> webfang_test_utils::EnvGuard {
+    webfang_test_utils::EnvGuard::with(&[(
+        webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+        "1",
+    )])
+}
+
 // ===========================================================================
 // Sitemap integration via SitemapParser (smoke tests)
 // ===========================================================================
@@ -16,6 +26,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 /// Sitemap served by wiremock is parsed and URLs are extracted.
 #[tokio::test]
 async fn sitemap_valid_xml_discovers_urls() {
+    let _entry_off = entry_guard_off();
     let mock = MockServer::start().await;
 
     let sitemap_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -70,6 +81,7 @@ async fn sitemap_malformed_xml_returns_error() {
 /// Large sitemap (200 URLs) is parsed without error.
 #[tokio::test]
 async fn sitemap_large_sitemap_parses_all_urls() {
+    let _entry_off = entry_guard_off();
     let mock = MockServer::start().await;
 
     let mut xml = String::from(
@@ -103,6 +115,7 @@ async fn sitemap_large_sitemap_parses_all_urls() {
 /// Empty sitemap returns NoUrlsFound error.
 #[tokio::test]
 async fn sitemap_empty_returns_no_urls_found() {
+    let _entry_off = entry_guard_off();
     let mock = MockServer::start().await;
 
     let empty_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -135,6 +148,7 @@ async fn sitemap_empty_returns_no_urls_found() {
 /// Sitemap with duplicate URLs is deduplicated.
 #[tokio::test]
 async fn sitemap_deduplicates_urls() {
+    let _entry_off = entry_guard_off();
     let mock = MockServer::start().await;
 
     let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
