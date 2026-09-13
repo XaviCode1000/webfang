@@ -471,6 +471,21 @@ async fn run_dry_run(opts: CrawlOptions) -> CliExit {
         Err(e) => return CliExit::NetworkError(format!("URL discovery failed: {e}")),
     };
 
+    // #1381: a seed the SSRF guard cuts opens no socket, so discovery completes
+    // `Ok` with zero URLs and the preview below reported "nothing to scrape" —
+    // exit 0 — for what is actually a policy refusal. Say so and leave with the
+    // null-result code the sitemap arms already use for this shape (2), instead
+    // of letting automation read a refusal as an empty site. Only the literal
+    // entry layer is named: a hostname refused by the connect-time resolver is
+    // indistinguishable here from a real DNS failure.
+    if discovered.is_empty() {
+        if let Some(exit) =
+            crate::cli::error::empty_discovery_exit_when_seed_refused(opts.url.as_url())
+        {
+            return exit;
+        }
+    }
+
     println!("\nDry-run: {} URL(s) would be scraped:", discovered.len());
     for url in &discovered {
         println!("  {url}");

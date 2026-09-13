@@ -30,37 +30,54 @@ hatch a local target needs depends on how the target is *spelled*: an IP literal
 layer 2 (`WEBFANG_DISABLE_SSRF_ENTRY_GUARD`), a name like `localhost` by layer 3
 (`WEBFANG_DISABLE_SSRF_RESOLVER`), and a target reachable by both spellings needs both.
 
-**One call site is not covered: the sitemap auto-discovery probes.**
-`application/crawler/sitemap_discovery.rs::build_discovery_client` goes through
-`application/http_client/factory.rs`, which installs layers 3 and 4 only. A loopback
-*sitemap* probe therefore opens real sockets (measured: `--use-sitemap` against a local
-server produced 18 requests with every guard armed) while the same address is refused
-before dialing on the engine and scrape paths. That is an asymmetry against the AGENTS.md
-guard-chain order, not a supported opt-out; fixing it means calling
-`reject_forbidden_literal_url` at the discovery-client boundary.
+**The sitemap path is now fully covered (#1382, previously the one uncovered call
+site).** `--use-sitemap` used to open real sockets against a loopback seed
+(measured: 18 requests with every guard armed) because
+`sitemap_discovery.rs::build_discovery_client` goes through
+`application/http_client/factory.rs`, which installs layers 3 and 4 only. The
+fix restores the AGENTS.md guard-chain order with three layer-1 cuts, all
+pre-socket: the seed is guarded in `crawl_with_sitemap_internal` before the
+discovery client exists, the resolved sitemap target (explicit `--sitemap-url`
+or a robots.txt `Sitemap:` directive) in `resolve_sitemap_url`, and every URL
+the parser fetches (initial target + index children) in `parse_with_depth` via
+the typed `SitemapError::SsrfLiteralRejected` → `CrawlError::InvalidUrl` (exit
+69, same Spanish copy as every other surface). Pinned by
+`sitemap_ssrf_e2e_test` (zero outbound requests) and the unit guards in
+`sitemap_discovery` tests.
 
 ## What a refusal looks like from the outside
 
 Every layer refuses **before a socket exists**, so there is no connection error to read and
 nothing to retry. What the caller sees depends on who was holding the URL — same seed, same
-policy, three different-looking outcomes:
+policy, five different-looking outcomes:
 
 | Surface | Outcome | Exit |
 | :--- | :--- | :--- |
 | CLI crawl / scrape / `--single-page`, loopback seed | `URL inválida: SSRF detectado: la IP 127.0.0.1 … está prohibida …` | 69 |
-| `--dry-run`, loopback seed | `Dry-run: 0 URL(s) would be scraped:` — the engine counts the refused seed (`crawl completed … errors: 1`), the preview prints only the URL list | 0 |
+| `--dry-run`, loopback **literal** seed | `Warning: SSRF detectado: …`, naming the cause and both hatches; no `Dry-run:` line (#1391) | 2 |
+| `--dry-run`, **hostname** seed resolving into a forbidden range | `Dry-run: 0 URL(s) would be scraped:` — the refusal arrives as `DNS error: name resolution failed`, indistinguishable here from a name that does not exist | 0 |
 | MCP crawl/scrape tools, loopback seed | layer 1 answers first: `-32602` / `isError` carrying `SSRF detectado` | — |
 | `discover_urls_unified` / `discover_urls_recursive` (library) | `Ok` with an empty `Vec` | — |
 
-The `--dry-run` row is the one that surprises operators, and it is deliberate policy since
-#1369: plain DOM discovery used to ride a knobless engine entry that built no downloader and
-never paid the guard chain, which is why the same seed produced output before and nothing
-after. The refusal itself is never hidden — `reject_forbidden_literal_url` logs a `WARN`
-(`SSRF literal-IP target rejected at entry (no socket opened)`) at default verbosity — but
-the *result line* is a success with zero URLs. Pinned by
-`discovery_plain_run_rejects_loopback_seed_with_ssrf_guard_on`
-(`crates/webfang_core/tests/engine_options_1369.rs`), which asserts `Ok`, zero URLs and
-**zero requests** reaching the mock. User-facing copy: `docs/src/troubleshooting.md` →
+The literal `--dry-run` row used to be the operator's surprise: since #1369 plain DOM discovery
+pays the whole guard chain — it had ridden a knobless engine entry that built no downloader —
+and a refused seed came back as a technical success with zero URLs, because
+each refused URL is a legitimate skip inside a crawl. #1391 moved the diagnosis to the boundary
+that reports it: the preview asks the entry guard its own verdict
+(`domain::ssrf_guard::seed_guard_refusal`, the same check `reject_forbidden_literal_url` makes
+minus its `WARN`) and answers with `CliExit::EmptyDiscovery`, the null-result code the sitemap
+arms already use. The library contract is deliberately unchanged — `Ok` with an empty list —
+and both halves are pinned together: `engine_options_1369.rs`'s
+`issue_1381_guard_refused_preview_maps_to_exit_2_while_the_library_stays_ok` asserts `Ok` +
+empty AND exit 2 in one test, while
+`seed_guard_refusal_agrees_with_the_enforcing_guard_on_every_form` in
+`domain/ssrf_guard.rs` keeps the diagnostic verdict from drifting from the enforcement,
+armed and hatched. Both sit alongside
+`discovery_plain_run_rejects_loopback_seed_with_ssrf_guard_on`, which still asserts
+`Ok`, zero URLs and **zero requests** reaching the mock. The refusal itself was never hidden:
+the `WARN` (`SSRF literal-IP target rejected at entry (no socket opened)`) prints at default
+verbosity, and the engine counts the seed (`crawl completed … errors: 1`) — what changed is that
+the exit code now agrees with them. User-facing copy: `docs/src/troubleshooting.md` →
 "A local or internal target discovers nothing".
 
 ## Kill-switches
