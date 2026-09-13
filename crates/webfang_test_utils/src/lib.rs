@@ -319,6 +319,55 @@ pub fn redact_nondeterministic(dir: &Path, text: &str) -> String {
     file_path.replace_all(&text, "$1<FILE>.rs").into_owned()
 }
 
+/// Resolve the workspace root by climbing from a crate manifest directory.
+///
+/// Every workspace member lives at `crates/<name>`, so ONE `parent()` hop
+/// reaches `crates/` and TWO reach the root that holds the virtual
+/// manifest. The #1366 bug climbed three hops — one too many — landing
+/// in the repo's PARENT, so the no-env fallback pointed at a `target/`
+/// directory cargo never populates.
+///
+/// # Panics
+///
+/// Panics if `manifest_dir` is not at least two levels below a root —
+/// impossible for a workspace member compiled in-tree.
+fn workspace_root_from_manifest(manifest_dir: &str) -> PathBuf {
+    PathBuf::from(manifest_dir)
+        .parent()
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .expect("resolve workspace root from CARGO_MANIFEST_DIR")
+}
+
+/// Pure core of [`webfang_path`]: resolve the `webfang` build-output path
+/// from EXPLICIT inputs — no environment reads, no process mutation.
+///
+/// `bin_exe` mirrors `CARGO_BIN_EXE_webfang` (set = trusted outright),
+/// `target_dir` mirrors `CARGO_TARGET_DIR` (set = output root), and
+/// `manifest_dir` anchors the fallback workspace-root climb. Passing
+/// `None` for both variables simulates the #1366 environment — a runner
+/// with neither harness variable set — hermetically, without touching
+/// the process environment.
+fn resolve_webfang_path(
+    bin_exe: Option<&str>,
+    target_dir: Option<&str>,
+    manifest_dir: &str,
+) -> PathBuf {
+    if let Some(p) = bin_exe {
+        return PathBuf::from(p);
+    }
+    let workspace_root = workspace_root_from_manifest(manifest_dir);
+    let target_root = match target_dir {
+        Some(dir) => PathBuf::from(dir),
+        None => workspace_root.join("target"),
+    };
+    let mut built = target_root.join("debug").join("webfang");
+    if cfg!(windows) {
+        built.set_extension("exe");
+    }
+    built
+}
+
 /// Resolve the path to the `webfang` binary, building it on demand.
 ///
 /// `webfang` is built by the `webfang_cli` crate (a workspace sibling),
@@ -334,24 +383,13 @@ pub fn webfang_path() -> PathBuf {
     if let Ok(p) = env::var("CARGO_BIN_EXE_webfang") {
         return PathBuf::from(p);
     }
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    // crates/webfang_test_utils -> crates -> workspace root (three levels up)
-    let workspace_root = manifest_dir
-        .parent()
-        .and_then(|p| p.parent())
-        .and_then(|p| p.parent())
-        .expect("resolve workspace root");
-    let target_root = env::var("CARGO_TARGET_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| workspace_root.join("target"));
+    let workspace_root = workspace_root_from_manifest(env!("CARGO_MANIFEST_DIR"));
+    let target_dir = env::var("CARGO_TARGET_DIR").ok();
+    let built = resolve_webfang_path(None, target_dir.as_deref(), env!("CARGO_MANIFEST_DIR"));
     let cargo = option_env!("CARGO").unwrap_or("cargo");
-    let mut built = target_root.join("debug").join("webfang");
-    if cfg!(windows) {
-        built.set_extension("exe");
-    }
     let status = std::process::Command::new(cargo)
         .args(["build", "-p", "webfang_cli", "--bin", "webfang", "--quiet"])
-        .current_dir(workspace_root)
+        .current_dir(&workspace_root)
         .status()
         .expect("spawn cargo to build webfang");
     assert!(status.success(), "cargo build --bin webfang failed");
@@ -362,6 +400,82 @@ pub fn webfang_path() -> PathBuf {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    /// #1366 regression pin: with BOTH harness variables absent
+    /// (`CARGO_BIN_EXE_webfang` unset — the binary belongs to a sibling crate —
+    /// and `CARGO_TARGET_DIR` unset — a runner without direnv), the fallback
+    /// must resolve the binary under the workspace root's own `target/`,
+    /// reached by climbing exactly TWO parent hops from the crate manifest.
+    /// The bug climbed three, landing one directory too high (the repo's
+    /// parent), so the fallback path pointed at a `target/` directory cargo
+    /// never populates — the build succeeded and the returned path was still
+    /// wrong. This test simulates the absent-variable environment by passing
+    /// `None` explicitly: it never mutates (or even reads) the process
+    /// environment, so it cannot race ENV_LOCK or leak state into siblings.
+    #[test]
+    fn resolve_webfang_path_without_both_env_vars_uses_workspace_target() {
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        let path = resolve_webfang_path(None, None, manifest);
+
+        let root = workspace_root_from_manifest(manifest);
+        assert_eq!(path, root.join("target").join("debug").join("webfang"));
+
+        // The two-hop root must be the real workspace root: it holds the
+        // virtual manifest, and it is NOT the three-hop directory the #1366
+        // bug used to land in (the repo's parent).
+        assert!(root.join("Cargo.toml").is_file());
+        let buggy_three_hop_root = Path::new(manifest)
+            .parent()
+            .and_then(Path::parent)
+            .and_then(Path::parent)
+            .expect("three-hop chain resolves");
+        assert_ne!(root, buggy_three_hop_root);
+    }
+
+    /// Cross-check the two-hop climb against the authoritative source of
+    /// truth: `cargo locate-project --workspace` reports exactly where the
+    /// workspace manifest lives. #1366 regressed here because the climb was
+    /// hand-rolled; this pin fails if the climb and cargo ever disagree again.
+    #[test]
+    fn workspace_root_from_manifest_matches_cargo_metadata() {
+        let root = workspace_root_from_manifest(env!("CARGO_MANIFEST_DIR"));
+        let out = std::process::Command::new(option_env!("CARGO").unwrap_or("cargo"))
+            .args([
+                "locate-project",
+                "--workspace",
+                "--message-format=plain",
+                "--manifest-path",
+            ])
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/Cargo.toml"))
+            .output()
+            .expect("spawn cargo locate-project");
+        assert!(out.status.success(), "cargo locate-project failed");
+        // locate-project prints the workspace manifest path; strip the
+        // `Cargo.toml` leaf to compare roots.
+        let manifest_out = String::from_utf8(out.stdout).expect("locate-project prints UTF-8");
+        let cargo_root = Path::new(manifest_out.trim_end())
+            .parent()
+            .expect("locate-project prints a manifest path");
+        assert_eq!(
+            root, cargo_root,
+            "two-hop climb must land on cargo's own workspace root"
+        );
+    }
+
+    /// Behavioral pins for the variable-present branches — the paths that
+    /// must NOT change with #1366: an explicit `CARGO_BIN_EXE_webfang` wins
+    /// outright, and an explicit `CARGO_TARGET_DIR` roots the debug output.
+    #[test]
+    fn resolve_webfang_path_respects_explicit_env_vars() {
+        let manifest = env!("CARGO_MANIFEST_DIR");
+        assert_eq!(
+            resolve_webfang_path(Some("/explicit/webfang"), None, manifest),
+            PathBuf::from("/explicit/webfang")
+        );
+
+        let via_target = resolve_webfang_path(None, Some("/custom/target"), manifest);
+        assert_eq!(via_target, PathBuf::from("/custom/target/debug/webfang"));
+    }
 
     #[test]
     fn env_guard_with_sets_and_restores() {
