@@ -18,7 +18,10 @@
 //!
 //! Wiremock loopbacks are literal-IP URLs, which production rejects at the
 //! SSRF entry guard — bypass entry + resolver exactly as
-//! `discovery_capture_1229` does.
+//! `discovery_capture_1229` does. The single exception is the #1369
+//! guard-armed pin at the bottom: it must observe the production default, so
+//! it clears both hatches via `EnvGuard::clean` instead (which also holds
+//! `ENV_LOCK`, keeping sibling bypass setters out of its window, #1389).
 
 use std::sync::Arc;
 
@@ -28,6 +31,7 @@ use webfang_core::application::crawler::content_sink::CrawlContentSink;
 use webfang_core::application::crawler::InMemoryContentSink;
 use webfang_core::cli::url_discovery::discover_urls_unified;
 use webfang_core::domain::persistence::PersistenceMode;
+use webfang_core::domain::ssrf_guard::{DISABLE_ENTRY_GUARD_ENV, DISABLE_VALIDATING_RESOLVER_ENV};
 use webfang_core::domain::{CrawlerConfig, ValidUrl};
 
 use wiremock::matchers::{method, path};
@@ -305,16 +309,25 @@ async fn discovery_plain_run_enforces_robots_by_default() {
 /// capture path always had. The knobless else-branch is gone, so the plain
 /// branch rides the factory-wired options and every fetch runs through the
 /// SSRF entry guard plus the validating resolver (AGENTS.md fetch-guard
-/// order). No `EnvGuard` here: both bypass envs stay at their production
-/// default (unset → guards armed). With a loopback wiremock seed the run must
-/// still COMPLETE (the engine's robots gate receives `PolicyRefused` and skips
-/// the URL — Ok with zero URLs, not Err), and because the rejection is
-/// pre-socket the mock server must observe zero requests of any kind. Seeds
-/// that used to crawl on the knobless path are refused by design (#1355,
-/// #1251); the operator hatch stays the documented
+/// order). The bypass envs must stay at their production default (unset →
+/// guards armed). `EnvGuard::clean` guarantees BOTH at once (#1389): it
+/// removes the two hatches explicitly and holds the workspace `ENV_LOCK`
+/// for the whole test, so no sibling `EnvGuard::with(&SSRF_BYPASS)` can be
+/// live concurrently — under the cargo-test runner (one process, shared
+/// threads — the Coverage lane shape) the pin used to read the sibling's
+/// armed bypass and let the loopback seed through. With a loopback wiremock
+/// seed the run must still COMPLETE (the engine's robots gate receives
+/// `PolicyRefused` and skips the URL — Ok with zero URLs, not Err), and
+/// because the rejection is pre-socket the mock server must observe zero
+/// requests of any kind. Seeds that used to crawl on the knobless path are
+/// refused by design (#1355, #1251); the operator hatch stays the documented
 /// `WEBFANG_DISABLE_SSRF_ENTRY_GUARD` / `WEBFANG_DISABLE_SSRF_RESOLVER` pair.
 #[tokio::test]
 async fn discovery_plain_run_rejects_loopback_seed_with_ssrf_guard_on() {
+    let _guards_off = webfang_test_utils::EnvGuard::clean(&[
+        DISABLE_ENTRY_GUARD_ENV,
+        DISABLE_VALIDATING_RESOLVER_ENV,
+    ]);
     let server = MockServer::start().await;
     mount_page_and_robots(&server).await;
     let base = server.uri();
