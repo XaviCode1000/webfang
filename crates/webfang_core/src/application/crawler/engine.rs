@@ -2132,10 +2132,16 @@ mod tests {
             shim.total_pages, explicit.total_pages,
             "shim and explicit entry must agree on page count"
         );
+        // #1375 strong parity: same-inputs must mean same OUTPUT, not just
+        // same counts. `DiscoveredUrl` carries url/depth/parent/content-type,
+        // so this compares the full discovery record of every page.
         assert_eq!(
-            shim.urls.len(),
-            explicit.urls.len(),
-            "shim and explicit entry must agree on discovered URLs"
+            shim.urls, explicit.urls,
+            "shim and explicit entry must discover identical URLs (content, not just count)"
+        );
+        assert_eq!(
+            shim.error_breakdown, explicit.error_breakdown,
+            "shim and explicit entry must agree on the error breakdown"
         );
         assert_eq!(shim.errors, 0);
         assert_eq!(explicit.errors, 0);
@@ -2197,9 +2203,12 @@ mod tests {
             explicit_pages.len(),
             "both entries must capture the same page count"
         );
+        // #1375 strong parity: the full captured record (url + body), not
+        // just the first body — same-inputs must produce identical capture
+        // output before the shim is removed.
         assert_eq!(
-            shim_pages[0].html, explicit_pages[0].html,
-            "shim sink and content_sink option must capture identical content"
+            shim_pages, explicit_pages,
+            "shim sink and content_sink option must capture identical pages"
         );
     }
 
