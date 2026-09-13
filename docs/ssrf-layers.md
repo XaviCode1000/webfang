@@ -30,14 +30,20 @@ hatch a local target needs depends on how the target is *spelled*: an IP literal
 layer 2 (`WEBFANG_DISABLE_SSRF_ENTRY_GUARD`), a name like `localhost` by layer 3
 (`WEBFANG_DISABLE_SSRF_RESOLVER`), and a target reachable by both spellings needs both.
 
-**One call site is not covered: the sitemap auto-discovery probes.**
-`application/crawler/sitemap_discovery.rs::build_discovery_client` goes through
-`application/http_client/factory.rs`, which installs layers 3 and 4 only. A loopback
-*sitemap* probe therefore opens real sockets (measured: `--use-sitemap` against a local
-server produced 18 requests with every guard armed) while the same address is refused
-before dialing on the engine and scrape paths. That is an asymmetry against the AGENTS.md
-guard-chain order, not a supported opt-out; fixing it means calling
-`reject_forbidden_literal_url` at the discovery-client boundary.
+**The sitemap path is now fully covered (#1382, previously the one uncovered call
+site).** `--use-sitemap` used to open real sockets against a loopback seed
+(measured: 18 requests with every guard armed) because
+`sitemap_discovery.rs::build_discovery_client` goes through
+`application/http_client/factory.rs`, which installs layers 3 and 4 only. The
+fix restores the AGENTS.md guard-chain order with three layer-1 cuts, all
+pre-socket: the seed is guarded in `crawl_with_sitemap_internal` before the
+discovery client exists, the resolved sitemap target (explicit `--sitemap-url`
+or a robots.txt `Sitemap:` directive) in `resolve_sitemap_url`, and every URL
+the parser fetches (initial target + index children) in `parse_with_depth` via
+the typed `SitemapError::SsrfLiteralRejected` → `CrawlError::InvalidUrl` (exit
+69, same Spanish copy as every other surface). Pinned by
+`sitemap_ssrf_e2e_test` (zero outbound requests) and the unit guards in
+`sitemap_discovery` tests.
 
 ## What a refusal looks like from the outside
 

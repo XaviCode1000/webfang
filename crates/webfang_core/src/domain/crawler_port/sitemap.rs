@@ -115,6 +115,13 @@ pub enum SitemapError {
         /// Formatted Spanish evidence chain (REQ-WAF-08).
         provider: String,
     },
+
+    /// The sitemap URL (initial target or index child — server-controlled
+    /// text) resolves to a forbidden IP literal and was rejected by the
+    /// entry guard BEFORE any socket opened (#1382). Payload is the Spanish
+    /// `ForbiddenLiteral` display text.
+    #[error("SSRF literal rejected: {0}")]
+    SsrfLiteralRejected(String),
 }
 
 /// Sitemap URL entry with metadata per sitemaps.org spec
