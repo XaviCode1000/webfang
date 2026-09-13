@@ -139,6 +139,25 @@ pub async fn crawl_with_sitemap_resolved(
 /// The public `crawl_with_sitemap_resolved` function calls this one.
 ///
 /// Following **own-borrow-over-clone**: Accepts `&ValidUrl` (borrowed), not an owned URL.
+/// #1382: layer-1 entry guard for the sitemap path — the seed host is a
+/// forbidden IP literal (loopback/RFC1918/...), the exact target every
+/// discovery probe would dial. Refusing here means no robots.txt GET, no
+/// HEAD/GET probes, no parser fetch ever leave: pre-socket by construction.
+/// Reads the documented entry hatch on every call, so test harnesses
+/// driving wiremock through this path disarm only this layer (#1217).
+fn reject_sitemap_entry_target(raw_url: &str) -> Result<(), CrawlError> {
+    let parsed =
+        Url::parse(raw_url).map_err(|e| CrawlError::InvalidUrl(format!("URL inválida: {e}")))?;
+    if let Err(rejection) = crate::domain::ssrf_guard::reject_forbidden_literal_url(&parsed) {
+        tracing::warn!(
+            url = raw_url,
+            "SSRF literal-IP target rejected at sitemap entry (no socket opened)"
+        );
+        return Err(CrawlError::InvalidUrl(rejection.to_string()));
+    }
+    Ok(())
+}
+
 #[allow(unused_variables)]
 async fn crawl_with_sitemap_internal(
     base_url: &str,
@@ -146,6 +165,10 @@ async fn crawl_with_sitemap_internal(
     config: &CrawlerConfig,
 ) -> Result<Vec<DiscoveredUrl>, CrawlError> {
     info!("Crawling with sitemap for {}", base_url);
+
+    // #1382: entry guard BEFORE the discovery client exists (layer 1 of
+    // the AGENTS.md guard-chain order — see `reject_sitemap_entry_target`).
+    reject_sitemap_entry_target(base_url)?;
 
     // Build the discovery client through the shared factory so sitemap probes
     // carry the same Chrome Client Hints, pooled user-agent, pool tuning, and
@@ -234,18 +257,32 @@ fn build_discovery_client(config: &CrawlerConfig) -> Result<wreq::Client, CrawlE
 }
 
 /// Resolve the sitemap URL: use the provided (already validated) one, or auto-discover it.
+///
+/// #1382: BOTH branches pay the entry guard — an explicit sitemap URL whose
+/// host is a forbidden literal (validated for scheme/credentials by
+/// `ValidUrl`, never for target address) and a robots.txt directive pointing
+/// at one are cut HERE, pre-socket, before the parser fetch dials anything.
 async fn resolve_sitemap_url(
     base_url: &str,
     sitemap: Option<&ValidUrl>,
     client: &wreq::Client,
 ) -> Result<String, CrawlError> {
-    match sitemap {
+    let resolved = match sitemap {
         Some(url) => {
             tracing::info!("Sitemap URL provided: {}", url.as_str());
-            Ok(url.as_str().to_string())
+            url.as_str().to_string()
         },
-        None => discover_sitemap_url_for(base_url, client).await,
-    }
+        None => discover_sitemap_url_for(base_url, client).await?,
+    };
+
+    // Entry guard over the resolved sitemap target (#1382): the seed may be a
+    // hostname, but the sitemap this chain is about to fetch must not be a
+    // forbidden literal. This also covers the robots.txt `Sitemap:` directive
+    // case — the directive is attacker-controllable text and its target is
+    // exactly what the parser would dial next.
+    reject_sitemap_entry_target(&resolved)?;
+
+    Ok(resolved)
 }
 
 /// Auto-discover a sitemap URL, logging the discovery outcome.
@@ -341,6 +378,12 @@ async fn parse_sitemap(
                 kind: WafDetectionKind::BodySignature,
                 url,
             },
+            // #1382: a forbidden-literal sitemap target (initial or index
+            // child) rejected pre-socket by the parser's entry guard maps to
+            // the same typed InvalidUrl the CLI/MCP entry points produce, so
+            // the exit-code mapping (69) and the Spanish SSRF copy are
+            // byte-identical to every other fetch surface.
+            SitemapError::SsrfLiteralRejected(msg) => CrawlError::InvalidUrl(msg),
             other => CrawlError::Parse(other.to_string()),
         }
     })?;
@@ -1002,6 +1045,15 @@ mod tests {
     /// by wiremock, the resolved entry returns exactly its `<loc>` entries.
     #[tokio::test]
     async fn issue_1162_explicit_valid_url_used_verbatim() {
+        // Loopback mock seed: the entry guard (#1382) now cuts literal-IP
+        // targets exactly as production should — these tests exercise the
+        // verbatim-URL contract, not the guard, so the entry hatch is the
+        // documented one-layer disarmer (same posture as the scrape-flow
+        // robots tests, #1369).
+        let _entry_off = webfang_test_utils::EnvGuard::with(&[(
+            crate::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+            "1",
+        )]);
         let mock = MockServer::start().await;
         let page1 = format!("{}/page1", mock.uri());
         let page2 = format!("{}/page2", mock.uri());
@@ -1042,6 +1094,13 @@ mod tests {
     /// (robots.txt `Sitemap:` directive → sitemap fetch → URLs).
     #[tokio::test]
     async fn issue_1162_auto_discovery_without_url() {
+        // Loopback mock seed — same entry-hatch posture as the verbatim test
+        // above (#1382/#1369): the contract under test is the discovery
+        // chain, not the guard.
+        let _entry_off = webfang_test_utils::EnvGuard::with(&[(
+            crate::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+            "1",
+        )]);
         let mock = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/robots.txt"))
