@@ -538,6 +538,7 @@ mod tests {
 #[cfg(all(test, feature = "ai"))]
 mod short_para_measurement {
     use super::HtmlChunker;
+    use crate::infrastructure_ai::content_pruner::{ContentPruner, LegibleContentPruner};
     use std::collections::BTreeMap;
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -555,6 +556,10 @@ mod short_para_measurement {
     /// Literal maximum length of a reported sample (chars, not bytes).
     const SAMPLE_MAX_CHARS: usize = 90;
 
+    /// Literal samples reported for the post-prune 1-9-bucket composition
+    /// (#1368 phase 2 — the datum F is decided from).
+    const B19_SAMPLE_CAP: usize = 10;
+
     struct Dropped {
         len: usize,
         text: String,
@@ -565,7 +570,158 @@ mod short_para_measurement {
         url: String,
         paras: usize,
         chars_total: usize,
+        /// Block structure of the RAW html (only counted in prune mode; the
+        /// pruned input is never apples-to-apples with raw and the JSON must
+        /// say so explicitly).
+        paras_raw: usize,
+        chars_total_raw: usize,
         dropped: Vec<Dropped>,
+    }
+
+    /// True when `NAME=1` in the environment.
+    fn env_flag(name: &str) -> bool {
+        std::env::var(name).is_ok_and(|v| v == "1")
+    }
+
+    /// Words that make a short block chrome when EVERY alphabetic word of the
+    /// block is in this list (nav/labels observed in the phase-1 and phase-2
+    /// sample review). Numbers never count as words.
+    const CHROME_WORDS: &[&str] = &[
+        "menu",
+        "search",
+        "page",
+        "edit",
+        "editar",
+        "edición",
+        "edits",
+        "source",
+        "history",
+        "views",
+        "read",
+        "talk",
+        "contributions",
+        "login",
+        "logout",
+        "sign",
+        "up",
+        "in",
+        "out",
+        "help",
+        "about",
+        "contact",
+        "donate",
+        "tools",
+        "language",
+        "languages",
+        "next",
+        "prev",
+        "previous",
+        "top",
+        "home",
+        "index",
+        "contents",
+        "category",
+        "categories",
+        "tag",
+        "tags",
+        "share",
+        "report",
+        "bug",
+        "show",
+        "hide",
+        "more",
+        "less",
+        "close",
+        "submit",
+        "skip",
+        "main",
+        "site",
+        "navigation",
+        "sidebar",
+        "footer",
+        "header",
+        "nav",
+        "article",
+        "articles",
+        "document",
+        "docs",
+        "version",
+        "versions",
+        "stable",
+        "beta",
+        "nightly",
+        "note",
+        "notes",
+        "warning",
+        "see",
+        "also",
+        "here",
+        "new",
+        "news",
+        "best",
+        "ask",
+        "reply",
+        "replies",
+        "vote",
+        "votes",
+        "by",
+        "action",
+        "actions",
+    ];
+
+    /// Suffixes that turn a single-token block into a file/domain chrome token
+    /// (site titles, repo names like `tokio.rs`).
+    const DOMAIN_SUFFIXES: &[&str] = &[
+        "rs", "py", "js", "ts", "go", "rb", "sh", "md", "html", "htm", "css", "xml", "json", "com",
+        "org", "net", "io", "dev", "app", "edu", "gov", "wiki", "xyz", "me", "tv", "cc",
+    ];
+
+    /// Deterministic class for a 1-9 byte block: UI chrome vs likely content.
+    /// Reviewed against the literal samples this module prints.
+    fn classify_1_9(text: &str) -> &'static str {
+        let t = text.trim();
+        // Pure punctuation (bullets, slashes, em-dashes): chrome.
+        if !t.chars().any(char::is_alphanumeric) {
+            return "boilerplate";
+        }
+        let lower = t.to_lowercase();
+        // Single-token file/domain (e.g. `tokio.rs`): chrome.
+        if !lower.contains(' ') {
+            if let Some(dot) = lower.rfind('.') {
+                let head = &lower[..dot];
+                let tail = &lower[dot + 1..];
+                let head_ok = !head.is_empty()
+                    && !head.ends_with('.')
+                    && head
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.');
+                let tail_ok = !tail.is_empty()
+                    && tail.len() <= 6
+                    && tail.chars().all(|c| c.is_ascii_alphabetic())
+                    && DOMAIN_SUFFIXES.contains(&tail);
+                if head_ok && tail_ok {
+                    return "boilerplate";
+                }
+            }
+        }
+        // Chrome label: every alphabetic word is a known nav word.
+        let mut saw_word = false;
+        for word in lower.split(|c: char| !c.is_alphabetic()) {
+            if word.is_empty() {
+                continue;
+            }
+            saw_word = true;
+            if !CHROME_WORDS.contains(&word) {
+                return "legit";
+            }
+        }
+        if saw_word {
+            "boilerplate"
+        } else {
+            // No letters at all but has digits (e.g. `2006`, `[1]`): treated as
+            // content unless review says otherwise.
+            "legit"
+        }
     }
 
     impl PageOutcome {
@@ -612,27 +768,57 @@ mod short_para_measurement {
     }
 
     /// Replicates `chunk()` pass-1 exactly, keeping the dropped pieces.
+    ///
+    /// With a pruner, feeds the pass-1 replica the EXACT input production
+    /// feeds it: `LegibleContentPruner::prune(html)`, falling back to the raw
+    /// html when the prune result is empty (same guard as
+    /// `SemanticCleanerImpl::clean` step 0, #1368 phase 2).
     fn measure_page(
         chunker: &HtmlChunker,
+        pruner: Option<&LegibleContentPruner>,
         path: &Path,
         urls: &BTreeMap<String, String>,
     ) -> anyhow::Result<PageOutcome> {
-        let html = fs::read_to_string(path)?;
+        let raw = fs::read_to_string(path)?;
         let file = path
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or_default()
             .to_string();
         let min = chunker.min_chunk_size();
-        let text = chunker.strip_html_tags(&html);
+        let pruned = pruner.map(|p| {
+            let out = p.prune(&raw);
+            if out.is_empty() {
+                raw.clone()
+            } else {
+                out
+            }
+        });
+        let html = pruned.as_deref().unwrap_or(&raw);
         let mut outcome = PageOutcome {
             url: urls.get(&file).cloned().unwrap_or_default(),
             file,
             paras: 0,
             chars_total: 0,
+            paras_raw: 0,
+            chars_total_raw: 0,
             dropped: Vec::new(),
         };
-        for paragraph in text.split('\n').filter(|p| !p.trim().is_empty()) {
+        if pruner.is_some() {
+            for paragraph in chunker
+                .strip_html_tags(&raw)
+                .split('\n')
+                .filter(|p| !p.trim().is_empty())
+            {
+                outcome.paras_raw += 1;
+                outcome.chars_total_raw += paragraph.trim().len();
+            }
+        }
+        for paragraph in chunker
+            .strip_html_tags(html)
+            .split('\n')
+            .filter(|p| !p.trim().is_empty())
+        {
             let trimmed = paragraph.trim();
             outcome.paras += 1;
             outcome.chars_total += trimmed.len();
@@ -732,6 +918,72 @@ mod short_para_measurement {
         ));
     }
 
+    /// Raw-vs-pruned block structure comparison — pruned measurements are NOT
+    /// comparable to raw ones, and the JSON must state that (prune mode only).
+    fn json_prune_structure(out: &mut String, outcomes: &[PageOutcome]) {
+        let blocks_raw: usize = outcomes.iter().map(|p| p.paras_raw).sum();
+        let blocks_pruned: usize = outcomes.iter().map(|p| p.paras).sum();
+        let chars_raw: usize = outcomes.iter().map(|p| p.chars_total_raw).sum();
+        let chars_pruned: usize = outcomes.iter().map(|p| p.chars_total).sum();
+        out.push_str(&format!(
+            "  \"prune_structure\": {{\"blocks_raw\": {blocks_raw}, \"blocks_pruned\": {blocks_pruned}, \
+             \"chars_raw\": {chars_raw}, \"chars_pruned\": {chars_pruned}, \
+             \"note\": \"prune() rewrites the block structure (chrome blocks removed and text truncated); \
+              pruned numbers are not comparable to the raw-corpus measurement\"}},\n",
+        ));
+    }
+
+    /// Post-prune composition of the 1-9 byte bucket: the datum F is decided
+    /// from (phase 2 counts the classes over EVERY block in the bucket, and
+    /// reports up to B19_SAMPLE_CAP literal samples). Final JSON section —
+    /// emits no trailing comma.
+    fn json_bucket_1_9(out: &mut String, outcomes: &[PageOutcome]) {
+        let items = dropped_in_bucket(outcomes, (1, 9));
+        let chars_total: usize = outcomes.iter().map(|p| p.chars_total).sum();
+        let chars: usize = items.iter().map(|d| d.len).sum();
+        let mut boiler = 0_usize;
+        let mut boiler_chars = 0_usize;
+        for d in &items {
+            if classify_1_9(&d.text) == "boilerplate" {
+                boiler += 1;
+                boiler_chars += d.len;
+            }
+        }
+        out.push_str("  \"bucket_1_9_pruned\": {\"count\": ");
+        out.push_str(&format!("{}", items.len()));
+        out.push_str(", \"chars\": ");
+        out.push_str(&format!("{chars}"));
+        out.push_str(&format!(
+            ", \"frac_of_pruned_chars\": {:.6}",
+            safe_frac(chars, chars_total)
+        ));
+        out.push_str(", \"classes\": {\"boilerplate\": {\"count\": ");
+        out.push_str(&format!("{boiler}"));
+        out.push_str(&format!(", \"chars\": {boiler_chars}}}"));
+        out.push_str(", \"legit\": {\"count\": ");
+        out.push_str(&format!("{}", items.len() - boiler));
+        out.push_str(", \"chars\": ");
+        out.push_str(&format!("{}", chars - boiler_chars));
+        out.push_str("}}");
+        out.push_str(",\n    \"samples\": [\n");
+        let shown = items.len().min(B19_SAMPLE_CAP);
+        for (i, d) in take_evenly(&items, B19_SAMPLE_CAP).into_iter().enumerate() {
+            out.push_str("      {\"text\": \"");
+            json_escape(out, &truncate_chars(&d.text, SAMPLE_MAX_CHARS));
+            out.push_str(&format!(
+                "\", \"len_bytes\": {}, \"class\": \"{}\"}}",
+                d.len,
+                classify_1_9(&d.text)
+            ));
+            if i + 1 < shown {
+                out.push_str(",\n");
+            } else {
+                out.push('\n');
+            }
+        }
+        out.push_str("    ]}\n");
+    }
+
     fn json_histogram(out: &mut String, outcomes: &[PageOutcome]) {
         out.push_str("  \"histogram\": {");
         for (i, (name, lo, hi)) in BUCKETS.iter().enumerate() {
@@ -771,7 +1023,7 @@ mod short_para_measurement {
         out.push_str("  ],\n");
     }
 
-    fn json_samples(out: &mut String, outcomes: &[PageOutcome]) {
+    fn json_samples(out: &mut String, outcomes: &[PageOutcome], trailing_comma: bool) {
         out.push_str("  \"samples\": [\n");
         let mut all: Vec<(&str, &Dropped)> = Vec::new();
         for bucket in ["1-9", "50-69", "85-99"] {
@@ -797,35 +1049,70 @@ mod short_para_measurement {
                 out.push('\n');
             }
         }
-        out.push_str("  ]\n");
+        if trailing_comma {
+            out.push_str("  ],\n");
+        } else {
+            out.push_str("  ]\n");
+        }
     }
 
-    fn render_json(outcomes: &[PageOutcome], dir: &Path, min_chunk_size: usize) -> String {
+    fn render_json(
+        outcomes: &[PageOutcome],
+        dir: &Path,
+        min_chunk_size: usize,
+        prune: bool,
+    ) -> String {
         let mut out = String::from("{\n");
         out.push_str("  \"corpus_dir\": \"");
         json_escape(&mut out, &dir.display().to_string());
-        out.push_str(&format!("\",\n  \"min_chunk_size\": {min_chunk_size},\n"));
+        out.push_str(&format!(
+            "\",\n  \"min_chunk_size\": {min_chunk_size},\n  \"prune\": {prune},\n"
+        ));
+        if prune {
+            json_prune_structure(&mut out, outcomes);
+        }
         json_per_page(&mut out, outcomes);
         json_global(&mut out, outcomes);
         json_histogram(&mut out, outcomes);
         json_worst5(&mut out, outcomes);
-        json_samples(&mut out, outcomes);
+        json_samples(&mut out, outcomes, prune);
+        if prune {
+            json_bucket_1_9(&mut out, outcomes);
+        }
         out.push('}');
         out
+    }
+
+    /// Phase-2 review aid: with prune mode on, print EVERY post-prune 1-9 byte
+    /// block with its automatic class so the sample review stays auditable.
+    fn dump_bucket_1_9(outcomes: &[PageOutcome]) {
+        for d in dropped_in_bucket(outcomes, (1, 9)) {
+            println!(
+                "[dump19] class={} len={} text={:?}",
+                classify_1_9(&d.text),
+                d.len,
+                d.text
+            );
+        }
     }
 
     #[test]
     #[ignore = "one-off quantification #1368; needs WEBFANG_1368_CORPUS dir"]
     fn measure_short_paragraph_loss_on_real_corpus() -> anyhow::Result<()> {
         let dir = PathBuf::from(std::env::var("WEBFANG_1368_CORPUS")?);
+        let prune = env_flag("WEBFANG_1368_PRUNE");
         let urls = load_urls(&dir);
         let chunker = HtmlChunker::new();
         let min = chunker.min_chunk_size();
+        let pruner = prune.then(|| LegibleContentPruner::standard());
         let mut outcomes = Vec::new();
         for path in list_html(&dir)? {
-            outcomes.push(measure_page(&chunker, &path, &urls)?);
+            outcomes.push(measure_page(&chunker, pruner.as_ref(), &path, &urls)?);
         }
-        let json = render_json(&outcomes, &dir, min);
+        if prune {
+            dump_bucket_1_9(&outcomes);
+        }
+        let json = render_json(&outcomes, &dir, min, prune);
         println!("{json}");
         if let Ok(target) = std::env::var("WEBFANG_1368_OUT") {
             let target = PathBuf::from(target);
