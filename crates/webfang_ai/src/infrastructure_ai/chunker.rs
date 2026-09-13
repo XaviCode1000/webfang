@@ -105,7 +105,8 @@ const BLOCK_TAGS: &[&str] = &[
 ///
 /// Chunks HTML content into semantic segments using a two-pass approach:
 /// 1. **Structural boundaries**: Split by paragraphs and HTML elements
-/// 2. **Size-based merge/split**: Merge small chunks, split large ones
+/// 2. **Size-based pack/split**: Pack every block into chunks of at most
+///    `max_chunk_size` (nothing is discarded, #1368), split oversized chunks
 ///
 /// # Examples
 ///
@@ -136,7 +137,8 @@ impl HtmlChunker {
     ///
     /// # Defaults
     ///
-    /// - `min_chunk_size`: 100 characters
+    /// - `min_chunk_size`: 100 characters — a packing preference only: shorter
+    ///   blocks are merged with their neighbours, never discarded (#1368)
     /// - `max_chunk_size`: 512 characters (model token limit safe zone)
     #[must_use]
     pub fn new() -> Self {
@@ -151,7 +153,10 @@ impl HtmlChunker {
     ///
     /// # Arguments
     ///
-    /// * `min_chunk_size` - Minimum characters per chunk
+    /// * `min_chunk_size` - Packing preference in characters: blocks shorter
+    ///   than this are merged with their neighbours up to `max_chunk_size`.
+    ///   Since #1368 it is NOT a filter — no content below it is ever
+    ///   discarded; short final runs are emitted as their own chunks.
     /// * `max_chunk_size` - Maximum characters per chunk
     ///
     /// # Returns
@@ -166,7 +171,8 @@ impl HtmlChunker {
         }
     }
 
-    /// Set the minimum chunk size
+    /// Set the minimum chunk size (packing preference; since #1368 it never
+    /// filters content out — see [`HtmlChunker::with_config`])
     #[must_use]
     pub fn with_min_chunk_size(mut self, size: usize) -> Self {
         self.min_chunk_size = size;
@@ -206,9 +212,13 @@ impl HtmlChunker {
     ///
     /// # Process
     ///
-    /// 1. **Strip HTML tags**: Extract plain text
-    /// 2. **Split by structural boundaries**: Paragraphs, sentences
-    /// 3. **Merge small chunks**: Combine chunks below min_chunk_size
+    /// 1. **Strip HTML tags**: Extract plain text ('\n' only at block edges, #1313)
+    /// 2. **Split by structural boundaries**: Every non-empty block is kept —
+    ///    pass 1 applies no size filter (#1368)
+    /// 3. **Pack by size**: Blocks are merged greedily in order up to
+    ///    `max_chunk_size`; `min_chunk_size` is only a packing preference, so
+    ///    a short run is either merged with its neighbours or emitted as its
+    ///    own chunk — the pipeline discards nothing (#1368)
     /// 4. **Split large chunks**: Break chunks above max_chunk_size
     ///
     /// # Examples
@@ -232,13 +242,14 @@ impl HtmlChunker {
         let text = self.strip_html_tags(html);
         let paragraphs: Vec<&str> = text.split('\n').filter(|p| !p.trim().is_empty()).collect();
 
-        // Convert to DocumentChunks
+        // Convert to DocumentChunks. Pass 1 keeps EVERY non-empty block: the
+        // old `len < min_chunk_size` filter dropped short legitimate prose
+        // (forum replies, doc sentences) before the merge could rescue it
+        // (#1368, pruned-corpus baseline: 10.85% of chars). `min_chunk_size`
+        // now only steers packing in `merge_small_chunks`, never filtering.
         let mut chunks: SmallVec<[DocumentChunk; 8]> = SmallVec::new();
         for paragraph in paragraphs.into_iter() {
             let trimmed = paragraph.trim();
-            if trimmed.len() < self.min_chunk_size {
-                continue; // Skip too-small chunks for now
-            }
 
             let chunk = DocumentChunk::new(
                 Uuid::new_v4(),
@@ -341,15 +352,26 @@ impl HtmlChunker {
         result
     }
 
-    /// Merge chunks smaller than min_chunk_size
+    /// Greedily pack blocks, in order, into chunks of at most `max_chunk_size`.
+    ///
+    /// `min_chunk_size` is a packing preference only: hitting the max boundary
+    /// flushes the accumulator even when it is shorter than `min_chunk_size`,
+    /// and a short final run is emitted as its own chunk. The overflow block
+    /// that triggered the flush starts the next accumulator — blocks are never
+    /// re-parsed or duplicated. Nothing is discarded: #1368 removed the two
+    /// `>= min_chunk_size` discard guards, whose only "legal" survivor — a
+    /// final accumulator below a discard floor F — stays possible ONLY if F
+    /// were raised above zero. F is deliberately **0**: the post-prune 1-9
+    /// bucket is a minority of its own bytes (47/199 chrome) and 0.32% of the
+    /// corpus, so no floor had data support (see the pinned zero-loss tests).
     ///
     /// # Arguments
     ///
-    /// * `chunks` - Input chunks to merge
+    /// * `chunks` - Input blocks in document order
     ///
     /// # Returns
     ///
-    /// Merged chunks meeting minimum size requirement
+    /// Packed chunks; every input block appears verbatim in some output chunk
     fn merge_small_chunks(
         &self,
         chunks: SmallVec<[DocumentChunk; 8]>,
@@ -364,28 +386,29 @@ impl HtmlChunker {
                 current_content = chunk.content;
                 current_url = chunk.url;
                 current_title = chunk.title;
-            } else if current_content.len() + chunk.content.len() <= self.max_chunk_size {
-                // Merge if under max size
+            } else if current_content.len() + 1 + chunk.content.len() <= self.max_chunk_size {
+                // Merge if under max size; the +1 costs the joining space so
+                // a packed chunk never exceeds `max_chunk_size` (#1368).
                 current_content.push(' ');
                 current_content.push_str(&chunk.content);
             } else {
-                // Push current and start new
-                if current_content.len() >= self.min_chunk_size {
-                    merged.push(DocumentChunk::new(
-                        Uuid::new_v4(),
-                        current_url.clone(),
-                        current_title.clone(),
-                        current_content.clone(),
-                    ));
-                }
+                // Max boundary: flush as-is, even below `min_chunk_size`
+                // (#1368 — the old guard here discarded the accumulator).
+                merged.push(DocumentChunk::new(
+                    Uuid::new_v4(),
+                    current_url.clone(),
+                    current_title.clone(),
+                    current_content.clone(),
+                ));
                 current_content = chunk.content;
                 current_url = chunk.url;
                 current_title = chunk.title;
             }
         }
 
-        // Don't forget the last chunk
-        if !current_content.is_empty() && current_content.len() >= self.min_chunk_size {
+        // Don't forget the last chunk — a short final run is emitted as its
+        // own chunk instead of being dropped (#1368; F = 0 keeps this lossless).
+        if !current_content.is_empty() {
             merged.push(DocumentChunk::new(
                 Uuid::new_v4(),
                 current_url,
@@ -524,5 +547,652 @@ mod tests {
             assert_eq!(chunks[0].url, "https://example.com");
             assert_eq!(chunks[0].title, "Test Title");
         }
+    }
+}
+
+/// One-off measurement harness for #1368 (phase 1: quantify the text lost by
+/// the pass-1 `< min_chunk_size` drop in [`HtmlChunker::chunk`], before
+/// `merge_small_chunks` ever sees it). It replicates production's exact
+/// enumeration — optional `LegibleContentPruner` step (env
+/// `WEBFANG_1368_PRUNE=1`, the shape production really feeds `chunk()`), then
+/// `strip_html_tags` → `split('\n')` → non-empty-trim filter → `trim()` — and
+/// measures byte length with `str::len()` (the same metric as production).
+/// Since the phase-2 fix, pass 1 drops nothing (F = 0), so the replica's
+/// drop set is empty; the added `production_retention` section runs the REAL
+/// `chunk()` per page and counts trimmed source blocks missing from the
+/// concatenated chunk output — the exact end-to-end loss, no replica needed.
+/// It adds zero behaviour: it only reads crate-internal items that are
+/// already visible to this descendant module, and its tests are `#[ignore]`d,
+/// so it stays dormant in CI.
+#[cfg(all(test, feature = "ai"))]
+mod short_para_measurement {
+    use super::HtmlChunker;
+    use crate::infrastructure_ai::content_pruner::{ContentPruner, LegibleContentPruner};
+    use std::collections::BTreeMap;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    /// Dropped-paragraph length buckets under the 100-byte threshold.
+    const BUCKETS: [(&str, usize, usize); 6] = [
+        ("1-9", 1, 9),
+        ("10-29", 10, 29),
+        ("30-49", 30, 49),
+        ("50-69", 50, 69),
+        ("70-84", 70, 84),
+        ("85-99", 85, 99),
+    ];
+
+    /// Literal maximum length of a reported sample (chars, not bytes).
+    const SAMPLE_MAX_CHARS: usize = 90;
+
+    /// Literal samples reported for the post-prune 1-9-bucket composition
+    /// (#1368 phase 2 — the datum F is decided from).
+    const B19_SAMPLE_CAP: usize = 10;
+
+    struct Dropped {
+        len: usize,
+        text: String,
+    }
+
+    struct PageOutcome {
+        file: String,
+        url: String,
+        paras: usize,
+        chars_total: usize,
+        /// Block structure of the RAW html (only counted in prune mode; the
+        /// pruned input is never apples-to-apples with raw and the JSON must
+        /// say so explicitly).
+        paras_raw: usize,
+        chars_total_raw: usize,
+        dropped: Vec<Dropped>,
+        /// Trimmed source blocks missing from the REAL `chunk()` output
+        /// (end-to-end retention, computed via concatenated chunk contents —
+        /// packing joins with ' ' and the sentence bounder keeps whitespace,
+        /// so untouched content is always contiguous inside the concat).
+        blocks_missing: usize,
+        chars_missing: usize,
+    }
+
+    /// True when `NAME=1` in the environment.
+    fn env_flag(name: &str) -> bool {
+        std::env::var(name).is_ok_and(|v| v == "1")
+    }
+
+    /// Words that make a short block chrome when EVERY alphabetic word of the
+    /// block is in this list (nav/labels observed in the phase-1 and phase-2
+    /// sample review). Numbers never count as words.
+    const CHROME_WORDS: &[&str] = &[
+        "menu",
+        "search",
+        "page",
+        "edit",
+        "editar",
+        "edición",
+        "edits",
+        "source",
+        "history",
+        "views",
+        "read",
+        "talk",
+        "contributions",
+        "login",
+        "logout",
+        "sign",
+        "up",
+        "in",
+        "out",
+        "help",
+        "about",
+        "contact",
+        "donate",
+        "tools",
+        "language",
+        "languages",
+        "next",
+        "prev",
+        "previous",
+        "top",
+        "home",
+        "index",
+        "contents",
+        "category",
+        "categories",
+        "tag",
+        "tags",
+        "share",
+        "report",
+        "bug",
+        "show",
+        "hide",
+        "more",
+        "less",
+        "close",
+        "submit",
+        "skip",
+        "main",
+        "site",
+        "navigation",
+        "sidebar",
+        "footer",
+        "header",
+        "nav",
+        "article",
+        "articles",
+        "document",
+        "docs",
+        "version",
+        "versions",
+        "stable",
+        "beta",
+        "nightly",
+        "note",
+        "notes",
+        "warning",
+        "see",
+        "also",
+        "here",
+        "new",
+        "news",
+        "best",
+        "ask",
+        "reply",
+        "replies",
+        "vote",
+        "votes",
+        "by",
+        "action",
+        "actions",
+    ];
+
+    /// Suffixes that turn a single-token block into a file/domain chrome token
+    /// (site titles, repo names like `tokio.rs`).
+    const DOMAIN_SUFFIXES: &[&str] = &[
+        "rs", "py", "js", "ts", "go", "rb", "sh", "md", "html", "htm", "css", "xml", "json", "com",
+        "org", "net", "io", "dev", "app", "edu", "gov", "wiki", "xyz", "me", "tv", "cc",
+    ];
+
+    /// Deterministic class for a 1-9 byte block: UI chrome vs likely content.
+    /// Reviewed against the literal samples this module prints.
+    fn classify_1_9(text: &str) -> &'static str {
+        let t = text.trim();
+        // Pure punctuation (bullets, slashes, em-dashes): chrome.
+        if !t.chars().any(char::is_alphanumeric) {
+            return "boilerplate";
+        }
+        let lower = t.to_lowercase();
+        // Single-token file/domain (e.g. `tokio.rs`): chrome.
+        if !lower.contains(' ') {
+            if let Some(dot) = lower.rfind('.') {
+                let head = &lower[..dot];
+                let tail = &lower[dot + 1..];
+                let head_ok = !head.is_empty()
+                    && !head.ends_with('.')
+                    && head
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.');
+                let tail_ok = !tail.is_empty()
+                    && tail.len() <= 6
+                    && tail.chars().all(|c| c.is_ascii_alphabetic())
+                    && DOMAIN_SUFFIXES.contains(&tail);
+                if head_ok && tail_ok {
+                    return "boilerplate";
+                }
+            }
+        }
+        // Chrome label: every alphabetic word is a known nav word.
+        let mut saw_word = false;
+        for word in lower.split(|c: char| !c.is_alphabetic()) {
+            if word.is_empty() {
+                continue;
+            }
+            saw_word = true;
+            if !CHROME_WORDS.contains(&word) {
+                return "legit";
+            }
+        }
+        if saw_word {
+            "boilerplate"
+        } else {
+            // No letters at all but has digits (e.g. `2006`, `[1]`): treated as
+            // content unless review says otherwise.
+            "legit"
+        }
+    }
+
+    impl PageOutcome {
+        fn chars_dropped(&self) -> usize {
+            self.dropped.iter().map(|d| d.len).sum()
+        }
+        fn chars_lost_frac(&self) -> f64 {
+            safe_frac(self.chars_dropped(), self.chars_total)
+        }
+    }
+
+    fn safe_frac(num: usize, den: usize) -> f64 {
+        if den == 0 {
+            0.0
+        } else {
+            num as f64 / den as f64
+        }
+    }
+
+    fn list_html(dir: &Path) -> anyhow::Result<Vec<PathBuf>> {
+        let mut files: Vec<PathBuf> = fs::read_dir(dir)?
+            .filter_map(|entry| entry.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|ext| ext == "html"))
+            .collect();
+        files.sort();
+        if files.is_empty() {
+            return Err(std::io::Error::other(format!("no *.html files under {dir:?}")).into());
+        }
+        Ok(files)
+    }
+
+    fn load_urls(dir: &Path) -> BTreeMap<String, String> {
+        let mut map = BTreeMap::new();
+        let Ok(manifest) = fs::read_to_string(dir.join("manifest.tsv")) else {
+            return map;
+        };
+        for line in manifest.lines().skip(1) {
+            let cols: Vec<&str> = line.split('\t').collect();
+            if cols.len() >= 5 {
+                map.insert(cols[0].to_string(), cols[4].to_string());
+            }
+        }
+        map
+    }
+
+    /// Replicates `chunk()` pass-1 exactly, keeping the dropped pieces — since
+    /// the phase-2 fix pass 1 keeps EVERY non-empty block and the packer has
+    /// no discard floor (F = 0, #1368), so after the fix the drop replica is
+    /// legitimately empty for every page and the honest end-to-end number is
+    /// `production_retention`, measured through the REAL `chunk()`.
+    ///
+    /// With a pruner, feeds the pass-1 replica the EXACT input production
+    /// feeds it: `LegibleContentPruner::prune(html)`, falling back to the raw
+    /// html when the prune result is empty (same guard as
+    /// `SemanticCleanerImpl::clean` step 0, #1368 phase 2).
+    fn measure_page(
+        chunker: &HtmlChunker,
+        pruner: Option<&LegibleContentPruner>,
+        path: &Path,
+        urls: &BTreeMap<String, String>,
+    ) -> anyhow::Result<PageOutcome> {
+        let raw = fs::read_to_string(path)?;
+        let file = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_string();
+        let pruned = pruner.map(|p| {
+            let out = p.prune(&raw);
+            if out.is_empty() {
+                raw.clone()
+            } else {
+                out
+            }
+        });
+        let html = pruned.as_deref().unwrap_or(&raw);
+        let mut outcome = PageOutcome {
+            url: urls.get(&file).cloned().unwrap_or_default(),
+            file,
+            paras: 0,
+            chars_total: 0,
+            paras_raw: 0,
+            chars_total_raw: 0,
+            dropped: Vec::new(),
+            blocks_missing: 0,
+            chars_missing: 0,
+        };
+        if pruner.is_some() {
+            for paragraph in chunker
+                .strip_html_tags(&raw)
+                .split('\n')
+                .filter(|p| !p.trim().is_empty())
+            {
+                outcome.paras_raw += 1;
+                outcome.chars_total_raw += paragraph.trim().len();
+            }
+        }
+        // End-to-end retention through the real public API (works pre- and
+        // post-fix identically): a trimmed block is "missing" when it is not
+        // contiguous inside the concatenation of the chunk outputs. Packing
+        // joins with a plain space and `split_sentence_bounds` keeps the
+        // source whitespace, so retained content is always contiguous.
+        let emitted: String = chunker
+            .chunk(html)?
+            .into_iter()
+            .map(|c| c.content)
+            .collect::<Vec<String>>()
+            .concat();
+        let stripped = chunker.strip_html_tags(html);
+        for paragraph in stripped.split('\n').filter(|p| !p.trim().is_empty()) {
+            let trimmed = paragraph.trim();
+            outcome.paras += 1;
+            outcome.chars_total += trimmed.len();
+            if !emitted.contains(trimmed) {
+                outcome.blocks_missing += 1;
+                outcome.chars_missing += trimmed.len();
+            }
+        }
+        Ok(outcome)
+    }
+
+    fn dropped_in_bucket(outcomes: &[PageOutcome], (lo, hi): (usize, usize)) -> Vec<&Dropped> {
+        outcomes
+            .iter()
+            .flat_map(|p| p.dropped.iter())
+            .filter(|d| d.len >= lo && d.len <= hi)
+            .collect()
+    }
+
+    /// Deterministic even spread of `want` picks over `items` (endpoints
+    /// included); takes all items when fewer than `want`.
+    fn take_evenly<'a, T>(items: &[&'a T], want: usize) -> Vec<&'a T> {
+        let n = items.len().min(want);
+        if n == 0 {
+            return Vec::new();
+        }
+        if n == 1 || items.len() == n {
+            return items.iter().copied().take(n).collect();
+        }
+        (0..n)
+            .map(|k| items[k * (items.len() - 1) / (n - 1)])
+            .collect()
+    }
+
+    fn truncate_chars(text: &str, max_chars: usize) -> String {
+        text.chars().take(max_chars).collect()
+    }
+
+    fn json_escape(out: &mut String, s: &str) {
+        for ch in s.chars() {
+            match ch {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+                c => out.push(c),
+            }
+        }
+    }
+
+    fn json_per_page(out: &mut String, outcomes: &[PageOutcome]) {
+        out.push_str("  \"per_page\": [\n");
+        for (i, p) in outcomes.iter().enumerate() {
+            out.push_str("    {\"file\": \"");
+            json_escape(out, &p.file);
+            out.push_str("\", \"url\": \"");
+            json_escape(out, &p.url);
+            out.push_str(&format!(
+                "\", \"paras\": {}, \"paras_dropped\": {}, \"paras_dropped_frac\": {:.6}, \
+                 \"chars_total\": {}, \"chars_dropped\": {}, \"chars_lost_frac\": {:.6}}}",
+                p.paras,
+                p.dropped.len(),
+                safe_frac(p.dropped.len(), p.paras),
+                p.chars_total,
+                p.chars_dropped(),
+                p.chars_lost_frac(),
+            ));
+            if i + 1 < outcomes.len() {
+                out.push_str(",\n");
+            } else {
+                out.push('\n');
+            }
+        }
+        out.push_str("  ],\n");
+    }
+
+    fn json_global(out: &mut String, outcomes: &[PageOutcome]) {
+        let paras_total: usize = outcomes.iter().map(|p| p.paras).sum();
+        let paras_dropped: usize = outcomes.iter().map(|p| p.dropped.len()).sum();
+        let chars_total: usize = outcomes.iter().map(|p| p.chars_total).sum();
+        let chars_dropped: usize = outcomes.iter().map(PageOutcome::chars_dropped).sum();
+        out.push_str(&format!(
+            "  \"global\": {{\"pages_ok\": {}, \"paras_total\": {}, \"paras_dropped\": {}, \
+             \"paras_dropped_frac\": {:.6}, \"chars_total\": {}, \"chars_dropped\": {}, \
+             \"chars_dropped_frac\": {:.6}}},\n",
+            outcomes.len(),
+            paras_total,
+            paras_dropped,
+            safe_frac(paras_dropped, paras_total),
+            chars_total,
+            chars_dropped,
+            safe_frac(chars_dropped, chars_total),
+        ));
+    }
+
+    /// Raw-vs-pruned block structure comparison — pruned measurements are NOT
+    /// comparable to raw ones, and the JSON must state that (prune mode only).
+    fn json_prune_structure(out: &mut String, outcomes: &[PageOutcome]) {
+        let blocks_raw: usize = outcomes.iter().map(|p| p.paras_raw).sum();
+        let blocks_pruned: usize = outcomes.iter().map(|p| p.paras).sum();
+        let chars_raw: usize = outcomes.iter().map(|p| p.chars_total_raw).sum();
+        let chars_pruned: usize = outcomes.iter().map(|p| p.chars_total).sum();
+        out.push_str(&format!(
+            "  \"prune_structure\": {{\"blocks_raw\": {blocks_raw}, \"blocks_pruned\": {blocks_pruned}, \
+             \"chars_raw\": {chars_raw}, \"chars_pruned\": {chars_pruned}, \
+             \"note\": \"prune() rewrites the block structure (chrome blocks removed and text truncated); \
+              pruned numbers are not comparable to the raw-corpus measurement\"}},\n",
+        ));
+    }
+
+    /// Post-prune composition of the 1-9 byte bucket: the datum F is decided
+    /// from (phase 2 counts the classes over EVERY block in the bucket, and
+    /// reports up to B19_SAMPLE_CAP literal samples). Final JSON section —
+    /// emits no trailing comma.
+    fn json_bucket_1_9(out: &mut String, outcomes: &[PageOutcome]) {
+        let items = dropped_in_bucket(outcomes, (1, 9));
+        let chars_total: usize = outcomes.iter().map(|p| p.chars_total).sum();
+        let chars: usize = items.iter().map(|d| d.len).sum();
+        let mut boiler = 0_usize;
+        let mut boiler_chars = 0_usize;
+        for d in &items {
+            if classify_1_9(&d.text) == "boilerplate" {
+                boiler += 1;
+                boiler_chars += d.len;
+            }
+        }
+        out.push_str("  \"bucket_1_9_pruned\": {\"count\": ");
+        out.push_str(&format!("{}", items.len()));
+        out.push_str(", \"chars\": ");
+        out.push_str(&format!("{chars}"));
+        out.push_str(&format!(
+            ", \"frac_of_pruned_chars\": {:.6}",
+            safe_frac(chars, chars_total)
+        ));
+        out.push_str(", \"classes\": {\"boilerplate\": {\"count\": ");
+        out.push_str(&format!("{boiler}"));
+        out.push_str(&format!(", \"chars\": {boiler_chars}}}"));
+        out.push_str(", \"legit\": {\"count\": ");
+        out.push_str(&format!("{}", items.len() - boiler));
+        out.push_str(", \"chars\": ");
+        out.push_str(&format!("{}", chars - boiler_chars));
+        out.push_str("}}");
+        out.push_str(",\n    \"samples\": [\n");
+        let shown = items.len().min(B19_SAMPLE_CAP);
+        for (i, d) in take_evenly(&items, B19_SAMPLE_CAP).into_iter().enumerate() {
+            out.push_str("      {\"text\": \"");
+            json_escape(out, &truncate_chars(&d.text, SAMPLE_MAX_CHARS));
+            out.push_str(&format!(
+                "\", \"len_bytes\": {}, \"class\": \"{}\"}}",
+                d.len,
+                classify_1_9(&d.text)
+            ));
+            if i + 1 < shown {
+                out.push_str(",\n");
+            } else {
+                out.push('\n');
+            }
+        }
+        out.push_str("    ]}\n");
+    }
+
+    fn json_histogram(out: &mut String, outcomes: &[PageOutcome]) {
+        out.push_str("  \"histogram\": {");
+        for (i, (name, lo, hi)) in BUCKETS.iter().enumerate() {
+            let items = dropped_in_bucket(outcomes, (*lo, *hi));
+            let chars: usize = items.iter().map(|d| d.len).sum();
+            out.push_str(&format!(
+                "\"{name}\": {{\"count\": {}, \"chars\": {}}}",
+                items.len(),
+                chars
+            ));
+            if i + 1 < BUCKETS.len() {
+                out.push_str(", ");
+            }
+        }
+        out.push_str("},\n");
+    }
+
+    fn json_worst5(out: &mut String, outcomes: &[PageOutcome]) {
+        let mut ranked: Vec<&PageOutcome> = outcomes.iter().collect();
+        ranked.sort_by(|a, b| b.chars_lost_frac().total_cmp(&a.chars_lost_frac()));
+        out.push_str("  \"worst5\": [\n");
+        for (i, p) in ranked.iter().take(5).enumerate() {
+            out.push_str("    {\"file\": \"");
+            json_escape(out, &p.file);
+            out.push_str("\", \"url\": \"");
+            json_escape(out, &p.url);
+            out.push_str(&format!(
+                "\", \"chars_lost_frac\": {:.6}}}",
+                p.chars_lost_frac()
+            ));
+            if i + 1 < ranked.len().min(5) {
+                out.push_str(",\n");
+            } else {
+                out.push('\n');
+            }
+        }
+        out.push_str("  ],\n");
+    }
+
+    fn json_samples(out: &mut String, outcomes: &[PageOutcome], trailing_comma: bool) {
+        out.push_str("  \"samples\": [\n");
+        let mut all: Vec<(&str, &Dropped)> = Vec::new();
+        for bucket in ["1-9", "50-69", "85-99"] {
+            let (lo, hi) = BUCKETS
+                .iter()
+                .find(|(name, _, _)| *name == bucket)
+                .map(|&(_, lo, hi)| (lo, hi))
+                .unwrap_or((0, 0));
+            for d in take_evenly(&dropped_in_bucket(outcomes, (lo, hi)), 5) {
+                all.push((bucket, d));
+            }
+        }
+        for (i, (bucket, d)) in all.iter().enumerate() {
+            out.push_str("    {\"text\": \"");
+            json_escape(out, &truncate_chars(&d.text, SAMPLE_MAX_CHARS));
+            out.push_str(&format!(
+                "\", \"len_bytes\": {}, \"bucket\": \"{bucket}\", \"class\": \"pending_manual\"}}",
+                d.len
+            ));
+            if i + 1 < all.len() {
+                out.push_str(",\n");
+            } else {
+                out.push('\n');
+            }
+        }
+        if trailing_comma {
+            out.push_str("  ],\n");
+        } else {
+            out.push_str("  ]\n");
+        }
+    }
+
+    fn render_json(
+        outcomes: &[PageOutcome],
+        dir: &Path,
+        min_chunk_size: usize,
+        prune: bool,
+    ) -> String {
+        let mut out = String::from("{\n");
+        out.push_str("  \"corpus_dir\": \"");
+        json_escape(&mut out, &dir.display().to_string());
+        out.push_str(&format!(
+            "\",\n  \"min_chunk_size\": {min_chunk_size},\n  \"prune\": {prune},\n"
+        ));
+        if prune {
+            json_prune_structure(&mut out, outcomes);
+        }
+        json_per_page(&mut out, outcomes);
+        json_global(&mut out, outcomes);
+        json_retention(&mut out, outcomes);
+        json_histogram(&mut out, outcomes);
+        json_worst5(&mut out, outcomes);
+        json_samples(&mut out, outcomes, prune);
+        if prune {
+            json_bucket_1_9(&mut out, outcomes);
+        }
+        out.push('}');
+        out
+    }
+
+    /// End-to-end truth through the real public `chunk()`: trimmed source
+    /// blocks that did not survive contiguously into the concatenated chunk
+    /// output (#1368 post-fix headline metric).
+    fn json_retention(out: &mut String, outcomes: &[PageOutcome]) {
+        let blocks_total: usize = outcomes.iter().map(|p| p.paras).sum();
+        let blocks_missing: usize = outcomes.iter().map(|p| p.blocks_missing).sum();
+        let chars_total: usize = outcomes.iter().map(|p| p.chars_total).sum();
+        let chars_missing: usize = outcomes.iter().map(|p| p.chars_missing).sum();
+        out.push_str(&format!(
+            "  \"production_retention\": {{\"blocks_total\": {blocks_total}, \
+             \"blocks_missing\": {blocks_missing}, \"chars_total\": {chars_total}, \
+             \"chars_missing\": {chars_missing}, \"missing_frac\": {:.6}}},\n",
+            safe_frac(chars_missing, chars_total),
+        ));
+    }
+
+    /// Phase-2 review aid: with prune mode on, print EVERY post-prune 1-9 byte
+    /// block with its automatic class so the sample review stays auditable.
+    fn dump_bucket_1_9(outcomes: &[PageOutcome]) {
+        for d in dropped_in_bucket(outcomes, (1, 9)) {
+            println!(
+                "[dump19] class={} len={} text={:?}",
+                classify_1_9(&d.text),
+                d.len,
+                d.text
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "one-off quantification #1368; needs WEBFANG_1368_CORPUS dir"]
+    fn measure_short_paragraph_loss_on_real_corpus() -> anyhow::Result<()> {
+        let dir = PathBuf::from(std::env::var("WEBFANG_1368_CORPUS")?);
+        let prune = env_flag("WEBFANG_1368_PRUNE");
+        let urls = load_urls(&dir);
+        let chunker = HtmlChunker::new();
+        let min = chunker.min_chunk_size();
+        let pruner = prune.then(LegibleContentPruner::standard);
+        let mut outcomes = Vec::new();
+        for path in list_html(&dir)? {
+            outcomes.push(measure_page(&chunker, pruner.as_ref(), &path, &urls)?);
+        }
+        if prune {
+            dump_bucket_1_9(&outcomes);
+        }
+        let json = render_json(&outcomes, &dir, min, prune);
+        println!("{json}");
+        if let Ok(target) = std::env::var("WEBFANG_1368_OUT") {
+            let target = PathBuf::from(target);
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(&target, json.as_bytes())?;
+            println!("wrote {target:?}");
+        }
+        // Sanity: the harness must at least never lose more than it counts.
+        for p in &outcomes {
+            assert!(
+                p.chars_dropped() <= p.chars_total,
+                "inconsistent page {}",
+                p.file
+            );
+        }
+        Ok(())
     }
 }

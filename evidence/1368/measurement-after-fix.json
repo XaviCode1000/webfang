@@ -1,0 +1,42 @@
+{
+  "corpus_dir": "/home/xavi/.cache/webfang-1368/corpus",
+  "min_chunk_size": 100,
+  "prune": true,
+  "prune_structure": {"blocks_raw": 5004, "blocks_pruned": 2129, "chars_raw": 1827471, "chars_pruned": 357020, "note": "prune() rewrites the block structure (chrome blocks removed and text truncated); pruned numbers are not comparable to the raw-corpus measurement"},
+  "per_page": [
+    {"file": "01-enwiki-web-scraping.html", "url": "https://en.wikipedia.org/wiki/Web_scraping", "paras": 121, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 26449, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "02-enwiki-full-text-search.html", "url": "https://en.wikipedia.org/wiki/Full_text_search", "paras": 80, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 10874, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "03-mdn-http.html", "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP", "paras": 86, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 9656, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "04-pydocs-functions.html", "url": "https://docs.python.org/3/library/functions.html", "paras": 643, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 76894, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "05-rustbook-control-flow.html", "url": "https://doc.rust-lang.org/book/ch03-05-control-flow.html", "paras": 120, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 20064, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "06-man7-socket.html", "url": "https://man7.org/linux/man-pages/man7/socket.7.html", "paras": 16, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 40736, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "07-guardian-anthropic-ai.html", "url": "https://www.theguardian.com/technology/2026/sep/10/anthropic-researchers-warn-ai-musk", "paras": 24, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 4750, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "08-guardian-instagram-algorithm.html", "url": "https://www.theguardian.com/media/2026/sep/11/i-turned-off-my-instagram-algorithm-opt-out-social-media-reforms-australia", "paras": 22, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 5708, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "09-npr-hiv-brazil.html", "url": "https://www.npr.org/2026/09/12/g-s1-142404/hiv-aids-brazil-stigma", "paras": 56, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 12193, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "10-dw-gold-banks.html", "url": "https://www.dw.com/en/why-are-european-banks-moving-gold-out-of-united-states/a-79213013", "paras": 31, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 6092, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "11-hn-thread-49619848.html", "url": "https://news.ycombinator.com/item?id=49619848", "paras": 7, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 1383, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "12-hn-thread-49625056.html", "url": "https://news.ycombinator.com/item?id=49625056", "paras": 30, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 6596, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "13-rustforum-capture-syntax.html", "url": "https://users.rust-lang.org/t/understanding-precise-capture-syntax-and-constraints", "paras": 30, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 5210, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "14-github-tokio.html", "url": "https://github.com/tokio-rs/tokio", "paras": 75, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 6372, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "15-github-reqwest.html", "url": "https://github.com/seanmonstar/reqwest", "paras": 25, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 1793, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "16-overreacted-useeffect.html", "url": "https://overreacted.io/a-complete-guide-to-useeffect/", "paras": 354, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 64315, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "17-eswiki-nlp.html", "url": "https://es.wikipedia.org/wiki/Procesamiento_de_lenguajes_naturales", "paras": 72, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 12387, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "18-jvns-django.html", "url": "https://jvns.ca/blog/2026/07/21/more-nice-django-things/", "paras": 57, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 9440, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "19-enwiki-info-retrieval.html", "url": "https://en.wikipedia.org/wiki/Information_retrieval", "paras": 280, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 36108, "chars_dropped": 0, "chars_lost_frac": 0.000000}
+  ],
+  "global": {"pages_ok": 19, "paras_total": 2129, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 357020, "chars_dropped": 0, "chars_dropped_frac": 0.000000},
+  "production_retention": {"blocks_total": 2129, "blocks_missing": 0, "chars_total": 357020, "chars_missing": 0, "missing_frac": 0.000000},
+  "histogram": {"1-9": {"count": 0, "chars": 0}, "10-29": {"count": 0, "chars": 0}, "30-49": {"count": 0, "chars": 0}, "50-69": {"count": 0, "chars": 0}, "70-84": {"count": 0, "chars": 0}, "85-99": {"count": 0, "chars": 0}},
+  "worst5": [
+    {"file": "01-enwiki-web-scraping.html", "url": "https://en.wikipedia.org/wiki/Web_scraping", "chars_lost_frac": 0.000000},
+    {"file": "02-enwiki-full-text-search.html", "url": "https://en.wikipedia.org/wiki/Full_text_search", "chars_lost_frac": 0.000000},
+    {"file": "03-mdn-http.html", "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP", "chars_lost_frac": 0.000000},
+    {"file": "04-pydocs-functions.html", "url": "https://docs.python.org/3/library/functions.html", "chars_lost_frac": 0.000000},
+    {"file": "05-rustbook-control-flow.html", "url": "https://doc.rust-lang.org/book/ch03-05-control-flow.html", "chars_lost_frac": 0.000000}
+  ],
+  "samples": [
+  ],
+  "bucket_1_9_pruned": {"count": 0, "chars": 0, "frac_of_pruned_chars": 0.000000, "classes": {"boilerplate": {"count": 0, "chars": 0}, "legit": {"count": 0, "chars": 0}},
+    "samples": [
+    ]}
+}

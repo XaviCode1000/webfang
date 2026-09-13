@@ -1,0 +1,38 @@
+{
+  "corpus_dir": "/home/xavi/.cache/webfang-1368/corpus",
+  "min_chunk_size": 100,
+  "prune": false,
+  "per_page": [
+    {"file": "01-enwiki-web-scraping.html", "url": "https://en.wikipedia.org/wiki/Web_scraping", "paras": 321, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 44147, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "02-enwiki-full-text-search.html", "url": "https://en.wikipedia.org/wiki/Full_text_search", "paras": 236, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 29794, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "03-mdn-http.html", "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP", "paras": 649, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 71621, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "04-pydocs-functions.html", "url": "https://docs.python.org/3/library/functions.html", "paras": 714, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 80433, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "05-rustbook-control-flow.html", "url": "https://doc.rust-lang.org/book/ch03-05-control-flow.html", "paras": 120, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 20064, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "06-man7-socket.html", "url": "https://man7.org/linux/man-pages/man7/socket.7.html", "paras": 26, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 41719, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "07-guardian-anthropic-ai.html", "url": "https://www.theguardian.com/technology/2026/sep/10/anthropic-researchers-warn-ai-musk", "paras": 261, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 276346, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "08-guardian-instagram-algorithm.html", "url": "https://www.theguardian.com/media/2026/sep/11/i-turned-off-my-instagram-algorithm-opt-out-social-media-reforms-australia", "paras": 268, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 319581, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "09-npr-hiv-brazil.html", "url": "https://www.npr.org/2026/09/12/g-s1-142404/hiv-aids-brazil-stigma", "paras": 179, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 28545, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "10-dw-gold-banks.html", "url": "https://www.dw.com/en/why-are-european-banks-moving-gold-out-of-united-states/a-79213013", "paras": 124, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 153771, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "11-hn-thread-49619848.html", "url": "https://news.ycombinator.com/item?id=49619848", "paras": 47, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 5024, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "12-hn-thread-49625056.html", "url": "https://news.ycombinator.com/item?id=49625056", "paras": 78, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 8211, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "13-rustforum-capture-syntax.html", "url": "https://users.rust-lang.org/t/understanding-precise-capture-syntax-and-constraints", "paras": 177, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 22468, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "14-github-tokio.html", "url": "https://github.com/tokio-rs/tokio", "paras": 307, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 67602, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "15-github-reqwest.html", "url": "https://github.com/seanmonstar/reqwest", "paras": 219, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 38937, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "16-overreacted-useeffect.html", "url": "https://overreacted.io/a-complete-guide-to-useeffect/", "paras": 373, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 513372, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "17-eswiki-nlp.html", "url": "https://es.wikipedia.org/wiki/Procesamiento_de_lenguajes_naturales", "paras": 263, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 25404, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "18-jvns-django.html", "url": "https://jvns.ca/blog/2026/07/21/more-nice-django-things/", "paras": 82, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 14962, "chars_dropped": 0, "chars_lost_frac": 0.000000},
+    {"file": "19-enwiki-info-retrieval.html", "url": "https://en.wikipedia.org/wiki/Information_retrieval", "paras": 560, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 65470, "chars_dropped": 0, "chars_lost_frac": 0.000000}
+  ],
+  "global": {"pages_ok": 19, "paras_total": 5004, "paras_dropped": 0, "paras_dropped_frac": 0.000000, "chars_total": 1827471, "chars_dropped": 0, "chars_dropped_frac": 0.000000},
+  "production_retention": {"blocks_total": 5004, "blocks_missing": 0, "chars_total": 1827471, "chars_missing": 0, "missing_frac": 0.000000},
+  "histogram": {"1-9": {"count": 0, "chars": 0}, "10-29": {"count": 0, "chars": 0}, "30-49": {"count": 0, "chars": 0}, "50-69": {"count": 0, "chars": 0}, "70-84": {"count": 0, "chars": 0}, "85-99": {"count": 0, "chars": 0}},
+  "worst5": [
+    {"file": "01-enwiki-web-scraping.html", "url": "https://en.wikipedia.org/wiki/Web_scraping", "chars_lost_frac": 0.000000},
+    {"file": "02-enwiki-full-text-search.html", "url": "https://en.wikipedia.org/wiki/Full_text_search", "chars_lost_frac": 0.000000},
+    {"file": "03-mdn-http.html", "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP", "chars_lost_frac": 0.000000},
+    {"file": "04-pydocs-functions.html", "url": "https://docs.python.org/3/library/functions.html", "chars_lost_frac": 0.000000},
+    {"file": "05-rustbook-control-flow.html", "url": "https://doc.rust-lang.org/book/ch03-05-control-flow.html", "chars_lost_frac": 0.000000}
+  ],
+  "samples": [
+  ]
+}
