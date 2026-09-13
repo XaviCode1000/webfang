@@ -20,12 +20,16 @@
 //! SSRF entry guard — bypass entry + resolver exactly as
 //! `discovery_capture_1229` does.
 
+use std::process::{ExitCode, Termination};
 use std::sync::Arc;
 
 use webfang_core::application::batch::{BatchJob, BatchProcessor};
 use webfang_core::application::crawl_options::CrawlOptions;
 use webfang_core::application::crawler::content_sink::CrawlContentSink;
 use webfang_core::application::crawler::InMemoryContentSink;
+use webfang_core::cli::error::{
+    empty_discovery_exit_when_seed_refused, CliExit, EXIT_EMPTY_DISCOVERY,
+};
 use webfang_core::cli::url_discovery::discover_urls_unified;
 use webfang_core::domain::persistence::PersistenceMode;
 use webfang_core::domain::{CrawlerConfig, ValidUrl};
@@ -350,4 +354,77 @@ async fn discovery_plain_run_rejects_loopback_seed_with_ssrf_guard_on() {
         seen.is_empty(),
         "rejection is pre-socket: the mock must receive zero requests, got {seen:?}"
     );
+}
+
+/// #1381 — the crossed contract: the library stays quiet, the CLI stops lying.
+///
+/// `discovery_plain_run_rejects_loopback_seed_with_ssrf_guard_on` above pins the
+/// half that must NOT change: a seed the guard cuts is an `Ok` with zero URLs,
+/// because an individual refused URL is a legitimate crawl skip. This pins the
+/// half that must: the surface that consumes that result can tell a refusal from
+/// an empty site, so a guard-refused preview maps to `CliExit::EmptyDiscovery`
+/// (exit 2, the null-result code the sitemap arms already use) instead of the
+/// success it used to report.
+///
+/// No `EnvGuard` on the first half — both bypass envs stay at their production
+/// default (unset → guards armed), which is what makes the refusal real.
+#[tokio::test]
+async fn issue_1381_guard_refused_preview_maps_to_exit_2_while_the_library_stays_ok() {
+    let server = MockServer::start().await;
+    mount_page_and_robots(&server).await;
+    let base = server.uri();
+    let seed_str = format!("{base}/");
+    let seed_url = url::Url::parse(&seed_str).expect("seed must parse");
+    let config = CrawlerConfig::builder(seed_url.clone())
+        .max_depth(1)
+        .max_pages(10)
+        .ignore_robots(false)
+        .timeout_secs(5)
+        .build();
+
+    let output = discover_urls_unified(
+        config,
+        &plain_opts(&seed_str),
+        &PersistenceMode::Disabled,
+        None,
+    )
+    .await
+    .expect("the armed guard cuts the seed pre-socket, so the run still completes Ok");
+
+    assert!(
+        output.urls.is_empty(),
+        "the library contract is unchanged: Ok with zero URLs, got {:?}",
+        output.urls
+    );
+
+    // The CLI boundary reads the same verdict and reports the null result.
+    let exit = empty_discovery_exit_when_seed_refused(&seed_url)
+        .expect("a guard-refused seed must not be previewed as a clean zero");
+    let CliExit::EmptyDiscovery(reason) = &exit else {
+        panic!("a policy refusal is a null result (2), never a network failure: {exit:?}");
+    };
+    assert!(
+        reason.contains("prohibida")
+            && reason.contains(webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV)
+            // The resolver hatch is still `pub(crate)` in the domain guard, so this
+            // target names its canonical string the way `SSRF_BYPASS` above does.
+            && reason.contains("WEBFANG_DISABLE_SSRF_RESOLVER"),
+        "the refusal must name its cause and both hatches, got: {reason}"
+    );
+    assert_eq!(
+        exit.report(),
+        ExitCode::from(EXIT_EMPTY_DISCOVERY),
+        "exit-code contract for a guard-refused preview"
+    );
+
+    // And it stays silent for an operator who already armed the documented hatch:
+    // there the guard never refused anything, so exit 2 would be a new lie.
+    {
+        let _env = webfang_test_utils::EnvGuard::with(&SSRF_BYPASS);
+        assert_eq!(
+            empty_discovery_exit_when_seed_refused(&seed_url),
+            None,
+            "an opted-out operator keeps the plain zero-URL preview"
+        );
+    }
 }

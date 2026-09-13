@@ -5,6 +5,7 @@
 
 use std::process::ExitCode;
 use thiserror::Error;
+use url::Url;
 
 use crate::error::{ErrorClass, ScraperError};
 
@@ -273,6 +274,36 @@ pub fn empty_discovery_exit_for(error: &ScraperError) -> Option<CliExit> {
         ScraperError::SitemapEmpty | ScraperError::SitemapNotFound(_)
     )
     .then(|| CliExit::EmptyDiscovery(format!("no URLs discovered: {error}")))
+}
+
+/// Typed override — a `--dry-run` whose seed the SSRF entry guard refuses →
+/// [`CliExit::EmptyDiscovery`] (exit 2).
+///
+/// The guard cuts a forbidden literal **before any socket opens**, so discovery
+/// completes `Ok` with zero URLs and the preview used to print
+/// `Dry-run: 0 URL(s) would be scraped:` and exit 0 — a false clean for
+/// automation, indistinguishable from a site that genuinely carries no links
+/// (#1381). Exit 2 is the same code the sitemap null-result arms already
+/// return through [`empty_discovery_exit_for`]: a null result, not a transient
+/// network failure, so it is deliberately NOT 69.
+///
+/// Only the literal-entry layer is named here. A hostname whose answer set is
+/// refused at dial time by the validating resolver stays `None`: to the CLI its
+/// error is indistinguishable from a real DNS failure, and claiming an SSRF
+/// refusal it cannot prove would trade one misleading message for another. That
+/// residue is documented in `docs/ssrf-layers.md`.
+#[must_use]
+pub fn empty_discovery_exit_when_seed_refused(seed: &Url) -> Option<CliExit> {
+    crate::domain::ssrf_guard::seed_guard_refusal(seed).map(|refusal| {
+            CliExit::EmptyDiscovery(format!(
+                "{refusal}. La vista previa no descubrió URLs porque el guard cortó la semilla antes \
+                 de abrir conexión. Para un destino interno de confianza: \
+                 {entry}=1 (IP literal) y {resolver}=1 (nombre que resuelve a una dirección interna). \
+                 Capas y variables: docs/ssrf-layers.md",
+                entry = crate::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+                resolver = crate::domain::ssrf_guard::DISABLE_VALIDATING_RESOLVER_ENV,
+            ))
+        })
 }
 
 /// Typed override — config errors ([`ScraperError::Config`] /
@@ -688,6 +719,75 @@ mod tests {
             std::io::Error::other("reset"),
         ));
         assert_eq!(empty_discovery_exit_for(&err), None);
+    }
+
+    /// #1381: a seed the entry guard cuts pre-socket must surface as the
+    /// documented null-result code (2), naming the guard's own Spanish cause
+    /// and BOTH members of the operator hatch pair.
+    #[test]
+    fn issue_1381_refused_literal_seed_maps_to_empty_discovery_2() {
+        let _guard = webfang_test_utils::EnvGuard::clean(&[
+            crate::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+        ]);
+        for raw in [
+            "http://127.0.0.1:8080/",
+            "http://10.0.0.5/",
+            "http://169.254.169.254/latest/meta-data/",
+        ] {
+            let seed = Url::parse(raw).expect("test URLs always parse");
+            let exit = empty_discovery_exit_when_seed_refused(&seed)
+                .unwrap_or_else(|| panic!("{raw} must map to a null-result exit"));
+            let CliExit::EmptyDiscovery(message) = exit else {
+                panic!("a policy refusal must not escalate to a network failure");
+            };
+            assert!(
+                message.contains("prohibida")
+                    && message.contains(crate::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV)
+                    && message.contains(crate::domain::ssrf_guard::DISABLE_VALIDATING_RESOLVER_ENV),
+                "message must name the cause and both hatches, got: {message}"
+            );
+            assert_eq!(
+                CliExit::EmptyDiscovery(message).report(),
+                ExitCode::from(EXIT_EMPTY_DISCOVERY),
+                "exit-code contract for a guard-refused preview"
+            );
+        }
+    }
+
+    /// The override must stay quiet for everything the entry guard does not
+    /// refuse: public literals and hostnames alike. A hostname is cut by the
+    /// connect-time resolver, whose error the CLI cannot tell from a real DNS
+    /// failure — claiming SSRF there would be a new lie (#1381 note).
+    #[test]
+    fn issue_1381_public_and_hostname_seeds_keep_the_null_result_quiet() {
+        let _guard = webfang_test_utils::EnvGuard::clean(&[
+            crate::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+        ]);
+        for raw in ["https://example.com/", "https://93.184.216.34/"] {
+            let seed = Url::parse(raw).expect("test URLs always parse");
+            assert_eq!(
+                empty_discovery_exit_when_seed_refused(&seed),
+                None,
+                "{raw} is not an entry-guard refusal"
+            );
+        }
+    }
+
+    /// Zero false positives: with the documented hatch armed the guard does not
+    /// refuse the seed, so an empty preview stays the empty preview it always
+    /// was (exit 0).
+    #[test]
+    fn issue_1381_entry_guard_hatch_silences_the_refusal() {
+        let _guard = webfang_test_utils::EnvGuard::with(&[(
+            crate::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+            "1",
+        )]);
+        let seed = Url::parse("http://127.0.0.1:8080/").expect("test URL always parses");
+        assert_eq!(
+            empty_discovery_exit_when_seed_refused(&seed),
+            None,
+            "an opted-out operator must not be told the seed was refused"
+        );
     }
 
     #[test]
