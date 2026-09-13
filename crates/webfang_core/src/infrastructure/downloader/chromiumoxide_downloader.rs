@@ -12,7 +12,7 @@ use {
     chromiumoxide::browser::HeadlessMode,
     chromiumoxide::cdp::browser_protocol::network::{
         CookieParam, EnableParams as NetworkEnableParams, EventLoadingFailed, EventLoadingFinished,
-        EventRequestWillBeSent, SetCookiesParams,
+        EventRequestWillBeSent, RequestId, SetCookiesParams,
     },
     chromiumoxide::{listeners::EventStream, Browser, BrowserConfig, Page},
     futures::StreamExt,
@@ -128,6 +128,60 @@ struct IdleStreams {
     loading_failed: EventStream<EventLoadingFailed>,
 }
 
+/// Reorder-proof in-flight bookkeeping for the network-idle settle
+/// (issue #1367).
+///
+/// CDP delivers the request lifecycle over three independent event
+/// streams whose relative poll order inside one `tokio::select!` is not
+/// guaranteed: a `loadingFinished`/`loadingFailed` can be observed before
+/// the `requestWillBeSent` of the same `requestId`. A scalar counter
+/// cannot survive that reorder (it discards the orphan completion and the
+/// later `sent` leaks +1 forever); the request-id pairing below nets each
+/// pair to zero in any arrival order:
+///
+/// - `pending`: requests whose `sent` was observed and whose completion
+///   has not.
+/// - `completed_unseen`: completions whose `sent` has not been observed
+///   yet (the finish-first reorder, and finishes of requests that started
+///   before `Network.enable`).
+///
+/// A CDP `requestId` has exactly one eventual completion; redirect
+/// re-sends reuse the id and deduplicate by set semantics. Quiet is
+/// gated ONLY by `pending`: a completion without a send describes a
+/// request that already finished, never one that is pending.
+#[cfg(feature = "chromium")]
+#[derive(Default)]
+struct InFlightTracker {
+    pending: std::collections::HashSet<RequestId>,
+    completed_unseen: std::collections::HashSet<RequestId>,
+}
+
+#[cfg(feature = "chromium")]
+impl InFlightTracker {
+    /// Observe a `Network.requestWillBeSent` for `request_id`. Duplicate
+    /// ids (redirect re-sends) are deduplicated by set semantics.
+    fn on_sent(&mut self, request_id: RequestId) {
+        if !self.completed_unseen.remove(&request_id) {
+            self.pending.insert(request_id);
+        }
+    }
+
+    /// Observe a completion (`Network.loadingFinished` or
+    /// `Network.loadingFailed`) for `request_id`. When the matching `sent`
+    /// has not been polled yet, remember the completion so the late `sent`
+    /// nets to zero instead of leaking a phantom pending entry.
+    fn on_completion(&mut self, request_id: RequestId) {
+        if !self.pending.remove(&request_id) {
+            self.completed_unseen.insert(request_id);
+        }
+    }
+
+    /// No request is in flight: the quiet window can close.
+    fn is_quiet(&self) -> bool {
+        self.pending.is_empty()
+    }
+}
+
 impl ChromiumoxideDownloader {
     #[cfg(feature = "chromium")]
     pub(crate) fn new(
@@ -219,7 +273,7 @@ impl ChromiumoxideDownloader {
             waited_ms: waited_ms_since(started),
             idle_reached: Some(idle_reached),
         };
-        let mut streams = match streams {
+        let streams = match streams {
             Some(streams) => streams,
             None => {
                 tracing::warn!(url = %url, "idle detection unavailable — degrading");
@@ -227,7 +281,12 @@ impl ChromiumoxideDownloader {
             },
         };
         let ceiling = Duration::from_secs(self.timeout_secs.max(1));
-        match tokio::time::timeout(ceiling, Self::drain_until_quiet(&mut streams)).await {
+        match tokio::time::timeout(
+            ceiling,
+            Self::drain_until_quiet(streams, PostLoadWait::IDLE_WINDOW),
+        )
+        .await
+        {
             Ok(()) => finished(true),
             Err(_) => {
                 tracing::warn!(url = %url, "network-idle not reached before ceiling");
@@ -294,37 +353,64 @@ impl ChromiumoxideDownloader {
         }
     }
 
+    /// Network-idle drain over the three CDP network streams, pairing
+    /// requests by `request_id` through [`InFlightTracker`] instead of
+    /// counting events (issue #1367).
+    ///
+    /// The three streams are independent unbounded channels drained by one
+    /// `tokio::select!`: cross-stream delivery order is NOT guaranteed, so
+    /// a `loadingFinished` may be polled before the `requestWillBeSent` of
+    /// the same request. The old scalar counter discarded that orphan
+    /// completion and then leaked the later `sent` forever — the drain
+    /// never went quiet and the idle settle silently burned its full
+    /// ceiling (30s under the default engine timeout) on a page that was
+    /// already loaded. [`InFlightTracker`] is reorder-proof by request-id
+    /// pairing.
+    ///
+    /// Streams that terminate (the event sender halves were dropped —
+    /// e.g. the browser died mid-settle) disable their `select!` branch.
+    /// Without the guard a closed channel returns `Ready(None)` on every
+    /// poll, `select!` keeps re-picking it, the fresh quiet-window sleep
+    /// never elapses, and the task monopolizes the runtime thread — the
+    /// outer [`Self::settle_idle`] ceiling cannot even observe its own
+    /// deadline. A hung fetch, not a bounded one.
+    ///
+    /// Quiet = the tracker holds no pending request for one full
+    /// `idle_window` tick.
     #[cfg(feature = "chromium")]
-    async fn drain_until_quiet(streams: &mut IdleStreams) {
-        let mut in_flight: u64 = 0;
+    async fn drain_until_quiet(streams: IdleStreams, idle_window: Duration) {
+        use futures::stream::StreamExt;
+        let mut sent = streams.will_be_sent;
+        let mut finished = streams.loading_finished;
+        let mut failed = streams.loading_failed;
+        // Branch-termination guards: a closed stream would otherwise return
+        // `Ready(None)` on every poll, livelocking `select!` so the fresh
+        // quiet-window sleep re-created per iteration never elapses (a
+        // monopolized runtime thread, not even a bounded ceiling).
+        let (mut sent_active, mut finished_active, mut failed_active) = (true, true, true);
+        let mut tracker = InFlightTracker::default();
         loop {
             tokio::select! {
-                event = streams.will_be_sent.next() => {
-                    if event.is_some() {
-                        in_flight = in_flight.saturating_add(1);
+                event = sent.next(), if sent_active => {
+                    match event {
+                        Some(event) => tracker.on_sent(event.request_id.clone()),
+                        None => sent_active = false,
                     }
                 },
-                    event = streams.loading_finished.next() => {
-                        if event.is_some() {
-                            // Orphan completion: started before subscription.
-                            // Observed activity — restart the quiet window.
-                            if in_flight == 0 {
-                                continue;
-                            }
-                            in_flight -= 1;
-                        }
-                    },
-                    event = streams.loading_failed.next() => {
-                        if event.is_some() {
-                            // Orphan completion: see above.
-                            if in_flight == 0 {
-                                continue;
-                            }
-                            in_flight -= 1;
-                        }
-                    },
-                () = tokio::time::sleep(PostLoadWait::IDLE_WINDOW) => {
-                    if in_flight == 0 {
+                event = finished.next(), if finished_active => {
+                    match event {
+                        Some(event) => tracker.on_completion(event.request_id.clone()),
+                        None => finished_active = false,
+                    }
+                },
+                event = failed.next(), if failed_active => {
+                    match event {
+                        Some(event) => tracker.on_completion(event.request_id.clone()),
+                        None => failed_active = false,
+                    }
+                },
+                () = tokio::time::sleep(idle_window) => {
+                    if tracker.is_quiet() {
                         break;
                     }
                 },
@@ -527,6 +613,270 @@ mod tests {
         assert_eq!(dl.memory_cost(), 200_000_000);
     }
 
+    /// #1367 regression kit.
+    ///
+    /// Two layers:
+    ///
+    /// 1. [`InFlightTracker`] unit tests — pure request-id pairing, fully
+    ///    deterministic, pinning the cross-stream reorder that made the old
+    ///    scalar counter leak (finish polled before send) and the
+    ///    closed-settle semantics (redirect dedup, orphan completion,
+    ///    genuine pending request).
+    /// 2. [`drain_until_quiet`] loop tests over synthetic `IdleStreams` —
+    ///    unbounded channels with the sender halves held alive for the
+    ///    whole test (dropping them closes the stream — that case is
+    ///    pinned by the closed-stream regression below).
+    #[cfg(feature = "chromium")]
+    mod drain_tests {
+        use super::super::{ChromiumoxideDownloader, IdleStreams, InFlightTracker, PostLoadWait};
+        use chromiumoxide::cdp::browser_protocol::network::{
+            EventLoadingFailed, EventLoadingFinished, EventRequestWillBeSent, RequestId,
+            ResourceType,
+        };
+        use chromiumoxide::listeners::EventStream;
+        use futures::channel::mpsc;
+        use futures::SinkExt;
+        use std::sync::Arc;
+
+        type EventTx = mpsc::UnboundedSender<Arc<dyn chromiumoxide::cdp::Event>>;
+
+        /// All three sender halves; every drain-loop test holds this alive
+        /// until the drain is done, so open channels never masquerade as
+        /// closed streams.
+        struct Senders {
+            sent: EventTx,
+            finished: EventTx,
+            failed: EventTx,
+        }
+
+        /// Minimal `EventRequestWillBeSent` with the given request id — only
+        /// `request_id` is read by the tracker; the tail is inert filler.
+        fn sent_event(rid: &str) -> EventRequestWillBeSent {
+            EventRequestWillBeSent {
+                request_id: RequestId::new(rid),
+                loader_id: Default::default(),
+                document_url: "http://127.0.0.1/doc".to_string(),
+                request: chromiumoxide::cdp::browser_protocol::network::Request::builder()
+                    .url("http://127.0.0.1/doc")
+                    .method("GET")
+                    .headers(chromiumoxide::cdp::browser_protocol::network::Headers::new(
+                        serde_json::json!({}),
+                    ))
+                    .initial_priority(
+                        chromiumoxide::cdp::browser_protocol::network::ResourcePriority::VeryHigh,
+                    )
+                    .referrer_policy(
+                        chromiumoxide::cdp::browser_protocol::network::RequestReferrerPolicy::StrictOriginWhenCrossOrigin,
+                    )
+                    .build()
+                    .expect("builder tail is complete"),
+                timestamp: Default::default(),
+                wall_time: Default::default(),
+                initiator: chromiumoxide::cdp::browser_protocol::network::Initiator::new(
+                    chromiumoxide::cdp::browser_protocol::network::InitiatorType::Other,
+                ),
+                redirect_has_extra_info: false,
+                redirect_response: None,
+                r#type: None,
+                frame_id: None,
+                has_user_gesture: None,
+            }
+        }
+
+        fn finished_event(rid: &str) -> EventLoadingFinished {
+            EventLoadingFinished {
+                request_id: RequestId::new(rid),
+                timestamp: Default::default(),
+                encoded_data_length: 0.0,
+            }
+        }
+
+        fn failed_event(rid: &str) -> EventLoadingFailed {
+            EventLoadingFailed {
+                request_id: RequestId::new(rid),
+                timestamp: Default::default(),
+                r#type: ResourceType::Other,
+                error_text: "net::ERR_TEST".to_string(),
+                canceled: None,
+                blocked_reason: None,
+                cors_error_status: None,
+            }
+        }
+
+        /// Wire three fresh unbounded channels into `IdleStreams` (same
+        /// wiring `subscribe_idle_streams` produces via `event_listener`).
+        fn synthetic_streams() -> (Senders, IdleStreams) {
+            let (sent_tx, sent_rx) = mpsc::unbounded();
+            let (finished_tx, finished_rx) = mpsc::unbounded();
+            let (failed_tx, failed_rx) = mpsc::unbounded();
+            let senders = Senders {
+                sent: sent_tx,
+                finished: finished_tx,
+                failed: failed_tx,
+            };
+            let streams = IdleStreams {
+                will_be_sent: EventStream::new(sent_rx),
+                loading_finished: EventStream::new(finished_rx),
+                loading_failed: EventStream::new(failed_rx),
+            };
+            (senders, streams)
+        }
+
+        // ---- InFlightTracker: pure request-id pairing (deterministic) --
+
+        /// #1367 core reorder: `loadingFinished` paired before its
+        /// `requestWillBeSent`. The old scalar counter discarded the orphan
+        /// completion (`in_flight == 0 → continue`) and then leaked the
+        /// later `sent` — the drain never went quiet and the settle burned
+        /// its 30s ceiling. The tracker nets the pair to zero in either
+        /// arrival order.
+        #[test]
+        fn tracker_finish_before_send_nets_to_quiet() {
+            let mut tracker = InFlightTracker::default();
+            tracker.on_completion(RequestId::new("nav-doc")); // polled FIRST
+            assert!(tracker.is_quiet()); // orphan completion is not pending
+            tracker.on_sent(RequestId::new("nav-doc")); // the late send
+            assert!(
+                tracker.is_quiet(),
+                "#1367: finish-before-send must not leave a phantom pending entry"
+            );
+        }
+
+        /// The causal order must pair too (the tracker is not simply
+        /// "always quiet").
+        #[test]
+        fn tracker_send_then_finish_pairs() {
+            let mut tracker = InFlightTracker::default();
+            tracker.on_sent(RequestId::new("nav-doc"));
+            assert!(
+                !tracker.is_quiet(),
+                "a request between sent and finished is pending"
+            );
+            tracker.on_completion(RequestId::new("nav-doc"));
+            assert!(tracker.is_quiet());
+        }
+
+        /// Redirect re-send: CDP reuses the `requestId` across a redirect
+        /// chain — `sent(rid)` may arrive twice for one eventual
+        /// completion. Set dedup keeps the pair balanced.
+        #[test]
+        fn tracker_deduplicates_redirect_re_sends() {
+            let mut tracker = InFlightTracker::default();
+            tracker.on_sent(RequestId::new("redirect-chain"));
+            tracker.on_sent(RequestId::new("redirect-chain"));
+            tracker.on_completion(RequestId::new("redirect-chain"));
+            assert!(
+                tracker.is_quiet(),
+                "redirect re-send must deduplicate to one pending slot"
+            );
+        }
+
+        /// Failed loads complete requests too: `loadingFailed` balances
+        /// `sent` exactly like `loadingFinished` does.
+        #[test]
+        fn tracker_failed_balances_sent() {
+            let mut tracker = InFlightTracker::default();
+            tracker.on_sent(RequestId::new("blocked-request"));
+            tracker.on_completion(RequestId::new("blocked-request"));
+            assert!(tracker.is_quiet());
+        }
+
+        /// Pre-subscription completions (favicon style, observed in the
+        /// #1367 traces): a completion whose send was never observed does
+        /// NOT block quiet — the request already finished.
+        #[test]
+        fn tracker_orphan_completion_does_not_block_quiet() {
+            let mut tracker = InFlightTracker::default();
+            tracker.on_completion(RequestId::new("favicon-before-enable"));
+            assert!(tracker.is_quiet());
+        }
+
+        // ---- drain_until_quiet: loop behavior over synthetic streams ---
+
+        /// The production shape: all lifecycle events already buffered when
+        /// the settle starts polling. Whatever order `select!` polls the
+        /// three streams in, every send/finish pair must net and the drain
+        /// must return after one quiet window.
+        #[tokio::test]
+        async fn drain_reaches_quiet_with_buffered_pairs() {
+            let (mut tx, streams) = synthetic_streams();
+            tx.finished
+                .send(Arc::new(finished_event("nav-doc")) as Arc<dyn chromiumoxide::cdp::Event>)
+                .await
+                .expect("finished channel alive");
+            tx.sent
+                .send(Arc::new(sent_event("nav-doc")) as Arc<dyn chromiumoxide::cdp::Event>)
+                .await
+                .expect("sent channel alive");
+            tx.sent
+                .send(Arc::new(sent_event("favicon")) as Arc<dyn chromiumoxide::cdp::Event>)
+                .await
+                .expect("sent channel alive");
+            tx.failed
+                .send(Arc::new(failed_event("favicon")) as Arc<dyn chromiumoxide::cdp::Event>)
+                .await
+                .expect("failed channel alive");
+            let outcome = tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                ChromiumoxideDownloader::drain_until_quiet(streams, PostLoadWait::IDLE_WINDOW),
+            )
+            .await;
+            assert!(
+                matches!(outcome, Ok(())),
+                "buffered send/finish pairs must net to quiet, got {outcome:?}"
+            );
+        }
+
+        /// A genuinely pending request (sent, no completion — a slow XHR)
+        /// keeps the drain awake past the quiet window. Sanity: the fix
+        /// did not turn the drain into an immediate return.
+        #[tokio::test]
+        async fn pending_request_keeps_drain_awake() {
+            let (mut tx, streams) = synthetic_streams();
+            tx.sent
+                .send(Arc::new(sent_event("still-loading")) as Arc<dyn chromiumoxide::cdp::Event>)
+                .await
+                .expect("sent channel alive");
+            let outcome = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                ChromiumoxideDownloader::drain_until_quiet(
+                    streams,
+                    std::time::Duration::from_millis(50),
+                ),
+            )
+            .await;
+            assert!(
+                outcome.is_err(),
+                "an unfinished request must keep the drain awake past the quiet window"
+            );
+        }
+
+        /// Livelock regression: when the browser dies mid-settle the CDP
+        /// pump drops the event senders and the streams close. Without the
+        /// branch guards every poll of a closed branch returns
+        /// `Ready(None)`, `select!` completes it instantly forever, the
+        /// quiet-window sleep never elapses, and the settle ceiling cannot
+        /// observe its deadline — the fetch hangs instead of bounding.
+        /// With the guards the closed branches disable, the window fires,
+        /// and the drain returns quiet.
+        #[tokio::test]
+        async fn closed_streams_do_not_livelock_the_drain() {
+            let (tx, streams) = synthetic_streams();
+            drop(tx); // all three senders gone: every stream is closed.
+            let outcome = tokio::time::timeout(
+                std::time::Duration::from_secs(2),
+                ChromiumoxideDownloader::drain_until_quiet(
+                    streams,
+                    std::time::Duration::from_millis(50),
+                ),
+            )
+            .await;
+            assert!(
+                matches!(outcome, Ok(())),
+                "closed streams must reach quiet, not livelock the select loop, got {outcome:?}"
+            );
+        }
+    }
     /// F-52-b E2E (#1277): settle contract against loopback fixtures.
     ///
     /// Two hydration mechanisms, two waits: timer-driven mutation (d200)

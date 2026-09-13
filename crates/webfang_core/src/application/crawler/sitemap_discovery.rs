@@ -139,6 +139,25 @@ pub async fn crawl_with_sitemap_resolved(
 /// The public `crawl_with_sitemap_resolved` function calls this one.
 ///
 /// Following **own-borrow-over-clone**: Accepts `&ValidUrl` (borrowed), not an owned URL.
+/// #1382: layer-1 entry guard for the sitemap path — the seed host is a
+/// forbidden IP literal (loopback/RFC1918/...), the exact target every
+/// discovery probe would dial. Refusing here means no robots.txt GET, no
+/// HEAD/GET probes, no parser fetch ever leave: pre-socket by construction.
+/// Reads the documented entry hatch on every call, so test harnesses
+/// driving wiremock through this path disarm only this layer (#1217).
+fn reject_sitemap_entry_target(raw_url: &str) -> Result<(), CrawlError> {
+    let parsed =
+        Url::parse(raw_url).map_err(|e| CrawlError::InvalidUrl(format!("URL inválida: {e}")))?;
+    if let Err(rejection) = crate::domain::ssrf_guard::reject_forbidden_literal_url(&parsed) {
+        tracing::warn!(
+            url = raw_url,
+            "SSRF literal-IP target rejected at sitemap entry (no socket opened)"
+        );
+        return Err(CrawlError::InvalidUrl(rejection.to_string()));
+    }
+    Ok(())
+}
+
 #[allow(unused_variables)]
 async fn crawl_with_sitemap_internal(
     base_url: &str,
@@ -146,6 +165,10 @@ async fn crawl_with_sitemap_internal(
     config: &CrawlerConfig,
 ) -> Result<Vec<DiscoveredUrl>, CrawlError> {
     info!("Crawling with sitemap for {}", base_url);
+
+    // #1382: entry guard BEFORE the discovery client exists (layer 1 of
+    // the AGENTS.md guard-chain order — see `reject_sitemap_entry_target`).
+    reject_sitemap_entry_target(base_url)?;
 
     // Build the discovery client through the shared factory so sitemap probes
     // carry the same Chrome Client Hints, pooled user-agent, pool tuning, and
@@ -234,18 +257,32 @@ fn build_discovery_client(config: &CrawlerConfig) -> Result<wreq::Client, CrawlE
 }
 
 /// Resolve the sitemap URL: use the provided (already validated) one, or auto-discover it.
+///
+/// #1382: BOTH branches pay the entry guard — an explicit sitemap URL whose
+/// host is a forbidden literal (validated for scheme/credentials by
+/// `ValidUrl`, never for target address) and a robots.txt directive pointing
+/// at one are cut HERE, pre-socket, before the parser fetch dials anything.
 async fn resolve_sitemap_url(
     base_url: &str,
     sitemap: Option<&ValidUrl>,
     client: &wreq::Client,
 ) -> Result<String, CrawlError> {
-    match sitemap {
+    let resolved = match sitemap {
         Some(url) => {
             tracing::info!("Sitemap URL provided: {}", url.as_str());
-            Ok(url.as_str().to_string())
+            url.as_str().to_string()
         },
-        None => discover_sitemap_url_for(base_url, client).await,
-    }
+        None => discover_sitemap_url_for(base_url, client).await?,
+    };
+
+    // Entry guard over the resolved sitemap target (#1382): the seed may be a
+    // hostname, but the sitemap this chain is about to fetch must not be a
+    // forbidden literal. This also covers the robots.txt `Sitemap:` directive
+    // case — the directive is attacker-controllable text and its target is
+    // exactly what the parser would dial next.
+    reject_sitemap_entry_target(&resolved)?;
+
+    Ok(resolved)
 }
 
 /// Auto-discover a sitemap URL, logging the discovery outcome.
@@ -341,6 +378,12 @@ async fn parse_sitemap(
                 kind: WafDetectionKind::BodySignature,
                 url,
             },
+            // #1382: a forbidden-literal sitemap target (initial or index
+            // child) rejected pre-socket by the parser's entry guard maps to
+            // the same typed InvalidUrl the CLI/MCP entry points produce, so
+            // the exit-code mapping (69) and the Spanish SSRF copy are
+            // byte-identical to every other fetch surface.
+            SitemapError::SsrfLiteralRejected(msg) => CrawlError::InvalidUrl(msg),
             other => CrawlError::Parse(other.to_string()),
         }
     })?;
@@ -1002,6 +1045,15 @@ mod tests {
     /// by wiremock, the resolved entry returns exactly its `<loc>` entries.
     #[tokio::test]
     async fn issue_1162_explicit_valid_url_used_verbatim() {
+        // Loopback mock seed: the entry guard (#1382) now cuts literal-IP
+        // targets exactly as production should — these tests exercise the
+        // verbatim-URL contract, not the guard, so the entry hatch is the
+        // documented one-layer disarmer (same posture as the scrape-flow
+        // robots tests, #1369).
+        let _entry_off = webfang_test_utils::EnvGuard::with(&[(
+            crate::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+            "1",
+        )]);
         let mock = MockServer::start().await;
         let page1 = format!("{}/page1", mock.uri());
         let page2 = format!("{}/page2", mock.uri());
@@ -1042,6 +1094,13 @@ mod tests {
     /// (robots.txt `Sitemap:` directive → sitemap fetch → URLs).
     #[tokio::test]
     async fn issue_1162_auto_discovery_without_url() {
+        // Loopback mock seed — same entry-hatch posture as the verbatim test
+        // above (#1382/#1369): the contract under test is the discovery
+        // chain, not the guard.
+        let _entry_off = webfang_test_utils::EnvGuard::with(&[(
+            crate::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+            "1",
+        )]);
         let mock = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/robots.txt"))
@@ -1079,5 +1138,194 @@ mod tests {
             .expect("auto-discovery should succeed");
 
         assert_eq!(urls.len(), 2, "expected both auto-discovered URLs");
+    }
+
+    // ── #1382: sitemap discovery SSRF entry guard (pre-socket) ──
+    //
+    // `build_discovery_client` installs SSRF layers 3 (validating resolver)
+    // and 4 (redirect policy) but the entry layer (`reject_forbidden_literal_url`)
+    // was never called on this path, so a loopback *seed* opened real sockets
+    // (measured: 18 requests with every guard armed, #1376/#1382). These pins
+    // restore the AGENTS.md guard-chain order: entry validation BEFORE the
+    // discovery client touches the network. No `EnvGuard` here — tests run in
+    // production posture (guards armed); the probes arm the tripwire mock and
+    // assert it observes ZERO requests, which is only true when the rejection
+    // happens before any socket opens.
+
+    /// A loopback seed is rejected at entry, pre-socket: the run fails with
+    /// the typed `CrawlError::InvalidUrl` carrying the Spanish SSRF message,
+    /// and the mock — the only listener for the seed's host — receives zero
+    /// requests of any kind (no robots.txt GET, no probes, nothing).
+    #[tokio::test]
+    async fn sitemap_discovery_rejects_loopback_seed_pre_socket() {
+        let mock = MockServer::start().await;
+        // Tripwire: any request that escapes the guard lands here and fails
+        // the zero-request assertion.
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<html></html>"))
+            .mount(&mock)
+            .await;
+
+        let base_url = mock.uri();
+        let seed = Url::parse(&base_url).expect("mock URL must parse");
+        let config = CrawlerConfig::new(seed);
+
+        let err = crawl_with_sitemap_resolved(&base_url, None, &config)
+            .await
+            .expect_err("loopback seed must be rejected at the entry guard");
+
+        match err {
+            CrawlError::InvalidUrl(msg) => assert!(
+                msg.contains("SSRF detectado"),
+                "rejection must carry the Spanish SSRF message, got: {msg}"
+            ),
+            other => panic!("expected CrawlError::InvalidUrl, got: {other:?}"),
+        }
+        let seen = mock.received_requests().await.unwrap_or_default();
+        assert!(
+            seen.is_empty(),
+            "rejection is pre-socket: the mock must observe zero requests, got {seen:?}"
+        );
+    }
+
+    /// An explicit sitemap URL whose host is a forbidden literal is rejected
+    /// at entry even when the seed host itself is fetchable text: the guard
+    /// applies to every URL this path would fetch, not only the seed. The
+    /// seed is never fetched by sitemap discovery, so a hostname seed keeps
+    /// this test focused on the sitemap target alone.
+    #[tokio::test]
+    async fn sitemap_discovery_rejects_forbidden_literal_sitemap_url() {
+        // Hostname seed: sitemap discovery never fetches the seed itself, and
+        // the entry guard lets hostnames through (that is layer-3 territory).
+        let seed = Url::parse("https://example.com").expect("hostname seed");
+        let config = CrawlerConfig::new(seed);
+        // Forbidden literal, RFC1918. Nothing listens there and nothing may
+        // ever dial it — the assertion is the typed rejection; the address is
+        // unroutable in the test environment, so a followed fetch could never
+        // succeed anyway.
+        let sitemap_url =
+            ValidUrl::parse("http://192.168.1.5:59999/sitemap.xml").expect("literal parses");
+
+        let err = crawl_with_sitemap_resolved("https://example.com", Some(&sitemap_url), &config)
+            .await
+            .expect_err("forbidden-literal sitemap URL must be rejected at entry");
+
+        match err {
+            CrawlError::InvalidUrl(msg) => assert!(
+                msg.contains("SSRF detectado") && msg.contains("192.168.1.5"),
+                "rejection must name the offending literal in Spanish, got: {msg}"
+            ),
+            other => panic!("expected CrawlError::InvalidUrl, got: {other:?}"),
+        }
+    }
+
+    /// A robots.txt `Sitemap:` directive pointing at a forbidden literal is
+    /// rejected before the sitemap fetch: robots.txt itself is fetched (one
+    /// request, the discovery chain's legitimate first hop), but the pointed
+    /// sitemap URL is never dialed. The seed uses the `localhost` hostname —
+    /// the entry layer correctly lets hostnames through (#1217 layer
+    /// separation) — with the resolver hatch set so the loopback answer is
+    /// dialable by the harness. Layer 1 (the subject under test) stays ARMED:
+    /// the mock's one-request journal plus the typed rejection pin that the
+    /// directive target was cut before its socket existed.
+    #[tokio::test]
+    async fn sitemap_discovery_rejects_robots_directive_pointing_at_literal() {
+        // Resolver-only hatch: `localhost` resolves to 127.0.0.1, a forbidden
+        // answer for layer 3. Layer 1 (literal guard) stays armed — it is the
+        // layer under test.
+        let _resolver_off = webfang_test_utils::EnvGuard::with(&[(
+            crate::domain::ssrf_guard::DISABLE_VALIDATING_RESOLVER_ENV,
+            "1",
+        )]);
+        // `localhost` + the mock's port: the same wiremock listener, spelled
+        // as a hostname so the entry layer is not the thing that fires on the
+        // seed itself.
+        let mock = MockServer::start().await;
+        let base_url = format!("http://localhost:{}/", mock.address().port());
+
+        Mock::given(method("GET"))
+            .and(path("/robots.txt"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("User-agent: *\nSitemap: http://10.9.8.7:9/sitemap.xml\n"),
+            )
+            .mount(&mock)
+            .await;
+
+        let seed = Url::parse(&base_url).expect("localhost seed must parse");
+        let config = CrawlerConfig::new(seed);
+
+        let err = crawl_with_sitemap_resolved(&base_url, None, &config)
+            .await
+            .expect_err("robots directive at a forbidden literal must be rejected");
+
+        match err {
+            CrawlError::InvalidUrl(msg) => assert!(
+                msg.contains("SSRF detectado") && msg.contains("10.9.8.7"),
+                "rejection must name the directive's forbidden literal, got: {msg}"
+            ),
+            other => panic!("expected CrawlError::InvalidUrl, got: {other:?}"),
+        }
+        let seen = mock.received_requests().await.unwrap_or_default();
+        assert_eq!(
+            seen.len(),
+            1,
+            "only the robots.txt fetch may reach the mock (the legitimate \
+             first hop); the directive target must never be dialed, got {seen:?}"
+        );
+    }
+
+    /// A sitemap index whose `<sitemap>` child points at a forbidden literal
+    /// is stopped by the parser's per-URL entry guard: the child URL is
+    /// never dialed (pre-socket) and the typed SSRF rejection surfaces
+    /// instead of a fetch error. The seed uses the `localhost` hostname with
+    /// the resolver-only hatch so the index itself is fetchable while the
+    /// child literal — an unroutable RFC1918 address — is cut by the armed
+    /// entry layer before its socket exists.
+    #[tokio::test]
+    async fn sitemap_discovery_rejects_index_child_pointing_at_literal() {
+        let _resolver_off = webfang_test_utils::EnvGuard::with(&[(
+            crate::domain::ssrf_guard::DISABLE_VALIDATING_RESOLVER_ENV,
+            "1",
+        )]);
+        let mock = MockServer::start().await;
+        let base_url = format!("http://localhost:{}/", mock.address().port());
+
+        Mock::given(method("GET"))
+            .and(path("/robots.txt"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("User-agent: *\nSitemap: /sitemap.xml\n"),
+            )
+            .mount(&mock)
+            .await;
+        let index_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <sitemap><loc>http://192.168.7.7:9/child-sitemap.xml</loc></sitemap>
+</sitemapindex>"#;
+        Mock::given(method("GET"))
+            .and(path("/sitemap.xml"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(index_xml)
+                    .insert_header("Content-Type", "application/xml"),
+            )
+            .mount(&mock)
+            .await;
+
+        let seed = Url::parse(&base_url).expect("localhost seed must parse");
+        let config = CrawlerConfig::new(seed);
+
+        let err = crawl_with_sitemap_resolved(&base_url, None, &config)
+            .await
+            .expect_err("index child at a forbidden literal must be rejected");
+
+        match err {
+            CrawlError::InvalidUrl(msg) => assert!(
+                msg.contains("SSRF detectado") && msg.contains("192.168.7.7"),
+                "rejection must name the child's forbidden literal, got: {msg}"
+            ),
+            other => panic!("expected CrawlError::InvalidUrl, got: {other:?}"),
+        }
     }
 }
