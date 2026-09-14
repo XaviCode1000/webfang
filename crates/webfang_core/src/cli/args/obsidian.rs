@@ -171,7 +171,7 @@ mod spec_parity_tests {
 
         // Explicit values: bool flags + the comma-delimited `obsidian_tags`
         // (single invocation) + the path-valued `vault`.
-        let parsed = parse_args(&[
+        let parsed = parse_args_hermetic(&[
             "--obsidian-wiki-links",
             "--obsidian-tags",
             "rust,cargo,docs",

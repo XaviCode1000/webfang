@@ -270,7 +270,7 @@ mod spec_parity_tests {
         // Explicit values, short forms, and the `--export` alias. `--output`
         // and its `-o` short form are exercised in separate invocations (an
         // option may only be used once per parse).
-        let parsed = parse_args(&[
+        let parsed = parse_args_hermetic(&[
             "--output",
             "custom-dir",
             "-f",
@@ -318,10 +318,11 @@ mod spec_parity_tests {
             crate::domain::config::PipelineOutputFormat::None
         );
 
-        let shorts = parse_args(&["-o", "short-dir"]).expect("short forms must parse");
+        let shorts = parse_args_hermetic(&["-o", "short-dir"]).expect("short forms must parse");
         assert_eq!(shorts.export.output, std::path::PathBuf::from("short-dir"));
 
-        let alias = parse_args(&["--export", "auto"]).expect("`--export` alias must parse");
+        let alias =
+            parse_args_hermetic(&["--export", "auto"]).expect("`--export` alias must parse");
         assert_eq!(
             alias.export.export_format,
             crate::domain::config::ExportFormat::Auto

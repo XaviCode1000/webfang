@@ -453,11 +453,11 @@ fn target_url_flag_and_env_deliver_same_args_outcome() {
     // Direct argv construction: `--url` is single-use, so the mandatory
     // `parse_base` base cannot coexist with a second `--url` here.
     let via_flag = Args::parse_from(["webfang", "--url", url]);
-    // Env delivery: clap resolves WEBFANG_URL into the same field. The
-    // env value passes through the same argv-boundary `parse_seed_url`
-    // parser (#1239), so both paths hold a hardened ValidUrl.
-    let mut via_env = Args::parse_from(["webfang"]);
-    via_env.crawler.url = Some(ValidUrl::parse(url).unwrap());
+    // Real env delivery: clap resolves WEBFANG_URL into the same field through
+    // the same argv-boundary `parse_seed_url` parser (#1239). EnvGuard::with also
+    // overrides any ambient WEBFANG_URL poison (#1385) for the parse duration.
+    let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_URL", url)]);
+    let via_env = Args::parse_from(["webfang"]);
 
     assert_eq!(
         via_flag.crawler.url.as_ref().map(ValidUrl::as_str),
