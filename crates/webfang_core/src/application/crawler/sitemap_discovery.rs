@@ -1074,10 +1074,7 @@ mod tests {
         // verbatim-URL contract, not the guard, so the entry hatch is the
         // documented one-layer disarmer (same posture as the scrape-flow
         // robots tests, #1369).
-        let _entry_off = webfang_test_utils::EnvGuard::with(&[(
-            crate::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
-            "1",
-        )]);
+        let _entry_off = webfang_test_utils::EnvGuard::entry_guard_off();
         let mock = MockServer::start().await;
         let page1 = format!("{}/page1", mock.uri());
         let page2 = format!("{}/page2", mock.uri());
@@ -1122,10 +1119,7 @@ mod tests {
         // Loopback mock seed — same entry-hatch posture as the verbatim test
         // above (#1382/#1369): the contract under test is the discovery
         // chain, not the guard.
-        let _entry_off = webfang_test_utils::EnvGuard::with(&[(
-            crate::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
-            "1",
-        )]);
+        let _entry_off = webfang_test_utils::EnvGuard::entry_guard_off();
         let mock = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/robots.txt"))
