@@ -6,12 +6,13 @@
 //! # Examples
 //!
 //! ```no_run
+//! use webfang_core::domain::CorrelationId;
 //! use webfang_core::infrastructure::crawler::SitemapParser;
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let parser = SitemapParser::new()?;
-//! let urls = parser.parse_from_url("https://example.com/sitemap.xml").await?;
+//! let urls = parser.parse_from_url("https://example.com/sitemap.xml", &CorrelationId::new()).await?;
 //! println!("Found {} URLs", urls.len());
 //! # Ok(())
 //! # }
@@ -228,7 +229,7 @@ impl SitemapParser {
     ///
     /// Returns `SitemapError` if parsing fails or no URLs found
     ///
-/// Parse sitemap from URL (streaming, zero-allocation)
+    /// Parse sitemap from URL (streaming, zero-allocation)
     ///
     /// # Arguments
     ///
@@ -244,7 +245,11 @@ impl SitemapParser {
     /// # Errors
     ///
     /// Returns `SitemapError` if parsing fails or no URLs found
-    pub async fn parse_from_url(&self, url: &str, correlation: &CorrelationId) -> Result<Vec<SitemapUrl>> {
+    pub async fn parse_from_url(
+        &self,
+        url: &str,
+        correlation: &CorrelationId,
+    ) -> Result<Vec<SitemapUrl>> {
         SitemapParserPort::parse_from_url(self, url, correlation).await
     }
 
@@ -729,8 +734,13 @@ impl SitemapParserPort for SitemapParser {
         Box::pin(
             async move {
                 let visited = Arc::new(Mutex::new(HashSet::new()));
-                self.parse_with_depth(sitemap_url, self.config.max_depth, &visited, &child_correlation)
-                    .await
+                self.parse_with_depth(
+                    sitemap_url,
+                    self.config.max_depth,
+                    &visited,
+                    &child_correlation,
+                )
+                .await
             }
             .instrument(span),
         )
@@ -1064,7 +1074,10 @@ mod waf_inspection_tests {
 
                 let parser = SitemapParser::new().unwrap();
                 let result = parser
-                    .parse_from_url(&format!("{}/sitemap.xml", mock.uri()))
+                    .parse_from_url(
+                        &format!("{}/sitemap.xml", mock.uri()),
+                        &CorrelationId::new(),
+                    )
                     .await;
 
                 match result {
@@ -1118,7 +1131,10 @@ mod waf_inspection_tests {
 
         let parser = SitemapParser::new().unwrap();
         let result = parser
-            .parse_from_url(&format!("{}/sitemap.xml", mock.uri()))
+            .parse_from_url(
+                &format!("{}/sitemap.xml", mock.uri()),
+                &CorrelationId::new(),
+            )
             .await;
 
         match result {
@@ -1152,7 +1168,10 @@ mod waf_inspection_tests {
 
         let parser = SitemapParser::new().unwrap();
         let result = parser
-            .parse_from_url(&format!("{}/sitemap.xml", mock.uri()))
+            .parse_from_url(
+                &format!("{}/sitemap.xml", mock.uri()),
+                &CorrelationId::new(),
+            )
             .await;
         assert!(
             !matches!(result, Err(SitemapError::WafChallenge { .. })),
@@ -1334,7 +1353,10 @@ mod tests {
 
         let parser = SitemapParser::new().unwrap();
         let result = parser
-            .parse_from_url(&format!("http://127.0.0.1:{port}/sitemap.xml"))
+            .parse_from_url(
+                &format!("http://127.0.0.1:{port}/sitemap.xml"),
+                &CorrelationId::new(),
+            )
             .await;
 
         match result {
@@ -1393,7 +1415,10 @@ mod tests {
 
         let parser = SitemapParser::new().unwrap();
         let urls = parser
-            .parse_from_url(&format!("http://127.0.0.1:{port}/sitemap.xml.gz"))
+            .parse_from_url(
+                &format!("http://127.0.0.1:{port}/sitemap.xml.gz"),
+                &CorrelationId::new(),
+            )
             .await
             .expect("body gzip + content-encoding gzip must parse (#757)");
         assert_eq!(urls.len(), 2);
@@ -1426,7 +1451,10 @@ mod tests {
 
         let parser = SitemapParser::new().unwrap();
         let urls = parser
-            .parse_from_url(&format!("http://127.0.0.1:{port}/manual.xml.gz"))
+            .parse_from_url(
+                &format!("http://127.0.0.1:{port}/manual.xml.gz"),
+                &CorrelationId::new(),
+            )
             .await
             .expect("gzip body without content-encoding must still decompress");
         assert_eq!(urls.len(), 1);
@@ -1457,7 +1485,10 @@ mod tests {
 
         let parser = SitemapParser::new().unwrap();
         let urls = parser
-            .parse_from_url(&format!("http://127.0.0.1:{port}/sitemap.xml.gz"))
+            .parse_from_url(
+                &format!("http://127.0.0.1:{port}/sitemap.xml.gz"),
+                &CorrelationId::new(),
+            )
             .await
             .expect("plain body behind .gz URL must pass through (#757)");
         assert_eq!(urls.len(), 1);
@@ -1557,7 +1588,7 @@ mod tests {
         let config = SitemapConfig::builder().max_depth(0).build();
         let parser = SitemapParser::with_config(config).unwrap();
         let result = parser
-            .parse_from_url("https://example.com/sitemap.xml")
+            .parse_from_url("https://example.com/sitemap.xml", &CorrelationId::new())
             .await;
         assert!(matches!(result, Err(SitemapError::MaxDepthExceeded)));
     }
@@ -1569,7 +1600,10 @@ mod tests {
         let parser = SitemapParser::with_config(config).unwrap();
         // depth=1 means it tries the HTTP fetch — with an invalid host it should fail
         let result = parser
-            .parse_from_url("https://invalid-host-xyz-12345.com/sitemap.xml")
+            .parse_from_url(
+                "https://invalid-host-xyz-12345.com/sitemap.xml",
+                &CorrelationId::new(),
+            )
             .await;
         assert!(result.is_err());
     }

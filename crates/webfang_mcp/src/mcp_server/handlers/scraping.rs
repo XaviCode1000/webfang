@@ -553,12 +553,13 @@ impl McpHandler {
                     )
                 })
             })
-.transpose()?;
-    
+            .transpose()?;
+
         match webfang_core::application::crawler::sitemap_discovery::crawl_with_sitemap_resolved(
             params.url.as_str(),
             explicit.as_ref(),
-            &config, &root_correlation,
+            &config,
+            &root_correlation,
         )
         .await
         {
@@ -721,13 +722,15 @@ impl McpHandler {
 
         let start = Instant::now();
         // One run identity per tool call, shared by its success and error events (#501/#698).
-let root_correlation = webfang_core::domain::CorrelationId::new();
+        let root_correlation = webfang_core::domain::CorrelationId::new();
         let crawler_config = webfang_core::domain::CrawlerConfig::new(seed.clone());
-    
+
         match webfang_core::application::crawler::sitemap_discovery::crawl_with_sitemap_resolved(
             params.url.as_str(),
             None,
-            &crawler_config, &root_correlation,
+            &crawler_config,
+            &root_correlation,
+        )
         .await
         {
             Ok(discovered) => {

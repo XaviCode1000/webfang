@@ -12,7 +12,7 @@ use crate::domain::http_config::HttpClientConfig;
 use crate::domain::site::SitemapConfig;
 use crate::domain::waf::{waf_inspector, InspectionContext};
 use crate::domain::ValidUrl;
-use crate::domain::{CrawlError, CrawlerConfig, DiscoveredUrl, CorrelationId};
+use crate::domain::{CorrelationId, CrawlError, CrawlerConfig, DiscoveredUrl};
 use crate::error::ScraperError;
 use crate::infrastructure::observability::log_scrape_error;
 use std::sync::Arc;
@@ -209,7 +209,7 @@ async fn crawl_with_sitemap_internal(
             target_path
         );
         return crawl_with_subpath_sitemaps(
-base_url,
+            base_url,
             &base,
             parser.as_ref(),
             3,
@@ -340,58 +340,61 @@ async fn parse_sitemap(
     sitemap_url: &str,
     correlation: &CorrelationId,
 ) -> Result<Vec<SitemapUrl>, CrawlError> {
-let urls = parser.parse_from_url(sitemap_url, correlation).await.map_err(|e| {
-        log_scrape_error(
-            &e,
-            sitemap_url,
-            "sitemap.discovery",
-            None,
-            "Failed to parse sitemap",
-        );
-        // Preserve the specific error type for proper exit code mapping
-        match e {
-            SitemapError::HttpError { status, message } => CrawlError::Http {
-                status,
-                url: message,
-            },
-            // ADR-0012-B: the XmlError payload is now a String carrying the
-            // bare `quick_xml::Error` Display text (the prefix lives on the
-            // enum's own Display). Re-adding the prefix here keeps the
-            // user-visible message byte-identical to the pre-port behavior
-            // (pinned by behavioral__malformed_xml_stderr.snap) and the
-            // exit-code mapping unchanged (Parse → exit 69).
-            SitemapError::XmlError(e) => CrawlError::Parse(format!("XML parsing failed: {e}")),
-            SitemapError::InvalidContentType(ct) => CrawlError::InvalidContentType(ct),
-            SitemapError::SitemapNotFound(url) => CrawlError::SitemapNotFound(url),
-            SitemapError::MaxDepthExceeded => CrawlError::SitemapDepthExceeded,
-            SitemapError::NoUrlsFound => CrawlError::SitemapEmpty,
-            SitemapError::DecompressionError(e) => {
-                CrawlError::Parse(format!("decompression failed: {e}"))
-            },
-            // All children FAILED to fetch/parse (HTTP errors) — this is an
-            // infrastructure failure (exit 69 via Parse→Internal), NOT a
-            // fully-empty sitemap (which is NoUrlsFound→SitemapEmpty→exit 2).
-            // Keep this mapping.
-            SitemapError::AllChildrenFailed(count, details) => {
-                CrawlError::Parse(format!("all {count} child sitemaps failed: {details}"))
-            },
-            // Issue #879: a challenge detected in the sitemap chain keeps its
-            // typed identity through the CrawlError layer (PermanentFatal per
-            // classify(), Spanish evidence chain via ScraperError::WafBlocked).
-            SitemapError::WafChallenge { url, provider } => CrawlError::WafChallenge {
-                provider,
-                kind: WafDetectionKind::BodySignature,
-                url,
-            },
-            // #1382: a forbidden-literal sitemap target (initial or index
-            // child) rejected pre-socket by the parser's entry guard maps to
-            // the same typed InvalidUrl the CLI/MCP entry points produce, so
-            // the exit-code mapping (69) and the Spanish SSRF copy are
-            // byte-identical to every other fetch surface.
-            SitemapError::SsrfLiteralRejected(msg) => CrawlError::InvalidUrl(msg),
-            other => CrawlError::Parse(other.to_string()),
-        }
-    })?;
+    let urls = parser
+        .parse_from_url(sitemap_url, correlation)
+        .await
+        .map_err(|e| {
+            log_scrape_error(
+                &e,
+                sitemap_url,
+                "sitemap.discovery",
+                None,
+                "Failed to parse sitemap",
+            );
+            // Preserve the specific error type for proper exit code mapping
+            match e {
+                SitemapError::HttpError { status, message } => CrawlError::Http {
+                    status,
+                    url: message,
+                },
+                // ADR-0012-B: the XmlError payload is now a String carrying the
+                // bare `quick_xml::Error` Display text (the prefix lives on the
+                // enum's own Display). Re-adding the prefix here keeps the
+                // user-visible message byte-identical to the pre-port behavior
+                // (pinned by behavioral__malformed_xml_stderr.snap) and the
+                // exit-code mapping unchanged (Parse → exit 69).
+                SitemapError::XmlError(e) => CrawlError::Parse(format!("XML parsing failed: {e}")),
+                SitemapError::InvalidContentType(ct) => CrawlError::InvalidContentType(ct),
+                SitemapError::SitemapNotFound(url) => CrawlError::SitemapNotFound(url),
+                SitemapError::MaxDepthExceeded => CrawlError::SitemapDepthExceeded,
+                SitemapError::NoUrlsFound => CrawlError::SitemapEmpty,
+                SitemapError::DecompressionError(e) => {
+                    CrawlError::Parse(format!("decompression failed: {e}"))
+                },
+                // All children FAILED to fetch/parse (HTTP errors) — this is an
+                // infrastructure failure (exit 69 via Parse→Internal), NOT a
+                // fully-empty sitemap (which is NoUrlsFound→SitemapEmpty→exit 2).
+                // Keep this mapping.
+                SitemapError::AllChildrenFailed(count, details) => {
+                    CrawlError::Parse(format!("all {count} child sitemaps failed: {details}"))
+                },
+                // Issue #879: a challenge detected in the sitemap chain keeps its
+                // typed identity through the CrawlError layer (PermanentFatal per
+                // classify(), Spanish evidence chain via ScraperError::WafBlocked).
+                SitemapError::WafChallenge { url, provider } => CrawlError::WafChallenge {
+                    provider,
+                    kind: WafDetectionKind::BodySignature,
+                    url,
+                },
+                // #1382: a forbidden-literal sitemap target (initial or index
+                // child) rejected pre-socket by the parser's entry guard maps to
+                // the same typed InvalidUrl the CLI/MCP entry points produce, so
+                // the exit-code mapping (69) and the Spanish SSRF copy are
+                // byte-identical to every other fetch surface.
+                SitemapError::SsrfLiteralRejected(msg) => CrawlError::InvalidUrl(msg),
+                other => CrawlError::Parse(other.to_string()),
+            }
+        })?;
     tracing::info!("Parsed {} total URLs from sitemap", urls.len());
     Ok(urls)
 }
@@ -459,6 +462,7 @@ async fn crawl_with_subpath_sitemaps(
     sitemap_current_depth: usize,
     crawl_max_depth: u8,
     client: &wreq::Client,
+    correlation: &CorrelationId,
 ) -> Result<Vec<DiscoveredUrl>, CrawlError> {
     if sitemap_current_depth >= sitemap_max_depth {
         tracing::warn!(
@@ -479,7 +483,7 @@ async fn crawl_with_subpath_sitemaps(
         return Ok(Vec::new());
     }
 
-    let all_urls = probe_subpath_sitemaps_for_crawl(base, client, parser).await;
+    let all_urls = probe_subpath_sitemaps_for_crawl(base, client, parser, correlation).await;
 
     if all_urls.is_empty() {
         tracing::warn!("no se encontraron sitemaps de subruta para {}", base_url);
@@ -509,7 +513,9 @@ async fn probe_subpath_sitemaps_for_crawl(
         let sub_path = segments[..i].join("/");
         for sitemap_name in &["sitemap.xml", "sitemap_index.xml"] {
             let candidate = format!("/{sub_path}/{sitemap_name}");
-if let Some(urls) = try_subpath_sitemap(base, client, parser, &candidate, correlation).await {
+            if let Some(urls) =
+                try_subpath_sitemap(base, client, parser, &candidate, correlation).await
+            {
                 all_urls.extend(urls);
             }
         }
@@ -534,7 +540,7 @@ async fn try_subpath_sitemap(
         return None;
     }
     tracing::info!("Found sub-path sitemap: {}", sitemap_str);
-parse_subpath_sitemap(parser, sitemap_str, correlation).await
+    parse_subpath_sitemap(parser, sitemap_str, correlation).await
 }
 
 /// Parse a discovered sub-path sitemap, logging the URL count on success.
@@ -543,7 +549,7 @@ async fn parse_subpath_sitemap(
     sitemap_str: &str,
     correlation: &CorrelationId,
 ) -> Option<Vec<SitemapUrl>> {
-match parser.parse_from_url(sitemap_str, correlation).await {
+    match parser.parse_from_url(sitemap_str, correlation).await {
         Ok(urls) => {
             tracing::info!(
                 "Parsed {} URLs from sub-path sitemap {}",
@@ -1018,9 +1024,14 @@ mod tests {
     async fn issue_1162_invalid_url_rejected_before_fetch() {
         let seed = Url::parse("https://example.com").expect("valid seed");
         let config = CrawlerConfig::new(seed);
-        let err = crawl_with_sitemap("https://example.com", Some("not-a-url"), &config)
-            .await
-            .expect_err("invalid sitemap URL must fail at the boundary");
+        let err = crawl_with_sitemap(
+            "https://example.com",
+            Some("not-a-url"),
+            &config,
+            &CorrelationId::new(),
+        )
+        .await
+        .expect_err("invalid sitemap URL must fail at the boundary");
         match err {
             CrawlError::InvalidUrl(msg) => assert!(
                 msg.contains("sitemap") && msg.contains("inválida"),
@@ -1040,6 +1051,7 @@ mod tests {
             "https://example.com",
             Some("ftp://example.com/sitemap.xml"),
             &config,
+            &CorrelationId::new(),
         )
         .await
         .expect_err("non-http(s) sitemap URL must fail at the boundary");
@@ -1088,9 +1100,10 @@ mod tests {
         let sitemap_url = format!("{base_url}/sitemap.xml");
         let explicit = ValidUrl::parse(&sitemap_url).expect("explicit test URL is valid");
 
-        let urls = crawl_with_sitemap_resolved(&base_url, Some(&explicit), &config)
-            .await
-            .expect("explicit sitemap must parse");
+        let urls =
+            crawl_with_sitemap_resolved(&base_url, Some(&explicit), &config, &CorrelationId::new())
+                .await
+                .expect("explicit sitemap must parse");
 
         assert_eq!(urls.len(), 2, "expected both <loc> entries");
         let found: Vec<String> = urls.into_iter().map(|d| d.url.to_string()).collect();
@@ -1141,7 +1154,7 @@ mod tests {
         let seed = Url::parse(&base_url).expect("valid mock URL");
         let config = CrawlerConfig::new(seed);
 
-        let urls = crawl_with_sitemap_resolved(&base_url, None, &config)
+        let urls = crawl_with_sitemap_resolved(&base_url, None, &config, &CorrelationId::new())
             .await
             .expect("auto-discovery should succeed");
 
@@ -1178,7 +1191,7 @@ mod tests {
         let seed = Url::parse(&base_url).expect("mock URL must parse");
         let config = CrawlerConfig::new(seed);
 
-        let err = crawl_with_sitemap_resolved(&base_url, None, &config)
+        let err = crawl_with_sitemap_resolved(&base_url, None, &config, &CorrelationId::new())
             .await
             .expect_err("loopback seed must be rejected at the entry guard");
 
@@ -1214,9 +1227,14 @@ mod tests {
         let sitemap_url =
             ValidUrl::parse("http://192.168.1.5:59999/sitemap.xml").expect("literal parses");
 
-        let err = crawl_with_sitemap_resolved("https://example.com", Some(&sitemap_url), &config)
-            .await
-            .expect_err("forbidden-literal sitemap URL must be rejected at entry");
+        let err = crawl_with_sitemap_resolved(
+            "https://example.com",
+            Some(&sitemap_url),
+            &config,
+            &CorrelationId::new(),
+        )
+        .await
+        .expect_err("forbidden-literal sitemap URL must be rejected at entry");
 
         match err {
             CrawlError::InvalidUrl(msg) => assert!(
@@ -1263,7 +1281,7 @@ mod tests {
         let seed = Url::parse(&base_url).expect("localhost seed must parse");
         let config = CrawlerConfig::new(seed);
 
-        let err = crawl_with_sitemap_resolved(&base_url, None, &config)
+        let err = crawl_with_sitemap_resolved(&base_url, None, &config, &CorrelationId::new())
             .await
             .expect_err("robots directive at a forbidden literal must be rejected");
 
@@ -1324,7 +1342,7 @@ mod tests {
         let seed = Url::parse(&base_url).expect("localhost seed must parse");
         let config = CrawlerConfig::new(seed);
 
-        let err = crawl_with_sitemap_resolved(&base_url, None, &config)
+        let err = crawl_with_sitemap_resolved(&base_url, None, &config, &CorrelationId::new())
             .await
             .expect_err("index child at a forbidden literal must be rejected");
 

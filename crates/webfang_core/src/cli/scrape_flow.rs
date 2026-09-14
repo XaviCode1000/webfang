@@ -298,8 +298,15 @@ pub async fn scrape_urls(
                     // Per-page identity: child of the run root — shared trace_id, fresh
                     // span_id (#501).
                     let page_correlation = root_correlation.child();
-                    let outcome =
-                        scrape_one_url(&url, ctx, opts, observer, &page_correlation).await;
+                    let outcome = scrape_one_url(
+                        &url,
+                        ctx,
+                        opts,
+                        observer,
+                        &page_correlation,
+                        &root_correlation,
+                    )
+                    .await;
                     (index, Some((url, outcome)))
                 }
             })
@@ -457,6 +464,7 @@ async fn scrape_one_url(
     opts: &CrawlOptions,
     observer: &dyn ProgressObserver,
     page_correlation: &CorrelationId,
+    root_correlation: &CorrelationId,
 ) -> Result<Option<ScrapedContent>, crate::error::ScraperError> {
     // SSRF entry guard (F-06 + F-32, #1217): reject literal-IP seeds with a
     // typed Spanish error BEFORE robots.txt or page fetches open any
@@ -519,6 +527,7 @@ async fn scrape_one_url(
             ctx.engine,
             None,
             page_correlation,
+            &root_correlation,
         )
         .await
     };

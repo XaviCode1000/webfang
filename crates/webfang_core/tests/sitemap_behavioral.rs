@@ -6,6 +6,7 @@
 //! Following contract-based-test-audit: observable behavior only, wiremock for HTTP.
 //! Following the task spec: valid sitemap, malformed XML, large sitemap (1000+ URLs).
 
+use webfang_core::domain::CorrelationId;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -44,7 +45,10 @@ async fn sitemap_valid_discovers_all_urls() {
 
     let parser = webfang_core::infrastructure::crawler::SitemapParser::new().unwrap();
     let url = format!("{}/sitemap.xml", mock.uri());
-    let urls = parser.parse_from_url(&url).await.unwrap();
+    let urls = parser
+        .parse_from_url(&url, &CorrelationId::new())
+        .await
+        .unwrap();
 
     assert_eq!(urls.len(), 3, "should discover 3 URLs from valid sitemap");
     let strings: Vec<String> = urls.iter().map(|u| u.url.to_string()).collect();
@@ -73,7 +77,7 @@ async fn sitemap_malformed_xml_graceful_degradation() {
 
     let parser = webfang_core::infrastructure::crawler::SitemapParser::new().unwrap();
     let url = format!("{}/bad-sitemap", mock.uri());
-    let result = parser.parse_from_url(&url).await;
+    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
 
     assert!(
         result.is_err(),
@@ -105,7 +109,7 @@ async fn sitemap_partially_malformed_xml() {
 
     let parser = webfang_core::infrastructure::crawler::SitemapParser::new().unwrap();
     let url = format!("{}/partial-sitemap", mock.uri());
-    let result = parser.parse_from_url(&url).await;
+    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
 
     // Should either parse what it can or return an error — never panic
     match result {
@@ -148,7 +152,10 @@ async fn sitemap_large_1000_plus_urls() {
     let url = format!("{}/big-sitemap.xml", mock.uri());
 
     let start = std::time::Instant::now();
-    let urls = parser.parse_from_url(&url).await.unwrap();
+    let urls = parser
+        .parse_from_url(&url, &CorrelationId::new())
+        .await
+        .unwrap();
     let elapsed = start.elapsed();
 
     assert_eq!(urls.len(), 1500, "should extract all 1500 URLs");
@@ -181,7 +188,7 @@ async fn sitemap_empty_returns_error() {
 
     let parser = webfang_core::infrastructure::crawler::SitemapParser::new().unwrap();
     let url = format!("{}/empty.xml", mock.uri());
-    let result = parser.parse_from_url(&url).await;
+    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
 
     assert!(
         matches!(
@@ -217,7 +224,10 @@ async fn sitemap_deduplicates_urls() {
 
     let parser = webfang_core::infrastructure::crawler::SitemapParser::new().unwrap();
     let url = format!("{}/sitemap.xml", mock.uri());
-    let urls = parser.parse_from_url(&url).await.unwrap();
+    let urls = parser
+        .parse_from_url(&url, &CorrelationId::new())
+        .await
+        .unwrap();
 
     assert_eq!(urls.len(), 2, "duplicates should be deduplicated");
 }
@@ -251,7 +261,10 @@ async fn sitemap_with_namespaces() {
 
     let parser = webfang_core::infrastructure::crawler::SitemapParser::new().unwrap();
     let url = format!("{}/sitemap.xml", mock.uri());
-    let urls = parser.parse_from_url(&url).await.unwrap();
+    let urls = parser
+        .parse_from_url(&url, &CorrelationId::new())
+        .await
+        .unwrap();
 
     assert!(
         !urls.is_empty(),
@@ -278,7 +291,7 @@ async fn sitemap_non_xml_content_type_returns_error() {
 
     let parser = webfang_core::infrastructure::crawler::SitemapParser::new().unwrap();
     let url = format!("{}/feed", mock.uri());
-    let result = parser.parse_from_url(&url).await;
+    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
 
     assert!(
         matches!(

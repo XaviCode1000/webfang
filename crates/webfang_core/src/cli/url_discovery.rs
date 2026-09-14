@@ -13,6 +13,7 @@ use crate::application::crawler::engine::{crawl_site_with_options, EngineOptions
 
 use crate::application::discover_urls_single_fetch;
 use crate::domain::persistence::PersistenceMode;
+use crate::domain::CorrelationId;
 use crate::error::Result as ScraperResult;
 use crate::CrawlerConfig;
 
@@ -44,27 +45,27 @@ pub async fn discover_urls(
 ) -> ScraperResult<Vec<Url>> {
     let discovery_pb = build_discovery_progress_bar(opts, "Discovering URLs...");
 
-let discovered_urls = match discover_urls_single_fetch(opts.url.as_str(), crawler_config, correlation).await
-    {
-        Ok(urls) => urls,
-        Err(e) => {
-            // Treat an empty sitemap as empty discovery (technical success),
-            // not as a network error. Typed match on `SitemapEmpty` — string
-            // matching on the display message coupled exit codes to wording
-            // (stabilization-sitemap-regression). Only propagate real errors.
-            if matches!(e, crate::error::ScraperError::SitemapEmpty) {
-                if let Some(pb) = discovery_pb.as_ref() {
-                    pb.finish_with_message("No URLs found");
+    let discovered_urls =
+        match discover_urls_single_fetch(opts.url.as_str(), crawler_config, correlation).await {
+            Ok(urls) => urls,
+            Err(e) => {
+                // Treat an empty sitemap as empty discovery (technical success),
+                // not as a network error. Typed match on `SitemapEmpty` — string
+                // matching on the display message coupled exit codes to wording
+                // (stabilization-sitemap-regression). Only propagate real errors.
+                if matches!(e, crate::error::ScraperError::SitemapEmpty) {
+                    if let Some(pb) = discovery_pb.as_ref() {
+                        pb.finish_with_message("No URLs found");
+                    }
+                    Vec::new()
+                } else {
+                    if let Some(pb) = discovery_pb.as_ref() {
+                        pb.finish_with_message("Discovery failed");
+                    }
+                    return Err(e);
                 }
-                Vec::new()
-            } else {
-                if let Some(pb) = discovery_pb.as_ref() {
-                    pb.finish_with_message("Discovery failed");
-                }
-                return Err(e);
-            }
-        },
-    };
+            },
+        };
 
     if let Some(pb) = discovery_pb {
         pb.finish_with_message(format!("Found {} URLs", discovered_urls.len()).to_owned());
@@ -309,7 +310,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = discover_urls(&config, &opts).await;
+        let result = discover_urls(&config, &opts, &CorrelationId::new()).await;
         // Should return Err for unreachable host, proving Result return type
         assert!(result.is_err(), "Expected Err for unreachable host");
     }

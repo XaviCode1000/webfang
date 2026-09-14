@@ -32,10 +32,10 @@
 //! string is the `quick_xml::Error` `Display` text, so user-visible
 //! messages stay byte-identical to the pre-port behavior.
 
+use crate::domain::CorrelationId;
 use futures::future::BoxFuture;
 use thiserror::Error;
 use url::Url;
-use super::CorrelationId;
 
 /// Sitemap parser errors
 ///
@@ -170,7 +170,7 @@ pub type Result<T> = std::result::Result<T, SitemapError>;
 /// discovery polls it from `tokio::spawn`-ed crawl tasks on the
 /// multi-threaded runtime.
 pub trait SitemapParserPort: Send + Sync {
-/// Parse sitemap from URL (streaming, zero-allocation)
+    /// Parse sitemap from URL (streaming, zero-allocation)
     ///
     /// # Arguments
     ///
@@ -262,7 +262,7 @@ mod tests {
         urls: Vec<SitemapUrl>,
     }
 
-impl SitemapParserPort for FakeSitemapParser {
+    impl SitemapParserPort for FakeSitemapParser {
         fn parse_from_url<'a>(
             &'a self,
             _sitemap_url: &'a str,
@@ -282,7 +282,7 @@ impl SitemapParserPort for FakeSitemapParser {
             urls: canned.clone(),
         });
         let urls = parser
-            .parse_from_url("https://example.com/sitemap.xml")
+            .parse_from_url("https://example.com/sitemap.xml", &CorrelationId::new())
             .await
             .unwrap();
         assert_eq!(urls, canned);

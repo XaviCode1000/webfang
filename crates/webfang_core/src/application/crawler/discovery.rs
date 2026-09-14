@@ -102,7 +102,8 @@ pub async fn discover_urls_single_fetch(
 
     // If sitemap enabled, use sitemap (preferred)
     if let SitemapConfig::Enabled { url } = sitemap {
-let discovered = crawl_with_sitemap_resolved(base_url, url.as_ref(), config, correlation).await?;
+        let discovered =
+            crawl_with_sitemap_resolved(base_url, url.as_ref(), config, correlation).await?;
         let urls: Vec<Url> = discovered.into_iter().map(|d| d.url).collect();
 
         Ok(urls)
@@ -234,7 +235,7 @@ pub async fn scrape_single_url(
     )
     .await
 }
-    
+
 /// Inner implementation of [`scrape_single_url`].
 ///
 /// The `#[instrument]` span declares the per-page identity (`correlation_id`,
@@ -569,7 +570,8 @@ mod tests {
         let config = CrawlerConfig::builder(seed).timeout_secs(2).build();
 
         let start = std::time::Instant::now();
-        let result = discover_urls_single_fetch(&server.uri(), &config).await;
+        let result =
+            discover_urls_single_fetch(&server.uri(), &config, &CorrelationId::new()).await;
         let elapsed = start.elapsed();
 
         let err = result.expect_err("slow response should time out");
@@ -610,7 +612,7 @@ mod tests {
         let config = CrawlerConfig::builder(seed).timeout_secs(2).build();
 
         let start = std::time::Instant::now();
-        let result = discover_urls_single_fetch(&target, &config).await;
+        let result = discover_urls_single_fetch(&target, &config, &CorrelationId::new()).await;
         let elapsed = start.elapsed();
 
         let err = result.expect_err("TLS blackhole should fail to connect");
@@ -653,7 +655,7 @@ mod tests {
         let seed = Url::parse(&server.uri()).unwrap();
         let config = CrawlerConfig::builder(seed).max_depth(0).build();
 
-        let urls = discover_urls_single_fetch(&server.uri(), &config)
+        let urls = discover_urls_single_fetch(&server.uri(), &config, &CorrelationId::new())
             .await
             .expect("discovery should succeed");
 
@@ -690,7 +692,7 @@ mod tests {
         let seed = Url::parse(&seed_url).unwrap();
         let config = CrawlerConfig::builder(seed).max_depth(1).build();
 
-        let urls = discover_urls_single_fetch(&seed_url, &config)
+        let urls = discover_urls_single_fetch(&seed_url, &config, &CorrelationId::new())
             .await
             .expect("discovery should succeed");
 
@@ -767,7 +769,7 @@ mod tests {
         let config = ScraperConfig::new();
 
         let corr = CorrelationId::new();
-        let result = scrape_single_url(&dl, &url, &config, None, None, None, &corr)
+        let result = scrape_single_url(&dl, &url, &config, None, None, None, &corr, &corr)
             .await
             .expect("binary detection should succeed");
 
@@ -789,7 +791,7 @@ mod tests {
         let config = ScraperConfig::new();
 
         let corr = CorrelationId::new();
-        let err = scrape_single_url(&dl, &url, &config, None, None, None, &corr)
+        let err = scrape_single_url(&dl, &url, &config, None, None, None, &corr, &corr)
             .await
             .expect_err("WAF body should trigger WafBlocked");
 
@@ -816,7 +818,7 @@ work with when computing the document readability score.</p>
         let config = ScraperConfig::new();
 
         let corr = CorrelationId::new();
-        let result = scrape_single_url(&dl, &url, &config, None, None, None, &corr)
+        let result = scrape_single_url(&dl, &url, &config, None, None, None, &corr, &corr)
             .await
             .expect("normal HTML should scrape successfully");
 
@@ -838,7 +840,7 @@ work with when computing the document readability score.</p>
         let config = ScraperConfig::new();
 
         let corr = CorrelationId::new();
-        let err = scrape_single_url(&dl, &url, &config, None, None, None, &corr)
+        let err = scrape_single_url(&dl, &url, &config, None, None, None, &corr, &corr)
             .await
             .expect_err("WafChallenge download error should propagate");
 
@@ -859,7 +861,7 @@ work with when computing the document readability score.</p>
         let config = ScraperConfig::new();
 
         let corr = CorrelationId::new();
-        let err = scrape_single_url(&dl, &url, &config, None, None, None, &corr)
+        let err = scrape_single_url(&dl, &url, &config, None, None, None, &corr, &corr)
             .await
             .expect_err("404 status should produce an error");
 
