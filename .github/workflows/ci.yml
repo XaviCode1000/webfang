@@ -861,23 +861,8 @@ jobs:
           # subtree, so the pure-Rust submodules (cookie_bridge, spa_detector)
           # run under Miri. hybrid_router/resource_governor can't run under Miri
           # (sysconf via sysinfo) and are gated by #[cfg(not(miri))] at test level.
-          #
-          # Additional FFI skips (#1342, scheduled run 34801180763, 2026-09-14 —
-          # the toolchain pin from #1323 is green; these are test-level gaps the
-          # code-level #[cfg_attr(miri, ignore)] flags have not landed for yet):
-          #   - bounded_cache_tests: every test builds a real `Downloader` →
-          #     wreq::Client → boring-sys2 `TLS_method` FFI (aborted the core job).
-          #   - sitemap_discovery: `test_client()` helper builds `wreq::Client::new()`.
-          #   - default_factory_builds_an_asset_downloader (domain): the only test
-          #     in asset_downloader_factory that calls `factory.build()` → wreq
-          #     Client; skipped by exact name so `factory_port_is_object_safe`
-          #     (no FFI) keeps running under Miri.
-          # When the matching #[cfg_attr(miri, ignore)] flags land in the source,
-          # these --skip entries become inert and may be removed.
           cargo miri test --lib -- \
             --skip wreq_downloader --skip obscura_downloader --skip chromiumoxide_downloader \
-            --skip bounded_cache_tests --skip sitemap_discovery \
-            --skip default_factory_builds_an_asset_downloader \
             ${{ matrix.filter }}
 
   # ============================================================================
@@ -961,20 +946,8 @@ jobs:
           MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-disable-isolation -Zmiri-ignore-leaks -Zmiri-seed=42 -Zmiri-permissive-provenance
         run: |
           cargo miri setup
-          # v1-migration skips (#1342, scheduled run 34801180763, 2026-09-14):
-          # record_store::migrate_v1 backs up the legacy state via `fs::copy`,
-          # which routes through `copy_file_range` (syscall 326) — not
-          # implemented in Miri, even with -Zmiri-disable-isolation. Every
-          # v1-fixture test reaches it through `store.load()`. Skipped by
-          # name prefixes so the ~30 non-migration record_store tests keep
-          # running under Miri: `--skip v1_` covers the four `v1_*` tests and
-          # `--skip migrated_records` covers the fifth (its name does not
-          # share the prefix). Remove these when migrate_v1 stops using
-          # fs::copy (e.g. streams the backup instead) or the tests gain
-          # #[cfg_attr(miri, ignore)] flags.
           cargo miri test --lib -- \
             --skip wreq_downloader --skip obscura_downloader --skip chromiumoxide_downloader \
-            --skip v1_ --skip migrated_records \
             -- infrastructure::crawler:: -- infrastructure::obsidian:: -- infrastructure::export:: -- infrastructure::http:: -- infrastructure::network:: -- infrastructure::converter:: -- infrastructure::downloader::cookie_bridge:: -- infrastructure::downloader::spa_detector:: --skip wikilinks --skip syntax_highlight
 
   # ============================================================================
