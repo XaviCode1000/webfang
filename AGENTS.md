@@ -541,6 +541,19 @@ issue #N
    dispatch), never by tagging main while it is ahead.
 ```
 
+### Advisory duty (agents propose, maintainer disposes)
+
+Anything in this policy that requires a maintainer decision (EOL exception, cutting `release/X.Y`, `release:cut` on a risky minor, whether a fix applies to another line, `support:extended`) MUST reach the maintainer as a proposal — never as a bare question and never as a silent stop:
+
+1. What you determined (facts: affected versions, line states from `support.json`).
+2. Options considered (2–3, one-line trade-off each).
+3. Explicit recommendation FIRST, marked as such — including the cost of being wrong.
+4. What you need: approval label, exception issue, or a choice between the options.
+
+Example: "Bug X affects 2.4 (MAINTENANCE, non-security) → options: (a) no backport per policy **[recommended**: matches N-1 security-only; cost if wrong: 2.4 users stay exposed], (b) exception via `support:extended` [cost: opens a maintenance line for one fix]. Need: your call — (a) executes with no further action."
+
+Silence, a bare "what should I do?", and deciding governance matters alone are all failures of this duty.
+
 ### Branch taxonomy (only these exist)
 
 - `main` — development. Bases: `feat/*`, `fix/*`, `refactor/*`, `perf/*`, `docs/*`, `test/*`, `chore/*` (+ `ci/*`, `build/*`, `style/*`, `revert/*` per branch naming).
