@@ -1669,6 +1669,7 @@ mod memory_probe_tests {
     use std::sync::Arc;
 
     #[test]
+    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) unsupported by Miri")]
     fn probe_downloaded_urls_growth_50k_assets() {
         const N: usize = 50_000;
         let downloader = Downloader::new(DownloadConfig::default()).expect("downloader builds");

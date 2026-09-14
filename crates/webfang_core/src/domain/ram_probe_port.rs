@@ -166,6 +166,7 @@ mod tests {
     /// probe on its own. Before this seam the only way was to name the
     /// infrastructure concrete, which is the edge ADR-0012-B removes.
     #[test]
+    #[cfg_attr(miri, ignore = "sysinfo sysconf unsupported by Miri")]
     fn system_default_returns_a_usable_dyn_probe() {
         let probe = system_default();
         let reading = probe.ram_usage_percent();
