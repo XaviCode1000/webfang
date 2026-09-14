@@ -1711,6 +1711,7 @@ mod memory_probe_tests {
 // ~87k entries in the BEFORE data).
 // ============================================================================
 #[cfg(test)]
+#[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) unsupported by Miri")]
 mod bounded_cache_tests {
     use super::*;
     use crate::infrastructure::observability::memory_probe;
