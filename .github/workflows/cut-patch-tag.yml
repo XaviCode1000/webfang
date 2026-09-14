@@ -1,0 +1,45 @@
+name: Cut patch tag (manual)
+
+# The ONLY action that creates a tag on support/*. Always manual
+# (workflow_dispatch): patch releases are maintainer decisions, never
+# reactions to push. Tag push triggers release.yml, whose preflight
+# re-verifies Cargo.toml == tag as defense in depth.
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "support/X.Y"
+        required: true
+        type: string
+      version:
+        description: "X.Y.Z (sin v)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+          fetch-tags: true
+      - name: Verify contract
+        run: |
+          set -euo pipefail
+          case "${{ inputs.branch }}" in
+            support/*) ;;
+            *) echo "::error::solo ramas support/*" >&2; exit 1 ;;
+          esac
+          [[ "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::versión X.Y.Z" >&2; exit 1; }
+          git rev-parse "v${{ inputs.version }}" >/dev/null 2>&1 && { echo "::error::tag ya existe" >&2; exit 1; }
+          CARGO_VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
+          [[ "$CARGO_VERSION" == "${{ inputs.version }}" ]] || {
+            echo "::error::bump el commit primero: Cargo.toml=${CARGO_VERSION}, pedido=${{ inputs.version }}" >&2; exit 1; }
+      - name: Tag and push
+        run: |
+          git tag "v${{ inputs.version }}"
+          git push origin "v${{ inputs.version }}"

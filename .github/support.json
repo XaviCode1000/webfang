@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "lines": [
+    {
+      "minor": "2.1",
+      "state": "STABLE",
+      "branch": null,
+      "latest": "2.1.0",
+      "released_at": "2026-09-11T16:33:39+01:00",
+      "accepts": ["bugfix", "security"]
+    },
+    {
+      "minor": "2.0",
+      "state": "EOL",
+      "branch": null,
+      "latest": "2.0.0",
+      "released_at": "2026-09-05T18:58:40+01:00",
+      "eol_at": "2026-09-14",
+      "eol_reason": "baseline: predates support tracking"
+    }
+  ]
+}
