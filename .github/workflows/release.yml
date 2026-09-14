@@ -24,9 +24,46 @@ env:
 
 jobs:
   # ============================================================================
+  # PREFLIGHT: Resolve release channel + verify Cargo.toml matches the tag.
+  # Runs before any build so a bad tag fails fast instead of burning 4
+  # platform builds. Covers tags from main, release/X.Y and support/X.Y:
+  # release.yml is tag-triggered and branch-agnostic by design.
+  # ============================================================================
+  preflight:
+    name: Validate tag
+    runs-on: ubuntu-latest
+    outputs:
+      prerelease: ${{ steps.channel.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Resolve release channel
+        id: channel
+        env:
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          if [[ "$TAG" =~ -rc\.[0-9]+$ ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::tag $TAG no matchea ni release ni RC" >&2
+            exit 1
+          fi
+      - name: Verify Cargo.toml matches tag
+        # Only on tag push: on workflow_dispatch the checkout is a branch,
+        # so the comparison is meaningless (manual test runs keep working).
+        if: github.event_name == 'push'
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"; TAG_VERSION="${TAG_VERSION%-rc.*}"
+          CARGO_VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
+          [[ "$TAG_VERSION" == "$CARGO_VERSION" ]] || {
+            echo "::error::${GITHUB_REF_NAME} no coincide con Cargo.toml (${CARGO_VERSION})" >&2; exit 1; }
+
+  # ============================================================================
   # BUILD: Cross-compile for all platforms
   # ============================================================================
   build:
+    needs: [preflight]
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -154,7 +191,7 @@ jobs:
   # ============================================================================
   release:
     name: Create GitHub Release
-    needs: [build, checksums]
+    needs: [build, checksums, preflight]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -201,4 +238,7 @@ jobs:
             artifacts/webfang-*
             artifacts/SHA256SUMS.txt
           draft: false
-          prerelease: false
+          # Channel resolved by preflight: RC tags publish as pre-release,
+          # stable tags as full releases. Manual dispatch test runs resolve
+          # their channel from the input tag the same way.
+          prerelease: ${{ needs.preflight.outputs.prerelease }}
