@@ -118,3 +118,15 @@ jobs:
             exit 1
           fi
           echo "OK: nombre de rama."
+
+      - name: Validate branch topology (warn-only)
+        # Warn-only until the release/support-line model lands: reports
+        # misrouted PRs (e.g. hotfix/* against main) without failing.
+        # To enforce: delete the continue-on-error line AND extend the
+        # conventional-branch regex above with release/*, support/*,
+        # hotfix/* (it would reject those heads today).
+        continue-on-error: true
+        env:
+          HEAD_REF: ${{ github.head_ref || github.event.merge_group.head_ref }}
+          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref }}
+        run: scripts/check-topology.sh
