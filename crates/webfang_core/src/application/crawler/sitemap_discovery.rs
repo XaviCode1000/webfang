@@ -454,6 +454,9 @@ fn build_discovered_urls(
 ///
 /// Following **own-borrow-over-clone**: Accepts `&Url` not `&String`.
 /// Following **err-no-unwrap-prod**: Proper error handling throughout.
+// Depth bounds + client + run-root correlation (#1386) exceed the arity
+// lint; bundling would only move the same wiring one level up.
+#[allow(clippy::too_many_arguments)]
 async fn crawl_with_subpath_sitemaps(
     base_url: &str,
     base: &Url,

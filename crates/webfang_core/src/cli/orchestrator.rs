@@ -589,7 +589,7 @@ async fn prepare_phase(
         // crawl Engine so `--max-depth` is honored (bug #651): the legacy
         // `discover_urls_single_fetch` path did one fetch and silently ignored depth.
         let discovered_urls = if opts.crawl.use_sitemap {
-            match discover_urls(&crawler_config, opts, &root_correlation).await {
+            match discover_urls(&crawler_config, opts, root_correlation).await {
                 // "Site has no sitemap" is a terminal discovery state, not
                 // an infrastructure failure (#695): exit 2 lets automation
                 // distinguish it from a real network outage (exit 69).

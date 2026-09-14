@@ -213,6 +213,10 @@ pub async fn discover_urls_single_fetch(
     skip(downloader, config, asset_downloader, engine, binary_writer, correlation),
     fields(url = %url)
 )]
+// Correlation contract (#501/#1386): the run-root travels beside the
+// per-page correlation so the span declares the shared trace_id at
+// creation. Bundling would only move the same wiring one level up.
+#[allow(clippy::too_many_arguments)]
 pub async fn scrape_single_url(
     downloader: &dyn Downloader,
     url: &Url,
@@ -257,6 +261,8 @@ pub async fn scrape_single_url(
 // function past clippy's 100-line budget; the span body is cohesive and
 // splitting it would obscure the pipeline order the harness depends on.
 #[allow(clippy::too_many_lines)]
+// Same correlation contract as the outer fn: run-root beside per-page.
+#[allow(clippy::too_many_arguments)]
 async fn scrape_single_url_inner(
     downloader: &dyn Downloader,
     url: &Url,

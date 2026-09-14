@@ -304,7 +304,7 @@ pub async fn scrape_urls(
                         opts,
                         observer,
                         &page_correlation,
-                        &root_correlation,
+                        root_correlation,
                     )
                     .await;
                     (index, Some((url, outcome)))
@@ -527,7 +527,7 @@ async fn scrape_one_url(
             ctx.engine,
             None,
             page_correlation,
-            &root_correlation,
+            root_correlation,
         )
         .await
     };
