@@ -930,6 +930,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "copy_file_range(326) unsupported by Miri")]
     fn second_load_after_migration_reads_v2_without_remigrating() {
         let dir = tempdir().unwrap();
         let store = RecordStore::new("idem.test").with_state_dir(dir.path().to_path_buf());
