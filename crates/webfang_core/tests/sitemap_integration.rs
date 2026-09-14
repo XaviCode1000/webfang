@@ -5,6 +5,7 @@
 
 use webfang_core::domain::CorrelationId;
 use webfang_core::infrastructure::crawler::{SitemapError, SitemapParser};
+use webfang_test_utils::EnvGuard;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -37,17 +38,11 @@ const SITEMAP_NAMESPACES: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
   </url>
 </urlset>"#;
 
-/// One-layer entry disarmer for the loopback mock (#1382/#1369): hold at the
-/// start of each test for the duration of the fetch. These integration tests
-/// exercise the parser's fetch/parse behavior against wiremock, not the
-/// guard (pinned separately in `sitemap_discovery` tests and
-/// `sitemap_ssrf_e2e_test`).
-fn entry_guard_off() -> webfang_test_utils::EnvGuard {
-    webfang_test_utils::EnvGuard::with(&[(
-        webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
-        "1",
-    )])
-}
+// One-layer entry disarmer for the loopback mock (#1382/#1369), canonical in
+// `EnvGuard::entry_guard_off` since #1396: hold it at the start of each test for
+// the duration of the fetch. These integration tests exercise the parser's
+// fetch/parse behavior against wiremock, not the guard (pinned separately in
+// `sitemap_discovery` tests and `sitemap_ssrf_e2e_test`).
 
 /// Helper: create parser with default config (no gzip, low depth for tests)
 fn parser() -> SitemapParser {
@@ -59,7 +54,7 @@ fn parser() -> SitemapParser {
 /// Parse a valid sitemap served by wiremock — extracts all URLs.
 #[tokio::test]
 async fn test_parse_valid_sitemap_from_mock_server() {
-    let _entry_off = entry_guard_off();
+    let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/sitemap.xml"))
@@ -89,7 +84,7 @@ async fn test_parse_valid_sitemap_from_mock_server() {
 /// Parse sitemap with duplicate URLs — parser deduplicates.
 #[tokio::test]
 async fn test_parse_sitemap_deduplicates_urls() {
-    let _entry_off = entry_guard_off();
+    let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/sitemap.xml"))
@@ -114,7 +109,7 @@ async fn test_parse_sitemap_deduplicates_urls() {
 /// Parse sitemap with XML namespaces — loc elements still extracted.
 #[tokio::test]
 async fn test_parse_sitemap_with_namespaces() {
-    let _entry_off = entry_guard_off();
+    let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/sitemap.xml"))
@@ -142,7 +137,7 @@ async fn test_parse_sitemap_with_namespaces() {
 /// Empty sitemap — returns NoUrlsFound error.
 #[tokio::test]
 async fn test_parse_empty_sitemap_returns_error() {
-    let _entry_off = entry_guard_off();
+    let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/sitemap.xml"))
@@ -167,7 +162,7 @@ async fn test_parse_empty_sitemap_returns_error() {
 /// Truly malformed XML — returns XmlError.
 #[tokio::test]
 async fn test_parse_malformed_xml_returns_error() {
-    let _entry_off = entry_guard_off();
+    let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
     // Null bytes are not valid XML — quick_xml will reject them
     let bad_xml = vec![0x00, 0x00, 0x00, 0x3C, 0x00];
@@ -198,7 +193,7 @@ async fn test_parse_malformed_xml_returns_error() {
 /// Non-XML content type on non-.xml path — returns InvalidContentType.
 #[tokio::test]
 async fn test_parse_non_xml_content_type_returns_error() {
-    let _entry_off = entry_guard_off();
+    let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
     // Use non-.xml path so content-type check actually applies
     Mock::given(method("GET"))
@@ -226,7 +221,7 @@ async fn test_parse_non_xml_content_type_returns_error() {
 /// parsed as XML (issue #590).
 #[tokio::test]
 async fn test_parse_http_404_returns_no_urls() {
-    let _entry_off = entry_guard_off();
+    let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/sitemap.xml"))
@@ -248,7 +243,7 @@ async fn test_parse_http_404_returns_no_urls() {
 /// (empty content type is treated as XML).
 #[tokio::test]
 async fn test_parse_sitemap_no_content_type_accepted() {
-    let _entry_off = entry_guard_off();
+    let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/sitemap.xml"))
@@ -302,7 +297,7 @@ const SITEMAP_2: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 /// Sitemap index with multiple child sitemaps — recursively parses all.
 #[tokio::test]
 async fn test_parse_sitemap_index_recurses() {
-    let _entry_off = entry_guard_off();
+    let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
     let base_url = mock.uri();
     let index_xml = sitemap_index_with_base(&base_url);
@@ -357,7 +352,7 @@ async fn test_parse_sitemap_index_recurses() {
 /// Sitemap index where one child returns 404 — other children still parsed.
 #[tokio::test]
 async fn test_sitemap_index_partial_failure_continues() {
-    let _entry_off = entry_guard_off();
+    let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
     let base_url = mock.uri();
     let index_xml = sitemap_index_with_base(&base_url);
@@ -407,7 +402,7 @@ async fn test_sitemap_index_partial_failure_continues() {
 /// Sitemap index where ALL children fail — returns AllChildrenFailed error.
 #[tokio::test]
 async fn test_sitemap_index_all_children_failed() {
-    let _entry_off = entry_guard_off();
+    let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
     let base_url = mock.uri();
     let index_xml = sitemap_index_with_base(&base_url);
@@ -449,7 +444,7 @@ async fn test_sitemap_index_all_children_failed() {
 /// Sitemap index with malformed XML child — error included in AllChildrenFailed.
 #[tokio::test]
 async fn test_sitemap_index_malformed_child_included_in_error() {
-    let _entry_off = entry_guard_off();
+    let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
     let base_url = mock.uri();
     let index_xml = sitemap_index_with_base(&base_url);
@@ -494,7 +489,7 @@ async fn test_sitemap_index_malformed_child_included_in_error() {
 /// Self-referential sitemap index (loop) — detected and skipped.
 #[tokio::test]
 async fn test_sitemap_index_self_reference_loop_detected() {
-    let _entry_off = entry_guard_off();
+    let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
     let base_url = mock.uri();
 
@@ -530,7 +525,7 @@ async fn test_sitemap_index_self_reference_loop_detected() {
 /// Mutually referential sitemap indexes (A -> B -> A) — loop detected.
 #[tokio::test]
 async fn test_sitemap_index_mutual_reference_loop_detected() {
-    let _entry_off = entry_guard_off();
+    let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
     let base_url = mock.uri();
 
@@ -578,7 +573,7 @@ async fn test_sitemap_index_mutual_reference_loop_detected() {
 /// Sitemap index with valid child and self-reference — valid child parsed, loop skipped.
 #[tokio::test]
 async fn test_sitemap_index_mixed_valid_and_loop() {
-    let _entry_off = entry_guard_off();
+    let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
     let base_url = mock.uri();
 
@@ -645,7 +640,7 @@ async fn test_sitemap_index_mixed_valid_and_loop() {
 /// Sitemap index deduplicates URLs across multiple children.
 #[tokio::test]
 async fn test_sitemap_index_deduplicates_across_children() {
-    let _entry_off = entry_guard_off();
+    let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
     let base_url = mock.uri();
 

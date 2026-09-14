@@ -7,23 +7,19 @@
 //! Following the task spec: valid sitemap, malformed XML, large sitemap (1000+ URLs).
 
 use webfang_core::domain::CorrelationId;
+use webfang_test_utils::EnvGuard;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// One-layer entry disarmer for the loopback mock (#1382/#1369): these
-/// behavioral tests pin the parse/discover pipeline against wiremock, not
-/// the entry guard (pinned separately in `sitemap_ssrf_e2e_test`).
-fn entry_guard_off() -> webfang_test_utils::EnvGuard {
-    webfang_test_utils::EnvGuard::with(&[(
-        webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
-        "1",
-    )])
-}
+// One-layer entry disarmer for the loopback mock (#1382/#1369), canonical in
+// `EnvGuard::entry_guard_off` since #1396: these behavioral tests pin the
+// parse/discover pipeline against wiremock, not the entry guard (pinned
+// separately in `sitemap_ssrf_e2e_test`).
 
 /// Valid sitemap XML served by wiremock → discovers all URLs.
 #[tokio::test]
 async fn sitemap_valid_discovers_all_urls() {
-    let _entry_off = entry_guard_off();
+    let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
 
     let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -60,7 +56,7 @@ async fn sitemap_valid_discovers_all_urls() {
 /// Malformed XML → graceful degradation (error returned, no panic).
 #[tokio::test]
 async fn sitemap_malformed_xml_graceful_degradation() {
-    let _entry_off = entry_guard_off();
+    let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
 
     // Null bytes — not valid XML
@@ -88,7 +84,7 @@ async fn sitemap_malformed_xml_graceful_degradation() {
 /// Partially malformed XML (missing closing tags) — parser handles gracefully.
 #[tokio::test]
 async fn sitemap_partially_malformed_xml() {
-    let _entry_off = entry_guard_off();
+    let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
 
     let partial_xml = r#"<?xml version="1.0"?>
@@ -124,7 +120,7 @@ async fn sitemap_partially_malformed_xml() {
 /// Large sitemap (1000+ URLs) → performance check (parses within reasonable time).
 #[tokio::test]
 async fn sitemap_large_1000_plus_urls() {
-    let _entry_off = entry_guard_off();
+    let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
 
     let mut xml = String::from(
@@ -169,7 +165,7 @@ async fn sitemap_large_1000_plus_urls() {
 /// Empty sitemap → NoUrlsFound error.
 #[tokio::test]
 async fn sitemap_empty_returns_error() {
-    let _entry_off = entry_guard_off();
+    let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
 
     let empty_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -202,7 +198,7 @@ async fn sitemap_empty_returns_error() {
 /// Sitemap with duplicate URLs → deduplicated.
 #[tokio::test]
 async fn sitemap_deduplicates_urls() {
-    let _entry_off = entry_guard_off();
+    let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
 
     let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -235,7 +231,7 @@ async fn sitemap_deduplicates_urls() {
 /// Sitemap with XML namespaces → loc elements still extracted.
 #[tokio::test]
 async fn sitemap_with_namespaces() {
-    let _entry_off = entry_guard_off();
+    let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
 
     let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -276,7 +272,7 @@ async fn sitemap_with_namespaces() {
 /// Non-XML content type on non-.xml path → InvalidContentType error.
 #[tokio::test]
 async fn sitemap_non_xml_content_type_returns_error() {
-    let _entry_off = entry_guard_off();
+    let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
 
     Mock::given(method("GET"))

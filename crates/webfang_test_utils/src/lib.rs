@@ -27,9 +27,61 @@
 //! | `WEBFANG_DISABLE_SSRF` (presence) | — (literal in `llm_extraction::ssrf_gate`, #703) | LLM base-URL SSRF gate |
 //! | `WEBFANG_MCP_DISABLE_SSRF` | `webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV` (#1348) | MCP entry validator |
 //!
-//! Tests that exercise the robots chain must use
-//! [`EnvGuard::wiremock_robots`], which arms the entry-guard and MCP
-//! hatches together — never a single hatch by hand (#1308).
+//! # Which hatch may a test arm? (#1308, scoped by #1396)
+//!
+//! The #1308 rule is about the **robots chain**, whose two entry hatches —
+//! `WEBFANG_DISABLE_SSRF_ENTRY_GUARD` and `WEBFANG_MCP_DISABLE_SSRF` — are
+//! read by the same fetch path. A robots test that arms only one of them
+//! leaves the other layer armed, so it can pass on a phantom denial label
+//! instead of the robots rules it means to exercise. For that chain the rule
+//! is still absolute: use [`EnvGuard::wiremock_robots`] and never arm one of
+//! *its two* hatches by hand.
+//!
+//! It was never a ban on single-hatch tests, and #1396 says so explicitly.
+//! A suite whose subject is one layer arms exactly that layer — through a
+//! named constructor, never by spelling the variable out at the call site:
+//!
+//! | Path under test | Constructor | Hatches armed |
+//! |---|---|---|
+//! | robots chain | [`EnvGuard::wiremock_robots`] | entry guard + MCP validator |
+//! | MCP scrape of a loopback mock | [`EnvGuard::ssrf_hatches_off`] | entry guard + MCP validator |
+//! | entry guard only (sitemap parse/discover suites) | [`EnvGuard::entry_guard_off`] | entry guard only |
+//!
+//! What #1308 actually forbids is an *ad-hoc* hatch: a literal env name at a
+//! call site, where a rename silently desynchronizes writer and reader and
+//! where nobody can see which layer the test disarmed. Adding another named
+//! constructor is cheap; restating a variable is not.
+//!
+//! # Nesting invariant: prime env-writing `Once` init BEFORE taking `ENV_LOCK` (#1224)
+//!
+//! Every constructor and helper in this module acquires the process-wide
+//! `ENV_LOCK`, and that lock is **not reentrant**. An `EnvGuard` holds it for
+//! its entire lifetime, so the ordering of *process-wide lazy
+//! initialization* is load-bearing — getting it wrong self-deadlocked the
+//! whole `Tests (all features)` lane (PR #1224):
+//!
+//! - Init that only **reads** the env, or mutates none, is safe anywhere —
+//!   e.g. an `OnceLock` that installs a port (`ensure_waf_inspector` in
+//!   `application/crawler/sitemap_discovery.rs`).
+//! - Init that **writes** the env — the shape is
+//!   `Once::call_once(|| env_set(..))` or `OnceLock::get_or_init(|| env_set(..))`,
+//!   because [`env_set`] and [`env_remove`] take `ENV_LOCK` themselves — run
+//!   for the first time *inside* a guard's scope deadlocks: the init blocks on
+//!   a lock the same test already holds. Under nextest every test is its own
+//!   process, so the `Once` has genuinely not fired yet and the hang is total.
+//!
+//! The fix is to prime the `Once` while this task holds no lock, in a blocking
+//! thread, and only then build the guard (live instance: `ssrf_guards_off` in
+//! `crates/webfang_mcp/tests/scraping_coverage_test.rs`):
+//!
+//! ```ignore
+//! // Prime the ONCE outside our own lock scope (#1224).
+//! let _ = tokio::task::spawn_blocking(init_ssrf_disabled).await;
+//! let _guards = webfang_test_utils::EnvGuard::entry_guard_off();
+//! ```
+//!
+//! Keep the idempotent init at its original call site as well — after priming
+//! it is a no-op, and it still covers harnesses that run without a guard.
 
 use regex::Regex;
 use std::env;
@@ -136,11 +188,19 @@ impl EnvGuard {
     ///    `webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV`,
     ///    landed with #1348 and adopted here with #1370).
     ///
-    /// The #1308 lesson: a robots test that arms only ONE hatch leaves the
-    /// other chain layer armed, so the test can pass on a phantom denial
-    /// label instead of the robots rules it means to exercise. Always use
-    /// this constructor for tests that drive the robots path against a
-    /// wiremock loopback literal — never arm a single hatch by hand.
+    /// The #1308 lesson: a robots test that arms only ONE of these two leaves
+    /// the other chain layer armed, so the test can pass on a phantom denial
+    /// label instead of the robots rules it means to exercise. Always use this
+    /// constructor for tests that drive the robots path against a wiremock
+    /// loopback literal — within that chain, never arm one of its two hatches
+    /// on its own.
+    ///
+    /// The rule is scoped to the robots chain, not to every test (#1396): a
+    /// suite whose subject is a single different layer disarms exactly that
+    /// layer, through its own named constructor — [`EnvGuard::entry_guard_off`]
+    /// for the literal-IP entry guard, [`EnvGuard::ssrf_hatches_off`] for an MCP
+    /// loopback scrape. What stays forbidden everywhere is the ad-hoc form: a
+    /// literal env variable spelled out at the call site.
     ///
     /// The guard restores both variables on drop.
     #[must_use]
@@ -155,6 +215,42 @@ impl EnvGuard {
                 "1",
             ),
         ])
+    }
+
+    /// Disarm ONLY the literal-IP SSRF entry guard (#1396).
+    ///
+    /// Sets `WEBFANG_DISABLE_SSRF_ENTRY_GUARD` to the exact `"1"` the guard
+    /// demands (canonical const:
+    /// `webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV`) and nothing
+    /// else: the MCP validator, the connect-time validating resolver (layer 3)
+    /// and the redirect guard (layer 4) all stay armed. The guard restores the
+    /// variable on drop.
+    ///
+    /// Use it for suites whose subject is a path that trips over exactly one
+    /// layer — a wiremock loopback driven through the sitemap parser or the
+    /// discovery chain (#1382): the entry guard rejects the literal seed, the
+    /// other layers never see it. It is NOT the right helper for the robots
+    /// chain, which consults two hatches: use [`EnvGuard::wiremock_robots`]
+    /// there (#1308, see the module docs).
+    ///
+    /// This replaces five byte-identical local `fn entry_guard_off` helpers that
+    /// had drifted into five copies of the same env name and value. The posture
+    /// argument ("this suite pins X, not the guard") is per-file and stays at
+    /// the call site as a comment; the mutation itself lives here, once.
+    ///
+    /// # Nesting (#1224)
+    ///
+    /// The returned guard holds the non-reentrant `ENV_LOCK` for its whole
+    /// lifetime. If the harness has a process-wide `Once` init that *writes* the
+    /// environment, prime it in `spawn_blocking` before calling this, or the
+    /// first fetch self-deadlocks on a lock this test already holds — see the
+    /// module-doc section "Nesting invariant".
+    #[must_use]
+    pub fn entry_guard_off() -> Self {
+        Self::with(&[(
+            webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+            "1",
+        )])
     }
 
     /// Remove the given variables from the environment, saving originals for
@@ -624,6 +720,70 @@ mod tests {
 
         assert!(env::var(WEBFANG_MCP_DISABLE_SSRF_ENV).is_err());
         assert!(env::var(DISABLE_ENTRY_GUARD_ENV).is_err());
+    }
+
+    /// The #1396 boundary pin: `entry_guard_off` lifts the literal-IP entry
+    /// guard and NOTHING else. The three sibling hatches stay untouched, so a
+    /// suite that leans on this constructor cannot silently disarm the MCP
+    /// validator, the resolving-time DNS guard, or the redirect guard — the
+    /// failure mode #1308 was about. Restoration is on drop.
+    #[test]
+    fn entry_guard_off_arms_only_the_entry_hatch_and_restores_it() {
+        use webfang_core::domain::ssrf_guard::{
+            DISABLE_ENTRY_GUARD_ENV, DISABLE_REDIRECT_GUARD_ENV, DISABLE_VALIDATING_RESOLVER_ENV,
+            WEBFANG_MCP_DISABLE_SSRF_ENV,
+        };
+        let hatches = [
+            DISABLE_ENTRY_GUARD_ENV,
+            WEBFANG_MCP_DISABLE_SSRF_ENV,
+            DISABLE_VALIDATING_RESOLVER_ENV,
+            DISABLE_REDIRECT_GUARD_ENV,
+        ];
+        {
+            let _lock = env_lock();
+            for hatch in hatches {
+                env::remove_var(hatch);
+            }
+            // One sibling starts armed so "untouched" cannot be confused with
+            // "set to nothing": drop must put the armed value back.
+            env::set_var(DISABLE_VALIDATING_RESOLVER_ENV, "1");
+        }
+
+        {
+            let _guard = EnvGuard::entry_guard_off();
+            assert_eq!(
+                env::var(DISABLE_ENTRY_GUARD_ENV).as_deref(),
+                Ok("1"),
+                "entry hatch must be armed with the exact value the guard reads"
+            );
+            assert!(
+                env::var(WEBFANG_MCP_DISABLE_SSRF_ENV).is_err(),
+                "MCP validator hatch must stay armed (untouched)"
+            );
+            assert_eq!(
+                env::var(DISABLE_VALIDATING_RESOLVER_ENV).as_deref(),
+                Ok("1"),
+                "resolver hatch must keep the value it had before the guard"
+            );
+            assert!(
+                env::var(DISABLE_REDIRECT_GUARD_ENV).is_err(),
+                "redirect hatch must stay armed (untouched)"
+            );
+        }
+
+        {
+            let _lock = env_lock();
+            assert!(
+                env::var(DISABLE_ENTRY_GUARD_ENV).is_err(),
+                "entry hatch must be restored to its absent original"
+            );
+            assert_eq!(
+                env::var(DISABLE_VALIDATING_RESOLVER_ENV).as_deref(),
+                Ok("1"),
+                "the sibling armed before the guard must survive it"
+            );
+            env::remove_var(DISABLE_VALIDATING_RESOLVER_ENV);
+        }
     }
 
     #[test]

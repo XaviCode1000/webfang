@@ -998,17 +998,12 @@ mod waf_inspection_tests {
     use super::*;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    /// One-layer entry disarmer for loopback mocks (#1382/#1369): wiremock
-    /// binds 127.0.0.1, which the parser's entry guard now rejects pre-socket
-    /// in production posture. These tests exercise WAF inspection, not the
-    /// guard (pinned in `sitemap_discovery` tests + `sitemap_ssrf_e2e_test`).
-    fn entry_guard_off() -> webfang_test_utils::EnvGuard {
-        webfang_test_utils::EnvGuard::with(&[(
-            crate::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
-            "1",
-        )])
-    }
+    // One-layer entry disarmer for loopback mocks (#1382/#1369), canonical in
+    // `webfang_test_utils::EnvGuard::entry_guard_off` since #1396: wiremock binds
+    // 127.0.0.1, which the parser's entry guard now rejects pre-socket in
+    // production posture. These tests exercise WAF inspection, not the guard
+    // (pinned in `sitemap_discovery` tests + `sitemap_ssrf_e2e_test`).
+    use webfang_test_utils::EnvGuard;
 
     // ── Issue #879 (Option A): WAF inspection over sitemap bodies ──
 
@@ -1048,7 +1043,7 @@ mod waf_inspection_tests {
     /// plus a structured trace event — not a generic XML parse failure (#879).
     #[test]
     fn parse_from_url_waf_challenge_body_returns_typed_error_and_trace_event() {
-        let _entry_off = entry_guard_off();
+        let _entry_off = EnvGuard::entry_guard_off();
         let buf = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
         let subscriber = tracing_subscriber::fmt()
             .with_writer(SharedWriter(buf.clone()))
@@ -1106,7 +1101,7 @@ mod waf_inspection_tests {
     /// swallowed into `AllChildrenFailed` (#879).
     #[tokio::test]
     async fn index_child_waf_challenge_propagates_typed_error() {
-        let _entry_off = entry_guard_off();
+        let _entry_off = EnvGuard::entry_guard_off();
         let mock = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/sitemap.xml"))
@@ -1149,7 +1144,7 @@ mod waf_inspection_tests {
     /// Fingerprint-tier evidence and must NOT raise `WafChallenge` (REQ-WAF-09).
     #[tokio::test]
     async fn benign_sitemap_body_mentioning_vendor_is_not_a_challenge() {
-        let _entry_off = entry_guard_off();
+        let _entry_off = EnvGuard::entry_guard_off();
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
         <!-- served behind cloudflare -->
         <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
@@ -1187,17 +1182,12 @@ mod waf_inspection_tests {
 #[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
-
-    /// One-layer entry disarmer for loopback mocks (#1382/#1369): wiremock
-    /// binds 127.0.0.1, which the parser's entry guard now rejects pre-socket
-    /// in production posture. These tests exercise WAF inspection, not the
-    /// guard (pinned in `sitemap_discovery` tests + `sitemap_ssrf_e2e_test`).
-    fn entry_guard_off() -> webfang_test_utils::EnvGuard {
-        webfang_test_utils::EnvGuard::with(&[(
-            crate::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
-            "1",
-        )])
-    }
+    // One-layer entry disarmer for loopback mocks (#1382/#1369), canonical in
+    // `webfang_test_utils::EnvGuard::entry_guard_off` since #1396: wiremock binds
+    // 127.0.0.1, which the parser's entry guard now rejects pre-socket in
+    // production posture. These tests exercise fetch + compression decoding, not
+    // the guard (pinned in `sitemap_discovery` tests + `sitemap_ssrf_e2e_test`).
+    use webfang_test_utils::EnvGuard;
 
     #[tokio::test]
     async fn test_parse_simple_sitemap() {
@@ -1339,7 +1329,7 @@ mod tests {
     /// MUST be checked BEFORE content-type (issue #590).
     #[tokio::test]
     async fn test_sitemap_404_yields_http_error_not_content_type() {
-        let _entry_off = entry_guard_off();
+        let _entry_off = EnvGuard::entry_guard_off();
         use wiremock::matchers::path;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1391,7 +1381,7 @@ mod tests {
     /// After the fix, extension without magic bytes passes through.
     #[tokio::test]
     async fn test_sitemap_gz_with_content_encoding_header() {
-        let _entry_off = entry_guard_off();
+        let _entry_off = EnvGuard::entry_guard_off();
         use wiremock::matchers::path;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1429,7 +1419,7 @@ mod tests {
     /// magic-byte sniffing detects gzip and the handler decompresses.
     #[tokio::test]
     async fn test_sitemap_gz_body_without_content_encoding() {
-        let _entry_off = entry_guard_off();
+        let _entry_off = EnvGuard::entry_guard_off();
         use wiremock::matchers::path;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1466,7 +1456,7 @@ mod tests {
     /// after the fix, magic-byte sniffing passes it through untouched.
     #[tokio::test]
     async fn test_sitemap_lying_gz_extension_with_plain_body() {
-        let _entry_off = entry_guard_off();
+        let _entry_off = EnvGuard::entry_guard_off();
         use wiremock::matchers::path;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
