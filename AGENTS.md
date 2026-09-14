@@ -496,6 +496,112 @@ If you detect you operated outside your assigned worktree, or `git stash pop` ap
 
 ---
 
+## 🏷️ Branching + Releases + Hotfix + Backport + Support + EOL
+
+### Validity status (read first — this section phases in)
+
+- **ACTIVE today:** `main` as the only development line; tags `v*` from `main`; `release.yml` preflight (RC vs stable channel + `tag == Cargo.toml` fail-fast); `support.json` + `SUPPORT.md` (2.1 STABLE, 2.0 EOL); process labels (`release:cut`, `support:create`, `support:extended`, `breaking:*`, `migration:*`); the agent routing below.
+- **WARN-ONLY today:** the branch-topology check in `pr-validation.yml` reports misrouted PRs without failing (`continue-on-error`). Read its output; do not rely on it as a gate yet.
+- **NOT YET:** no `release/*` or `support/*` branch exists. Do not create one speculatively — support lines are materialized on demand (see below), never "just in case". Enforcement (removing `continue-on-error`) lands separately after the soak.
+
+### Mental model: version first, branch second
+
+Never start from "where do I create my worktree". Start from the issue:
+
+```text
+issue #N
+  → affected version?
+  → .github/support.json (jq, no LLM needed)
+  → line state?
+  → correct branch
+  → worktree
+```
+
+`main` is always DEVELOPMENT (vNext) — never a release line and never a hotfix target. A hotfix branch physically cannot contain future code when it is based on `support/X.Y`: the safety is structural, not disciplinary.
+
+### Agent routing (execute in order, stop at the first match)
+
+```text
+1. No version named (or version == main HEAD, no later work)? → main, normal flow.
+2. Named version, main NOT ahead? → main, normal flow.
+3. Named version, main ahead? → read support.json for line X.Y:
+   EOL → STOP. Comment "línea EOL, requiere excepción del maintainer". Create nothing.
+   MAINTENANCE → only if the bug is security; otherwise STOP as EOL.
+   STABLE → step 4.
+4. support/X.Y exists? → new worktree on it, hotfix/* based on support/X.Y.
+   Missing? → create support/X.Y from tag vX.Y.latest FIRST (cut-support-branch.sh,
+   inside chore/support-*, never on main), then as above. Never branch a hotfix from main.
+5. Hotfix PR base MUST be support/X.Y — verify with `gh pr view --json baseRefName`.
+   Base = main on a hotfix PR is a review-blocking error.
+6. After merge: forward-port to main the same day (cherry-pick -x, same issue) if the
+   affected code still exists there; else record `Backport: not-applicable (<reason>)`.
+7. Fix lands on the OLDEST supported affected line first, then cherry-picks upward
+   (fix-oldest-first). Never merge main INTO support/* (that drags the future into stable).
+8. Patch tags (vX.Y.Z+1) are cut on the support line via cut-patch-tag.yml (manual
+   dispatch), never by tagging main while it is ahead.
+```
+
+### Branch taxonomy (only these exist)
+
+- `main` — development. Bases: `feat/*`, `fix/*`, `refactor/*`, `perf/*`, `docs/*`, `test/*`, `chore/*` (+ `ci/*`, `build/*`, `style/*`, `revert/*` per branch naming).
+- `release/X.Y` — TEMPORARY stabilization for a MINOR/MAJOR. Cut by the maintainer from an explicit main SHA. Accepts only `fix/*` based on it. No features. Deleted when `vX.Y.0` ships. PATCH releases never create one.
+- `support/X.Y` — maintenance line, created ON DEMAND from the line's latest tag when (and only when) it needs a patch while main is ahead. Accepts only `hotfix/*`. Deleted at EOL — a deleted support branch IS the EOL marker, but `support.json` is the source of truth, not the branch.
+- `hotfix/*` — MUST be based on `support/X.Y` (or the affected tag when materializing the support branch in the same move). PR base MUST be `support/X.Y`, never `main`.
+
+### Line states (`accepts` in support.json is machine-checkable — prefer jq over prose)
+
+| State | Features | Bugfix | Security | Releases |
+|---|---|---|---|---|
+| DEVELOPMENT (`main`) | yes | yes | yes | no (only via cut) |
+| STABILIZATION (`release/X.Y`) | **no** | yes (blockers) | yes | `rc.N` |
+| STABLE (latest minor) | no | yes (via support) | yes | patch `Z+1` |
+| MAINTENANCE (previous minor) | no | no | yes (best-effort) | security patch |
+| EOL | no | no | no (explicit exception only) | no |
+
+Support window (structural, no calendar): at most 2 live lines. Publishing `vX.(Y+1).0` demotes the previous STABLE to MAINTENANCE (security-only) and EOLs the previous MAINTENANCE automatically (`rotate-stable.sh`). Exceptions via approved issue, traced as `extended_by` / `support:extended` — an EOL line never silently revives.
+
+### Release candidates
+
+- PATCH: no RC, straight tag on the support line.
+- MINOR/MAJOR: `vX.Y.0-rc.N` (`prerelease:true`, resolved by `release.yml` preflight) only when the maintainer declares a stabilization window (state migrations, export format, ONNX/ai changes). During RC, `release/X.Y` takes fixes only; `main` stays open.
+
+### Cutting a release (labels are signals, authority is the maintainer)
+
+- `MAJOR` → always cuts `release/X.Y`. `PATCH` → never does.
+- `MINOR` → cuts `release/X.Y` when it touches state format/compat, SQLite migrations, behavior incompatible with existing installs, major AI/ONNX changes, operational protocol/API changes, or any issue explicitly marked release-risk. Labels (`breaking:*`, `migration:*`) and the categories above are triage *signals*; the *decision* is the maintainer applying `release:cut`. A forgotten label must never silently skip stabilization for a risky minor.
+
+### Versioning authority
+
+- `release-plz` owns versioning on `main` (Release PR → tag `v*` → binaries). It NEVER runs on `support/*`: both `release-pr` and `update` fail on `cargo package` for the unpublished path+version deps (same #1337 codepath, verified by pre-flight) — and `release-pr` targets the default branch by upstream design (#2159 open).
+- On `support/*`: manual PATCH via `bump-support-patch.sh` INSIDE the hotfix PR (fix commit(s) first, then the script enforces the release contract — tag uniqueness, line `accepts`, lock in sync, CHANGELOG entry, snapshot green — and produces the single `chore: bump` commit). Never run `release-plz` against a support branch.
+- Version bumps are release acts, never part of feature/fix commits. Inter-crate pins stay at `^old` by #1339 precedent — only the root `[workspace.package]` version moves.
+
+### Governance scripts (all fail-closed; safe to re-run)
+
+Run inside a `chore/support-*` branch (base `main`); mutations travel by normal PR (issue + `status:approved` + `type:chore`). Never on a `main` or `support/*` checkout. `SUPPORT.md` is rendered (`render-support-md.sh`), never hand-edited — same single-writer pattern as `CHANGELOG.md`.
+
+| Script | Event |
+|---|---|
+| `cut-support-branch.sh X.Y` | Materialize branch from the line's latest tag (refuses EOL/unknown lines) |
+| `rotate-stable.sh X.Y` | On publishing `vX.(Y+1).0`: demote + auto-EOL (idempotent per argument) |
+| `eol-line.sh X.Y` | Declare EOL (deletes branch remote+local, marks entry) |
+| `render-support-md.sh` | Regenerate `SUPPORT.md` (agent commits both files; CI verifies diff only) |
+| `bump-support-patch.sh X.Y.Z [pr#]` | Manual patch bump with release-contract checks (see above) |
+| `check-topology.sh` | Head-prefix → base validation (CI warn-only until enforcement) |
+
+### Merge Queue (durable statement, not environment-dependent)
+
+The repository currently does not use GitHub Merge Queue; `merge-when-green.sh` + batch merge (same-`baseRefName` required within a batch) is the integration mechanism. Re-evaluate if repository ownership/plan changes.
+
+### Forbidden operations (review-blocking, CI-enforced at enforcement time)
+
+- Merging `main` INTO `support/*`. Cherry-picking `main` → `support/*` without an approved issue.
+- Tagging `vX.Y.Z+1` from `main` while it is ahead of `vX.Y.Z`. A hotfix PR with base `main`.
+- Creating `support/*` "just in case". Editing `SUPPORT.md` by hand. Running `release-plz` on a support branch.
+- Batching PRs with different `baseRefName` (disjoint files are not sufficient).
+
+---
+
 ## 🔒 Safety & Permissions
 
 ### Allowed without asking
