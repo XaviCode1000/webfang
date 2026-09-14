@@ -831,6 +831,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "copy_file_range(326) unsupported by Miri")]
     fn v1_state_file_migrates_to_committed_v2_records_with_backup() {
         let dir = tempdir().unwrap();
         let store = RecordStore::new("migrate.test").with_state_dir(dir.path().to_path_buf());
@@ -879,6 +880,7 @@ mod tests {
     /// well-formed neighbors (file-level Corrupt stays reserved for
     /// unparseable structure).
     #[test]
+    #[cfg_attr(miri, ignore = "copy_file_range(326) unsupported by Miri")]
     fn v1_migration_drops_empty_urls_but_keeps_neighbors() {
         let dir = tempdir().unwrap();
         let store = RecordStore::new("empty.test").with_state_dir(dir.path().to_path_buf());
@@ -915,6 +917,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "copy_file_range(326) unsupported by Miri")]
     fn migrated_records_survive_invariant_validation_despite_null_hash() {
         // Migrated records are Committed with content_hash/output_location
         // = None: the MIGRATED_V1_RUN_ID exemption must keep them.
@@ -972,6 +975,7 @@ mod tests {
     // --- #876: empty-string URL is structurally meaningless identity ----
 
     #[test]
+    #[cfg_attr(miri, ignore = "copy_file_range(326) unsupported by Miri")]
     fn v1_empty_string_url_is_quarantined_never_committed() {
         let dir = tempdir().unwrap();
         let store = RecordStore::new("empty-v1.test").with_state_dir(dir.path().to_path_buf());
@@ -1022,6 +1026,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(miri, ignore = "copy_file_range(326) unsupported by Miri")]
     fn v1_whitespace_only_url_is_quarantined_never_committed() {
         let dir = tempdir().unwrap();
         let store = RecordStore::new("ws-v1.test").with_state_dir(dir.path().to_path_buf());
