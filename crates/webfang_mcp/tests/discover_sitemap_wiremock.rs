@@ -13,9 +13,9 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use webfang_core::domain::CorrelationId;
 
-/// Entry-hatch posture for the loopback mock seed (#1382/#1369): the
-/// subject is the response shape, not the guard — one-layer disarmer via
-/// the canonical constructor.
+// Entry-hatch posture for the loopback mock seed (#1382/#1369): the
+// subject is the response shape, not the guard — one-layer disarmer via
+// the canonical constructor.
 
 /// Fake sitemap XML with exactly 2 `<loc>` entries.
 const SITEMAP_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
