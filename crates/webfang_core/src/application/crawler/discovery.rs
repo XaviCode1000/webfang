@@ -56,6 +56,7 @@ pub use crate::application::extraction::extract_content;
 ///
 /// * `base_url` - Base URL to discover from
 /// * `config` - Crawler configuration
+/// * `correlation` - Caller run-root correlation (spans derive children from it)
 ///
 /// # Returns
 ///
@@ -65,7 +66,7 @@ pub use crate::application::extraction::extract_content;
 /// # Examples
 ///
 /// ```no_run
-/// use webfang_core::{application::discover_urls_single_fetch, domain::CrawlerConfig};
+/// use webfang_core::{application::discover_urls_single_fetch, domain::{CorrelationId, CrawlerConfig}};
 /// use url::Url;
 ///
 /// # #[tokio::main]
@@ -73,7 +74,7 @@ pub use crate::application::extraction::extract_content;
 /// let seed = Url::parse("https://example.com")?;
 /// let config = CrawlerConfig::new(seed);
 ///
-/// let urls = discover_urls_single_fetch("https://example.com", &config).await?;
+/// let urls = discover_urls_single_fetch("https://example.com", &config, &CorrelationId::new()).await?;
 /// println!("Found {} URLs", urls.len());
 /// # Ok(())
 /// # }

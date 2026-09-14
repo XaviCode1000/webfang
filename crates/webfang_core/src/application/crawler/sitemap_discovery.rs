@@ -38,6 +38,7 @@ use url::Url;
 /// * `base_url` - Base URL of the website
 /// * `sitemap_url` - Optional explicit sitemap URL (auto-discovers if None)
 /// * `config` - Crawler configuration
+/// * `correlation` - Caller run-root correlation (spans derive children from it)
 ///
 /// # Returns
 ///
@@ -48,7 +49,7 @@ use url::Url;
 ///
 /// ```no_run
 /// use webfang_core::application::crawl_with_sitemap;
-/// use webfang_core::domain::CrawlerConfig;
+/// use webfang_core::domain::{CorrelationId, CrawlerConfig};
 /// use url::Url;
 ///
 /// # #[tokio::main]
@@ -56,7 +57,7 @@ use url::Url;
 /// let seed = Url::parse("https://example.com")?;
 /// let config = CrawlerConfig::new(seed);
 ///
-/// let urls = crawl_with_sitemap("https://example.com", None, &config).await?;
+/// let urls = crawl_with_sitemap("https://example.com", None, &config, &CorrelationId::new()).await?;
 /// println!("Found {} URLs from sitemap", urls.len());
 /// # Ok(())
 /// # }
