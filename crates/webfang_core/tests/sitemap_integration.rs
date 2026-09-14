@@ -3,6 +3,7 @@
 //! Exercises `parse_from_url` end-to-end against a wiremock `MockServer`,
 //! covering happy paths, edge cases, and error conditions per R-INT-02.
 
+use webfang_core::domain::CorrelationId;
 use webfang_core::infrastructure::crawler::{SitemapError, SitemapParser};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -72,7 +73,10 @@ async fn test_parse_valid_sitemap_from_mock_server() {
 
     let parser = parser();
     let url = format!("{}/sitemap.xml", mock.uri());
-    let urls = parser.parse_from_url(&url).await.unwrap();
+    let urls = parser
+        .parse_from_url(&url, &CorrelationId::new())
+        .await
+        .unwrap();
 
     assert_eq!(urls.len(), 3, "should extract 3 URLs from sitemap");
 
@@ -99,7 +103,10 @@ async fn test_parse_sitemap_deduplicates_urls() {
 
     let parser = parser();
     let url = format!("{}/sitemap.xml", mock.uri());
-    let urls = parser.parse_from_url(&url).await.unwrap();
+    let urls = parser
+        .parse_from_url(&url, &CorrelationId::new())
+        .await
+        .unwrap();
 
     assert_eq!(urls.len(), 2, "duplicates should be deduplicated");
 }
@@ -121,7 +128,10 @@ async fn test_parse_sitemap_with_namespaces() {
 
     let parser = parser();
     let url = format!("{}/sitemap.xml", mock.uri());
-    let urls = parser.parse_from_url(&url).await.unwrap();
+    let urls = parser
+        .parse_from_url(&url, &CorrelationId::new())
+        .await
+        .unwrap();
 
     assert_eq!(urls.len(), 1, "should extract the one loc URL");
     assert_eq!(urls[0].url.as_str(), "https://example.com/gallery");
@@ -146,7 +156,7 @@ async fn test_parse_empty_sitemap_returns_error() {
 
     let parser = parser();
     let url = format!("{}/sitemap.xml", mock.uri());
-    let result = parser.parse_from_url(&url).await;
+    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
 
     assert!(
         matches!(result, Err(SitemapError::NoUrlsFound)),
@@ -173,7 +183,7 @@ async fn test_parse_malformed_xml_returns_error() {
 
     let parser = parser();
     let url = format!("{}/feed", mock.uri());
-    let result = parser.parse_from_url(&url).await;
+    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
 
     // Null bytes cause XmlError or NoUrlsFound depending on parser behavior
     assert!(
@@ -203,7 +213,7 @@ async fn test_parse_non_xml_content_type_returns_error() {
 
     let parser = parser();
     let url = format!("{}/feed", mock.uri());
-    let result = parser.parse_from_url(&url).await;
+    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
 
     assert!(
         matches!(result, Err(SitemapError::InvalidContentType(_))),
@@ -226,7 +236,7 @@ async fn test_parse_http_404_returns_no_urls() {
 
     let parser = parser();
     let url = format!("{}/sitemap.xml", mock.uri());
-    let result = parser.parse_from_url(&url).await;
+    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
 
     assert!(
         matches!(result, Err(SitemapError::HttpError { .. })),
@@ -248,7 +258,10 @@ async fn test_parse_sitemap_no_content_type_accepted() {
 
     let parser = parser();
     let url = format!("{}/sitemap.xml", mock.uri());
-    let urls = parser.parse_from_url(&url).await.unwrap();
+    let urls = parser
+        .parse_from_url(&url, &CorrelationId::new())
+        .await
+        .unwrap();
 
     assert_eq!(urls.len(), 3, "should parse sitemap without Content-Type");
 }
@@ -324,7 +337,10 @@ async fn test_parse_sitemap_index_recurses() {
 
     let parser = parser();
     let url = format!("{}/sitemap-index.xml", mock.uri());
-    let urls = parser.parse_from_url(&url).await.unwrap();
+    let urls = parser
+        .parse_from_url(&url, &CorrelationId::new())
+        .await
+        .unwrap();
 
     assert_eq!(
         urls.len(),
@@ -372,7 +388,10 @@ async fn test_sitemap_index_partial_failure_continues() {
 
     let parser = parser();
     let url = format!("{}/sitemap-index.xml", mock.uri());
-    let urls = parser.parse_from_url(&url).await.unwrap();
+    let urls = parser
+        .parse_from_url(&url, &CorrelationId::new())
+        .await
+        .unwrap();
 
     // Should still parse the successful child
     assert_eq!(
@@ -415,7 +434,7 @@ async fn test_sitemap_index_all_children_failed() {
 
     let parser = parser();
     let url = format!("{}/sitemap-index.xml", mock.uri());
-    let result = parser.parse_from_url(&url).await;
+    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
 
     assert!(
         matches!(result, Err(SitemapError::AllChildrenFailed(count, _)) if count == 2),
@@ -461,7 +480,7 @@ async fn test_sitemap_index_malformed_child_included_in_error() {
 
     let parser = parser();
     let url = format!("{}/sitemap-index.xml", mock.uri());
-    let result = parser.parse_from_url(&url).await;
+    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
 
     assert!(
         matches!(result, Err(SitemapError::AllChildrenFailed(count, _)) if count == 2),
@@ -501,7 +520,7 @@ async fn test_sitemap_index_self_reference_loop_detected() {
 
     let parser = parser();
     let url = format!("{}/sitemap-index.xml", mock.uri());
-    let result = parser.parse_from_url(&url).await;
+    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
 
     // Should detect the loop and return NoUrlsFound (no children parsed)
     // or AllChildrenFailed if it tries to fetch itself again
@@ -550,7 +569,7 @@ async fn test_sitemap_index_mutual_reference_loop_detected() {
 
     let parser = parser();
     let url = format!("{}/index-a.xml", mock.uri());
-    let result = parser.parse_from_url(&url).await;
+    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
 
     // Should detect the loop and not infinite recurse
     assert!(result.is_err(), "mutual reference sitemap should fail");
@@ -613,7 +632,10 @@ async fn test_sitemap_index_mixed_valid_and_loop() {
 
     let parser = parser();
     let url = format!("{}/mixed-index.xml", mock.uri());
-    let urls = parser.parse_from_url(&url).await.unwrap();
+    let urls = parser
+        .parse_from_url(&url, &CorrelationId::new())
+        .await
+        .unwrap();
 
     // Should parse the valid child and skip the loop
     assert_eq!(urls.len(), 1, "should parse valid child, skip loop");
@@ -677,7 +699,10 @@ async fn test_sitemap_index_deduplicates_across_children() {
 
     let parser = parser();
     let url = format!("{}/index-overlap.xml", mock.uri());
-    let urls = parser.parse_from_url(&url).await.unwrap();
+    let urls = parser
+        .parse_from_url(&url, &CorrelationId::new())
+        .await
+        .unwrap();
 
     assert_eq!(urls.len(), 3, "should deduplicate page2 across children");
     let strings: Vec<String> = urls.iter().map(|u| u.url.to_string()).collect();

@@ -9,6 +9,8 @@
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+use webfang_core::domain::CorrelationId;
+
 /// One-layer entry disarmer for the loopback mock (#1382/#1369): these smoke
 /// tests pin the public parser API against wiremock, not the entry guard
 /// (pinned separately in `sitemap_ssrf_e2e_test`).
@@ -47,7 +49,10 @@ async fn sitemap_valid_xml_discovers_urls() {
 
     let parser = webfang_core::infrastructure::crawler::SitemapParser::new().unwrap();
     let url = format!("{}/sitemap.xml", mock.uri());
-    let urls = parser.parse_from_url(&url).await.unwrap();
+    let urls = parser
+        .parse_from_url(&url, &CorrelationId::new())
+        .await
+        .unwrap();
 
     assert_eq!(urls.len(), 2, "should discover 2 URLs from sitemap");
     let strings: Vec<String> = urls.iter().map(|u| u.url.to_string()).collect();
@@ -73,7 +78,7 @@ async fn sitemap_malformed_xml_returns_error() {
 
     let parser = webfang_core::infrastructure::crawler::SitemapParser::new().unwrap();
     let url = format!("{}/bad-sitemap", mock.uri());
-    let result = parser.parse_from_url(&url).await;
+    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
 
     assert!(result.is_err(), "malformed XML should produce an error");
 }
@@ -107,7 +112,10 @@ async fn sitemap_large_sitemap_parses_all_urls() {
 
     let parser = webfang_core::infrastructure::crawler::SitemapParser::new().unwrap();
     let url = format!("{}/big-sitemap.xml", mock.uri());
-    let urls = parser.parse_from_url(&url).await.unwrap();
+    let urls = parser
+        .parse_from_url(&url, &CorrelationId::new())
+        .await
+        .unwrap();
 
     assert_eq!(urls.len(), 200, "should extract all 200 URLs");
 }
@@ -134,7 +142,7 @@ async fn sitemap_empty_returns_no_urls_found() {
 
     let parser = webfang_core::infrastructure::crawler::SitemapParser::new().unwrap();
     let url = format!("{}/empty.xml", mock.uri());
-    let result = parser.parse_from_url(&url).await;
+    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
 
     assert!(
         matches!(
@@ -170,7 +178,10 @@ async fn sitemap_deduplicates_urls() {
 
     let parser = webfang_core::infrastructure::crawler::SitemapParser::new().unwrap();
     let url = format!("{}/sitemap.xml", mock.uri());
-    let urls = parser.parse_from_url(&url).await.unwrap();
+    let urls = parser
+        .parse_from_url(&url, &CorrelationId::new())
+        .await
+        .unwrap();
 
     assert_eq!(urls.len(), 2, "duplicates should be deduplicated");
 }

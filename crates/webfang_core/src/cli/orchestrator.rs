@@ -147,7 +147,7 @@ pub async fn run(
     // site that knows about user flags.
     let persistence_mode = resolve_persistence_mode(&opts);
 
-    let prepare = match prepare_phase(&opts, &persistence_mode).await {
+    let prepare = match prepare_phase(&opts, &persistence_mode, &root_correlation).await {
         Err(e) => return e,
         Ok(p) => p,
     };
@@ -558,6 +558,7 @@ fn resolve_persistence_mode(opts: &CrawlOptions) -> PersistenceMode {
 async fn prepare_phase(
     opts: &CrawlOptions,
     persistence_mode: &PersistenceMode,
+    root_correlation: &domain::CorrelationId,
 ) -> Result<PrepareResult, CliExit> {
     // Discovery-captured bodies (F-05, #1229): filled by the DOM branch
     // below, reused by the scrape phase instead of refetching.
@@ -588,7 +589,7 @@ async fn prepare_phase(
         // crawl Engine so `--max-depth` is honored (bug #651): the legacy
         // `discover_urls_single_fetch` path did one fetch and silently ignored depth.
         let discovered_urls = if opts.crawl.use_sitemap {
-            match discover_urls(&crawler_config, opts).await {
+            match discover_urls(&crawler_config, opts, root_correlation).await {
                 // "Site has no sitemap" is a terminal discovery state, not
                 // an infrastructure failure (#695): exit 2 lets automation
                 // distinguish it from a real network outage (exit 69).
@@ -2619,7 +2620,12 @@ mod tests {
 
         let default_state_dir = crate::cli::scrape_flow::resolve_default_state_dir();
         let persistence_mode = opts.crawl.persistence_mode(&default_state_dir);
-        let result = prepare_phase(&opts, &persistence_mode).await;
+        let result = prepare_phase(
+            &opts,
+            &persistence_mode,
+            &crate::domain::CorrelationId::new(),
+        )
+        .await;
         assert!(
             result.is_ok(),
             "prepare_phase must succeed: {:?}",

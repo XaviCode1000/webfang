@@ -32,6 +32,7 @@
 //! string is the `quick_xml::Error` `Display` text, so user-visible
 //! messages stay byte-identical to the pre-port behavior.
 
+use crate::domain::CorrelationId;
 use futures::future::BoxFuture;
 use thiserror::Error;
 use url::Url;
@@ -174,6 +175,11 @@ pub trait SitemapParserPort: Send + Sync {
     /// # Arguments
     ///
     /// * `sitemap_url` - Sitemap URL (supports .xml and .xml.gz)
+    /// * `correlation` - The caller's run-root [`CorrelationId`]; the impl derives
+    ///   its span correlation as `correlation.child()` so the parse joins the
+    ///   caller's trace instead of minting a second root (#1386; the standalone-root
+    ///   behavior from #1318 only applies when a caller genuinely has no run
+    ///   context).
     ///
     /// # Returns
     ///
@@ -182,8 +188,11 @@ pub trait SitemapParserPort: Send + Sync {
     /// # Errors
     ///
     /// Returns `SitemapError` if parsing fails or no URLs found
-    fn parse_from_url<'a>(&'a self, sitemap_url: &'a str)
-        -> BoxFuture<'a, Result<Vec<SitemapUrl>>>;
+    fn parse_from_url<'a>(
+        &'a self,
+        sitemap_url: &'a str,
+        correlation: &'a CorrelationId,
+    ) -> BoxFuture<'a, Result<Vec<SitemapUrl>>>;
 }
 
 #[cfg(test)]
@@ -257,6 +266,7 @@ mod tests {
         fn parse_from_url<'a>(
             &'a self,
             _sitemap_url: &'a str,
+            _correlation: &'a CorrelationId,
         ) -> BoxFuture<'a, Result<Vec<SitemapUrl>>> {
             Box::pin(async move { Ok(self.urls.clone()) })
         }
@@ -272,7 +282,7 @@ mod tests {
             urls: canned.clone(),
         });
         let urls = parser
-            .parse_from_url("https://example.com/sitemap.xml")
+            .parse_from_url("https://example.com/sitemap.xml", &CorrelationId::new())
             .await
             .unwrap();
         assert_eq!(urls, canned);

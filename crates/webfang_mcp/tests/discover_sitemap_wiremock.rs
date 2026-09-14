@@ -11,6 +11,8 @@
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+use webfang_core::domain::CorrelationId;
+
 /// Entry-hatch posture for the loopback mock seed (#1382/#1369): the
 /// production entry guard now cuts literal-IP targets on the sitemap path
 /// exactly as on every other fetch surface, so these contract tests —
@@ -61,9 +63,14 @@ async fn discover_sitemap_returns_urls_from_fake_sitemap() {
     // the sitemap parsing + URL extraction path.
     let sitemap_url = format!("{base_url}/sitemap.xml");
 
-    let discovered = webfang_core::crawl_with_sitemap(&base_url, Some(&sitemap_url), &config)
-        .await
-        .expect("crawl_with_sitemap should succeed");
+    let discovered = webfang_core::crawl_with_sitemap(
+        &base_url,
+        Some(&sitemap_url),
+        &config,
+        &CorrelationId::new(),
+    )
+    .await
+    .expect("crawl_with_sitemap should succeed");
 
     // Verify the raw discovered URLs (pre-serialization)
     assert_eq!(
@@ -146,9 +153,10 @@ async fn discover_sitemap_auto_discovers_via_robots_txt() {
     let config = webfang_core::domain::CrawlerConfig::new(seed);
 
     // Pass None — triggers auto-discovery via robots.txt
-    let discovered = webfang_core::crawl_with_sitemap(&base_url, None, &config)
-        .await
-        .expect("auto-discovery should succeed");
+    let discovered =
+        webfang_core::crawl_with_sitemap(&base_url, None, &config, &CorrelationId::new())
+            .await
+            .expect("auto-discovery should succeed");
 
     assert_eq!(
         discovered.len(),
@@ -189,7 +197,13 @@ async fn discover_sitemap_errors_on_empty_sitemap() {
     let config = webfang_core::domain::CrawlerConfig::new(seed);
     let sitemap_url = format!("{base_url}/sitemap.xml");
 
-    let result = webfang_core::crawl_with_sitemap(&base_url, Some(&sitemap_url), &config).await;
+    let result = webfang_core::crawl_with_sitemap(
+        &base_url,
+        Some(&sitemap_url),
+        &config,
+        &CorrelationId::new(),
+    )
+    .await;
 
     assert!(
         result.is_err(),

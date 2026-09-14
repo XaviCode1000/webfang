@@ -559,6 +559,7 @@ impl McpHandler {
             params.url.as_str(),
             explicit.as_ref(),
             &config,
+            &root_correlation,
         )
         .await
         {
@@ -728,6 +729,7 @@ impl McpHandler {
             params.url.as_str(),
             None,
             &crawler_config,
+            &root_correlation,
         )
         .await
         {
