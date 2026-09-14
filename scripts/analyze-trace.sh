@@ -43,20 +43,20 @@ fi
 
 case "$CMD" in
   errors)
-    jq -c 'select(.level == "ERROR") | {target, url: .fields.url, stage: .fields.stage, error: .fields.error, msg: .fields.message}' "$FILE"
+    jq -c 'select(.level == "ERROR") | {target, url: .fields.url, stage: .fields.stage, error: .fields.error, msg: .message}' "$FILE"
     ;;
   slow)
     N="${1:-20}"
     jq -r 'select(.span_duration_ms != null) | [.span_duration_ms, .span] | @tsv' "$FILE" | sort -rn | head -n "$N"
     ;;
   stages)
-    jq -r 'select(.span == "pipeline_stage" and .record != "span_close") | .fields.stage' "$FILE" | sort | uniq -c | sort -rn
+    jq -r 'select(.span != null and .record != "span_close") | .span' "$FILE" | sort | uniq -c | sort -rn
     ;;
   progress)
-    jq -c 'select(.fields.message? == "crawl progress") | {pages: .fields.pages_crawled, pct: .fields.progress_pct, eta_s: .fields.eta_secs}' "$FILE"
+    jq -c 'select(.message == "crawl progress") | {pages: .fields.pages_crawled, pct: .fields.progress_pct, eta_s: .fields.eta_secs}' "$FILE"
     ;;
   summary)
-    jq -c 'select(.fields.message? == "crawl completed")' "$FILE"
+    jq -c 'select(.message == "crawl completed")' "$FILE"
     ;;
   counts)
     jq -r 'select(.record != "span_close") | .span // "event"' "$FILE" | sort | uniq -c | sort -rn
