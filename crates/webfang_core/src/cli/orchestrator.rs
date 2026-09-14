@@ -558,6 +558,7 @@ fn resolve_persistence_mode(opts: &CrawlOptions) -> PersistenceMode {
 async fn prepare_phase(
     opts: &CrawlOptions,
     persistence_mode: &PersistenceMode,
+    root_correlation: &domain::CorrelationId,
 ) -> Result<PrepareResult, CliExit> {
     // Discovery-captured bodies (F-05, #1229): filled by the DOM branch
     // below, reused by the scrape phase instead of refetching.

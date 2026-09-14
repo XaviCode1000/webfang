@@ -12,7 +12,7 @@ use crate::domain::http_config::HttpClientConfig;
 use crate::domain::site::SitemapConfig;
 use crate::domain::waf::{waf_inspector, InspectionContext};
 use crate::domain::ValidUrl;
-use crate::domain::{CrawlError, CrawlerConfig, DiscoveredUrl};
+use crate::domain::{CrawlError, CrawlerConfig, DiscoveredUrl, CorrelationId};
 use crate::error::ScraperError;
 use crate::infrastructure::observability::log_scrape_error;
 use std::sync::Arc;
@@ -73,6 +73,7 @@ pub async fn crawl_with_sitemap(
     base_url: &str,
     sitemap_url: Option<&str>,
     config: &CrawlerConfig,
+    correlation: &CorrelationId,
 ) -> Result<Vec<DiscoveredUrl>, CrawlError> {
     // Through the boundary even on the legacy path: `resolve` is the single
     // home of the `Some(url) implies intent` coercion, and it parses NOW, so
@@ -91,7 +92,7 @@ pub async fn crawl_with_sitemap(
         },
         None => None,
     };
-    crawl_with_sitemap_resolved(base_url, explicit.as_ref(), config).await
+    crawl_with_sitemap_resolved(base_url, explicit.as_ref(), config, correlation).await
 }
 
 /// Crawl site using a boundary-resolved sitemap URL (#1190).
@@ -129,8 +130,9 @@ pub async fn crawl_with_sitemap_resolved(
     base_url: &str,
     sitemap: Option<&ValidUrl>,
     config: &CrawlerConfig,
+    correlation: &CorrelationId,
 ) -> Result<Vec<DiscoveredUrl>, CrawlError> {
-    crawl_with_sitemap_internal(base_url, sitemap, config).await
+    crawl_with_sitemap_internal(base_url, sitemap, config, correlation).await
 }
 
 /// Crawl with sitemap (internal version with progress tracking)
@@ -163,6 +165,7 @@ async fn crawl_with_sitemap_internal(
     base_url: &str,
     sitemap: Option<&ValidUrl>,
     config: &CrawlerConfig,
+    correlation: &CorrelationId,
 ) -> Result<Vec<DiscoveredUrl>, CrawlError> {
     info!("Crawling with sitemap for {}", base_url);
 
@@ -189,7 +192,7 @@ async fn crawl_with_sitemap_internal(
     let parser = build_sitemap_parser(config, DEFAULT_BATCH_SIZE)?;
 
     // Parse sitemap
-    let urls = parse_sitemap(parser.as_ref(), &sitemap_url).await?;
+    let urls = parse_sitemap(parser.as_ref(), &sitemap_url, correlation).await?;
 
     // Validate sitemap relevance: check if any URLs share a path prefix
     // with the target URL. This handles cases where robots.txt points to
@@ -206,13 +209,14 @@ async fn crawl_with_sitemap_internal(
             target_path
         );
         return crawl_with_subpath_sitemaps(
-            base_url,
+base_url,
             &base,
             parser.as_ref(),
             3,
             0,
             config.max_depth,
             &discovery_client,
+            correlation,
         )
         .await;
     }
@@ -334,8 +338,9 @@ fn build_sitemap_parser(
 async fn parse_sitemap(
     parser: &dyn SitemapParserPort,
     sitemap_url: &str,
+    correlation: &CorrelationId,
 ) -> Result<Vec<SitemapUrl>, CrawlError> {
-    let urls = parser.parse_from_url(sitemap_url).await.map_err(|e| {
+let urls = parser.parse_from_url(sitemap_url, correlation).await.map_err(|e| {
         log_scrape_error(
             &e,
             sitemap_url,
@@ -494,6 +499,7 @@ async fn probe_subpath_sitemaps_for_crawl(
     base: &Url,
     client: &wreq::Client,
     parser: &dyn SitemapParserPort,
+    correlation: &CorrelationId,
 ) -> Vec<SitemapUrl> {
     let segments: Vec<_> = base.path().split('/').filter(|s| !s.is_empty()).collect();
     let mut all_urls = Vec::new();
@@ -503,7 +509,7 @@ async fn probe_subpath_sitemaps_for_crawl(
         let sub_path = segments[..i].join("/");
         for sitemap_name in &["sitemap.xml", "sitemap_index.xml"] {
             let candidate = format!("/{sub_path}/{sitemap_name}");
-            if let Some(urls) = try_subpath_sitemap(base, client, parser, &candidate).await {
+if let Some(urls) = try_subpath_sitemap(base, client, parser, &candidate, correlation).await {
                 all_urls.extend(urls);
             }
         }
@@ -518,6 +524,7 @@ async fn try_subpath_sitemap(
     client: &wreq::Client,
     parser: &dyn SitemapParserPort,
     candidate: &str,
+    correlation: &CorrelationId,
 ) -> Option<Vec<SitemapUrl>> {
     let sitemap_url = base.join(candidate).ok()?;
     let sitemap_str = sitemap_url.as_str();
@@ -527,15 +534,16 @@ async fn try_subpath_sitemap(
         return None;
     }
     tracing::info!("Found sub-path sitemap: {}", sitemap_str);
-    parse_subpath_sitemap(parser, sitemap_str).await
+parse_subpath_sitemap(parser, sitemap_str, correlation).await
 }
 
 /// Parse a discovered sub-path sitemap, logging the URL count on success.
 async fn parse_subpath_sitemap(
     parser: &dyn SitemapParserPort,
     sitemap_str: &str,
+    correlation: &CorrelationId,
 ) -> Option<Vec<SitemapUrl>> {
-    match parser.parse_from_url(sitemap_str).await {
+match parser.parse_from_url(sitemap_str, correlation).await {
         Ok(urls) => {
             tracing::info!(
                 "Parsed {} URLs from sub-path sitemap {}",

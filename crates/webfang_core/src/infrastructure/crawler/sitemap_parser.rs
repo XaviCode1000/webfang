@@ -228,11 +228,24 @@ impl SitemapParser {
     ///
     /// Returns `SitemapError` if parsing fails or no URLs found
     ///
-    /// Thin inherent wrapper over the [`SitemapParserPort`] impl (the logic
-    /// moved there in the sitemap port slice, ADR-0012-B); infrastructure
-    /// internals and integration-test call sites keep using this name.
-    pub async fn parse_from_url(&self, url: &str) -> Result<Vec<SitemapUrl>> {
-        SitemapParserPort::parse_from_url(self, url).await
+/// Parse sitemap from URL (streaming, zero-allocation)
+    ///
+    /// # Arguments
+    ///
+    /// * `url` - Sitemap URL (supports .xml and .xml.gz)
+    /// * `correlation` - The caller's run-root [`CorrelationId`]; the impl derives
+    ///   its span correlation as `correlation.child()` so the parse joins the
+    ///   caller's trace instead of minting a second root (#1386).
+    ///
+    /// # Returns
+    ///
+    /// Vector of valid URLs found in sitemap
+    ///
+    /// # Errors
+    ///
+    /// Returns `SitemapError` if parsing fails or no URLs found
+    pub async fn parse_from_url(&self, url: &str, correlation: &CorrelationId) -> Result<Vec<SitemapUrl>> {
+        SitemapParserPort::parse_from_url(self, url, correlation).await
     }
 
     /// Validate a sitemap HTTP response: status MUST be checked before
@@ -694,28 +707,29 @@ impl SitemapParser {
 /// is now a thin wrapper so infrastructure internals and integration-test
 /// call sites keep compiling unchanged.
 ///
-/// This is the correlation root of a sitemap parse: it mints the run's
-/// [`CorrelationId`], attaches it to a manual span (the port's boxed future
-/// cannot take `#[instrument]`), and every failure below carries it
-/// downstream (#1318).
+/// This is no longer the correlation root of a sitemap parse; instead, it
+/// derives its span correlation from the caller's run-root [`CorrelationId`]
+/// via `correlation.child()` so the parse joins the caller's trace (#1386).
 impl SitemapParserPort for SitemapParser {
     fn parse_from_url<'a>(
         &'a self,
         sitemap_url: &'a str,
+        correlation: &'a CorrelationId,
     ) -> BoxFuture<'a, Result<Vec<SitemapUrl>>> {
-        let correlation = CorrelationId::new();
+        // Derive a child correlation for this parse so it joins the caller's trace
+        let child_correlation = correlation.child();
         // The span must own its recorded values, and the future must own the
         // correlation it propagates: clone before the `async move` captures.
         let span = tracing::info_span!(
             "sitemap.parse",
             url = %sitemap_url,
-            correlation_id = %correlation,
-            trace_id = %correlation.trace_id()
+            correlation_id = %child_correlation,
+            trace_id = %child_correlation.trace_id()
         );
         Box::pin(
             async move {
                 let visited = Arc::new(Mutex::new(HashSet::new()));
-                self.parse_with_depth(sitemap_url, self.config.max_depth, &visited, &correlation)
+                self.parse_with_depth(sitemap_url, self.config.max_depth, &visited, &child_correlation)
                     .await
             }
             .instrument(span),

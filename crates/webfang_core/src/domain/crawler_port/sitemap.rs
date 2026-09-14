@@ -35,6 +35,7 @@
 use futures::future::BoxFuture;
 use thiserror::Error;
 use url::Url;
+use super::CorrelationId;
 
 /// Sitemap parser errors
 ///
@@ -169,11 +170,16 @@ pub type Result<T> = std::result::Result<T, SitemapError>;
 /// discovery polls it from `tokio::spawn`-ed crawl tasks on the
 /// multi-threaded runtime.
 pub trait SitemapParserPort: Send + Sync {
-    /// Parse sitemap from URL (streaming, zero-allocation)
+/// Parse sitemap from URL (streaming, zero-allocation)
     ///
     /// # Arguments
     ///
     /// * `sitemap_url` - Sitemap URL (supports .xml and .xml.gz)
+    /// * `correlation` - The caller's run-root [`CorrelationId`]; the impl derives
+    ///   its span correlation as `correlation.child()` so the parse joins the
+    ///   caller's trace instead of minting a second root (#1386; the standalone-root
+    ///   behavior from #1318 only applies when a caller genuinely has no run
+    ///   context).
     ///
     /// # Returns
     ///
@@ -182,8 +188,11 @@ pub trait SitemapParserPort: Send + Sync {
     /// # Errors
     ///
     /// Returns `SitemapError` if parsing fails or no URLs found
-    fn parse_from_url<'a>(&'a self, sitemap_url: &'a str)
-        -> BoxFuture<'a, Result<Vec<SitemapUrl>>>;
+    fn parse_from_url<'a>(
+        &'a self,
+        sitemap_url: &'a str,
+        correlation: &'a CorrelationId,
+    ) -> BoxFuture<'a, Result<Vec<SitemapUrl>>>;
 }
 
 #[cfg(test)]
@@ -253,10 +262,11 @@ mod tests {
         urls: Vec<SitemapUrl>,
     }
 
-    impl SitemapParserPort for FakeSitemapParser {
+impl SitemapParserPort for FakeSitemapParser {
         fn parse_from_url<'a>(
             &'a self,
             _sitemap_url: &'a str,
+            _correlation: &'a CorrelationId,
         ) -> BoxFuture<'a, Result<Vec<SitemapUrl>>> {
             Box::pin(async move { Ok(self.urls.clone()) })
         }

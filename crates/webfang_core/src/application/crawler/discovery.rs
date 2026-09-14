@@ -89,6 +89,7 @@ pub use crate::application::extraction::extract_content;
 pub async fn discover_urls_single_fetch(
     base_url: &str,
     config: &CrawlerConfig,
+    correlation: &CorrelationId,
 ) -> ScraperResult<Vec<Url>> {
     info!("Discovering URLs from {}", base_url);
 
@@ -101,7 +102,7 @@ pub async fn discover_urls_single_fetch(
 
     // If sitemap enabled, use sitemap (preferred)
     if let SitemapConfig::Enabled { url } = sitemap {
-        let discovered = crawl_with_sitemap_resolved(base_url, url.as_ref(), config).await?;
+let discovered = crawl_with_sitemap_resolved(base_url, url.as_ref(), config, correlation).await?;
         let urls: Vec<Url> = discovered.into_iter().map(|d| d.url).collect();
 
         Ok(urls)
@@ -219,6 +220,7 @@ pub async fn scrape_single_url(
     #[allow(unused_variables)] engine: Option<&AdaptiveSelectorEngine>,
     binary_writer: Option<&dyn crate::domain::ports::BinaryWriterPort>,
     correlation: &CorrelationId,
+    root_correlation: &CorrelationId,
 ) -> ScraperResult<ScrapedContent> {
     scrape_single_url_inner(
         downloader,
@@ -228,10 +230,11 @@ pub async fn scrape_single_url(
         engine,
         binary_writer,
         correlation.clone(),
+        root_correlation,
     )
     .await
 }
-
+    
 /// Inner implementation of [`scrape_single_url`].
 ///
 /// The `#[instrument]` span declares the per-page identity (`correlation_id`,
@@ -246,7 +249,7 @@ pub async fn scrape_single_url(
     fields(
         url = %url,
         correlation_id = %correlation,
-        trace_id = %correlation.trace_id()
+        trace_id = %root_correlation.trace_id()
     )
 )]
 // The crash-injection pin for POST_EXTRACTION_PRE_PIPELINE pushes this
@@ -261,6 +264,7 @@ async fn scrape_single_url_inner(
     #[allow(unused_variables)] engine: Option<&AdaptiveSelectorEngine>,
     binary_writer: Option<&dyn crate::domain::ports::BinaryWriterPort>,
     correlation: CorrelationId,
+    root_correlation: &CorrelationId,
 ) -> ScraperResult<ScrapedContent> {
     debug!("Scraping: {}", url);
 
