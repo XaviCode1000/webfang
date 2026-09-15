@@ -275,6 +275,23 @@ mod tests {
         );
     }
 
+    /// sitemap-crawl-run-parity 4.2 (GREEN pin): `max_pages = 3` with 8
+    /// sitemap seeds truncates the run within the documented in-flight-drain
+    /// bound (engine.rs:908-927, collector.rs:135-137) — the collector trips
+    /// `is_full(3)` and only already-sent in-flight completions still land.
+    /// `total_pages` keeps engine semantics (fetched+crawled pages); the
+    /// naive unbounded reading (all 9) is recorded by the ignored RED above.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn sitemap_entry_max_pages_bound_pins_inflight_drain() {
+        let result = many_url_sitemap_run(3, 2).await;
+        let urls = collected_urls(&result);
+        assert!(
+            (3..9).contains(&result.total_pages),
+            "max_pages=3 must truncate the 9-seed run within in-flight drain, got {}: {urls:?}",
+            result.total_pages
+        );
+    }
+
     /// Many-URL sitemap fixture for the 4.2 overshoot pin: a link-free
     /// seed plus 8 sitemap-only leaf pages (rich-enough bodies to clear
     /// the extraction pipeline), driven through the new session entry
