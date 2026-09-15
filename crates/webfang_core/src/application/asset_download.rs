@@ -95,14 +95,25 @@ pub fn extract_asset_urls(
 ///
 /// Uses the shared downloader when provided; builds a fallback one through
 /// the domain [`AssetDownloaderFactory`](crate::domain::asset_downloader_factory::AssetDownloaderFactory)
-/// otherwise. Operation order mirrors the historical implementation exactly:
-/// downloader construction, empty short-circuit, progress log, then the batch
-/// transfer.
+/// otherwise. Operation order: empty short-circuit first, then downloader
+/// construction (only when there is real work), progress log, then the batch
+/// transfer. The construction-first order was the historical shape; #1426
+/// changed it because it built a full TLS client only to discard it on the
+/// empty path, and surfaced network-config errors for jobs that download
+/// nothing.
 pub async fn download_asset_urls(
     urls: &[crate::domain::ValidUrl],
     _config: &ScraperConfig,
     _shared_downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
 ) -> Result<Vec<DownloadedAsset>> {
+    // Nothing to transfer: return before touching the downloader. The
+    // fallback client (wreq -> BoringSSL FFI) is built only when a download
+    // will actually happen (#1426). This ordering is also what keeps the
+    // empty-path tests runnable under Miri: no construction, no foreign call.
+    if urls.is_empty() {
+        return Ok(Vec::new());
+    }
+
     // Use shared downloader when provided; build a fallback one through the
     // domain factory otherwise. `application` never names the adapter type
     // (ADR-0012-B cheap win).
@@ -115,10 +126,6 @@ pub async fn download_asset_urls(
             &*owned_downloader
         },
     };
-
-    if urls.is_empty() {
-        return Ok(Vec::new());
-    }
 
     tracing::info!(
         assets = urls.len(),
@@ -138,8 +145,14 @@ mod tests {
     /// MUST return an empty vec without attempting any download — regardless
     /// of feature flags (issue #590). Previously the cfg gate would skip the
     /// inner block entirely; now the runtime check is the single gate.
+    ///
+    /// Order pin (#1426): this test runs under Miri on purpose — the
+    /// `#[cfg_attr(miri, ignore)]` it used to carry is gone. The empty path
+    /// must not construct a downloader (wreq -> BoringSSL FFI), so if the
+    /// construction ever moves back above the short-circuit, Miri aborts here
+    /// and the lane goes red. Native builds cannot observe the ordering (both
+    /// orders return Ok([])), so Miri IS the regression detector.
     #[tokio::test]
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) unsupported by Miri")]
     async fn download_assets_returns_empty_when_disabled() {
         let config = ScraperConfig::default(); // has_downloads() == false
         let base_url = Url::parse("https://example.com").expect("valid url");
@@ -149,5 +162,18 @@ mod tests {
             .await
             .expect("must return Ok");
         assert!(result.is_empty(), "disabled config must yield empty vec");
+    }
+
+    /// Direct contract (#1426): an empty slice short-circuits to `Ok` before
+    /// the `None` fallback is even consulted — no shared downloader needed,
+    /// no client constructed.
+    #[tokio::test]
+    async fn download_asset_urls_empty_short_circuits_without_downloader() {
+        let config = ScraperConfig::default();
+        let urls: Vec<crate::domain::ValidUrl> = Vec::new();
+        let result = download_asset_urls(&urls, &config, None)
+            .await
+            .expect("empty urls must return Ok");
+        assert!(result.is_empty(), "empty urls must yield an empty vec");
     }
 }
