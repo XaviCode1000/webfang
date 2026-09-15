@@ -21,13 +21,14 @@
 #                                     (--base is an alias of --base-ref.)
 #   --head-ref <ref> / --head <ref>   head for `git diff` (default: HEAD).
 #                                     (--head is an alias of --head-ref.)
-#   --format human|github  human (default): full 17-key output to
+#   --format human|github  human (default): full 18-key output to
 #                          $GITHUB_OUTPUT (or --github-output) else stdout,
 #                          plus a stderr summary. github: only deterministic
 #                          `key=value` lines to stdout (caller appends to
 #                          $GITHUB_OUTPUT), including docs_only, ci_only, code,
 #                          all, affected, run_code_jobs, needs_ai, needs_mcp,
-#                          needs_mutation_hotpath, snapshot_changed. An explicit
+#                          needs_mutation_hotpath, snapshot_changed,
+#                          lib_src_changed. An explicit
 #                          --github-output <path> with --format github writes
 #                          there instead of stdout.
 #   --github-output <path> override for $GITHUB_OUTPUT (CI writes here).
@@ -38,7 +39,7 @@
 # Outputs (one `key=value` line each, `true`/`false`):
 #   docs_only, ci_only, code_changed, ai_changed, mcp_changed, cli_changed,
 #   core_changed, crawler_changed, downloader_changed, tests_changed,
-#   release_changed, lock_changed, all,
+#   release_changed, lock_changed, lib_src_changed, all,
 #   needs_ai, needs_mcp, needs_mutation_hotpath, snapshot_changed
 #
 # Mutation hotpath (Phase 4, advisory output only — no gating use yet).
@@ -124,6 +125,16 @@ set -euo pipefail
 #   lock_changed
 #     Cargo.lock at any level (plus any *.lock as a conservative net).
 #     Implies code_changed + release_changed (build graph moved).
+#
+#   lib_src_changed
+#     True when ANY changed file is Rust library source: crates/*/src/**.rs
+#     at any depth under src/ (bash `case` `*` spans `/`, so one pattern
+#     covers nested modules). EXPLICITLY EXCLUDED: build.rs files (they
+#     live beside src/, never under it), tests/ trees (crates/*/tests/**,
+#     tests/** — covered by tests_changed, never under src/), and insta
+#     snapshot baselines (*.snap — test expectations, never source .rs).
+#     Drives the local fast-gate rustdoc step, which mirrors the CI
+#     `doc-quality` job (`cargo doc` with `RUSTDOCFLAGS=-D warnings`).
 #
 #   all
 #     Conservative fallback: true when `git diff` cannot run (missing refs,
@@ -313,7 +324,7 @@ classify() {
   local docs_only=false ci_only=false code_changed=false ai_changed=false
   local mcp_changed=false cli_changed=false core_changed=false
   local crawler_changed=false downloader_changed=false tests_changed=false
-  local release_changed=false lock_changed=false all=false
+  local release_changed=false lock_changed=false lib_src_changed=false all=false
   local needs_ai=false needs_mcp=false needs_mutation_hotpath=false snapshot_changed=false
 
   if ! $diff_ok || [[ ${#files[@]} -eq 0 ]]; then
@@ -376,6 +387,13 @@ classify() {
       case "$f" in
         *Cargo.lock | *.lock)
           lock_changed=true ;;
+      esac
+      # Rust library source ONLY: crates/*/src/**.rs at any depth
+      # (bash `case` `*` spans `/`). build.rs lives beside src/, never
+      # under it; tests/ trees and *.snap baselines never match either.
+      case "$f" in
+        crates/*/src/*.rs)
+          lib_src_changed=true ;;
       esac
     done
     # A lockfile moves the build graph: always code + release relevant.
@@ -460,6 +478,7 @@ classify() {
         echo "needs_mcp=$needs_mcp"
         echo "needs_mutation_hotpath=$needs_mutation_hotpath"
         echo "snapshot_changed=$snapshot_changed"
+        echo "lib_src_changed=$lib_src_changed"
       } >> "$OUTPUT_OVERRIDE"
     else
       echo "docs_only=$docs_only"
@@ -472,8 +491,9 @@ classify() {
       echo "needs_mcp=$needs_mcp"
       echo "needs_mutation_hotpath=$needs_mutation_hotpath"
       echo "snapshot_changed=$snapshot_changed"
+      echo "lib_src_changed=$lib_src_changed"
     fi
-    echo "classifier: ${#files[@]} file(s) base=$base head=$head -> docs_only=$docs_only ci_only=$ci_only code=$code_changed ai=$ai_changed mcp=$mcp_changed cli=$cli_changed core=$core_changed crawler=$crawler_changed downloader=$downloader_changed tests=$tests_changed release=$release_changed lock=$lock_changed snapshot=$snapshot_changed all=$all affected=$affected run_code_jobs=$run_code_jobs needs_ai=$needs_ai needs_mcp=$needs_mcp needs_mutation_hotpath=$needs_mutation_hotpath" >&2
+    echo "classifier: ${#files[@]} file(s) base=$base head=$head -> docs_only=$docs_only ci_only=$ci_only code=$code_changed ai=$ai_changed mcp=$mcp_changed cli=$cli_changed core=$core_changed crawler=$crawler_changed downloader=$downloader_changed tests=$tests_changed release=$release_changed lock=$lock_changed snapshot=$snapshot_changed lib_src=$lib_src_changed all=$all affected=$affected run_code_jobs=$run_code_jobs needs_ai=$needs_ai needs_mcp=$needs_mcp needs_mutation_hotpath=$needs_mutation_hotpath" >&2
     return 0
   fi
 
@@ -499,6 +519,7 @@ classify() {
       echo "needs_mcp=$needs_mcp"
       echo "needs_mutation_hotpath=$needs_mutation_hotpath"
       echo "snapshot_changed=$snapshot_changed"
+      echo "lib_src_changed=$lib_src_changed"
     } >> "$dest"
   else
     echo "docs_only=$docs_only"
@@ -518,11 +539,12 @@ classify() {
     echo "needs_mcp=$needs_mcp"
     echo "needs_mutation_hotpath=$needs_mutation_hotpath"
     echo "snapshot_changed=$snapshot_changed"
+    echo "lib_src_changed=$lib_src_changed"
   fi
 
   # Human summary for the job log (stderr so it never pollutes $GITHUB_OUTPUT
   # parsing or stdout key=value consumers).
-  echo "classifier: ${#files[@]} file(s) base=$base head=$head -> docs_only=$docs_only ci_only=$ci_only code=$code_changed ai=$ai_changed mcp=$mcp_changed cli=$cli_changed core=$core_changed crawler=$crawler_changed downloader=$downloader_changed tests=$tests_changed release=$release_changed lock=$lock_changed snapshot=$snapshot_changed all=$all needs_ai=$needs_ai needs_mcp=$needs_mcp needs_mutation_hotpath=$needs_mutation_hotpath" >&2
+  echo "classifier: ${#files[@]} file(s) base=$base head=$head -> docs_only=$docs_only ci_only=$ci_only code=$code_changed ai=$ai_changed mcp=$mcp_changed cli=$cli_changed core=$core_changed crawler=$crawler_changed downloader=$downloader_changed tests=$tests_changed release=$release_changed lock=$lock_changed snapshot=$snapshot_changed lib_src=$lib_src_changed all=$all needs_ai=$needs_ai needs_mcp=$needs_mcp needs_mutation_hotpath=$needs_mutation_hotpath" >&2
 }
 
 # --- CLI -----------------------------------------------------------------------

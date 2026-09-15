@@ -778,12 +778,14 @@ version }}"`, `version_group = "webfang"` on every processed crate, `publish = f
 ### Pre-commit gate (every commit)
 
 ```bash
-cargo check && cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines && cargo fmt
+cargo check && cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines && cargo fmt && env "RUSTDOCFLAGS=-D warnings" cargo doc --workspace --all-features --no-deps
 ```
 
 > ⚠️ **The clippy command MUST match CI exactly.** CI runs the strict gate above, which enables the `#516` complexity ratchets (`clippy::cognitive_complexity` + `clippy::too_many_lines`, thresholds in `clippy.toml`). Running a bare `cargo clippy -- -D warnings` locally will PASS while CI FAILS on any function >100 lines or over the cognitive-complexity limit. Always use the full command above before pushing.
 
 > 🚨 **`--all-features` is a safety flag here, not a strictness preference.** This crate has `chromium`-gated code whose only consumers are behind `#[cfg(feature = "chromium")]`. Running clippy **without** `--all-features` makes those imports look dead, and `clippy --fix` will **delete live code** — `cargo check` with default features then still passes, so the loss is invisible until `--all-features` fails. This bit the main checkout twice during #994 (see #1006). Never run `clippy --fix`, and never wire an auto-fixing tool, against a feature set narrower than the build's. `.pi-lens.json` disables the pi-lens autofix paths for exactly this reason; do not re-enable them.
+
+> 📚 **The fourth command mirrors the CI `doc-quality` job, which denies rustdoc lints (`rustdoc::redundant_explicit_links`, missing docs) via `RUSTDOCFLAGS=-D warnings`.** `cargo check`, `clippy`, and `fmt` never document an item, and the fast gate's `lane_docs` only validates Markdown links — without this step a denied-by-default rustdoc lint is invisible locally and only fails CI (#1435). It is path-gated inside `scripts/ci_fast_gate.sh` (runs only when `crates/*/src/**.rs` changed; the full lane always runs it), so docs/CI-only commits skip it.
 
 ### Cloud verification
 
@@ -804,6 +806,7 @@ gh run list --workflow=ci.yml --branch "$(git branch --show-current)" --limit 1 
 
 - [ ] `bash scripts/ci_fast_gate.sh` GREEN (lane-aware local gate: runs the cargo gates below only when code changed)
 - [ ] `cargo check` + `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines` + `cargo fmt`
+- [ ] rustdoc covered when library source changed: `env "RUSTDOCFLAGS=-D warnings" cargo doc --workspace --all-features --no-deps` GREEN (path-gated inside `ci_fast_gate.sh` on `crates/*/src/**.rs`; the full lane always runs it)
 - [ ] `cargo nextest run` (at least affected module)
 - [ ] Review `git diff --stat main...HEAD` to confirm only expected symbols/files changed
 - [ ] Error messages in Spanish if user-facing; new public items have doc comments
