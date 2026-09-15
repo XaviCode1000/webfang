@@ -134,7 +134,11 @@ fn normalize_whitespace(html: &str) -> String {
     result
 }
 
-#[cfg(test)]
+// All tests in this module route through clean_html() → lol_html rewrite_str
+// (servo_arc fetch_sub on a Frozen tag aborts Miri Tree Borrows). Gate the
+// whole module instead of patching test by test (same pattern as
+// sitemap_discovery::tests).
+#[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
 

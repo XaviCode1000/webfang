@@ -139,6 +139,7 @@ mod tests {
     /// of feature flags (issue #590). Previously the cfg gate would skip the
     /// inner block entirely; now the runtime check is the single gate.
     #[tokio::test]
+    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) unsupported by Miri")]
     async fn download_assets_returns_empty_when_disabled() {
         let config = ScraperConfig::default(); // has_downloads() == false
         let base_url = Url::parse("https://example.com").expect("valid url");
