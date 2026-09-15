@@ -23,8 +23,6 @@
 #![cfg(feature = "mcp")]
 
 use serde_json::{json, Value};
-use std::net::SocketAddr;
-use tokio::net::TcpListener;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 use wreq::Client;
@@ -32,16 +30,16 @@ use wreq::Client;
 use webfang_core::di::Container;
 use webfang_core::domain::config::ScraperConfig;
 use webfang_core::domain::CrawlerConfig;
-use webfang_mcp::mcp_server::server::build_mcp_router;
-use webfang_mcp::mcp_server::server::ServerOptions;
+use webfang_mcp::mcp_server::server::{build_mcp_router, ServerOptions};
 use webfang_mcp::mcp_server::state::McpState;
 
-// Canonical HTML page fixture, shared across the MCP test binaries (#1371).
-// Imported by name, not `use common::*`: this file keeps its own local
-// server/session harness (a glob would collide with `init_session`,
-// `call_tool`, `tool_text`, `is_tool_error`).
+// This binary keeps its own server/session harness (a glob import would clash
+// with the session/call/text/error helper names), so only the non-colliding
+// page-fixture and port-serving helpers are imported by name.
 mod common;
-use common::{call_tool, init_session, is_tool_error, mount_page_200, tool_text};
+use common::{
+    call_tool, init_session, is_tool_error, mount_page_200, serve_on_random_port, tool_text,
+};
 
 // ============================================================================
 // Harness — local copies (each integration test binary is standalone)
@@ -51,6 +49,8 @@ use common::{call_tool, init_session, is_tool_error, mount_page_200, tool_text};
 /// environment the proven multi-page crawl test runs under (F-06 + F-32,
 /// #1217), since every tool under test fetches wiremock loopback literals.
 /// Setup is serialized under ENV_LOCK via `Once` + `env_set` (#1126).
+/// Serving reuses the shared port helper so the bind/serve/wait sequence
+/// lives in exactly one place (#1371).
 async fn start_server() -> (String, tokio::task::JoinHandle<()>, tempfile::TempDir) {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
@@ -78,18 +78,7 @@ async fn start_server() -> (String, tokio::task::JoinHandle<()>, tempfile::TempD
     let state = McpState::new(container);
     let app = build_mcp_router(state, &ServerOptions::default());
 
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr: SocketAddr = listener.local_addr().unwrap();
-    let base_url = format!("http://{addr}");
-    let handle = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-    for _ in 0..20 {
-        if tokio::net::TcpStream::connect(&addr).await.is_ok() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
+    let (base_url, handle) = serve_on_random_port(app).await;
     (base_url, handle, container_tmp)
 }
 
@@ -104,17 +93,19 @@ fn tool_result(resp: Value) -> Value {
 ///
 /// `tempfile::TempDir` always returns an absolute path, which the MCP
 /// `require_safe_path` validator rejects. These tests need a *relative*
-/// output dir, so we manage one manually.
+/// output dir, so we manage one manually — named after the process plus
+/// a nanos timestamp, which keeps names unique without a global counter.
 struct RelTempDir {
     path: std::path::PathBuf,
 }
 
 impl RelTempDir {
     fn new(prefix: &str) -> Self {
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let name = format!("{prefix}-{}-{}", std::process::id(), n);
-        let path = std::path::PathBuf::from(name);
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = std::path::PathBuf::from(format!("{prefix}-{}-{nanos}", std::process::id()));
         std::fs::create_dir_all(&path).expect("create relative temp dir");
         RelTempDir { path }
     }
@@ -159,6 +150,29 @@ async fn mount_open_robots(site: &MockServer) {
         .await;
 }
 
+/// Serve `/sitemap.xml` listing `leaves` — shared by the staleness site and
+/// the parity site so the XML envelope lives in exactly one place.
+async fn mount_sitemap_xml(site: &MockServer, leaves: &[&str]) {
+    let base = site.uri();
+    let entries = leaves
+        .iter()
+        .map(|leaf| format!("<url><loc>{base}{leaf}</loc></url>"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let sitemap = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n{entries}\n</urlset>"
+    );
+    Mock::given(method("GET"))
+        .and(path("/sitemap.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/xml")
+                .set_body_string(sitemap),
+        )
+        .mount(site)
+        .await;
+}
+
 /// Site A: a BFS crawl fixture — seed links two leaves.
 async fn mount_site_a(site: &MockServer) {
     mount_open_robots(site).await;
@@ -180,19 +194,7 @@ async fn mount_site_b(site: &MockServer) {
     mount_page_200(site, "/", &page("seed-b", "")).await;
     mount_page_200(site, "/b1", &page("beta-one", "")).await;
     mount_page_200(site, "/b2", &page("beta-two", "")).await;
-    let base = site.uri();
-    let sitemap = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n<url><loc>{base}/b1</loc></url>\n<url><loc>{base}/b2</loc></url>\n</urlset>"
-    );
-    Mock::given(method("GET"))
-        .and(path("/sitemap.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("content-type", "application/xml")
-                .set_body_string(sitemap),
-        )
-        .mount(site)
-        .await;
+    mount_sitemap_xml(site, &["/b1", "/b2"]).await;
 }
 
 // ============================================================================
@@ -217,16 +219,21 @@ fn record_urls(records: &[Value]) -> Vec<&str> {
         .collect()
 }
 
+/// The `url` field of a record, for ordering — shared by the snapshot
+/// rendering and the timestamp-normalized comparison so the sort key lives
+/// in exactly one place.
+fn url_key(record: &Value) -> &str {
+    record
+        .get("url")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+}
+
 /// Deterministic rendering of an export for snapshots: records sorted by url,
 /// one compact JSON object per line.
 fn sorted_render(records: &[Value]) -> String {
     let mut sorted: Vec<&Value> = records.iter().collect();
-    sorted.sort_by(|a, b| {
-        a.get("url")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .cmp(b.get("url").and_then(Value::as_str).unwrap_or_default())
-    });
+    sorted.sort_by(|a, b| url_key(a).cmp(url_key(b)));
     sorted
         .iter()
         .map(|v| serde_json::to_string(v).expect("record must serialize"))
@@ -394,25 +401,23 @@ fn webfang_binary() -> std::path::PathBuf {
     } else {
         "webfang"
     };
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root = manifest_dir
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("resolve workspace root");
-    let candidates = [
+    let manifest = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let target_dirs = [
         std::env::var("CARGO_TARGET_DIR")
             .ok()
             .map(std::path::PathBuf::from),
-        Some(workspace_root.join("target")),
-        Some(manifest_dir.join("target")),
+        manifest
+            .parent()
+            .and_then(|p| p.parent())
+            .map(|root| root.join("target")),
+        Some(manifest.join("target")),
     ];
-    for candidate in candidates.into_iter().flatten() {
-        let path = candidate.join("debug").join(name);
-        if path.exists() {
-            return path;
-        }
-    }
-    panic!("webfang binary not found — build it first (cargo build -p webfang_cli)");
+    target_dirs
+        .into_iter()
+        .flatten()
+        .map(|dir| dir.join("debug").join(name))
+        .find(|candidate| candidate.exists())
+        .expect("webfang binary not found — build it first (cargo build -p webfang_cli)")
 }
 
 /// Minimal recursive file walk (the workspace ships no `walkdir` dep).
@@ -447,19 +452,7 @@ async fn mount_parity_sitemap_site(site: &MockServer) {
     mount_page_200(site, "/", &page("parity-seed", "")).await;
     mount_page_200(site, "/c1", &page("parity-one", "")).await;
     mount_page_200(site, "/c2", &page("parity-two", "")).await;
-    let base = site.uri();
-    let sitemap = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n<url><loc>{base}/c1</loc></url>\n<url><loc>{base}/c2</loc></url>\n</urlset>"
-    );
-    Mock::given(method("GET"))
-        .and(path("/sitemap.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .insert_header("content-type", "application/xml")
-                .set_body_string(sitemap),
-        )
-        .mount(site)
-        .await;
+    mount_sitemap_xml(site, &["/c1", "/c2"]).await;
 }
 
 /// Read a JSONL export into timestamp-normalized records sorted by url.
@@ -486,12 +479,7 @@ fn normalized_records(path: &std::path::Path) -> Vec<Value> {
             v
         })
         .collect();
-    records.sort_by(|a, b| {
-        a.get("url")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .cmp(b.get("url").and_then(Value::as_str).unwrap_or_default())
-    });
+    records.sort_by(|a, b| url_key(a).cmp(url_key(b)));
     records
 }
 

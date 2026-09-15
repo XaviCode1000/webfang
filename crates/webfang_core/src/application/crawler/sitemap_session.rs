@@ -134,6 +134,46 @@ mod tests {
     use wiremock::matchers::path;
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
+    /// Shared article-HTML bodies for the session-entry pins: mounts the
+    /// link-bearing seed plus its BFS-linked leaf. Each caller adds its
+    /// own extra pages (sitemap-only leaves) on top.
+    async fn mount_seed_and_linked(server: &MockServer, linked: &Url) {
+        Mock::given(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+                "<html><body><a href=\"{linked}\">next</a></body></html>"
+            )))
+            .mount(server)
+            .await;
+        Mock::given(path("/x"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("<html><body>linked</body></html>"),
+            )
+            .mount(server)
+            .await;
+    }
+
+    /// Shared run config for the session-entry pins (depth 2, 10 pages).
+    fn session_test_config(seed: &Url) -> CrawlerConfig {
+        CrawlerConfig::builder(seed.clone())
+            .max_depth(2)
+            .max_pages(10)
+            .ignore_robots(true)
+            .build()
+    }
+
+    /// Shared engine options for the session-entry pins.
+    fn session_test_options() -> EngineOptions {
+        EngineOptions {
+            ignore_robots: true,
+            ..Default::default()
+        }
+    }
+
+    /// Collected crawled-URL strings of a run result.
+    fn collected_urls(result: &CrawlResult) -> Vec<String> {
+        result.urls.iter().map(|u| u.url.to_string()).collect()
+    }
+
     /// sitemap-crawl-run-parity 1.5 (TRIANGULATE): the new entry crawls the
     /// seed (BFS, including the linked page) PLUS the sitemap-only unlinked
     /// page, with seed/sitemap overlap deduped — the seed appears exactly
@@ -147,18 +187,7 @@ mod tests {
         let linked = Url::parse(&format!("http://127.0.0.1:{port}/x")).expect("linked");
         let only = Url::parse(&format!("http://127.0.0.1:{port}/y")).expect("sitemap-only");
 
-        Mock::given(path("/"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
-                "<html><body><a href=\"{linked}\">next</a></body></html>"
-            )))
-            .mount(&server)
-            .await;
-        Mock::given(path("/x"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string("<html><body>linked</body></html>"),
-            )
-            .mount(&server)
-            .await;
+        mount_seed_and_linked(&server, &linked).await;
         Mock::given(path("/y"))
             .respond_with(
                 ResponseTemplate::new(200)
@@ -167,28 +196,20 @@ mod tests {
             .mount(&server)
             .await;
 
-        let config = CrawlerConfig::builder(seed.clone())
-            .max_depth(2)
-            .max_pages(10)
-            .ignore_robots(true)
-            .build();
-        // Sitemap set: a seed duplicate (overlap) + the unlinked page at the
+        let config = session_test_config(&seed);
         // depth `build_discovered_urls` assigns non-seed sitemap URLs (1).
         // The seed itself is absent from the sitemap set as a sitemap row.
         let extra_seeds = vec![
             DiscoveredUrl::html(seed.clone(), 0, seed.clone()),
             DiscoveredUrl::html(only.clone(), 1, seed.clone()),
         ];
-        let options = EngineOptions {
-            ignore_robots: true,
-            ..Default::default()
-        };
+        let options = session_test_options();
 
         let result = crawl_with_sitemap_session(config, extra_seeds, options, CorrelationId::new())
             .await
             .expect("sitemap session run must succeed");
 
-        let urls: Vec<String> = result.urls.iter().map(|u| u.url.to_string()).collect();
+        let urls = collected_urls(&result);
         assert!(
             urls.contains(&seed.to_string()),
             "seed must be crawled although absent from the sitemap set: {urls:?}"
@@ -220,34 +241,16 @@ mod tests {
         let seed = Url::parse(&format!("http://127.0.0.1:{port}/")).expect("seed");
         let linked = Url::parse(&format!("http://127.0.0.1:{port}/x")).expect("linked");
 
-        Mock::given(path("/"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
-                "<html><body><a href=\"{linked}\">next</a></body></html>"
-            )))
-            .mount(&server)
-            .await;
-        Mock::given(path("/x"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string("<html><body>linked</body></html>"),
-            )
-            .mount(&server)
-            .await;
+        mount_seed_and_linked(&server, &linked).await;
 
-        let config = CrawlerConfig::builder(seed.clone())
-            .max_depth(2)
-            .max_pages(10)
-            .ignore_robots(true)
-            .build();
-        let options = EngineOptions {
-            ignore_robots: true,
-            ..Default::default()
-        };
+        let config = session_test_config(&seed);
+        let options = session_test_options();
 
         let result = crawl_with_sitemap_session(config, Vec::new(), options, CorrelationId::new())
             .await
             .expect("empty-seed run must succeed");
 
-        let urls: Vec<String> = result.urls.iter().map(|u| u.url.to_string()).collect();
+        let urls = collected_urls(&result);
         assert!(urls.contains(&seed.to_string()), "seed crawled: {urls:?}");
         assert!(
             urls.contains(&linked.to_string()),
@@ -256,14 +259,16 @@ mod tests {
         assert_eq!(result.total_pages, 2, "no phantom third page: {urls:?}");
     }
 
-    /// sitemap-crawl-run-parity 4.2 (RED): the NAIVE unbounded reading —
-    /// `max_pages = 3` with 8 sitemap seeds crawls all 9 pages. This MUST
-    /// fail (the bound truncates the run); the GREEN pin below asserts the
-    /// documented in-flight-drain bound instead.
+    /// sitemap-crawl-run-parity 4.2 (RED, kept as TDD evidence — never run
+    /// in CI): the NAIVE unbounded reading — `max_pages = 3` with 8
+    /// sitemap seeds crawls all 9 pages. This MUST fail (the bound
+    /// truncates the run); the GREEN pin below asserts the documented
+    /// in-flight-drain bound instead.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "kept RED by design: asserts the naive unbounded reading, fails against the truncating bound"]
     async fn sitemap_entry_max_pages_truncates_many_url_fixture() {
         let result = many_url_sitemap_run(3, 2).await;
-        let urls: Vec<String> = result.urls.iter().map(|u| u.url.to_string()).collect();
+        let urls = collected_urls(&result);
         assert_eq!(
             result.total_pages, 9,
             "NAIVE unbounded reading: all 9 pages crawled: {urls:?}"
