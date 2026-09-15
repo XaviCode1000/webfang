@@ -14,6 +14,7 @@ pub mod export_flow;
 pub mod orchestrator;
 pub mod parse;
 pub mod preflight;
+pub mod preflight_notes;
 pub mod scrape_flow;
 pub mod shutdown;
 pub(crate) mod spec_command;

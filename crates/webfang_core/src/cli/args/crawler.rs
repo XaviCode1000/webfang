@@ -64,7 +64,13 @@ pub(crate) fn parse_rate_limit_burst(s: &str) -> Result<Option<u32>, String> {
             u32::MAX
         )),
         Err(_) => {
-            tracing::warn!(value = %s, "invalid rate-limit burst, using derived default");
+            // #1431: this runs before `init_logging_dual` installs the
+            // subscriber, so a `tracing::warn!` here would be dropped.
+            // Record the notice instead; the binary replays it once
+            // logging is live. The note names the offending raw value.
+            crate::cli::preflight_notes::record(format!(
+                "invalid rate-limit burst «{s}», using derived default"
+            ));
             Ok(None)
         },
     }
