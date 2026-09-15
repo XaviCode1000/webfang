@@ -86,6 +86,34 @@ mod tests {
         );
     }
 
+    /// AUDIT probe: does a POISONED mutex really lose notes, as the review
+    /// finding claims? Panic while holding the lock, then record + take.
+    #[test]
+    fn notes_survive_a_poisoned_mutex() {
+        let _ = super::take();
+        let handle = std::thread::spawn(|| {
+            let _guard = super::notes().lock().expect("poison probe lock");
+            panic!("poison the buffer lock on purpose");
+        });
+        assert!(
+            handle.join().is_err(),
+            "the probe thread must panic to poison the lock"
+        );
+        assert!(
+            super::notes().lock().is_err(),
+            "precondition: the mutex must actually be poisoned now"
+        );
+
+        super::record("poison-probe-note-must-survive");
+        let drained = super::take();
+        assert!(
+            drained
+                .iter()
+                .any(|n| n == "poison-probe-note-must-survive"),
+            "a poisoned mutex must not swallow the note, got {drained:?}"
+        );
+    }
+
     #[test]
     fn identical_notes_are_stored_once() {
         let _ = super::take();
