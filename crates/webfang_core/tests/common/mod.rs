@@ -13,6 +13,7 @@
 #![allow(dead_code, unused_imports)]
 
 pub mod cli_harness;
+pub mod fixture_server;
 pub mod fixtures;
 pub mod mock_http;
 
