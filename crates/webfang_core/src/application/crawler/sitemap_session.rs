@@ -255,4 +255,65 @@ mod tests {
         );
         assert_eq!(result.total_pages, 2, "no phantom third page: {urls:?}");
     }
+
+        /// sitemap-crawl-run-parity 4.2 (RED): the NAIVE unbounded reading —
+        /// `max_pages = 3` with 8 sitemap seeds crawls all 9 pages. This MUST
+        /// fail (the bound truncates the run); the GREEN pin below asserts the
+        /// documented in-flight-drain bound instead.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        async fn sitemap_entry_max_pages_truncates_many_url_fixture() {
+            let result = many_url_sitemap_run(3, 2).await;
+            let urls: Vec<String> = result.urls.iter().map(|u| u.url.to_string()).collect();
+            assert_eq!(
+                result.total_pages, 9,
+                "NAIVE unbounded reading: all 9 pages crawled: {urls:?}"
+            );
+        }
+
+        /// Many-URL sitemap fixture for the 4.2 overshoot pin: a link-free
+        /// seed plus 8 sitemap-only leaf pages (rich-enough bodies to clear
+        /// the extraction pipeline), driven through the new session entry
+        /// with an explicit `max_pages` / `concurrency` pair.
+        async fn many_url_sitemap_run(max_pages: usize, concurrency: usize) -> CrawlResult {
+            use std::num::NonZeroUsize;
+
+            const LEAVES: usize = 8;
+            let server = MockServer::start().await;
+            let port = server.address().port();
+            let seed = Url::parse(&format!("http://127.0.0.1:{port}/")).expect("seed");
+
+            Mock::given(path("/"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+                    "<html><head><title>Seed</title></head><body><h1>Overshoot seed</h1><p>Leaf-free seed page with enough ordinary text for the readability pipeline to accept it as main content without tripping the minimum content guard.</p></body></html>"
+                )))
+                .mount(&server)
+                .await;
+            let mut extra_seeds = Vec::with_capacity(LEAVES);
+            for i in 0..LEAVES {
+                let leaf =
+                    Url::parse(&format!("http://127.0.0.1:{port}/p{i}")).expect("leaf");
+                Mock::given(path(format!("/p{i}")))
+                    .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+                        "<html><head><title>Leaf {i}</title></head><body><h1>Overshoot leaf {i}</h1><p>Leaf page number {i} carrying enough ordinary text for the readability pipeline to accept it as main content without tripping the minimum content guard.</p></body></html>"
+                    )))
+                    .mount(&server)
+                    .await;
+                extra_seeds.push(DiscoveredUrl::html(leaf, 1, seed.clone()));
+            }
+
+            let config = CrawlerConfig::builder(seed.clone())
+                .max_depth(5)
+                .max_pages(max_pages)
+                .concurrency(NonZeroUsize::new(concurrency).expect("non-zero"))
+                .ignore_robots(true)
+                .build();
+            let options = EngineOptions {
+                ignore_robots: true,
+                ..Default::default()
+            };
+
+            crawl_with_sitemap_session(config, extra_seeds, options, CorrelationId::new())
+                .await
+                .expect("many-URL sitemap run must succeed")
+        }
 }
