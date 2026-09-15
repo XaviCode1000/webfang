@@ -243,3 +243,109 @@ async fn scrape_trace_and_vector_export_share_per_page_correlation() {
     // --- (c) The vector export carries the same identities ---
     assert_vector_export_identities(&t, &lines);
 }
+
+// ——— #1439: DOM-route run-root regression pin ———
+//
+// The single-fetch/sitemap route was sealed by #1412; the DOM route that
+// enters the Engine through the PUBLIC wrapper (`crawl_site_with_options`)
+// kept re-breaking the invariant (#687 fixed Aug, re-broken by the #1232
+// rework): the wrapper minted its own run-root milliseconds after the CLI
+// announced one, so reconstructing the run by the announced trace_id
+// silently missed discovery + crawl. This test pins the DOM route with NO
+// model dependency — it must run everywhere, hence it ships un-skipped.
+
+/// Collect the `trace_id` values the run announced via "run identity"
+/// events (top-level `message`, durable UUID in `.fields.trace_id`).
+/// Both the CLI entry event and every `CrawlSession::begin` event land
+/// here; #1439 requires they all agree.
+fn run_identity_trace_ids(lines: &[serde_json::Value]) -> BTreeSet<String> {
+    lines
+        .iter()
+        .filter(|v| v["message"].as_str() == Some("run identity"))
+        .filter_map(|v| v["fields"]["trace_id"].as_str().map(str::to_owned))
+        .collect()
+}
+
+/// Mount a pure link graph — NO sitemap: `/` links `/page-a`, which links
+/// `/page-b`. Padded bodies clear the 50-char minimum-content guard so the
+/// scrape phase succeeds deterministically.
+async fn mount_dom_link_chain(t: &BehavioralTest) -> String {
+    let pad = "carries plenty of substantive server-rendered text so it comfortably \
+               clears the fifty character minimum content guard.";
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            r#"<html><body><a href="/page-a">A</a><p>This hub page {pad}</p></body></html>"#
+        )))
+        .mount(&t.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/page-a"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            r#"<html><body><h1>Page A</h1><a href="/page-b">B</a><p>This page A {pad}</p></body></html>"#
+        )))
+        .mount(&t.server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/page-b"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            r#"<html><body><article><h1>Page B</h1><p>This page B {pad}</p></article></body></html>"#
+        )))
+        .mount(&t.server)
+        .await;
+
+    t.server.uri()
+}
+
+/// A DOM crawl (`--max-depth 2`, link graph, no sitemap) with `--trace-file`
+/// must reconstruct from ONE run root:
+/// (i)   exactly one distinct `span_fields.trace_id` across the whole JSONL,
+///       and every "run identity" event announces that same UUID;
+/// (ii)  at least two page spans with distinct `correlation_id` values
+///       (children of the root — one identity per page, #501);
+/// (iii) every per-page traceparent embeds the run-root trace UUID.
+#[tokio::test]
+async fn dom_crawl_trace_shares_one_run_root() {
+    let t = BehavioralTest::new().await;
+    let base = mount_dom_link_chain(&t).await;
+
+    let trace_path = t.out.path().join("trace.jsonl");
+    let output = cmd()
+        .arg("--url")
+        .arg(&base)
+        .arg("--max-depth")
+        .arg("2")
+        .arg("--ignore-robots")
+        .arg("--output")
+        .arg(t.out.path())
+        .arg("--trace-file")
+        .arg(&trace_path)
+        .arg("--quiet")
+        .output()
+        .expect("run webfang binary");
+    assert!(
+        output.status.success(),
+        "DOM depth-2 crawl must succeed, got {:?}\nstderr: {}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let lines = parse_trace(&trace_path);
+    assert!(!lines.is_empty(), "trace must contain events");
+
+    // (i) ONE distinct span trace_id, and the announced identities agree.
+    let run_trace = assert_shared_run_root_trace(&lines);
+    let announced = run_identity_trace_ids(&lines);
+    assert_eq!(
+        announced,
+        BTreeSet::from([run_trace.clone()]),
+        "every 'run identity' event must announce the single run root — a second \
+         value means the Engine minted its own identity beside the CLI's (#1439)"
+    );
+
+    // (ii) at least two page identities, each its own span (#501).
+    assert_per_page_correlation_ids(&lines);
+
+    // (iii) all page traceparents embed the run-root trace UUID.
+    assert_traceparent_embeds_run_trace(&lines, &run_trace);
+}
