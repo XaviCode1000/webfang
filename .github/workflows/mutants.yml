@@ -6,9 +6,11 @@
 #                   so cost is proportional to the change. cargo-mutants exits
 #                   2 when a mutant survives -> PR is blocked.
 #   - mutants-weekly: weekly baseline over the full hot-path scope, split into
-#                   32 deterministic shards (--shard k/32, --no-shuffle). The
-#                   shards partition the ~600 hot-path mutants so each job
-#                   finishes well inside the timeout. Report-only.
+#                   64 deterministic shards (--shard k/64, --no-shuffle). The
+#                   shards partition the ~600 hot-path mutants (~9-10 per shard,
+#                   half the old per-shard draw — at that size 14 shards hit the
+#                   90-minute wall, #1436) so each job finishes well inside the
+#                   timeout. Report-only.
 #   - report:        aggregates shard outcomes.json into a single summary.
 #
 # Fixed in this version (was broken):
@@ -151,18 +153,18 @@ jobs:
           path: mutants-output.txt
 
   # ---------------------------------------------------------------------------
-  # WEEKLY BASELINE — full hot-path scope as 32 deterministic shards.
+  # WEEKLY BASELINE — full hot-path scope as 64 deterministic shards.
   # Survivors are reported, never blocking.
   # ---------------------------------------------------------------------------
   mutants-weekly:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    name: "cargo-mutants (shard ${{ matrix.shard }}/32)"
+    name: "cargo-mutants (shard ${{ matrix.shard }}/64)"
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64]
     steps:
       - uses: actions/checkout@v5
 
@@ -179,7 +181,7 @@ jobs:
 
       # NOTE: deliberately NO Swatinem/rust-cache here (cf. benches.yml:55-60).
       # Weekly baseline is low-frequency (Mon 03:00 UTC + dispatch), heavy
-      # (32 shards), and non-blocking (report-only): a fresh multi-GB cache
+      # (64 shards), and non-blocking (report-only): a fresh multi-GB cache
       # entry per shard would evict CI/PR caches toward the 10 GB eviction
       # limit. Cold compile (~10-15 min incl. BoringSSL) fits comfortably in
       # the 90 min timeout below. mutants-pr KEEPS its cache step (gated on
@@ -187,13 +189,13 @@ jobs:
 
       - name: Run mutation testing (shard)
         # Survivors (exit 2) must not abort the shard: the report job below
-        # aggregates every shard's outcomes. --no-shuffle keeps the k/32
+        # aggregates every shard's outcomes. --no-shuffle keeps the k/64
         # partition deterministic (no overlap, no gaps).
         continue-on-error: true
         run: |
           cargo mutants -p webfang_core \
             --no-shuffle \
-            --shard ${{ matrix.shard }}/32 \
+            --shard ${{ matrix.shard }}/64 \
             --baseline=skip \
             --timeout=300 \
             --in-place \
@@ -203,7 +205,7 @@ jobs:
         if: always()
         run: |
           if grep -q "MISSED" mutants-output.txt; then
-            echo "::warning::Surviving mutants detected in shard ${{ matrix.shard }}/32"
+            echo "::warning::Surviving mutants detected in shard ${{ matrix.shard }}/64"
             grep "MISSED" mutants-output.txt
           fi
 
