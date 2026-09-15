@@ -14,9 +14,15 @@
 #   docs_only=true    -> cheap docs validation only (NO cargo).
 #   ci_only=true      -> shell syntax + workflow validation only (NO cargo).
 #   otherwise         -> `cargo fmt --check` + repo guards, then
-#                        crate-targeted check/clippy/build/tests for the
-#                        changed areas. Never AI inference, coverage,
-#                        release builds, or broad mutation.
+#                        crate-targeted check/clippy/rustdoc/build/tests for
+#                        the changed areas. The rustdoc step mirrors the CI
+#                        `doc-quality` job (`cargo doc --workspace
+#                        --all-features --no-deps` with `RUSTDOCFLAGS=-D
+#                        warnings`) and runs only when library source
+#                        (`crates/*/src/**.rs`, classifier lib_src_changed)
+#                        changed; the FULL lane always runs it. Never AI
+#                        inference, coverage, release builds, or broad
+#                        mutation.
 #
 # Scope notes:
 #   - The classifier sees committed range refs; uncommitted worktree edits
@@ -163,16 +169,16 @@ trap 'rm -f "$UNION_TMP" "$CLASS_TMP"' EXIT
 bash "$CLASSIFIER" --base-ref "$BASE_REF" --head-ref "$HEAD_REF" \
   --files "$(cat "$UNION_TMP")" --github-output "$CLASS_TMP"
 
-# Load only the 13 known keys (never blind-source tool output).
+# Load only the 14 known keys (never blind-source tool output).
 # Pre-initialised so `set -u`-style readers and shellcheck (SC2154) see
 # real assignments; printf -v below only overwrites them.
 docs_only=false ci_only=false code_changed=false ai_changed=false
 mcp_changed=false cli_changed=false core_changed=false crawler_changed=false
 downloader_changed=false tests_changed=false release_changed=false
-lock_changed=false all=false
+lock_changed=false lib_src_changed=false all=false
 for key in docs_only ci_only code_changed ai_changed mcp_changed cli_changed \
   core_changed crawler_changed downloader_changed tests_changed \
-  release_changed lock_changed all; do
+  release_changed lock_changed lib_src_changed all; do
   val="$(grep -E "^${key}=" "$CLASS_TMP" | tail -1 | cut -d= -f2)"
   printf -v "$key" '%s' "${val:-false}"
 done
@@ -271,6 +277,8 @@ EOF
 # Mirrors the `repo-guards` job + `fmt` tier of .github/workflows/ci.yml.
 # Cheap greps/scripts only; every guard present in scripts/ runs, missing
 # ones warn-skip (never silently dropped: the skip is logged).
+# (The rustdoc step is not a guard: it runs in targeted_cargo/lane_full,
+# gated on the classifier lib_src_changed signal — see run_rustdoc_gate.)
 
 # run_guard <name> <script> <cmd...>: run_step when the guard script
 # exists and is readable, else a logged skip (never a silent drop).
@@ -318,11 +326,34 @@ lane_fmt_and_guards() {
     echo 'OK: no string-match sitemap coupling'"
 }
 
-# --- shared: crate-targeted check/clippy/build/tests ------------------------------
+# run_rustdoc_gate <mode>: mirrors the CI `doc-quality` rustdoc step
+# EXACTLY (`cargo doc --workspace --all-features --no-deps` with
+# `RUSTDOCFLAGS=-D warnings`; cf. AGENTS.md lesson from #516/#1006: a
+# local gate narrower than CI is a hole). mode=auto runs only when the
+# classifier saw library source (lib_src_changed=true); mode=always runs
+# unconditionally (FULL lane — unknown scope must never skip a
+# CI-required check). Fail-open on a MISSING cargo (warn + skip), never
+# red-block; fail-closed on real rustdoc findings. `env` scopes
+# RUSTDOCFLAGS to this one command (never `export`). A skip is counted
+# and printed via skip_step, never as PASS (see the summary below).
+run_rustdoc_gate() {
+  local mode="${1:-auto}"
+  if ! command -v cargo >/dev/null 2>&1; then
+    skip_step "rustdoc" "cargo not installed (warn-only)"
+  elif [[ "$mode" == "always" || "$lib_src_changed" == "true" ]]; then
+    run_step "rustdoc (links + missing_docs, RUSTDOCFLAGS=-D warnings)" env "RUSTDOCFLAGS=-D warnings" cargo doc --workspace --all-features --no-deps
+  else
+    skip_step "rustdoc" "no crates/*/src/** change"
+  fi
+}
+
+# --- shared: crate-targeted check/clippy/rustdoc/build/tests ----------------------
 # Packages derive from the classifier flags. crawler/downloader live inside
 # webfang_core, so those flags fold into -p webfang_core. No package matched
 # but code changed (e.g. only root Cargo.toml/clippy.toml) -> workspace scope
 # (fail to full at the check level, still no AI/coverage/release/mutation).
+# The rustdoc step runs last via run_rustdoc_gate (auto mode: only on
+# lib_src_changed), so compile failures surface before doc findings.
 
 targeted_cargo() {
   local -a pkgs=()
@@ -335,6 +366,7 @@ targeted_cargo() {
     run_step "cargo check (workspace, all targets+features)" cargo check --workspace --all-targets --all-features
     run_step "clippy strict (workspace)" cargo clippy --workspace --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines
     run_step "nextest unit (workspace lib)" cargo nextest run --workspace --lib --test-threads 4 --retries 2
+    run_rustdoc_gate auto
     return 0
   fi
   if [[ ${#pkgs[@]} -eq 0 ]]; then
@@ -364,12 +396,15 @@ targeted_cargo() {
   else
     skip_step "nextest integration" "no runtime-area flags (crawler/downloader/cli/mcp/tests)"
   fi
+  run_rustdoc_gate auto
 }
 
 # --- lane: full local gate (unknown scope — fail to full, never skip) --------------
 # Mirrors the AGENTS.md pre-commit gate plus the workspace test surface
 # (test-core + test-full minus AI inference). Still no coverage, release,
 # cross-platform, sanitizers, fuzz, or mutation: those are main/nightly tiers.
+# The rustdoc step always runs here (unknown scope must never skip a
+# CI-required check), via run_rustdoc_gate always.
 
 lane_full() {
   echo "fast-gate lane: FULL (unknown scope — nothing skipped)"
@@ -378,6 +413,7 @@ lane_full() {
   run_step "clippy strict (workspace)" cargo clippy --workspace --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines
   run_step "pre-build webfang binary" cargo build -p webfang_cli --bin webfang --all-features
   run_step "nextest (workspace, all features)" cargo nextest run --workspace --all-features --test-threads 4 --retries 2
+  run_rustdoc_gate always
 }
 
 # --- dispatch -----------------------------------------------------------------------
