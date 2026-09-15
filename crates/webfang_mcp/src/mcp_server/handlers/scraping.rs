@@ -510,7 +510,7 @@ impl McpHandler {
 
     /// Discover and crawl URLs from a sitemap
     #[tool(
-        description = "Discover URLs from a website's sitemap and crawl them. Auto-discovers sitemap from robots.txt if not provided."
+        description = "Discover URLs from a website's sitemap and crawl them. Auto-discovers sitemap from robots.txt if not provided. The run's enriched results stay owned by this session and are what the export tools serve afterwards (#1429, like crawl_site #1290). Unlike CLI --sitemap sequential mode, the run BFS-expands from the seed plus the sitemap seeds and includes the seed page even when the sitemap omits it. Response-array count is discovered/filtered URLs; total_pages is fetched/crawled pages — neither is redefined."
     )]
     // serde_json::to_string cannot fail for a serde_json::Value.
     #[allow(clippy::expect_used)]
@@ -538,9 +538,15 @@ impl McpHandler {
         let start = Instant::now();
         // One run identity per tool call, shared by its success and error events (#501/#698).
         let root_correlation = webfang_core::domain::CorrelationId::new();
-        // Clone: `CrawlerConfig::new` consumes `seed_url` and the Ok arm
-        // re-uses it as the filter anchor.
-        let config = webfang_core::domain::CrawlerConfig::new(seed_url.clone());
+        // Clone: the builder consumes the seed URL and the session-Ok arm
+        // re-uses it as the filter anchor (the config itself is moved
+        // into the session run). Bounds are the `CRAWL_SITE_*` initial
+        // defaults shared with `crawl_site` — never the CLI defaults
+        // (2/10); per-param overrides arrive with the Phase-3 params.
+        let config = webfang_core::domain::CrawlerConfig::builder(seed_url.clone())
+            .max_depth(CRAWL_SITE_DEFAULT_MAX_DEPTH)
+            .max_pages(CRAWL_SITE_DEFAULT_MAX_PAGES as usize)
+            .build();
 
         // The explicit sitemap URL arrives boundary-validated (`McpUrl`
         // wraps a parsed+hardened `ValidUrl`): rewrap without re-parsing
@@ -570,25 +576,94 @@ impl McpHandler {
         .await
         {
             Ok(urls) => {
-                let count = urls.len();
-                self.state.record_scrape_identity(
-                    "crawl_with_sitemap",
-                    domain_of(params.url.as_str()),
-                    Outcome::Success,
-                    count,
-                    start,
-                    &root_correlation,
+                // P6-2 run parity (#1429): the sitemap run is session-owned
+                // through the public `crawl_with_sitemap_session` entry —
+                // the seed BFS-expands plus the discovered sitemap URLs
+                // arrive as `extra_seeds` (`UrlSource::Sitemap`, overlap
+                // deduped at enqueue so the seed page is crawled exactly
+                // once). Capture flows through the shared in-memory sink
+                // so the export tools serve this run's records afterwards.
+                // Clone: the discovered URLs are BOTH the session's
+                // `extra_seeds` input (moved) and the response-array
+                // material below — one sitemap-sized clone, no second fetch.
+                let sink = std::sync::Arc::new(
+                    webfang_core::application::crawler::content_sink::InMemoryContentSink::new(),
                 );
-                tracing::info!("sitemap crawl complete: {} urls found", urls.len());
-                // REQ-01: filter discovered URLs before responding. Sitemap
-                // discovery is host-agnostic — the filter is the gate that
-                // drops external-domain and forbidden-literal-IP entries.
-                let mut url_strings = Vec::with_capacity(urls.len());
-                filter_ssrf_safe(&urls, seed_url, &mut url_strings);
-                Ok(CallToolResult::success(vec![Content::text(
-                    serde_json::to_string_pretty(&url_strings)
-                        .expect("serializing JSON to a string cannot fail"),
-                )]))
+                let options = webfang_core::application::crawler::EngineOptions {
+                    // No js_strategy/session_pool/checkpoint params on this
+                    // tool yet: defaults until the params grow them (same
+                    // shape as the `crawl_site` options block otherwise —
+                    // guarded FetchRouter factory per #1355, sink capture).
+                    session_pool_enabled: false,
+                    checkpoint_path: None,
+                    downloader_factory: Some(
+                        webfang_core::application::container::Container::downloader_factory(),
+                    ),
+                    content_sink: Some(std::sync::Arc::clone(&sink)
+                        as std::sync::Arc<
+                            dyn webfang_core::application::crawler::content_sink::CrawlContentSink,
+                        >),
+                    ..Default::default()
+                };
+                match webfang_core::application::crawler::crawl_with_sitemap_session(
+                    config,
+                    urls.clone(),
+                    options,
+                    root_correlation.child(),
+                )
+                .await
+                {
+                    Ok(run) => {
+                        tracing::info!(
+                            total_pages = run.total_pages,
+                            errors = run.errors,
+                            "sitemap session run complete"
+                        );
+                        let count = urls.len();
+                        self.state.record_scrape_identity(
+                            "crawl_with_sitemap",
+                            domain_of(params.url.as_str()),
+                            Outcome::Success,
+                            count,
+                            start,
+                            &root_correlation,
+                        );
+                        // Convert the captured pages BEFORE answering, so
+                        // a client that exports right after this call
+                        // observes exactly this run's records (same
+                        // contract as `crawl_site`).
+                        self.store_session_results(&sink).await;
+                        tracing::info!("sitemap crawl complete: {} urls found", urls.len());
+                        // REQ-01: filter discovered URLs before responding. Sitemap
+                        // discovery is host-agnostic — the filter is the gate that
+                        // drops external-domain and forbidden-literal-IP entries.
+                        let mut url_strings = Vec::with_capacity(urls.len());
+                        filter_ssrf_safe(&urls, seed_url, &mut url_strings);
+                        Ok(CallToolResult::success(vec![Content::text(
+                            serde_json::to_string_pretty(&url_strings)
+                                .expect("serializing JSON to a string cannot fail"),
+                        )]))
+                    },
+                    Err(e) => {
+                        use webfang_core::infrastructure::observability::log_scrape_error;
+                        self.state.record_scrape_identity(
+                            "crawl_with_sitemap",
+                            domain_of(params.url.as_str()),
+                            Outcome::Error,
+                            0,
+                            start,
+                            &root_correlation,
+                        );
+                        log_scrape_error(
+                            &e,
+                            params.url.as_str(),
+                            "mcp_crawl_with_sitemap",
+                            Some(&root_correlation),
+                            "sitemap session run failed",
+                        );
+                        Ok(CallToolResult::error(vec![Content::text(e.to_string())]))
+                    },
+                }
             },
             Err(e) => {
                 self.state.record_scrape_identity(
@@ -1720,6 +1795,89 @@ mod tests {
             }))
             .await;
         assert_ssrf_rejected(res);
+    }
+
+    /// Phase 2 (#1429, RED): `crawl_with_sitemap` is session-owned — after
+    /// the call, `session_results` holds THIS sitemap run's records so a
+    /// subsequent export serves the sitemap run, not a previous run's.
+    /// Wiremock sitemap fixture: two pages listed, all served with
+    /// article HTML. Fails today (discovery-only: nothing stored).
+    #[cfg_attr(miri, ignore)] // wiremock + wreq use boring-sys2 FFI (unsupported by Miri)
+    #[tokio::test]
+    #[serial]
+    async fn crawl_with_sitemap_stores_sitemap_run_in_session_results() {
+        // Lift both guards for this test only (wiremock binds 127.0.0.1):
+        // the MCP entry validator and the shared core literal-IP entry
+        // guard (F-06 + F-32, #1217). EnvGuard restores the originals on
+        // drop, so the "1"s cannot leak into siblings (#1126).
+        let _guard = webfang_test_utils::EnvGuard::with(&[
+            (
+                webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+                "1",
+            ),
+            (
+                webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+                "1",
+            ),
+        ]);
+        let (handler, _tmp) = test_handler().await;
+        let server = MockServer::start().await;
+        let base = server.uri();
+        let sitemap = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\n<url><loc>{base}/a</loc></url>\n<url><loc>{base}/b</loc></url>\n</urlset>"
+        );
+        Mock::given(method("GET"))
+            .and(path("/sitemap.xml"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "application/xml")
+                    .set_body_string(sitemap),
+            )
+            .mount(&server)
+            .await;
+        for page in ["/", "/a", "/b"] {
+            Mock::given(method("GET"))
+                .and(path(page))
+                .respond_with(ResponseTemplate::new(200).set_body_string(ARTICLE_HTML))
+                .mount(&server)
+                .await;
+        }
+
+        let res = handler
+            .crawl_with_sitemap(Parameters(CrawlWithSitemapParams {
+                url: vu(&base),
+                sitemap_url: Some(vu(&format!("{base}/sitemap.xml"))),
+            }))
+            .await
+            .expect("handler returns Ok");
+
+        // Wire shape unchanged: the bare JSON string array carries the
+        // discovered sitemap pages.
+        let text = result_text(&res);
+        let urls: Vec<String> =
+            serde_json::from_str(&text).expect("response must stay a bare JSON string array");
+        assert!(
+            urls.iter().any(|u| u.ends_with("/a")) && urls.iter().any(|u| u.ends_with("/b")),
+            "response array must carry the sitemap pages, got: {urls:?}"
+        );
+
+        // Session ownership: the sitemap run is stored for the export tools.
+        let stored = handler
+            .state
+            .session_results
+            .lock()
+            .expect("session_results lock")
+            .clone();
+        assert!(
+            !stored.is_empty(),
+            "session_results must hold the sitemap run after crawl_with_sitemap"
+        );
+        let stored_urls: Vec<&str> = stored.iter().map(|c| c.url.as_str()).collect();
+        assert!(
+            stored_urls.iter().any(|u| u.ends_with("/a"))
+                && stored_urls.iter().any(|u| u.ends_with("/b")),
+            "stored run must cover the sitemap pages, got: {stored_urls:?}"
+        );
     }
 
     /// #1116: invalid URL is unrepresentable at the `McpUrl` boundary.
