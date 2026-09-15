@@ -161,6 +161,14 @@ async fn __main() -> CliExit {
     #[allow(clippy::let_unit_value)]
     let _guard = init_logging_dual(log_level, opts.export.quiet, no_color, file_trace_layer);
 
+    // #1431: replay parse-time diagnostics recorded before the subscriber
+    // existed (e.g. the --rate-limit-burst substitution notice). The note
+    // text already names the offending value; it travels once more as a
+    // structured field so trace queries can select it without parsing.
+    for note in webfang_core::cli::preflight_notes::take() {
+        tracing::warn!(preflight_note = %note, "{note}");
+    }
+
     // 6c. JS strategy dependency preflight (#685): --js-strategy full needs
     // Chrome installed — fail fast with exit 78 before any crawl starts.
     if let Err(exit) = preflight::check_js_dependencies(&opts) {

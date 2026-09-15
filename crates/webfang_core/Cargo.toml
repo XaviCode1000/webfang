@@ -273,5 +273,9 @@ name = "harness_403_counts"
 path = "tests/harness_403_counts.rs"
 
 [[test]]
+name = "preflight_diagnostics"
+path = "tests/preflight_diagnostics.rs"
+
+[[test]]
 name = "harness_ssrf_arrivals"
 path = "tests/harness_ssrf_arrivals.rs"
