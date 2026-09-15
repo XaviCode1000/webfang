@@ -27,7 +27,7 @@ use webfang_core::domain::options_spec::{crawler, export, OptionSpec};
 use crate::mcp_server::{
     handlers,
     params::{
-        CrawlSiteParams, ExportFileParams, GetAccessibilitySnapshotParams,
+        CrawlSiteParams, CrawlWithSitemapParams, ExportFileParams, GetAccessibilitySnapshotParams,
         ProcessExportPipelineParams, ScrapeBatchParams, ScrapeWithOptionsParams, CONCURRENCY_MAX,
         CONCURRENCY_MIN,
     },
@@ -68,6 +68,17 @@ pub const CRAWL_SITE_PROPERTIES: &[SpecProperty] = &[
     // advertised-default override is needed. `session_pool`/`checkpoint_dir`
     // stay MCP-only (schemars shape, like `concurrency`).
     prop("js_strategy", &crawler::JS_STRATEGY),
+];
+
+/// `crawl_with_sitemap`: `url`, `max_depth`, `max_pages` overlap the crawler
+/// spec group (#1429 Phase 3, D4). `sitemap_url` stays MCP-only (schemars
+/// shape, like `concurrency`). No `js_strategy` row: the handler does not
+/// forward it yet (defaults until the params grow it — same comment block as
+/// the `crawl_site` options copy in `handlers/scraping.rs`).
+pub const CRAWL_WITH_SITEMAP_PROPERTIES: &[SpecProperty] = &[
+    prop("url", &crawler::URL),
+    prop("max_depth", &crawler::MAX_DEPTH),
+    prop("max_pages", &crawler::MAX_PAGES),
 ];
 
 /// `scrape_with_options`: every parameter overlaps the crawler spec group.
@@ -161,6 +172,22 @@ pub fn default_overrides_for_tool(tool: &str) -> Vec<(&'static str, DefaultOverr
         // (handlers/scraping.rs), which differ from the CLI/spec defaults
         // (2/10). Advertise the values the tool actually applies.
         "crawl_site" => vec![
+            (
+                "max_depth",
+                DefaultOverride::Set(json!(handlers::scraping::CRAWL_SITE_DEFAULT_MAX_DEPTH)),
+            ),
+            (
+                "max_pages",
+                DefaultOverride::Set(json!(handlers::scraping::CRAWL_SITE_DEFAULT_MAX_PAGES)),
+            ),
+        ],
+        // `crawl_with_sitemap`: the handler applies
+        // `params.max_depth.unwrap_or(CRAWL_SITE_DEFAULT_MAX_DEPTH)` /
+        // `params.max_pages.unwrap_or(CRAWL_SITE_DEFAULT_MAX_PAGES)`
+        // (#1429 Phase 3) — the same runtime-effective values as
+        // `crawl_site`, never the CLI/spec defaults (2/10). Advertise
+        // exactly what the tool applies (same shape as the arm above).
+        "crawl_with_sitemap" => vec![
             (
                 "max_depth",
                 DefaultOverride::Set(json!(handlers::scraping::CRAWL_SITE_DEFAULT_MAX_DEPTH)),
@@ -361,6 +388,11 @@ fn crawl_site_input_schema() -> Arc<Map<String, Value>> {
     merged_input_schema::<CrawlSiteParams>(CRAWL_SITE_PROPERTIES, &overrides)
 }
 
+fn crawl_with_sitemap_input_schema() -> Arc<Map<String, Value>> {
+    let overrides = default_overrides_for_tool("crawl_with_sitemap");
+    merged_input_schema::<CrawlWithSitemapParams>(CRAWL_WITH_SITEMAP_PROPERTIES, &overrides)
+}
+
 fn scrape_with_options_input_schema() -> Arc<Map<String, Value>> {
     let overrides = default_overrides_for_tool("scrape_with_options");
     merged_input_schema::<ScrapeWithOptionsParams>(SCRAPE_WITH_OPTIONS_PROPERTIES, &overrides)
@@ -394,6 +426,10 @@ type InputSchemaFn = fn() -> Arc<Map<String, Value>>;
 /// logs a warning instead of failing the router build.
 const OVERRIDES: &[(&str, InputSchemaFn)] = &[
     ("crawl_site", crawl_site_input_schema as InputSchemaFn),
+    (
+        "crawl_with_sitemap",
+        crawl_with_sitemap_input_schema as InputSchemaFn,
+    ),
     (
         "scrape_with_options",
         scrape_with_options_input_schema as InputSchemaFn,
@@ -493,6 +529,37 @@ mod tests {
             schema["properties"]["max_pages"],
             crawler::MAX_PAGES.json_schema()
         );
+    }
+
+    /// Proof (#1429 Phase 3, TRIANGULATE 3.4): `crawl_with_sitemap` advertises
+    /// the SAME runtime-effective defaults as `crawl_site` — exactly the
+    /// handler's `unwrap_or` constants (`CRAWL_SITE_DEFAULT_MAX_DEPTH` = 3 /
+    /// `CRAWL_SITE_DEFAULT_MAX_PAGES` = 100), never the CLI/spec defaults
+    /// (2/10). Pins truthfulness: runtime defaults == schema-advertised values.
+    #[test]
+    fn crawl_with_sitemap_advertises_crawl_site_runtime_defaults() {
+        let schema = crawl_with_sitemap_input_schema();
+        assert_eq!(
+            schema["properties"]["max_depth"]["default"],
+            json!(handlers::scraping::CRAWL_SITE_DEFAULT_MAX_DEPTH)
+        );
+        assert_eq!(
+            schema["properties"]["max_pages"]["default"],
+            json!(handlers::scraping::CRAWL_SITE_DEFAULT_MAX_PAGES)
+        );
+        // The override path actually fired: the fragments differ from the
+        // raw spec renderings (which carry the CLI defaults "2"/"10").
+        assert_ne!(
+            schema["properties"]["max_depth"],
+            crawler::MAX_DEPTH.json_schema()
+        );
+        assert_ne!(
+            schema["properties"]["max_pages"],
+            crawler::MAX_PAGES.json_schema()
+        );
+        // Advertised values ARE the constants — not literals that could drift.
+        assert_eq!(schema["properties"]["max_depth"]["default"], json!(3));
+        assert_eq!(schema["properties"]["max_pages"]["default"], json!(100));
     }
 
     /// Proof (#940 F2): `scrape_with_options` advertises NO default for

@@ -540,12 +540,12 @@ impl McpHandler {
         let root_correlation = webfang_core::domain::CorrelationId::new();
         // Clone: the builder consumes the seed URL and the session-Ok arm
         // re-uses it as the filter anchor (the config itself is moved
-        // into the session run). Bounds are the `CRAWL_SITE_*` initial
-        // defaults shared with `crawl_site` — never the CLI defaults
-        // (2/10); per-param overrides arrive with the Phase-3 params.
+        // into the session run). Bounds are the per-param overrides with
+        // `CRAWL_SITE_*` fallbacks shared with `crawl_site` — never the
+        // CLI defaults (2/10).
         let config = webfang_core::domain::CrawlerConfig::builder(seed_url.clone())
-            .max_depth(CRAWL_SITE_DEFAULT_MAX_DEPTH)
-            .max_pages(CRAWL_SITE_DEFAULT_MAX_PAGES as usize)
+            .max_depth(params.max_depth.unwrap_or(CRAWL_SITE_DEFAULT_MAX_DEPTH))
+            .max_pages(params.max_pages.unwrap_or(CRAWL_SITE_DEFAULT_MAX_PAGES) as usize)
             .build();
 
         // The explicit sitemap URL arrives boundary-validated (`McpUrl`
@@ -1792,6 +1792,8 @@ mod tests {
             .crawl_with_sitemap(Parameters(CrawlWithSitemapParams {
                 url: vu("http://8.8.8.8/"),
                 sitemap_url: Some(vu("http://127.0.0.1/")),
+                max_depth: None,
+                max_pages: None,
             }))
             .await;
         assert_ssrf_rejected(res);
@@ -1847,6 +1849,8 @@ mod tests {
             .crawl_with_sitemap(Parameters(CrawlWithSitemapParams {
                 url: vu(&base),
                 sitemap_url: Some(vu(&format!("{base}/sitemap.xml"))),
+                max_depth: None,
+                max_pages: None,
             }))
             .await
             .expect("handler returns Ok");
