@@ -471,9 +471,11 @@ EXIT CODES:
   2    No URLs discovered
   3    All scrapers failed
   64   Bad CLI arguments (usage error)
-  69   WAF block or network error
+  65   Data format error (extraction without usable content)
+  69   Network error, partial success, or SSRF refusal
   74   I/O error
   76   Protocol error
+  77   All URLs blocked by robots.txt
   78   Configuration error
 
 EXAMPLES:
