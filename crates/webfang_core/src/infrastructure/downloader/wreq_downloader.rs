@@ -645,7 +645,7 @@ impl WreqDownloader {
             // Retry-After is captured BEFORE anything reads the body: `read_body_snippet`
             // consumes the response, and the 429 branch below still needs the server's
             // requested delay or #1231's backoff silently degrades.
-            let retry_after_ms =
+            let mut retry_after_ms =
                 (last_status == 429).then(|| parse_retry_after_ms(&response, self.backoff_max_ms));
 
             if !self.ignore_waf {
@@ -699,11 +699,21 @@ impl WreqDownloader {
                         return self.build_page(res, url).await;
                     },
                     Ok(res) => {
-                        // Rotated retry returned non-2xx (e.g., 429, 500).
-                        // Capture its status and continue the loop so unified
-                        // retry logic (429/5xx branch below) handles it.
+                        // Rotated retry returned non-2xx (e.g., a second
+                        // 403, 429, 500). The rotation CONSUMES the attempt:
+                        // fall through to the unified 429/5xx-or-terminal
+                        // handling below instead of `continue`-ing back to
+                        // the loop top. A bare `continue` re-enters the loop
+                        // and fires another default-UA request for the same
+                        // failure (#1430: always-403 cost 3 requests —
+                        // default, rotated, default — instead of 2,
+                        // amplification against WAFs), and skips the backoff
+                        // sleep a rotated 429/5xx owes. The `attempt == 0`
+                        // guard above stays the single "no rotation spent
+                        // yet" gate — no parallel flag.
                         last_status = res.status().as_u16();
-                        continue;
+                        retry_after_ms = (last_status == 429)
+                            .then(|| parse_retry_after_ms(&res, self.backoff_max_ms));
                     },
                     Err(e) => return Err(e),
                 }
@@ -1616,6 +1626,81 @@ mod wiremock_tests {
             .expect("rotated retry succeeds for unpinned downloads");
         assert_eq!(page.status, 200);
         assert_eq!(page.html, "<html>rotated</html>");
+    }
+
+    /// Issue #1430: an always-403 origin must cost EXACTLY two requests —
+    /// one with the default UA, one with the rotated pool agent — and the
+    /// final error must preserve the last observed status (403).
+    /// The rotated retry consumes the attempt: it falls through to the
+    /// terminal handling instead of `continue`-ing back to the loop top
+    /// (which fired a third, default-UA request against the WAF).
+    #[tokio::test]
+    async fn always_403_costs_exactly_two_requests_and_reports_403() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::{Arc, Mutex};
+
+        let mock_server = MockServer::start().await;
+        let pool_agent = UserAgentCache::fallback_agents().swap_remove(1);
+        let hits = Arc::new(AtomicUsize::new(0));
+        let uas: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let hits_clone = Arc::clone(&hits);
+        let uas_clone = Arc::clone(&uas);
+
+        Mock::given(method("GET"))
+            .respond_with(move |req: &wiremock::Request| {
+                hits_clone.fetch_add(1, Ordering::SeqCst);
+                let ua = req
+                    .headers
+                    .get("user-agent")
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("<missing>")
+                    .to_string();
+                uas_clone.lock().unwrap().push(ua);
+                ResponseTemplate::new(403)
+            })
+            .mount(&mock_server)
+            .await;
+
+        let downloader = WreqDownloader::new(
+            10,
+            5,
+            Profile::Chrome145,
+            None,
+            Vec::new(),
+            None,
+            None,
+            3,
+            1000,
+            10000,
+            crate::domain::downloader_factory::DEFAULT_MAX_PAGE_BYTES,
+        )
+        .unwrap();
+        let url: Url = mock_server.uri().parse().unwrap();
+
+        match downloader.fetch(&url).await {
+            Err(DownloadError::Http { status: 403, .. }) => {},
+            other => panic!("Expected terminal Http 403, got {other:?}"),
+        }
+        assert_eq!(
+            hits.load(Ordering::SeqCst),
+            2,
+            "always-403 must cost exactly 2 requests (default + rotated)"
+        );
+        let uas = uas.lock().unwrap();
+        assert_eq!(
+            uas.len(),
+            2,
+            "expected one default-UA and one rotated-UA request"
+        );
+        assert_ne!(
+            uas[0], pool_agent,
+            "first request must carry the default UA, got: {}",
+            uas[0]
+        );
+        assert_eq!(
+            uas[1], pool_agent,
+            "second request must carry the rotated pool agent"
+        );
     }
     // ------------------------------------------------------------------
     // FIX-1 (#1231 F-08, #1236 F-09): retry classification contract tests.
