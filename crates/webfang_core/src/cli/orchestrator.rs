@@ -90,8 +90,23 @@ pub async fn run(
     >,
     vault_ports: crate::application::container::VaultAiPorts,
 ) -> CliExit {
+    // Run-root correlation identity (#501, #1439): the whole operation owns
+    // ONE root, minted HERE at the orchestration entry and propagated into
+    // every route — dry-run preview, batch, prepare/scrape phases. Before
+    // #1439 the discovery Engine minted its own root milliseconds after this
+    // event, silently splitting every DOM/batch run into two identities in
+    // the trace (the historical #687 class). `#[instrument]` spans cannot
+    // see locals at creation, so declare it offline-visible via a structured
+    // event (lands in the JSONL `.fields`).
+    let root_correlation = domain::CorrelationId::new();
+    info!(
+        correlation_id = %root_correlation,
+        trace_id = %root_correlation.trace_id(),
+        "run identity"
+    );
+
     if opts.export.dry_run {
-        return run_dry_run(opts).await;
+        return run_dry_run(opts, &root_correlation).await;
     }
 
     // #703/#652: pre-flight gate for `--output-vectors` — single source of
@@ -116,28 +131,20 @@ pub async fn run(
     let cancel = shutdown.token();
 
     if opts.batch.enabled {
-        // Batch mode uses the crawl Engine, which mints its own run-root
-        // identity per crawl — do not mint one here.
+        // #1439: the run-root minted above travels through `run_batch_crawl`
+        // onto the `BatchProcessor`, so every per-URL crawl engine of one
+        // batch run shares this single identity instead of minting its own
+        // (the old per-crawl mint split the batch trace in two).
         return run_batch(
             opts,
             #[cfg(feature = "ai")]
             ai_cleaner,
             vault_ports,
             &cancel,
+            &root_correlation,
         )
         .await;
     }
-
-    // Run-root correlation identity (#501): the whole operation owns ONE
-    // root; every page derives `.child()` from it. `#[instrument]` spans
-    // cannot see locals at creation, so declare it offline-visible via a
-    // structured event (lands in the JSONL `.fields`).
-    let root_correlation = domain::CorrelationId::new();
-    info!(
-        correlation_id = %root_correlation,
-        trace_id = %root_correlation.trace_id(),
-        "run identity"
-    );
 
     // PersistenceMode unified control-plane — pure resolver with default dir.
     // Built BEFORE prepare_phase so discovery Engine can be wired with
@@ -421,7 +428,7 @@ async fn export_phase(
 }
 
 /// Run dry-run: discover URLs and print them without scraping.
-async fn run_dry_run(opts: CrawlOptions) -> CliExit {
+async fn run_dry_run(opts: CrawlOptions, root_correlation: &domain::CorrelationId) -> CliExit {
     let tls_emulation = match HttpClientConfig::profile_from_name(&opts.network.h2_profile) {
         Ok(profile) => profile,
         Err(e) => return CliExit::ConfigError(e.to_string()),
@@ -464,6 +471,7 @@ async fn run_dry_run(opts: CrawlOptions) -> CliExit {
         &opts,
         &persistence_mode,
         None,
+        root_correlation,
     )
     .await
     {
@@ -550,6 +558,33 @@ fn resolve_persistence_mode(opts: &CrawlOptions) -> PersistenceMode {
     persistence_mode
 }
 
+/// Run sitemap discovery and map its terminal states to `CliExit` (#1439
+/// extraction: keeps `prepare_phase` under the `too_many_lines` ratchet).
+///
+/// "Site has no sitemap" and "sitemap empty" are discovery states, not
+/// infrastructure failures (#695): exit 2 lets automation distinguish them
+/// from a real network outage (exit 69). Exit 2 also fires when the sitemap —
+/// the source of truth in this mode — yields zero URLs.
+async fn discover_sitemap_urls(
+    crawler_config: &CrawlerConfig,
+    opts: &CrawlOptions,
+    root_correlation: &domain::CorrelationId,
+) -> Result<Vec<url::Url>, CliExit> {
+    match discover_urls(crawler_config, opts, root_correlation).await {
+        Err(crate::error::ScraperError::SitemapNotFound(_)) => Err(CliExit::EmptyDiscovery(
+            "No URLs discovered: sitemap not found".into(),
+        )),
+        Err(crate::error::ScraperError::SitemapEmpty) => Err(CliExit::EmptyDiscovery(
+            "No URLs discovered: sitemap is empty".into(),
+        )),
+        Err(e) => Err(CliExit::NetworkError(format!("URL discovery failed: {e}"))),
+        Ok(urls) if urls.is_empty() => Err(CliExit::EmptyDiscovery(
+            "No URLs discovered from sitemaps".into(),
+        )),
+        Ok(urls) => Ok(urls),
+    }
+}
+
 /// Prepare scraper config and discover URLs.
 ///
 /// Returns the initial `ScraperConfig` (before asset/download wiring) and
@@ -589,37 +624,18 @@ async fn prepare_phase(
         // crawl Engine so `--max-depth` is honored (bug #651): the legacy
         // `discover_urls_single_fetch` path did one fetch and silently ignored depth.
         let discovered_urls = if opts.crawl.use_sitemap {
-            match discover_urls(&crawler_config, opts, root_correlation).await {
-                // "Site has no sitemap" is a terminal discovery state, not
-                // an infrastructure failure (#695): exit 2 lets automation
-                // distinguish it from a real network outage (exit 69).
-                Err(crate::error::ScraperError::SitemapNotFound(_)) => {
-                    return Err(CliExit::EmptyDiscovery(
-                        "No URLs discovered: sitemap not found".into(),
-                    ));
-                },
-                Err(crate::error::ScraperError::SitemapEmpty) => {
-                    return Err(CliExit::EmptyDiscovery(
-                        "No URLs discovered: sitemap is empty".into(),
-                    ));
-                },
-                Err(e) => {
-                    return Err(CliExit::NetworkError(format!("URL discovery failed: {e}")));
-                },
-                // Exit 2 only when the sitemap is the source of truth.
-                Ok(urls) if urls.is_empty() => {
-                    return Err(CliExit::EmptyDiscovery(
-                        "No URLs discovered from sitemaps".into(),
-                    ));
-                },
-                Ok(urls) => urls,
-            }
+            discover_sitemap_urls(&crawler_config, opts, root_correlation).await?
         } else {
             // Recursive BFS discovery respects max_depth/max_pages/robots/
             // patterns; the existing scrape_phase + export_phase still own
             // content extraction and on-disk output.
-            let (urls, pages) =
-                discover_dom_with_capture(&crawler_config, opts, persistence_mode).await?;
+            let (urls, pages) = discover_dom_with_capture(
+                &crawler_config,
+                opts,
+                persistence_mode,
+                root_correlation,
+            )
+            .await?;
             captured_pages = pages;
             urls
         };
@@ -712,7 +728,8 @@ async fn prepare_phase(
 /// for the scrape phase to reuse instead of refetching — one HTTP request
 /// per page. Unified DOM discovery (F-14, #1232) runs the recursive Engine;
 /// F-35 (#1216): the config is cloned because `plan_urls` reuses it for
-/// the seed pattern guard.
+/// the seed pattern guard. `root_correlation` (#1439) is the CLI run-root,
+/// propagated verbatim so the Engine and the CLI share one trace identity.
 ///
 /// # Errors
 ///
@@ -721,10 +738,19 @@ async fn discover_dom_with_capture(
     crawler_config: &CrawlerConfig,
     opts: &CrawlOptions,
     persistence_mode: &PersistenceMode,
+    root_correlation: &domain::CorrelationId,
 ) -> Result<(Vec<url::Url>, Vec<CapturedPage>), CliExit> {
     let capture_sink = std::sync::Arc::new(InMemoryContentSink::new());
     let cfg = crawler_config.clone();
-    match discover_urls_unified(cfg, opts, persistence_mode, Some(capture_sink)).await {
+    match discover_urls_unified(
+        cfg,
+        opts,
+        persistence_mode,
+        Some(capture_sink),
+        root_correlation,
+    )
+    .await
+    {
         Err(e) => Err(CliExit::NetworkError(format!("URL discovery failed: {e}"))),
         Ok(output) => Ok((output.urls, output.pages)),
     }
@@ -933,6 +959,7 @@ async fn run_batch(
     #[cfg(feature = "ai")] ai_cleaner: Option<std::sync::Arc<dyn SemanticCleaner>>,
     vault_ports: crate::application::container::VaultAiPorts,
     cancel: &tokio_util::sync::CancellationToken,
+    root_correlation: &domain::CorrelationId,
 ) -> CliExit {
     // #703/#652: pre-flight gate for `--output-vectors` — same single source of
     // truth as `run()` (see `output_vectors_gate`). First statement here so the
@@ -955,10 +982,11 @@ async fn run_batch(
         Err(e) => return e,
     };
 
-    let (summary, sink) = match run_batch_crawl(&opts, tls_emulation, cancel).await {
-        Ok(pair) => pair,
-        Err(e) => return e,
-    };
+    let (summary, sink) =
+        match run_batch_crawl(&opts, tls_emulation, cancel, root_correlation).await {
+            Ok(pair) => pair,
+            Err(e) => return e,
+        };
 
     let extracted = extract_batch_content(&sink, &opts).await;
     discard_batch_spool(&sink).await;
@@ -1027,9 +1055,11 @@ async fn run_batch_crawl(
     opts: &CrawlOptions,
     tls_emulation: wreq_util::Profile,
     cancel: &tokio_util::sync::CancellationToken,
+    root_correlation: &domain::CorrelationId,
 ) -> Result<(BatchManagerSummary, std::sync::Arc<BoundedFileSink>), CliExit> {
     let sink = std::sync::Arc::new(build_batch_sink(opts).await?);
-    let manager = prepare_batch_manager(opts, tls_emulation, sink.clone()).await?;
+    let manager =
+        prepare_batch_manager(opts, tls_emulation, sink.clone(), root_correlation).await?;
 
     let summary = manager.process_all_summary_cancellable(cancel).await;
     log_batch_summary(&summary);
@@ -1080,10 +1110,14 @@ fn warn_batch_crawl_flags_ignored(opts: &CrawlOptions) {
 /// `--sitemap`) differ from their defaults: since #1215 batch scrapes each
 /// URL instead of crawling it, those flags are inert here and the operator
 /// must hear about it rather than assume a crawl happened.
+///
+/// `root_correlation` (#1439) travels onto the [`BatchProcessor`] so every
+/// per-URL crawl engine of this run shares the one announced identity.
 async fn prepare_batch_manager(
     opts: &CrawlOptions,
     tls_emulation: wreq_util::Profile,
     sink: std::sync::Arc<BoundedFileSink>,
+    root_correlation: &domain::CorrelationId,
 ) -> Result<BatchManager, CliExit> {
     warn_batch_crawl_flags_ignored(opts);
     let budget = crate::domain::budget::BudgetModel::build(
@@ -1093,7 +1127,8 @@ async fn prepare_batch_manager(
     let crawler_config = build_batch_crawler_config(opts, tls_emulation, &budget)?;
     let manager = load_batch_manager(opts, crawler_config, &budget)
         .await?
-        .with_content_sink(sink);
+        .with_content_sink(sink)
+        .with_correlation(root_correlation.clone());
 
     if manager.url_count() == 0 {
         error!("No URLs provided for batch processing");
@@ -2683,6 +2718,7 @@ mod tests {
             opts,
             crate::application::container::VaultAiPorts::default(),
             &cancel,
+            &crate::domain::CorrelationId::new(),
         )
         .await;
 
@@ -2738,6 +2774,7 @@ mod tests {
             None,
             crate::application::container::VaultAiPorts::default(),
             &cancel,
+            &crate::domain::CorrelationId::new(),
         )
         .await;
 

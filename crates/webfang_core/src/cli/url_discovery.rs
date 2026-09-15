@@ -109,11 +109,19 @@ pub struct DiscoveryOutput {
 ///
 /// Returns [`crate::error::ScraperError`] on network/timeout errors from the
 /// Engine, exactly as the metadata-only path does.
+///
+/// # Run-root propagation (#1439)
+///
+/// `correlation` is the CLI run-root: the discovery Engine adopts it as its
+/// own root, so the "run identity" event and every discovery/crawl span
+/// share ONE `trace_id`. (Before #1439 the engine entry minted a second
+/// root milliseconds apart, silently splitting the run in the trace.)
 pub async fn discover_urls_unified(
     crawler_config: CrawlerConfig,
     opts: &CrawlOptions,
     persistence_mode: &PersistenceMode,
     sink: Option<Arc<InMemoryContentSink>>,
+    correlation: &CorrelationId,
 ) -> ScraperResult<DiscoveryOutput> {
     let discovery_pb = build_discovery_progress_bar(opts, "Discovering URLs (recursive)...");
 
@@ -139,7 +147,7 @@ pub async fn discover_urls_unified(
         options.checkpoint_path = Some(cfg.dir.clone());
         options.checkpoint_interval = cfg.interval;
     }
-    let result = crawl_site_with_options(crawler_config, options).await?;
+    let result = crawl_site_with_options(crawler_config, options, correlation).await?;
 
     let urls: Vec<Url> = result.urls.into_iter().map(|d| d.url).collect();
     let count = urls.len();
@@ -223,12 +231,17 @@ fn build_discovery_engine_options(
 ///
 /// Compatibility shim over [`discover_urls_unified`] (F-14, #1232): keeps the
 /// `Vec<Url>` call shape while the orchestrator migrates to the unified output.
+///
+/// `correlation` (#1439) is the caller's run-root, forwarded verbatim to the
+/// unified entry — the shim never mints an identity of its own.
 pub async fn discover_urls_recursive(
     crawler_config: CrawlerConfig,
     opts: &CrawlOptions,
     persistence_mode: &PersistenceMode,
+    correlation: &CorrelationId,
 ) -> ScraperResult<Vec<Url>> {
-    let output = discover_urls_unified(crawler_config, opts, persistence_mode, None).await?;
+    let output =
+        discover_urls_unified(crawler_config, opts, persistence_mode, None, correlation).await?;
     Ok(output.urls)
 }
 
@@ -412,9 +425,14 @@ mod tests {
             ..Default::default()
         };
         opts.export.quiet = true;
-        let discovered = discover_urls_recursive(config, &opts, &PersistenceMode::Disabled)
-            .await
-            .expect("six-node discovery must succeed");
+        let discovered = discover_urls_recursive(
+            config,
+            &opts,
+            &PersistenceMode::Disabled,
+            &CorrelationId::new(),
+        )
+        .await
+        .expect("six-node discovery must succeed");
 
         assert_eq!(
             discovered.len(),

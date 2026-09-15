@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use tokio::time::timeout;
 use url::Url;
 use webfang_core::application::{crawl_site_with_options, EngineOptions};
-use webfang_core::domain::{CrawlerConfig, JsStrategy};
+use webfang_core::domain::{CorrelationId, CrawlerConfig, JsStrategy};
 use webfang_core::infrastructure::downloader::fetch_router::DefaultDownloaderFactory;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -96,7 +96,7 @@ async fn engine_js_strategy_respects_config_timeout() {
     let start = Instant::now();
     let result = timeout(
         Duration::from_secs(15),
-        crawl_site_with_options(config, options),
+        crawl_site_with_options(config, options, &CorrelationId::new()),
     )
     .await
     .expect("crawl must not hang — with_js_strategy must honor config.timeout_secs");

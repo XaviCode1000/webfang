@@ -37,7 +37,7 @@ use webfang_core::cli::error::{
 use webfang_core::cli::url_discovery::discover_urls_unified;
 use webfang_core::domain::persistence::PersistenceMode;
 use webfang_core::domain::ssrf_guard::{DISABLE_ENTRY_GUARD_ENV, DISABLE_VALIDATING_RESOLVER_ENV};
-use webfang_core::domain::{CrawlerConfig, ValidUrl};
+use webfang_core::domain::{CorrelationId, CrawlerConfig, ValidUrl};
 
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -251,6 +251,7 @@ async fn discovery_plain_run_propagates_ignore_robots_option() {
         &plain_opts(&seed_str),
         &PersistenceMode::Disabled,
         None,
+        &CorrelationId::new(),
     )
     .await
     .expect("plain discovery must succeed");
@@ -294,6 +295,7 @@ async fn discovery_plain_run_enforces_robots_by_default() {
         &plain_opts(&seed_str),
         &PersistenceMode::Disabled,
         None,
+        &CorrelationId::new(),
     )
     .await
     .expect("plain discovery must succeed");
@@ -350,6 +352,7 @@ async fn discovery_plain_run_rejects_loopback_seed_with_ssrf_guard_on() {
         &plain_opts(&seed_str),
         &PersistenceMode::Disabled,
         None,
+        &CorrelationId::new(),
     )
     .await
     .expect("the armed guard cuts the seed pre-socket, so the run completes Ok");
@@ -412,6 +415,7 @@ async fn issue_1381_guard_refused_preview_maps_to_exit_2_while_the_library_stays
             &plain_opts(&seed_str),
             &PersistenceMode::Disabled,
             None,
+            &CorrelationId::new(),
         )
         .await
         .expect("the armed guard cuts the seed pre-socket, so the run still completes Ok");

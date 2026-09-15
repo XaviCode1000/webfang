@@ -18,6 +18,7 @@ use tempfile::TempDir;
 use url::Url;
 use webfang_core::application::crawl_options::CrawlOptions;
 use webfang_core::cli::url_discovery::discover_urls_recursive;
+use webfang_core::domain::CorrelationId;
 use webfang_core::CrawlerConfig;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
@@ -81,9 +82,14 @@ async fn crawl_once(seed: Url, shared_state_dir: &std::path::Path) -> BTreeSet<S
         .build();
 
     let persistence_mode = opts.crawl.persistence_mode(shared_state_dir);
-    let discovered = discover_urls_recursive(crawler_config, &opts, &persistence_mode)
-        .await
-        .expect("discovery must succeed");
+    let discovered = discover_urls_recursive(
+        crawler_config,
+        &opts,
+        &persistence_mode,
+        &CorrelationId::new(),
+    )
+    .await
+    .expect("discovery must succeed");
     discovered.into_iter().map(|u| u.to_string()).collect()
 }
 

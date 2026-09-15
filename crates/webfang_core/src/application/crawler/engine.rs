@@ -1295,6 +1295,7 @@ impl Default for EngineOptions {
 /// ```no_run
 /// use webfang_core::{domain::CrawlerConfig, application::crawl_site_with_options};
 /// use webfang_core::application::crawler::engine::EngineOptions;
+/// use webfang_core::domain::CorrelationId;
 /// use url::Url;
 ///
 /// # #[tokio::main]
@@ -1305,7 +1306,8 @@ impl Default for EngineOptions {
 ///     .max_pages(50)
 ///     .build();
 ///
-/// let result = crawl_site_with_options(config, EngineOptions::default()).await?;
+/// let correlation = CorrelationId::new();
+/// let result = crawl_site_with_options(config, EngineOptions::default(), &correlation).await?;
 /// println!("Crawled {} pages", result.total_pages);
 /// # Ok(())
 /// # }
@@ -1317,6 +1319,12 @@ impl Default for EngineOptions {
 /// session pool, the JS strategy, robots handling and content capture all
 /// stay invisible at the call site. Use [`crawl_site_with_options`] instead.
 /// The shim keeps working exactly as before until removal.
+///
+/// Run-root contract (#1439): this is a STANDALONE entry — a caller of this
+/// function performs the whole operation here, so the shim mints its own
+/// run-root at the boundary (like `scrape_with_readability`). Production
+/// routes must NOT use it: they own a root and propagate it through
+/// [`crawl_site_with_options`].
 #[deprecated(
     since = "2.2.0",
     note = "Use crawl_site_with_options instead: EngineOptions lets callers set checkpoint, session pool, js_strategy, robots and content sink explicitly instead of inheriting silent defaults (#1369)."
@@ -1447,10 +1455,23 @@ async fn crawl_site_inner(
 /// session pooling, or explicit robots.txt control beyond what
 /// `CrawlerConfig.ignore_robots` provides.
 ///
+/// # Run-root identity (#1439)
+///
+/// `correlation` is the calling operation's run-root [`CorrelationId`]
+/// (#501). This entry NO LONGER mints one: every production route (CLI
+/// discovery, batch, MCP, benchmark) owns a root at its operation boundary
+/// and must propagate it here, so the engine spans and the caller's events
+/// share one `trace_id` and the whole run reconstructs from the announced
+/// identity. A genuinely standalone caller for which this call IS the
+/// operation mints its own root at the call site
+/// (`CorrelationId::new()`), documenting that contract — the silent
+/// mint-on-behalf is what re-broke causability after #1232.
+///
 /// # Arguments
 ///
 /// * `config` - Crawler configuration (seed, depth, patterns, etc.)
 /// * `options` - Engine-level options (checkpoint, session pool, robots)
+/// * `correlation` - The operation's run-root correlation identity (#1439)
 ///
 /// # Returns
 ///
@@ -1462,7 +1483,7 @@ async fn crawl_site_inner(
 /// ```no_run
 /// use webfang_core::{domain::CrawlerConfig, application::crawl_site_with_options};
 /// use webfang_core::application::crawler::engine::EngineOptions;
-/// use webfang_core::domain::JsStrategy;
+/// use webfang_core::domain::{CorrelationId, JsStrategy};
 /// use std::time::Duration;
 /// use url::Url;
 ///
@@ -1482,7 +1503,9 @@ async fn crawl_site_inner(
 ///     ..Default::default()
 /// };
 ///
-/// let result = crawl_site_with_options(config, options).await?;
+/// // The caller owns the run-root: this call is the whole operation.
+/// let correlation = CorrelationId::new();
+/// let result = crawl_site_with_options(config, options, &correlation).await?;
 /// println!("Crawled {} pages", result.total_pages);
 /// # Ok(())
 /// # }
@@ -1490,8 +1513,9 @@ async fn crawl_site_inner(
 pub async fn crawl_site_with_options(
     config: CrawlerConfig,
     options: EngineOptions,
+    correlation: &CorrelationId,
 ) -> Result<CrawlResult, CrawlError> {
-    crawl_site_with_options_inner(config, options, CorrelationId::new()).await
+    crawl_site_with_options_inner(config, options, correlation.clone()).await
 }
 
 /// Inner implementation of [`crawl_site_with_options`].
@@ -2016,6 +2040,10 @@ mod tests {
         pool: Option<Arc<FakeSessionPort>>,
         session_pool_enabled: bool,
     ) -> CrawlSession {
+        // #1439: identity is a REQUIRED builder part (no silent mint), so
+        // the pool-wiring proof supplies its own standalone root. The label
+        // is read BEFORE `.config(...)` moves the config into the builder.
+        let run_label = config.seed_url.host_str().unwrap_or("seed").to_string();
         CrawlSession::builder()
             .config(config)
             .persistence(PersistenceMode::Disabled)
@@ -2039,6 +2067,10 @@ mod tests {
                 content_sink: None,
                 pipeline: None,
                 output_stages: Vec::new(),
+            })
+            .identity(crate::application::crawler::session::CrawlIdentity {
+                root: CorrelationId::new(),
+                run_label,
             })
             .build()
             .expect("test session must build")
@@ -2131,7 +2163,7 @@ mod tests {
             ..Default::default()
         };
 
-        let result = crawl_site_with_options(config, options)
+        let result = crawl_site_with_options(config, options, &CorrelationId::new())
             .await
             .expect("crawl with session pool enabled must succeed");
         assert_eq!(
@@ -2177,6 +2209,7 @@ mod tests {
                 ignore_robots: true,
                 ..Default::default()
             },
+            &CorrelationId::new(),
         )
         .await
         .expect("explicit entry must work");
@@ -2243,6 +2276,7 @@ mod tests {
                 content_sink: Some(explicit_sink.clone() as std::sync::Arc<dyn CrawlContentSink>),
                 ..Default::default()
             },
+            &CorrelationId::new(),
         )
         .await
         .expect("explicit entry with content_sink must work");

@@ -16,7 +16,7 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use url::Url;
 use webfang_core::application::crawler::engine::EngineOptions;
-use webfang_core::domain::JsStrategy;
+use webfang_core::domain::{CorrelationId, JsStrategy};
 use webfang_core::infrastructure::downloader::fetch_router::DefaultDownloaderFactory;
 use webfang_core::{
     crawl_site_with_options, BincodeCheckpoint, CheckpointPath, CheckpointStore, CrawlCheckpoint,
@@ -360,7 +360,9 @@ async fn crawl_with_checkpoint(
         ..Default::default()
     };
 
-    crawl_site_with_options(config, options).await
+    // #1439: each helper invocation is its own standalone run — mint the
+    // job root here, at the operation boundary.
+    crawl_site_with_options(config, options, &CorrelationId::new()).await
 }
 
 /// Verify the scoped checkpoint file exists with a valid CRC32 prefix +

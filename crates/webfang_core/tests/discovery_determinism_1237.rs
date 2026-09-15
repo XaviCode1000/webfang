@@ -13,7 +13,7 @@ use webfang_core::application::crawl_options::CrawlOptions;
 use webfang_core::cli::url_discovery::discover_urls_unified;
 use webfang_core::domain::budget::{BudgetOverrides, CrawlConcurrency};
 use webfang_core::domain::persistence::PersistenceMode;
-use webfang_core::domain::{CrawlerConfig, DiscoveredUrl, ValidUrl};
+use webfang_core::domain::{CorrelationId, CrawlerConfig, DiscoveredUrl, ValidUrl};
 use webfang_core::infrastructure::crawler::url_queue::{PrioritizedUrl, UrlQueue};
 
 use wiremock::matchers::{method, path};
@@ -185,6 +185,7 @@ async fn discover_once(seed_url: &url::Url, seed_str: &str) -> Vec<String> {
         &manylinks_opts(seed_str),
         &PersistenceMode::Disabled,
         None,
+        &CorrelationId::new(),
     )
     .await
     .expect("manylinks discovery must succeed")

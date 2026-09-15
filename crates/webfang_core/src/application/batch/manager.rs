@@ -103,6 +103,15 @@ impl BatchManager {
         self
     }
 
+    /// Adopt `root` as the run identity of every job this manager runs
+    /// (#1439 — propagates to the underlying [`BatchProcessor`], where each
+    /// per-URL crawl engine shares it).
+    #[must_use]
+    pub fn with_correlation(mut self, root: crate::domain::CorrelationId) -> Self {
+        self.processor = self.processor.with_correlation(root);
+        self
+    }
+
     /// Create a batch manager from a single batch job
     pub fn with_job(mut self, job: BatchJob) -> Self {
         self.jobs.push(job);
