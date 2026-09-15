@@ -41,18 +41,16 @@ fn notes() -> &'static Mutex<Vec<String>> {
 /// parse path.
 pub fn record(note: impl Into<String>) {
     let note = note.into();
-    match notes().lock() {
-        Ok(mut guard) => {
-            if !guard.contains(&note) {
-                guard.push(note);
-            }
-        },
-        Err(poisoned) => {
-            let mut guard = poisoned.into_inner();
-            if !guard.contains(&note) {
-                guard.push(note);
-            }
-        },
+    // ONE write site for both lock outcomes: poisoning changes how the guard is
+    // obtained, never what the update does. Two arms that repeat the push were a
+    // standing invitation to believe the poisoned path behaves differently (#1431
+    // review); `take` is the single reader of the same invariant.
+    let mut guard = match notes().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    if !guard.contains(&note) {
+        guard.push(note);
     }
 }
 
@@ -62,10 +60,11 @@ pub fn record(note: impl Into<String>) {
 /// batch. Poisoning degrades to `into_inner()`, same as [`record`].
 #[must_use]
 pub fn take() -> Vec<String> {
-    match notes().lock() {
-        Ok(mut guard) => std::mem::take(&mut *guard),
-        Err(poisoned) => std::mem::take(&mut *poisoned.into_inner()),
-    }
+    let mut guard = match notes().lock() {
+        Ok(guard) => guard,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    std::mem::take(&mut *guard)
 }
 
 #[cfg(test)]
