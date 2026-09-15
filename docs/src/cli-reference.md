@@ -564,3 +564,16 @@ Options:
           Print help (see a summary with '-h')
 ````
 <!-- CLI-REFERENCE:END -->
+
+## State directory contents
+
+Companion note to `--state-dir` (documented in the generated block above).
+Each `--resume` run keeps one JSON state file per domain plus a
+`<...>.json.lock` sentinel file next to it. The sentinel is created on
+demand and intentionally **never removed**: its presence does NOT mean a
+writer is alive. The real mutual exclusion is the advisory `flock` held on
+the sentinel, which the kernel releases when the process exits — including
+after SIGKILL. There is exactly one sentinel per state file, so the leftover
+is bounded. Do not delete the `.lock` file while a run holds it: removing
+the path breaks the lock and lets two writers enter the critical section at
+once, losing state updates.
