@@ -299,8 +299,14 @@ impl CrawlSessionBuilder {
         self
     }
 
-    /// Run identity override (optional; a fresh root is minted otherwise —
-    /// single mint per run, never shared across runs).
+    /// Run identity (required; validated by [`build`](Self::build)).
+    ///
+    /// #1439: the builder no longer mints a fallback root — every entry that
+    /// reaches `build()` must carry the operation's run-root explicitly, so a
+    /// session can never silently split a run into two identities. A
+    /// standalone entry that IS the operation mints its own root at ITS
+    /// boundary (the documented contract of the deprecated `crawl_site`
+    /// shims), never the builder on their behalf.
     pub(crate) fn identity(mut self, identity: CrawlIdentity) -> Self {
         self.identity = Some(identity);
         self
@@ -311,8 +317,9 @@ impl CrawlSessionBuilder {
     /// # Errors
     ///
     /// Returns [`CrawlSessionError::InvalidConfiguration`] when a required
-    /// part is missing, the seed scheme is not fetchable, the backoff bounds
-    /// are inverted, or a checkpoint target carries a zero interval.
+    /// part (including the run identity, #1439) is missing, the seed scheme
+    /// is not fetchable, the backoff bounds are inverted, or a checkpoint
+    /// target carries a zero interval.
     pub(crate) fn build(self) -> Result<CrawlSession, CrawlSessionError> {
         let config = self.config.ok_or_else(|| {
             CrawlSessionError::InvalidConfiguration("missing target configuration".to_string())
@@ -345,10 +352,15 @@ impl CrawlSessionBuilder {
         let ports = self.ports.ok_or_else(|| {
             CrawlSessionError::InvalidConfiguration("missing port bundle".to_string())
         })?;
-        let identity = self.identity.unwrap_or_else(|| CrawlIdentity {
-            root: CorrelationId::new(),
-            run_label: config.seed_url.host_str().unwrap_or("seed").to_string(),
-        });
+        // #1439 run-root propagation: identity is REQUIRED, not defaulted.
+        // The old `unwrap_or_else(CorrelationId::new)` fallback let any
+        // forgotten `.identity(...)` silently split a run into two
+        // causability roots (the #687 class, re-broken by the #1232 rework).
+        // Missing identity now fails exactly like a missing port bundle —
+        // before any worker spawns.
+        let identity = self.identity.ok_or_else(|| {
+            CrawlSessionError::InvalidConfiguration("missing run identity".to_string())
+        })?;
         Ok(CrawlSession {
             identity,
             config: Arc::new(config),
@@ -629,12 +641,20 @@ mod tests {
         }
     }
 
+    fn test_identity() -> CrawlIdentity {
+        CrawlIdentity {
+            root: CorrelationId::new(),
+            run_label: "example.com".to_string(),
+        }
+    }
+
     fn build_ok(mode: PersistenceMode) -> CrawlSession {
         CrawlSession::builder()
             .config(test_config())
             .persistence(mode)
             .transport(test_transport())
             .ports(test_ports())
+            .identity(test_identity())
             .build()
             .expect("valid session must build")
     }
@@ -703,14 +723,42 @@ mod tests {
         );
     }
 
+    /// #1439: identity is a REQUIRED part — a fully-populated builder without
+    /// `.identity(...)` must fail like any other missing part, never silently
+    /// mint a second run-root for the operation that owns one already.
+    #[test]
+    fn build_rejects_missing_identity() {
+        let result = CrawlSession::builder()
+            .config(test_config())
+            .persistence(PersistenceMode::Disabled)
+            .transport(test_transport())
+            .ports(test_ports())
+            .build();
+        match result {
+            Err(CrawlSessionError::InvalidConfiguration(msg)) => {
+                assert_eq!(
+                    msg, "missing run identity",
+                    "#1439: the mint-free refusal must name the missing part"
+                );
+            },
+            Err(other) => {
+                panic!("identity-less build must fail as InvalidConfiguration, got {other}")
+            },
+            Ok(_) => panic!(
+                "identity-less build must NEVER succeed — the silent mint is what \
+                 #1439 removed"
+            ),
+        }
+    }
+
     #[tokio::test]
-    async fn identity_single_mint_and_default_label() {
+    async fn identity_travels_from_the_caller_verbatim() {
         let a = build_ok(PersistenceMode::Disabled);
         let b = build_ok(PersistenceMode::Disabled);
         assert_ne!(
             a.identity().root,
             b.identity().root,
-            "two builds must mint distinct roots"
+            "two separately-minted callers must not share a root"
         );
         assert_eq!(a.identity().run_label, "example.com");
         // Consume: an un-run session is a must_use leak by design (D7).

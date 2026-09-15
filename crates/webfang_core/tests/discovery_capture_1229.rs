@@ -118,6 +118,7 @@ async fn discovery_single_fetch_counts_requests() {
         &star_opts(&seed_str),
         &PersistenceMode::Disabled,
         Some(Arc::clone(&sink)),
+        &CorrelationId::new(),
     )
     .await
     .expect("star discovery must succeed");
@@ -190,6 +191,7 @@ async fn capture_stops_at_byte_cap() {
         &star_opts(&seed_str),
         &PersistenceMode::Disabled,
         Some(Arc::clone(&sink)),
+        &CorrelationId::new(),
     )
     .await
     .expect("capped discovery must succeed");

@@ -125,7 +125,11 @@ fn run_strategy(
         .delay_ms(0)
         .build();
     let _crawl_result = tracing::dispatcher::with_default(&dispatch, || {
-        rt.block_on(crawl_site_with_options(config, options))
+        // #1439: the crawl engine adopts the SAME correlation id the
+        // instrumented `run_strategy` span declares, so the run-root stamped
+        // into the JSONL `crawl_site` span matches the strategy-run identity
+        // (the pre-fix entry minted a second root, breaking reconstruction).
+        rt.block_on(crawl_site_with_options(config, options, &correlation_id))
     })
     .map_err(|error| BenchmarkError::Engine(error.to_string()))?;
     // `dispatch` dropped above ⇒ FileTraceLayer flushed its buffer to

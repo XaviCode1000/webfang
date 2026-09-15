@@ -3,7 +3,10 @@
 //! Uses [`tokio::sync::Semaphore`] for job-level concurrency control.
 //! Each URL in the batch is a separate `crawl_site_with_options()` call, with
 //! the run-wide [`EngineOptions`] built once by `build_batch_engine_options`
-//! (#1369 — the knobless `crawl_site` entry is deprecated).
+//! (#1369 — the knobless `crawl_site` entry is deprecated) and the job's ONE
+//! run-root correlation adopted by every engine call (#1439 — carried via
+//! [`BatchProcessor::with_correlation`], or minted once per job otherwise, so
+//! a batch run reconstructs from a single trace identity).
 //!
 //! # Usage
 //!
@@ -43,7 +46,7 @@ use crate::application::crawler::engine::EngineOptions;
 use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
 use crate::domain::budget::detector::SystemDetector;
 use crate::domain::budget::BudgetModel;
-use crate::domain::{CrawlError, CrawlErrorCategory, CrawlerConfig, JsStrategy};
+use crate::domain::{CorrelationId, CrawlError, CrawlErrorCategory, CrawlerConfig, JsStrategy};
 use crate::error::ScraperError;
 use crate::ValidUrl;
 
@@ -84,6 +87,14 @@ pub struct BatchProcessor {
     /// Shared across all concurrent crawls in the batch, so the CLI ends up
     /// with one collection covering every URL in the run.
     content_sink: Option<Arc<dyn CrawlContentSink>>,
+    /// Run-root correlation identity (#1439).
+    ///
+    /// `Some` carries the calling operation's root: every per-URL crawl
+    /// engine of the job adopts it, so the batch trace reconstructs from the
+    /// ONE identity the CLI/MCP announced. `None` keeps a standalone library
+    /// job honest: `process_batch_cancellable` mints exactly one root at
+    /// the job boundary — never one per URL (the old #687-class split).
+    correlation: Option<CorrelationId>,
 }
 
 impl BatchProcessor {
@@ -104,6 +115,7 @@ impl BatchProcessor {
             max_concurrent_jobs: max_concurrent,
             semaphore: Arc::new(Semaphore::new(max_concurrent)),
             content_sink: None,
+            correlation: None,
         })
     }
 
@@ -114,6 +126,21 @@ impl BatchProcessor {
     #[must_use]
     pub fn with_content_sink(mut self, sink: Arc<dyn CrawlContentSink>) -> Self {
         self.content_sink = Some(sink);
+        self
+    }
+
+    /// Adopt `root` as the run identity of every job this processor runs
+    /// (#1439).
+    ///
+    /// The calling operation (CLI batch run, MCP batch tool) owns ONE
+    /// run-root and hands it here, so every per-URL crawl engine shares the
+    /// trace identity the operation announced. Unset, a standalone library
+    /// job still gets exactly one root — minted once per
+    /// [`process_batch_cancellable`](Self::process_batch_cancellable) call,
+    /// never per URL.
+    #[must_use]
+    pub fn with_correlation(mut self, root: CorrelationId) -> Self {
+        self.correlation = Some(root);
         self
     }
 
@@ -176,6 +203,13 @@ impl BatchProcessor {
         // keeps unthrottled runs on the historical per-engine limiters.
         let mut base_options = build_batch_engine_options(&base_config, self.content_sink.clone());
         base_options.rate_limiter = build_batch_rate_limiter(&base_config);
+        // #1439: exactly ONE run-root per job. The production caller's root
+        // arrives through `with_correlation`; a standalone library job mints
+        // its single root HERE, at the operation boundary — never per URL
+        // (the engine-side per-crawl minting is what split the batch trace).
+        // `CorrelationId::default()` IS a fresh mint (`Default` delegates to
+        // `new`), so the standalone contract stays explicit.
+        let run_root = self.correlation.clone().unwrap_or_default();
 
         let mut join_set = JoinSet::new();
         let mut errors: Vec<(String, ScraperError)> = Vec::new();
@@ -193,6 +227,7 @@ impl BatchProcessor {
             let url = url_str.clone();
             let config = base_config.clone();
             let options = base_options.clone();
+            let correlation = run_root.clone();
             let permit = self
                 .semaphore
                 .clone()
@@ -206,7 +241,7 @@ impl BatchProcessor {
             join_set.spawn(
                 async move {
                     let _permit = permit; // Hold permit for duration of task
-                    let result = process_single_url(&url, config, options).await;
+                    let result = process_single_url(&url, config, options, &correlation).await;
                     (url, result)
                 }
                 .in_current_span(),
@@ -394,12 +429,13 @@ fn build_batch_engine_options(
 }
 
 /// Process a single URL by creating a CrawlerConfig and running the explicit
-/// engine entry with the run-wide options
+/// engine entry with the run-wide options and the job's run-root
 ///
 /// Creates a new seed-only `CrawlerConfig` for the given URL (#1215: one
 /// page per URL, never a BFS expansion) and captures the fetched body into
 /// the shared sink when one is attached (carried on `options.content_sink`,
-/// #1369).
+/// #1369). `correlation` (#1439) is the job's ONE run-root, adopted by the
+/// crawl engine so every URL of the batch shares the operation's identity.
 ///
 /// Returns `Err(CrawlError)` if the crawl result has any errors (e.g., timeouts),
 /// ensuring the batch processor correctly counts failed URLs.
@@ -407,11 +443,13 @@ async fn process_single_url(
     url: &str,
     base_config: CrawlerConfig,
     options: EngineOptions,
+    correlation: &CorrelationId,
 ) -> Result<crate::domain::CrawlResult, CrawlError> {
     let config = build_per_url_config(url, &base_config)?;
 
     let result =
-        crate::application::crawler::engine::crawl_site_with_options(config, options).await?;
+        crate::application::crawler::engine::crawl_site_with_options(config, options, correlation)
+            .await?;
 
     // Treat any crawl errors (timeouts, etc.) as failures for batch processing,
     // but preserve severity (#537): the engine already partitioned them into

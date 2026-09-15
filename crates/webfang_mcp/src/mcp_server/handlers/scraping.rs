@@ -455,8 +455,14 @@ impl McpHandler {
             ..Default::default()
         };
 
-        match webfang_core::application::crawler::crawl_site_with_options(crawler_config, options)
-            .await
+        // #1439: the crawl adopts this handler's run-root, so the engine's
+        // spans and the success/error identity events share one trace_id.
+        match webfang_core::application::crawler::crawl_site_with_options(
+            crawler_config,
+            options,
+            &root_correlation,
+        )
+        .await
         {
             Ok(result) => {
                 let count = result.total_pages;

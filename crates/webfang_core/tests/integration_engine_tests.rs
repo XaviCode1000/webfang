@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tempfile::TempDir;
 use url::Url;
 use webfang_core::application::crawler::engine::EngineOptions;
-use webfang_core::domain::JsStrategy;
+use webfang_core::domain::{CorrelationId, JsStrategy};
 use webfang_core::infrastructure::downloader::fetch_router::DefaultDownloaderFactory;
 use webfang_core::{
     crawl_site_with_options, BincodeCheckpoint, CheckpointPath, CheckpointStore, CrawlCheckpoint,
@@ -64,7 +64,7 @@ async fn test_engine_with_checkpoint_enabled() {
         ..Default::default()
     };
 
-    let result = crawl_site_with_options(config, options).await;
+    let result = crawl_site_with_options(config, options, &CorrelationId::new()).await;
     assert!(result.is_ok(), "crawl should succeed: {:?}", result.err());
 
     let crawl_result = result.unwrap();
@@ -161,7 +161,7 @@ async fn test_engine_resume_from_checkpoint() {
         ..Default::default()
     };
 
-    let result = crawl_site_with_options(config, options).await;
+    let result = crawl_site_with_options(config, options, &CorrelationId::new()).await;
     assert!(
         result.is_ok(),
         "resume crawl should succeed: {:?}",

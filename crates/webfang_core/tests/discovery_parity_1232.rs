@@ -11,6 +11,7 @@
 use webfang_core::application::crawl_options::CrawlOptions;
 use webfang_core::cli::url_discovery::discover_urls_unified;
 use webfang_core::domain::persistence::PersistenceMode;
+use webfang_core::domain::CorrelationId;
 use webfang_core::domain::CrawlerConfig;
 use webfang_core::domain::ValidUrl;
 
@@ -100,16 +101,28 @@ async fn dry_run_parity_with_real_discovery() {
     // Dry-run shape: options built as `run_dry_run` does, then unified call.
     let dry_opts = discovery_opts(&seed_str);
     let dry_cfg = discovery_config(&seed_url);
-    let dry_output = discover_urls_unified(dry_cfg, &dry_opts, &PersistenceMode::Disabled, None)
-        .await
-        .expect("dry-run shaped unified discovery must succeed");
+    let dry_output = discover_urls_unified(
+        dry_cfg,
+        &dry_opts,
+        &PersistenceMode::Disabled,
+        None,
+        &CorrelationId::new(),
+    )
+    .await
+    .expect("dry-run shaped unified discovery must succeed");
 
     // Real DOM shape: options built as `prepare_phase` does, then unified call.
     let dom_opts = discovery_opts(&seed_str);
     let dom_cfg = discovery_config(&seed_url);
-    let dom_output = discover_urls_unified(dom_cfg, &dom_opts, &PersistenceMode::Disabled, None)
-        .await
-        .expect("DOM shaped unified discovery must succeed");
+    let dom_output = discover_urls_unified(
+        dom_cfg,
+        &dom_opts,
+        &PersistenceMode::Disabled,
+        None,
+        &CorrelationId::new(),
+    )
+    .await
+    .expect("DOM shaped unified discovery must succeed");
 
     assert_eq!(
         sorted_urls(&dry_output.urls),
