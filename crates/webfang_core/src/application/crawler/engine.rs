@@ -1135,7 +1135,7 @@ impl Engine {
 /// configuration struct.
 ///
 /// `Clone` without a derived `Debug`: the run-scoped
-/// [`SharedRateLimiter`](crate::application::rate_limiter::SharedRateLimiter)
+/// [`SharedRateLimiter`]
 /// carries a governor bucket with no `Debug` impl, so the manual impl below
 /// renders every field and the limiter as presence-only.
 #[derive(Clone)]
