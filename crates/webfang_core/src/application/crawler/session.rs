@@ -40,7 +40,7 @@ use crate::domain::error::CrawlError;
 use crate::domain::persistence::PersistenceMode;
 use crate::domain::post_load_wait::PostLoadWait;
 use crate::domain::session_port::SessionPort;
-use crate::domain::{CorrelationId, CrawlerConfig, JsStrategy};
+use crate::domain::{CorrelationId, CrawlerConfig, DiscoveredUrl, JsStrategy};
 use crate::error::ScraperError;
 use crate::infrastructure::observability::log_scrape_error;
 
@@ -165,6 +165,10 @@ pub(crate) struct CrawlSession {
     pub(crate) transport: TransportPolicy,
     /// Injected seams.
     pub(crate) ports: CrawlPorts,
+    /// Sitemap-discovered URLs injected as additional seeds (D1): drained
+    /// into the queue right after the scheduler seed (`Engine::run`). Empty
+    /// by default, so existing call sites keep single-seed behaviour.
+    pub(crate) extra_seeds: Vec<DiscoveredUrl>,
     /// Single cancellation authority for the run (#509).
     pub(crate) cancel_token: CancellationToken,
 }
@@ -272,6 +276,7 @@ pub(crate) struct CrawlSessionBuilder {
     transport: Option<TransportPolicy>,
     ports: Option<CrawlPorts>,
     identity: Option<CrawlIdentity>,
+    extra_seeds: Vec<DiscoveredUrl>,
 }
 
 impl CrawlSessionBuilder {
@@ -309,6 +314,16 @@ impl CrawlSessionBuilder {
     /// shims), never the builder on their behalf.
     pub(crate) fn identity(mut self, identity: CrawlIdentity) -> Self {
         self.identity = Some(identity);
+        self
+    }
+
+    /// Sitemap-discovered URLs to inject as additional seeds (optional;
+    /// empty by default). Carried into the session and drained by
+    /// [`Engine::run`](super::engine::Engine::run) via
+    /// `push_prioritized` with [`UrlSource::Sitemap`](crate::domain::crawler_port::UrlSource),
+    /// so enqueue-time dedup absorbs seed/sitemap overlap.
+    pub(crate) fn extra_seeds(mut self, seeds: Vec<DiscoveredUrl>) -> Self {
+        self.extra_seeds = seeds;
         self
     }
 
@@ -370,6 +385,7 @@ impl CrawlSessionBuilder {
             },
             transport,
             ports,
+            extra_seeds: self.extra_seeds,
             cancel_token: CancellationToken::new(),
         })
     }
@@ -400,6 +416,11 @@ impl CrawlSession {
     /// Target configuration.
     pub(crate) fn config(&self) -> &Arc<CrawlerConfig> {
         &self.config
+    }
+
+    /// Sitemap-discovered additional seeds for this run (empty = single-seed).
+    pub(crate) fn extra_seeds(&self) -> &[DiscoveredUrl] {
+        &self.extra_seeds
     }
 
     /// Cancellation token clone for engine adoption (`from_session`).
@@ -667,6 +688,18 @@ mod tests {
                 Err(CrawlSessionError::InvalidConfiguration(_))
             ),
             "empty builder must fail"
+        );
+    }
+
+    /// sitemap-crawl-run-parity 1.1 (RED): a fresh builder carries no extra
+    /// seeds, so every existing call site keeps today's single-seed behaviour.
+    /// Fails until the `extra_seeds` builder field exists (D1).
+    #[test]
+    fn default_builder_carries_empty_extra_seeds() {
+        let builder = CrawlSessionBuilder::default();
+        assert!(
+            builder.extra_seeds.is_empty(),
+            "fresh builder must carry no extra seeds (existing call sites unaffected)"
         );
     }
 

@@ -16,6 +16,7 @@ pub(crate) mod ports;
 pub mod progress;
 pub(crate) mod session;
 pub mod sitemap_discovery;
+pub mod sitemap_session;
 
 pub use bounded_sink::{BoundedFileSink, BoundedSinkError, CapturedPageReader};
 pub use collector::{ResultsAdapter, ResultsCollector};
@@ -25,6 +26,7 @@ pub use discovery::{
     crawl_with_sitemap, discover_urls_single_fetch, extract_content, scrape_single_url,
 };
 pub use engine::{crawl_site_with_options, EngineOptions};
+pub use sitemap_session::crawl_with_sitemap_session;
 // #1369: the deprecated shims stay exported at their historical paths until
 // removal — the lint on the `pub use` itself is inherent to that contract
 // (callers must still see the warning at their own use sites).
