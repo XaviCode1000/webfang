@@ -1133,7 +1133,12 @@ impl Engine {
 /// Named `EngineOptions` (not `CrawlOptions`) to avoid collision with
 /// `application::crawl_options::CrawlOptions`, which is the CLI-level
 /// configuration struct.
-#[derive(Debug, Clone)]
+///
+/// `Clone` without a derived `Debug`: the run-scoped
+/// [`SharedRateLimiter`]
+/// carries a governor bucket with no `Debug` impl, so the manual impl below
+/// renders every field and the limiter as presence-only.
+#[derive(Clone)]
 pub struct EngineOptions {
     /// Path to save checkpoint files. `None` disables checkpointing.
     pub checkpoint_path: Option<PathBuf>,
@@ -1197,6 +1202,44 @@ pub struct EngineOptions {
     /// SAME engine path — checkpoint-only, capture-only, and both all
     /// converge in [`crawl_site_with_options`]; no second entry function.
     pub content_sink: Option<Arc<dyn CrawlContentSink>>,
+    /// Run-scoped token bucket shared by every engine of one run (#1428).
+    ///
+    /// `None` (the default) keeps the historical behavior: `build_machinery`
+    /// mints a fresh limiter per engine. `Some` makes
+    /// [`crawl_site_with_options`] adopt it instead, so `--delay-ms` paces
+    /// across engines — batch runs one engine per URL, and a per-engine
+    /// bucket restores a full burst per URL, making cross-URL spacing
+    /// structurally impossible. Carried by `Clone` (one `Arc` clone per
+    /// task), exactly like `content_sink`.
+    pub rate_limiter: Option<SharedRateLimiter>,
+}
+
+impl std::fmt::Debug for EngineOptions {
+    /// Manual `Debug`: `SharedRateLimiter` carries a governor bucket with
+    /// no `Debug` impl, so the struct cannot derive it. Every field is
+    /// rendered; the limiter as presence-only (token counts are runtime
+    /// state, not configuration).
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EngineOptions")
+            .field("checkpoint_path", &self.checkpoint_path)
+            .field("checkpoint_interval", &self.checkpoint_interval)
+            .field("session_pool_enabled", &self.session_pool_enabled)
+            .field("ignore_robots", &self.ignore_robots)
+            .field("js_strategy", &self.js_strategy)
+            .field("obscura_binary", &self.obscura_binary)
+            .field("post_load_wait", &self.post_load_wait)
+            .field("chrome_binary", &self.chrome_binary)
+            .field("autoscale_enabled", &self.autoscale_enabled)
+            .field("tls_emulation", &self.tls_emulation)
+            .field("ignore_waf", &self.ignore_waf)
+            .field("max_retries", &self.max_retries)
+            .field("backoff_base_ms", &self.backoff_base_ms)
+            .field("backoff_max_ms", &self.backoff_max_ms)
+            .field("downloader_factory", &self.downloader_factory)
+            .field("content_sink", &self.content_sink)
+            .field("rate_limiter_shared", &self.rate_limiter.is_some())
+            .finish()
+    }
 }
 
 impl Default for EngineOptions {
@@ -1222,6 +1265,7 @@ impl Default for EngineOptions {
             backoff_max_ms: 10000,
             downloader_factory: None,
             content_sink: None,
+            rate_limiter: None,
         }
     }
 }
@@ -1468,7 +1512,8 @@ pub async fn crawl_site_with_options(
         checkpoint_enabled = options.checkpoint_path.is_some(),
         session_pool = options.session_pool_enabled,
         ignore_robots = options.ignore_robots,
-        capture_enabled = options.content_sink.is_some()
+        capture_enabled = options.content_sink.is_some(),
+        shared_limiter = options.rate_limiter.is_some()
     )
 )]
 async fn crawl_site_with_options_inner(
@@ -1533,6 +1578,15 @@ async fn crawl_site_with_options_inner(
 
     session.begin();
     let mut engine = Engine::from_session(session)?;
+    // #1428 RUN-scope limiter: a shared bucket carried on the options
+    // replaces the per-engine bucket `build_machinery` minted (via
+    // `from_session`), so `--delay-ms` paces across the engines of one
+    // run instead of granting every engine a fresh burst. The swap happens
+    // before `run()` spawns any task, so no worker ever observes the
+    // minted bucket. `None` keeps the historical per-engine behavior.
+    if let Some(limiter) = options.rate_limiter.clone() {
+        engine.rate_limiter = limiter;
+    }
     let result = engine.run().await;
     engine.shutdown().await;
     result

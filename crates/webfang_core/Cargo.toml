@@ -263,3 +263,15 @@ path = "tests/wreq_probe_test.rs"
 [[test]]
 name = "parser_property_test"
 path = "tests/parser_property_test.rs"
+
+[[test]]
+name = "batch_delay_pacing"
+path = "tests/batch_delay_pacing.rs"
+
+[[test]]
+name = "harness_403_counts"
+path = "tests/harness_403_counts.rs"
+
+[[test]]
+name = "harness_ssrf_arrivals"
+path = "tests/harness_ssrf_arrivals.rs"

@@ -40,6 +40,9 @@ use tracing::{error, info, instrument, warn, Instrument};
 use super::BatchJob;
 use crate::application::crawler::content_sink::CrawlContentSink;
 use crate::application::crawler::engine::EngineOptions;
+use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
+use crate::domain::budget::detector::SystemDetector;
+use crate::domain::budget::BudgetModel;
 use crate::domain::{CrawlError, CrawlErrorCategory, CrawlerConfig, JsStrategy};
 use crate::error::ScraperError;
 use crate::ValidUrl;
@@ -167,7 +170,12 @@ impl BatchProcessor {
         // #1369: the options are run-wide — built once from the batch's real
         // sources (base config + shared sink) and cloned per URL task.
         // `EngineOptions: Clone` is cheap (owned scalars + Arc handles).
-        let base_options = build_batch_engine_options(&base_config, self.content_sink.clone());
+        // #1428: the token bucket is run-wide too — one shared limiter for
+        // the whole run, so `--delay-ms` paces across URLs instead of
+        // granting each URL a fresh burst. `None` at `delay_ms == 0`
+        // keeps unthrottled runs on the historical per-engine limiters.
+        let mut base_options = build_batch_engine_options(&base_config, self.content_sink.clone());
+        base_options.rate_limiter = build_batch_rate_limiter(&base_config);
 
         let mut join_set = JoinSet::new();
         let mut errors: Vec<(String, ScraperError)> = Vec::new();
@@ -295,6 +303,53 @@ fn build_per_url_config(
         .build())
 }
 
+/// Build the RUN-scoped token bucket shared by every URL of one batch run (#1428).
+///
+/// Each batch URL runs its own engine (`process_single_url` →
+/// `crawl_site_with_options`), and every engine mints a fresh limiter with
+/// a full burst — so without this shared bucket `--delay-ms` is inert on
+/// the batch path: each URL starts with a full burst and cross-URL spacing
+/// is structurally impossible. The bucket is built from the SAME two inputs
+/// `Engine::run` uses — `delay_ms` as the refill period and the budget
+/// model's independent burst tier — so batch pacing shares the crawl
+/// cadence policy (AGENTS.md fetch guard-chain stage 2: pacing happens
+/// BEFORE any network is touched).
+///
+/// `delay_ms == 0` returns `None`: no bucket is allocated and each engine
+/// keeps its historical per-engine limiter, which keeps an unthrottled run
+/// identical to the pre-fix behavior (zero overhead, zero drift) — the same
+/// contract as `build_scrape_rate_limiter` (`scrape_flow.rs`).
+///
+/// A construction failure degrades to `None` with a WARN, mirroring the
+/// scrape-path precedent. It is unreachable in practice:
+/// `SharedRateLimiter::new` rejects only a zero period (clamped to 1 ms)
+/// or a zero burst (the budget tier is non-zero by construction).
+fn build_batch_rate_limiter(base_config: &CrawlerConfig) -> Option<SharedRateLimiter> {
+    if base_config.delay_ms == 0 {
+        return None;
+    }
+    let burst = BudgetModel::build(base_config.budget_overrides, &SystemDetector)
+        .burst()
+        .get();
+    match SharedRateLimiter::new(&RateLimiterConfig::new(base_config.delay_ms, burst)) {
+        Ok(limiter) => {
+            info!(
+                delay_ms = base_config.delay_ms,
+                burst, "batch rate limiter wired (run scope)"
+            );
+            Some(limiter)
+        },
+        Err(e) => {
+            warn!(
+            error = %e,
+            delay_ms = base_config.delay_ms,
+            "batch rate limiter unavailable — continuing with per-engine limiters"
+            );
+            None
+        },
+    }
+}
+
 /// Build the run-wide [`EngineOptions`] shared by every URL of one batch run.
 ///
 /// #1369: the batch entry used to route through the knobless `crawl_site` /
@@ -317,6 +372,12 @@ fn build_per_url_config(
 ///   retries, 1s/10s backoff, 100-page checkpoint interval).
 ///
 /// Built once per run and cloned per URL task.
+///
+/// NOTE: the run-scoped pacer lives OUTSIDE this bag — see
+/// [`build_batch_rate_limiter`], wired onto the built options by
+/// `process_batch_cancellable`. The split keeps this constructor a pure
+/// DTO build (its seam test pins every knob source) while the limiter
+/// documents its own budget-derived source separately.
 fn build_batch_engine_options(
     base_config: &CrawlerConfig,
     content_sink: Option<Arc<dyn CrawlContentSink>>,
@@ -824,6 +885,39 @@ mod tests {
         assert!(matches!(err, Err(CrawlError::InvalidUrl(_))));
     }
 
+    // =====================================================================
+    // #1428: the run-scoped limiter is built from the base config, once
+    // per run — one shared bucket, so `--delay-ms` paces across URLs.
+    // =====================================================================
+
+    #[test]
+    fn batch_rate_limiter_none_at_zero_delay() {
+        // `delay_ms == 0` means "no pacing": no bucket is allocated and
+        // each engine keeps its historical per-engine limiter (zero
+        // overhead, zero drift — the `build_scrape_rate_limiter` contract
+        // in `scrape_flow.rs`).
+        let base = CrawlerConfig::builder(Url::parse("https://example.com").unwrap())
+            .delay_ms(0)
+            .build();
+
+        assert!(
+            build_batch_rate_limiter(&base).is_none(),
+            "zero delay must build no bucket"
+        );
+    }
+
+    #[test]
+    fn batch_rate_limiter_some_at_positive_delay() {
+        let base = CrawlerConfig::builder(Url::parse("https://example.com").unwrap())
+            .delay_ms(400)
+            .build();
+
+        assert!(
+            build_batch_rate_limiter(&base).is_some(),
+            "a positive delay must build the run-scoped bucket"
+        );
+    }
+
     /// #1369 seam pin: every knob of the batch `EngineOptions` must come from
     /// an explicit source — the robots value from the base config, the sink
     /// from the processor, and the knobs the batch has no source for set to
@@ -861,6 +955,11 @@ mod tests {
             options.content_sink.is_none(),
             "no sink attached leaves the batch metadata-only (the #631 gotcha)"
         );
+        assert!(
+                options.rate_limiter.is_none(),
+                "the pacer is NOT part of the options bag — `process_batch_cancellable` wires \
+                 the run-scoped bucket from `build_batch_rate_limiter` onto the built options (#1428)"
+            );
 
         let sink = Arc::new(crate::application::crawler::content_sink::InMemoryContentSink::new());
         let options = build_batch_engine_options(&base, Some(sink));
