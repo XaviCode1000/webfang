@@ -19,7 +19,7 @@
 //! deliberately no flag, no config key, and no second logging path —
 //! collection and replay are the same single pipeline, split in time.
 
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 /// Append-only buffer for parse-time diagnostic notes.
 ///
@@ -34,21 +34,30 @@ fn notes() -> &'static Mutex<Vec<String>> {
     NOTES.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-/// Record a parse-time diagnostic note for later replay.
+/// Acquire the note buffer, recovering deliberately from a poisoning panic.
 ///
-/// Lock poisoning (a previous holder panicked while pushing) degrades to
-/// pushing through `into_inner()` — losing a notice must never panic the
-/// parse path.
-pub fn record(note: impl Into<String>) {
-    let note = note.into();
-    // ONE write site for both lock outcomes: poisoning changes how the guard is
-    // obtained, never what the update does. Two arms that repeat the push were a
-    // standing invitation to believe the poisoned path behaves differently (#1431
-    // review); `take` is the single reader of the same invariant.
-    let mut guard = match notes().lock() {
+/// `PoisonError::into_inner()` returns the SAME guard an uncontended lock would:
+/// poisoning only records that a previous holder panicked while it was inside
+/// the critical section, so this call still owns the buffer exclusively and
+/// every read and write made through the returned guard stays race-free. One
+/// acquisition point, one place where that is stated — `record` and `take` are
+/// both ordinary guard users and differ only in what they do with it.
+///
+/// Recovery rather than panic-on-lock is intentional: losing one operator
+/// diagnostic must never abort argument handling. The invariant is pinned by
+/// `notes_survive_a_poisoned_mutex`, which poisons the mutex on purpose and
+/// then asserts the note still comes back out of `take`.
+fn lock_buffer() -> MutexGuard<'static, Vec<String>> {
+    match notes().lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
-    };
+    }
+}
+
+/// Record a parse-time diagnostic note for later replay.
+pub fn record(note: impl Into<String>) {
+    let note = note.into();
+    let mut guard = lock_buffer();
     if !guard.contains(&note) {
         guard.push(note);
     }
@@ -57,13 +66,10 @@ pub fn record(note: impl Into<String>) {
 /// Drain every recorded note, leaving the buffer empty.
 ///
 /// Each note is returned exactly once; later [`record`] calls start a fresh
-/// batch. Poisoning degrades to `into_inner()`, same as [`record`].
+/// batch.
 #[must_use]
 pub fn take() -> Vec<String> {
-    let mut guard = match notes().lock() {
-        Ok(guard) => guard,
-        Err(poisoned) => poisoned.into_inner(),
-    };
+    let mut guard = lock_buffer();
     std::mem::take(&mut *guard)
 }
 
