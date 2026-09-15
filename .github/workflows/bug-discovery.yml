@@ -135,10 +135,15 @@ jobs:
         # Downloads the ONNX model so AI integration tests run and pass.
         # Skips tests that fundamentally cannot pass in CI: timing-sensitive,
         # env-dependent, and network-requiring tests.
+        # Also excludes two deliberately manual, environment-bound measurements:
+        # tier_311m_peak_rss_under_budget requires a pre-cached granite-311m HF
+        # blob (this job provisions only 97M); measure_short_paragraph_loss_on_real_corpus
+        # requires WEBFANG_1368_CORPUS, a local corpus dir. Both document their
+        # manual contract at their definition sites (see #1436).
         run: |
           set -o pipefail
           cargo nextest run --workspace --all-features --run-ignored only --no-fail-fast \
-            -E 'not(test(/session_pool/) | test(/vault_detector/) | test(/cli_binary_test/))' \
+            -E 'not(test(/session_pool/) | test(/vault_detector/) | test(/cli_binary_test/) | test(/tier_311m_peak_rss_under_budget/) | test(/measure_short_paragraph_loss_on_real_corpus/))' \
             --test-threads 2 \
             2>&1 | tee /tmp/ignored-tests-nextest.log
       - name: Publish failure names
