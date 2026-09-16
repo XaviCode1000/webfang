@@ -220,7 +220,18 @@ An agent suggesting "clean up duplicate dependencies" must be stopped. These con
 
 ### Build requirement
 
-`cmake` is mandatory — `wreq` → `boring2` → `boring-sys2` needs it for BoringSSL. First build compiles BoringSSL from C++ (~3–5 min).
+`cmake` is mandatory — `wreq` → `boring2` → `boring-sys2` needs it for BoringSSL. The first build compiles BoringSSL from C++.
+
+> ⏱️ **Measured cost, do not inflate it (2026-09-16, 16-core workstation, ccache active via
+> `/usr/lib64/ccache/cc`, warm registry, `--offline`, dev profile with
+> `debug = "line-tables-only"`):** a cold `cargo build -p webfang_core` in a virgin target
+> dir finishes in **85 s**, and that window contains BoringSSL's whole C++ compile (639
+> objects, 96 MB of `.o` under `.../btls-sys-*/out/`). A cold `cargo build --workspace` is
+> **2 m 23 s** (430 units, 3.1 GB). So BoringSSL is tens of seconds, not "3-5 min", on a
+> developer machine. The minutes-scale figures still alive in `.github/workflows/`
+> (sanitizers.yml ~10 min, benches.yml and mutants.yml ~10-15 min) describe **GitHub
+> runners with no ccache and, for sanitizers, std rebuilt from source** — they are not a
+> local baseline, and neither is this one. Quote the context, never the number alone.
 
 ---
 
@@ -335,18 +346,25 @@ git worktree add ~/Projects/Rust/webfang-worktrees/feat-auth -b feat/auth
 cd ~/Projects/Rust/webfang-worktrees/feat-auth
 
 # Per-worktree bootstrap (NONE of these are shared), run INSIDE the worktree:
-cp ~/Projects/Rust/webfang/.envrc . && direnv allow     # shared CARGO_TARGET_DIR (gitignored)
+cp ~/Projects/Rust/webfang/.envrc . && direnv allow     # gitignored; carries the per-tree cache policy
+#   .envrc is the ONLY place this policy can live: mise.toml is byte-identical in
+#   every tree, so it cannot tell main from a worktree. A fresh worktree needs
+#   CARGO_TARGET_DIR=~/.cache/cargo-target/$(basename "$PWD") (isolated, #1267),
+#   CARGO_INCREMENTAL=0 and the sccache wrapper UNSET. main instead keeps the
+#   shared target with CARGO_INCREMENTAL=1, also without the wrapper. Both trees
+#   drop sccache, for two different measured reasons - see the #1267 note below.
+
 cp ~/Projects/Rust/webfang/.env .                       # .env is gitignored
 codegraph init                                     # CodeGraph: source exploration index
 codedb reindex && codedb status                    # CodeDB: root MUST be $PWD, head MUST match git rev-parse --short HEAD
 # — same without cd: codedb "$PWD" reindex && codedb "$PWD" status
 # Index lives in BOTH ./codedb.snapshot AND ~/.codedb/projects/<hash>/ (see data: in status).
-cargo build                                        # fast: reuses shared target via direnv
+cargo build                                        # cold on an isolated target (#1267): measured 2m23s for --workspace, not a blocker
 ```
 
-> ⚠️ **`.envrc` + `direnv allow` is mandatory per worktree.** It points `CARGO_TARGET_DIR` at the shared build cache (`~/.cache/cargo-target/webfang`), so BoringSSL and all dependencies compile once, not per worktree. Without it the worktree silently builds into its own `target/` (~3-5 min cold). direnv is installed via mise; the Fish hook lives in `~/.config/fish/conf.d/03-direnv.fish`.
+> ⚠️ **`.envrc` + `direnv allow` is mandatory per worktree.** In a **worktree** it points `CARGO_TARGET_DIR` at a per-tree isolated dir (`~/.cache/cargo-target/<tree-name>`), which is what #1267 requires; the cost is that BoringSSL and every dependency compile again per worktree — measured at 2 m 23 s for `cargo build --workspace`, which is cheap enough that it must never be used as an argument to share a target dir between concurrent builds (#1267). Only `main` uses the shared cache, because there it is a single live tree and therefore sequential by construction. Without `.envrc` a tree silently builds into its own in-repo `target/`, which no cleanup step knows about. direnv is installed via mise; the Fish hook lives in `~/.config/fish/conf.d/03-direnv.fish`.
 >
-> ⚠️ **Concurrent agent builds must NOT share that cache (#1267).** Two worktrees building the same binary profile concurrently overwrite each other's `debug/webfang` (same `-C metadata` hash ⇒ same output filename), so E2E runs silently execute the other tree's binary — stale links report as fresh, failures misattribute. The shared cache is for SEQUENTIAL human builds only. Isolated-build recipe (verified 2026-09-09 after 8 opaque worker deaths): `export CARGO_TARGET_DIR=~/.cache/cargo-target/<worktree>` (home disk — `/tmp` tmpfs is only 16 GB and a full workspace target dir starves both the build and sccache), `env -u RUSTC_WRAPPER -u RUSTUP_TOOLCHAIN` (global sccache has ~0% Rust hit rate at 10/10 GiB and breaks `--json` parsing on isolated dirs; an exported stable toolchain shadows `rust-toolchain.toml` and its rust-lld rejects the BFD-only link flags below — F-52 evidence), `CARGO_BUILD_JOBS=2` plus `RUSTFLAGS="-C link-arg=-Wl,--no-keep-memory -C link-arg=-Wl,--reduce-memory-overheads"` (test-binary links OOM-die otherwise). The orchestrator assigns the isolated path per gate; workers never invent their own. Post-merge runbook may delete isolated target dirs to reclaim disk — never depend on a warm isolated cache surviving its merge.
+> ⚠️ **Concurrent agent builds must NOT share that cache (#1267).** Two worktrees building the same binary profile concurrently overwrite each other's `debug/webfang` (same `-C metadata` hash ⇒ same output filename), so E2E runs silently execute the other tree's binary — stale links report as fresh, failures misattribute. The shared cache is for SEQUENTIAL human builds only. Isolated-build recipe (verified 2026-09-09 after 8 opaque worker deaths): `export CARGO_TARGET_DIR=~/.cache/cargo-target/<worktree>` (home disk — `/tmp` tmpfs is only 16 GB and a full workspace target dir starves both the build and sccache), `env -u RUSTC_WRAPPER -u RUSTUP_TOOLCHAIN` (sccache's Rust cache key embeds the target-dir path, so an identical source in a new isolated dir scores ZERO hits - verified with a private cache and a positive control: same dir hits, different dir misses, leaving duplicate objects for one unit. Raising `SCCACHE_CACHE_SIZE` cannot fix that, it only fits the duplicates; the wrapper also breaks `--json` parsing on isolated dirs; an exported stable toolchain shadows `rust-toolchain.toml` and its rust-lld rejects the BFD-only link flags below — F-52 evidence), `CARGO_BUILD_JOBS=2` plus `RUSTFLAGS="-C link-arg=-Wl,--no-keep-memory -C link-arg=-Wl,--reduce-memory-overheads"` (test-binary links OOM-die otherwise). The orchestrator assigns the isolated path per gate; workers never invent their own. Step 6 of the post-merge runbook deletes them - measured cost of NOT doing it: 52 GB of dead build state from three already-merged trees, invisible to `git status` and to `git worktree prune`.
 
 > ⚠️ **Without both indexes, the agent is BLIND in the worktree.** Intelligence tools silently resolve to the main checkout or return empty results. Check that `.codegraph/` and `codedb.snapshot` exist.
 
@@ -368,8 +386,19 @@ A merge is NOT done until the repo is clean and ready for the next mission. Clea
 2. **Sync local main (ff-only)** — `git fetch origin && git merge --ff-only origin/main`. If `--ff-only` FAILS, local main diverged — STOP and investigate; never paper over it.
 3. **Remove the mission worktree** — `git worktree remove ~/Projects/Rust/webfang-worktrees/<dir>`.
 4. **Delete the local branch** — `git branch -D <type>/<description>`. Squash-merge rewrites history, so safe `-d` refuses; the step-1 `MERGED` check is your safety net. Never touch: `main`, `gh-pages`, `backup/*`, or the current branch.
-5. **Prune orphaned metadata** — `git worktree prune`.
-6. **Verify the handoff contract** — `git worktree list` (ONLY main), `git branch -vv` (ONLY main, in sync), `git status --short` (empty).
+5. **Prune orphaned metadata** - `git worktree prune`.
+6. **Delete the mission's isolated target dir** - `rm -rf ~/.cache/cargo-target/<worktree-dir-name>`.
+   Git owns nothing here, so neither `worktree remove` nor `prune` touches it, and `git status`
+   stays clean while it grows. **Match on more than the name** before deleting anything under
+   that parent: an agent may point `CARGO_TARGET_DIR` at a shortened name that differs from
+   its worktree dir (observed: tree `fix-preflight-diagnostics-and-stale-lock` building into
+   `~/.cache/cargo-target/fix-preflight-diagnostics`). A dir is safe only if ALL of: no live
+   worktree with that basename, no branch of that name locally OR on the remote, no process
+   using it as `CARGO_TARGET_DIR` (read `/proc/<pid>/environ` - a paused agent is not a live
+   process, but its cache is not orphaned either), and no writes in the last 30 minutes.
+   Enumerate before deleting, and expect logical size to read ~2x the physical one (btrfs
+   `zstd:1` plus `du` counting uncompressed `st_blocks`).
+7. **Verify the handoff contract** — `git worktree list` (ONLY main), `git branch -vv` (ONLY main, in sync), `git status --short` (empty).
 
 **No automated safety net is installed.** This file previously described a weekly systemd
 `git-hygiene.timer` (Sun 03:00) that pruned confirmed-safe stale local branches. **That
