@@ -1,9 +1,12 @@
-# Release-plz — automated version bump + CHANGELOG + Release PR + v* tags.
+# Release automation — the tag pusher.
 #
-# Flow: push to main -> release-plz-release pushes the `v{{ version }}` tag
-# for an already-merged version bump, which triggers release.yml (binaries +
-# GitHub Release). The Release PR itself is created MANUALLY (see #1339):
-# the release-plz-pr job cannot open one, see the note on that job below.
+# Flow: a Release PR (version bump + CHANGELOG, produced locally by
+# scripts/cut-release.sh) merges to main -> release-plz-release pushes the
+# `v{{ version }}` tag -> release.yml builds the 4 binaries + SHA256SUMS and
+# publishes the GitHub Release.
+#
+# There is NO `release-pr` job in this file, on purpose — see the note at the
+# end of this file, and webfang#1387.
 #
 # Config: release-plz.toml + cliff.toml. No registry publishing (git_only).
 
@@ -16,7 +19,7 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
+  pull-requests: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -24,6 +27,15 @@ env:
 jobs:
   # Publish already-merged release commits: pushes the v* tag.
   # Tag push triggers release.yml for binaries + GitHub Release.
+  #
+  # This job is the half of release-plz that WORKS: `command: release` never goes
+  # through the `cargo package` path that makes `release-pr` unsatisfiable (see
+  # the note at the end of this file). Verified on v2.1.0, where the hand-cut
+  # Release PR #1339 merged and this job pushed the tag. Keep it.
+  #
+  # One known wart, deliberately not touched here: with a shared `git_tag_name`
+  # plus `version_group` it can report a duplicate-tag 422 while the tag itself
+  # is correct — tracked as webfang#1341, observable only at the next release.
   release-plz-release:
     name: Release-plz release
     runs-on: ubuntu-latest
@@ -51,40 +63,28 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # KNOWN ISSUE (webfang#1337): this job fails whenever there is something to
-  # release. In git_only mode release-plz runs `cargo package --allow-dirty
-  # --workspace` in a worktree at the last release tag, and our inter-crate deps
-  # are { path, version } on crates that are never published (binaries-only), so
-  # crates.io resolution can never succeed. Manual Release PRs are the operating
-  # convention (see #1339) until release-plz supports skipping the packaging step.
-  release-plz-pr:
-    name: Release-plz PR
-    runs-on: ubuntu-latest
-    if: ${{ github.repository_owner == 'XaviCode1000' }}
-    permissions:
-      contents: write
-      pull-requests: write
-    concurrency:
-      group: release-plz-${{ github.ref }}
-      cancel-in-progress: false
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v5
-        with:
-          fetch-depth: 0
-          # actions/checkout does NOT fetch tags by default (fetch-tags: false)
-          # even with fetch-depth: 0. release-plz git_only mode needs the v* tags
-          # for version detection - without them every package is treated as an
-          # initial release (observed on the first automated run).
-          fetch-tags: true
-          persist-credentials: false
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-      - name: Run release-plz
-        # continue-on-error: true  # Advisory: webfang#1387; upstream release-plz#3054 to #3058
-        uses: release-plz/action@v0.5
-        with:
-          command: release-pr
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: true
+  # ---------------------------------------------------------------------------
+  # There is deliberately NO `release-plz-pr` job in this file (webfang#1387).
+  #
+  # release-plz's `release-pr` command is structurally unsatisfiable for this
+  # workspace. In git_only mode it materialises a worktree checked out AT THE
+  # LAST `v*` TAG and runs `cargo package --allow-dirty --workspace` there. Our
+  # inter-crate deps are { path, version } on crates that are never published
+  # (binaries-only distribution), so crates.io resolution can never succeed and
+  # the command fails whenever there is anything to release. Verified against
+  # release-plz 0.3.165 with local repros: `release=false` does not filter the
+  # packaging invocation, and `publish=false` does not make a crate resolvable
+  # for its consumers. There is no config to skip the packaging step; the
+  # upstream fix is the still-open stack release-plz#3054..#3058, which no
+  # released version includes.
+  #
+  # Why deleted rather than left advisory: the job last shipped with
+  # `continue-on-error: true` on its step, which reported `completed/success`
+  # over a logged `##[error]Process completed with exit code 1` (run
+  # 35063811850). A green job that does nothing is worse than a red one — it
+  # removes the signal AND the failure. Measured cost of that shape: 73 commits
+  # after v2.1.0 with no Release PR and no route to a release.
+  #
+  # Produce the Release PR locally instead:
+  #   scripts/cut-release.sh X.Y.Z --dry-run && scripts/cut-release.sh X.Y.Z
+  # ---------------------------------------------------------------------------

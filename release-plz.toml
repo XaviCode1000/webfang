@@ -30,6 +30,16 @@ git_release_enable = false
 # Changelog: single workspace-level file, Keep a Changelog sections.
 # The first automated update runs against the 2.0.0 baseline cut in #1176.
 
+# Release PR shape, kept as the reference for scripts/cut-release.sh, which is
+# now the ONLY producer of a Release PR (webfang#1387; see the note at the end of
+# .github/workflows/release-plz.yml). These keys are read by release-plz's
+# `release-pr` command, which no longer runs here, so they are inert today. They
+# are deliberately NOT deleted: proving the surviving `release` command ignores
+# them needs a real release to exercise, and silently breaking the tag pusher is
+# the one failure mode this change exists to avoid. If upstream
+# release-plz#3054..#3058 ships, this block is the head start; otherwise it
+# collapses once a release has been cut through it.
+#
 # Release PR must pass pr-validation.yml unchanged:
 # - `chore/release-...` matches the conventional branch regex
 # - `type:chore` is the single type:* label (pr-validation requires exactly one)
