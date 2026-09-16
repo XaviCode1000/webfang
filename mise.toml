@@ -45,7 +45,20 @@ rust-analyzer = "2026-09-07"
 "cargo:cargo-mutants" = "27.1.0"        # no aqua, no binstall — compiles from source (~5-10 min first time)
 
 [env]
-RUSTC_WRAPPER = "sccache"
+# RUSTC_WRAPPER is deliberately NOT declared here, and no build context on this
+# machine uses it. Two independent measured reasons:
+#   - main keeps CARGO_INCREMENTAL=1, and `-C incremental` makes every unit
+#     non-cacheable (observed: 122 of 207 sccache requests rejected with
+#     reason=incremental).
+#   - worktrees isolate their target dir (#1267), and sccache's Rust cache key
+#     embeds that path, so an identical source in a new tree scores zero hits
+#     (verified with a private cache and a positive control: same dir hits,
+#     different dir misses, duplicate objects per unit).
+# Declaring it here would also be inescapable: mise re-applies [env] on every
+# cd, and this file is byte-identical across main, every worktree and every
+# clone, so per-tree opt-out would have to race direnv. Per-tree policy lives
+# in each tree's .envrc; the bootstrap block in AGENTS.md carries it into a
+# fresh clone.
 
 [tasks.setup]
 description = "Install and verify local development tools"
