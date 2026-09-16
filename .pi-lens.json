@@ -18,7 +18,8 @@
     "serverOverrides": {
       "rust": {
         "initializationOptions": {
-          "cargo": { "features": "all" }
+          "cargo": { "features": "all" },
+          "check": { "enable": false }
         }
       }
     }
