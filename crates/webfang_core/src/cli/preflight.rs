@@ -1500,6 +1500,7 @@ mod tests {
 
     /// Hybrid + a fake `obscura` file on the injected PATH: the check
     /// passes with no `chromium` feature required.
+    #[cfg_attr(miri, ignore)] // Command::spawn → posix_spawnattr_init unsupported by Miri (#775)
     #[test]
     fn hybrid_binary_found_on_path_ok() {
         let bin_dir = tempfile::TempDir::new().expect("tempdir");

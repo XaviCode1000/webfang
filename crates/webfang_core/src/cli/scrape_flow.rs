@@ -1123,6 +1123,10 @@ mod tests {
 
     /// `delay_ms == 0` must build NO bucket at all — not a bucket with a 1 ms
     /// floor. That is what keeps an unthrottled run free of any added await.
+    #[cfg_attr(
+        miri,
+        ignore = "quanta CPUID detection (raw-cpuid inline asm) unsupported by Miri"
+    )]
     #[test]
     fn scrape_rate_limiter_is_built_only_for_a_positive_delay() {
         let opts = CrawlOptions::default();
