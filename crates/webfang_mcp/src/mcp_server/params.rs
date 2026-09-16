@@ -497,15 +497,30 @@ pub struct CrawlWithSitemapParams {
     pub url: McpUrl,
     /// Optional explicit sitemap URL
     pub sitemap_url: Option<McpUrl>,
+    /// Maximum crawl depth (default: 3, hard cap 10)
+    #[schemars(range(min = 1, max = 10))]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_depth: Option<u8>,
+    /// Maximum pages to crawl (default: 100)
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_pages: Option<u32>,
 }
 
 impl CrawlWithSitemapParams {
     /// # Errors
     /// Returns `McpError::invalid_params` if `url` (or `sitemap_url` when
-    /// present) is not a valid http(s) URL.
+    /// present) is not a valid http(s) URL, `max_depth` violates the shared
+    /// spec cap (`crawler::MAX_DEPTH`, 0..=10), or `max_pages` violates the
+    /// shared spec bounds (`crawler::MAX_PAGES`, 1..=100_000).
     pub fn validate(&self) -> Result<(), McpError> {
         // Both `url` and `sitemap_url` are parsed+hardened at the boundary
         // by `McpUrl` (#1116).
+        if let Some(d) = self.max_depth {
+            validate_max_depth(u64::from(d))?;
+        }
+        if let Some(p) = self.max_pages {
+            validate_max_pages(p)?;
+        }
         Ok(())
     }
 }
@@ -1352,5 +1367,73 @@ mod tests {
         let params: ProcessExportPipelineParams = serde_json::from_value(json)
             .expect("`format` alias must deserialize to `pipeline_format`");
         assert_eq!(params.pipeline_format, Some("jsonl".to_string()));
+    }
+}
+
+/// Phase 3 (#1429 RED 3.1): `CrawlWithSitemapParams` bounds mirror
+/// `CrawlSiteParams` through the shared OptionsSpec-SSOT validators —
+/// `max_depth` over the spec cap rejected, `max_pages` 0 rejected.
+///
+/// Note: `max_depth` 0 stays VALID (seed-only semantics, `zero_valid_capped`),
+/// exactly like `crawl_site` (`max_depth_zero_and_cap_accept`) — the shared
+/// validators are the arbiter, no new literals.
+#[cfg(test)]
+mod sitemap_crawl_parity_tests {
+    use super::*;
+
+    fn vu(s: &str) -> McpUrl {
+        s.parse().expect("test url must be valid http(s)")
+    }
+
+    #[test]
+    fn sitemap_max_depth_over_spec_cap_rejected() {
+        let params = CrawlWithSitemapParams {
+            url: vu("https://example.com"),
+            sitemap_url: None,
+            max_depth: Some(11),
+            max_pages: None,
+        };
+        assert!(
+            params.validate().is_err(),
+            "sitemap max_depth 11 must be rejected: {:?}",
+            params.validate().err()
+        );
+    }
+
+    #[test]
+    fn sitemap_max_depth_zero_stays_valid_seed_only() {
+        let params = CrawlWithSitemapParams {
+            url: vu("https://example.com"),
+            sitemap_url: None,
+            max_depth: Some(0),
+            max_pages: None,
+        };
+        assert_eq!(params.validate(), Ok(()), "0 = seed-only crawl");
+    }
+
+    #[test]
+    fn sitemap_max_pages_zero_rejected() {
+        let params = CrawlWithSitemapParams {
+            url: vu("https://example.com"),
+            sitemap_url: None,
+            max_depth: None,
+            max_pages: Some(0),
+        };
+        assert!(
+            params.validate().is_err(),
+            "sitemap max_pages 0 must be rejected: {:?}",
+            params.validate().err()
+        );
+    }
+
+    #[test]
+    fn sitemap_bounds_accept_valid_values() {
+        let params = CrawlWithSitemapParams {
+            url: vu("https://example.com"),
+            sitemap_url: None,
+            max_depth: Some(3),
+            max_pages: Some(100),
+        };
+        assert_eq!(params.validate(), Ok(()));
     }
 }

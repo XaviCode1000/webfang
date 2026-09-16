@@ -46,7 +46,7 @@ use crate::application::pipeline::{OutputStage, PipelineExecutor};
 use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
 use crate::domain::budget::BudgetModel;
 use crate::domain::cookie_bridge::CookieBridge;
-use crate::domain::crawler_port::RobotsPort;
+use crate::domain::crawler_port::{RobotsPort, UrlSource};
 use crate::domain::downloader_factory::{
     DownloaderFactory, DownloaderSpec, DEFAULT_OBSCURA_BINARY,
 };
@@ -691,6 +691,16 @@ impl Engine {
         self.cancel_token.clone()
     }
 
+    /// Adopt a run-scope shared rate limiter (#1428).
+    ///
+    /// Replaces the per-engine bucket `from_session` minted so `--delay-ms`
+    /// paces across the engines of one run instead of granting every engine
+    /// a fresh burst. Must be called before [`run`](Self::run) spawns any
+    /// task, so no worker ever observes the minted bucket.
+    pub(crate) fn set_shared_limiter(&mut self, limiter: SharedRateLimiter) {
+        self.rate_limiter = limiter;
+    }
+
     /// Run the crawl loop until completion
     ///
     /// Returns the collected URLs and error count.
@@ -708,6 +718,23 @@ impl Engine {
 
         // Seed the scheduler (pushes onto the discovery queue and pending buffer)
         self.scheduler.seed(&config_clone.seed_url).await;
+
+        // Sitemap extra seeds (sitemap-crawl-run-parity D1): drained right
+        // after the scheduler seed and before the pattern-filter early
+        // return, through the queue port — enqueue-time dedup absorbs
+        // seed/sitemap overlap, so the seed page is crawled exactly once.
+        // Snapshotted first: no session borrow crosses the enqueue `.await`.
+        let extra_seeds = self
+            .session
+            .as_ref()
+            .map(|session| session.extra_seeds().to_vec())
+            .unwrap_or_default();
+        for discovered in extra_seeds {
+            self.scheduler
+                .queue()
+                .push_prioritized(discovered, UrlSource::Sitemap)
+                .await;
+        }
 
         // Apply pattern filtering to seed — #634
         let seed_str = config_clone.seed_url.as_str().to_string();
