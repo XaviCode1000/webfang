@@ -963,6 +963,12 @@ jobs:
     timeout-minutes: 40
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     needs: [test-full]
+    env:
+      # Same rationale as mutants.yml:53-54 (which already sets this): coverage is a
+      # single-use build, so rustc's incremental bookkeeping is pure overhead - and
+      # `-C incremental` additionally marks every unit non-cacheable for a compiler
+      # cache. Only the profile-config form is used here, to match the repo.
+      CARGO_PROFILE_DEV_INCREMENTAL: "false"
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
