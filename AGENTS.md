@@ -362,7 +362,7 @@ codedb reindex && codedb status                    # CodeDB: root MUST be $PWD, 
 cargo build                                        # cold on an isolated target (#1267): measured 2m23s for --workspace, not a blocker
 ```
 
-> ⚠️ **`.envrc` + `direnv allow` is mandatory per worktree.** In a **worktree** it points `CARGO_TARGET_DIR` at a per-tree isolated dir (`~/.cache/cargo-target/<tree-name>`), which is what #1267 requires; the cost is that BoringSSL and every dependency compile again per worktree — measured at 2 m 23 s for `cargo build --workspace`, which is cheap enough that it must never be used as an argument to share a target dir between concurrent builds (#1267). Only `main` uses the shared cache, because there it is a single live tree and therefore sequential by construction. Without `.envrc` a tree silently builds into its own in-repo `target/`, which no cleanup step knows about. direnv is installed via mise; the Fish hook lives in `~/.config/fish/conf.d/03-direnv.fish`.
+> ⚠️ **`.envrc` + `direnv allow` is mandatory per worktree.** In a **worktree** it points `CARGO_TARGET_DIR` at a per-tree isolated dir (`~/.cache/cargo-target/<tree-name>`), which is what #1267 requires; the cost is that BoringSSL and every dependency compile again per worktree — measured at 2 m 23 s for `cargo build --workspace`, which is cheap enough that it must never be used as an argument to share a target dir between concurrent builds (#1267). Only `main` uses the shared cache, because there it is a single live tree and therefore sequential by construction. Without `.envrc` a tree silently builds into its own in-repo `target/`, which no cleanup step knows about.
 >
 > ⚠️ **Concurrent agent builds must NOT share that cache (#1267).** Two worktrees building the same binary profile concurrently overwrite each other's `debug/webfang` (same `-C metadata` hash ⇒ same output filename), so E2E runs silently execute the other tree's binary — stale links report as fresh, failures misattribute. The shared cache is for SEQUENTIAL human builds only. Isolated-build recipe (verified 2026-09-09 after 8 opaque worker deaths): `export CARGO_TARGET_DIR=~/.cache/cargo-target/<worktree>` (home disk — `/tmp` tmpfs is only 16 GB and a full workspace target dir starves both the build and sccache), `env -u RUSTC_WRAPPER -u RUSTUP_TOOLCHAIN` (sccache's Rust cache key embeds the target-dir path, so an identical source in a new isolated dir scores ZERO hits - verified with a private cache and a positive control: same dir hits, different dir misses, leaving duplicate objects for one unit. Raising `SCCACHE_CACHE_SIZE` cannot fix that, it only fits the duplicates; the wrapper also breaks `--json` parsing on isolated dirs; an exported stable toolchain shadows `rust-toolchain.toml` and its rust-lld rejects the BFD-only link flags below — F-52 evidence), `CARGO_BUILD_JOBS=2` plus `RUSTFLAGS="-C link-arg=-Wl,--no-keep-memory -C link-arg=-Wl,--reduce-memory-overheads"` (test-binary links OOM-die otherwise). The orchestrator assigns the isolated path per gate; workers never invent their own. Step 6 of the post-merge runbook deletes them - measured cost of NOT doing it: 52 GB of dead build state from three already-merged trees, invisible to `git status` and to `git worktree prune`.
 
@@ -389,16 +389,28 @@ A merge is NOT done until the repo is clean and ready for the next mission. Clea
 5. **Prune orphaned metadata** - `git worktree prune`.
 6. **Delete the mission's isolated target dir** - `rm -rf ~/.cache/cargo-target/<worktree-dir-name>`.
    Git owns nothing here, so neither `worktree remove` nor `prune` touches it, and `git status`
-   stays clean while it grows. **Match on more than the name** before deleting anything under
-   that parent: an agent may point `CARGO_TARGET_DIR` at a shortened name that differs from
-   its worktree dir (observed: tree `fix-preflight-diagnostics-and-stale-lock` building into
-   `~/.cache/cargo-target/fix-preflight-diagnostics`). A dir is safe only if ALL of: no live
-   worktree with that basename, no branch of that name locally OR on the remote, no process
-   using it as `CARGO_TARGET_DIR` (read `/proc/<pid>/environ` - a paused agent is not a live
-   process, but its cache is not orphaned either), and no writes in the last 30 minutes.
-   Enumerate before deleting, and expect logical size to read ~2x the physical one (btrfs
-   `zstd:1` plus `du` counting uncompressed `st_blocks`).
-7. **Verify the handoff contract** — `git worktree list` (ONLY main), `git branch -vv` (ONLY main, in sync), `git status --short` (empty).
+   stays clean while it grows. **The sound safety test is ownership, not exclusion:** delete the
+   directory *you* named for the worktree you removed in step 3 - its exact basename, or the custom
+   name you exported into `CARGO_TARGET_DIR` yourself. Never enumerate that parent hunting for
+   extra candidates, and never treat an unrecognized name as evidence of death: agents name their
+   targets freely and git never sees those names, and one worktree can build under several shortened
+   names (observed: `fix-preflight-diagnostics-and-stale-lock` has built into both
+   `~/.cache/cargo-target/fix-preflight-diagnostics` and `.../fix-preflight-doccheck`, neither of
+   which matches any worktree or branch). Re-check right before deleting, with a **moving
+   window**: sample the file count twice 60 s apart and require delta 0, plus zero live
+   `cargo`/`rustc`/`cargo-nextest` (`pgrep -x`, one name per call - `pgrep -x 'a;b'` never matches).
+   The fixed "no writes in the last 30 minutes" test this step used to publish is NOT sufficient: it
+   cannot tell a finished build from an agent that is thinking between builds. And absence of a
+   branch is *anti-correlated* with being dead - work that has not been pushed yet has no branch
+   locally or on the remote by definition, so that criterion passes hardest over the newest, most
+   active caches. Executed as written it deleted a live mission's 24 GB cache and cost its owner a
+   3m15s check and a 706s behavioral rebuild; all four old criteria were satisfied at the time
+   (#1449). Expect logical size to read ~2x the physical one (btrfs `zstd:1` plus `du` counting
+   uncompressed `st_blocks`).
+7. **Verify the handoff contract** — `git worktree list` shows no worktree and `git branch -vv`
+   shows no branch **for the mission you just merged**, and `git status --short` is empty. Other
+   worktrees and branches are expected: missions run in parallel in this repo, so their presence is
+   neither a failed handoff nor your business. Delete only what step 6 can attribute to you.
 
 **No automated safety net is installed.** This file previously described a weekly systemd
 `git-hygiene.timer` (Sun 03:00) that pruned confirmed-safe stale local branches. **That
