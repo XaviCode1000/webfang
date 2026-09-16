@@ -220,7 +220,18 @@ An agent suggesting "clean up duplicate dependencies" must be stopped. These con
 
 ### Build requirement
 
-`cmake` is mandatory — `wreq` → `boring2` → `boring-sys2` needs it for BoringSSL. First build compiles BoringSSL from C++ (~3–5 min).
+`cmake` is mandatory — `wreq` → `boring2` → `boring-sys2` needs it for BoringSSL. The first build compiles BoringSSL from C++.
+
+> ⏱️ **Measured cost, do not inflate it (2026-09-16, 16-core workstation, ccache active via
+> `/usr/lib64/ccache/cc`, warm registry, `--offline`, dev profile with
+> `debug = "line-tables-only"`):** a cold `cargo build -p webfang_core` in a virgin target
+> dir finishes in **85 s**, and that window contains BoringSSL's whole C++ compile (639
+> objects, 96 MB of `.o` under `.../btls-sys-*/out/`). A cold `cargo build --workspace` is
+> **2 m 23 s** (430 units, 3.1 GB). So BoringSSL is tens of seconds, not "3-5 min", on a
+> developer machine. The minutes-scale figures still alive in `.github/workflows/`
+> (sanitizers.yml ~10 min, benches.yml and mutants.yml ~10-15 min) describe **GitHub
+> runners with no ccache and, for sanitizers, std rebuilt from source** — they are not a
+> local baseline, and neither is this one. Quote the context, never the number alone.
 
 ---
 
@@ -348,10 +359,10 @@ codegraph init                                     # CodeGraph: source explorati
 codedb reindex && codedb status                    # CodeDB: root MUST be $PWD, head MUST match git rev-parse --short HEAD
 # — same without cd: codedb "$PWD" reindex && codedb "$PWD" status
 # Index lives in BOTH ./codedb.snapshot AND ~/.codedb/projects/<hash>/ (see data: in status).
-cargo build                                        # cold on an isolated target (#1267); first BoringSSL build ~3-5 min
+cargo build                                        # cold on an isolated target (#1267): measured 2m23s for --workspace, not a blocker
 ```
 
-> ⚠️ **`.envrc` + `direnv allow` is mandatory per worktree.** In a **worktree** it points `CARGO_TARGET_DIR` at a per-tree isolated dir (`~/.cache/cargo-target/<tree-name>`), which is what #1267 requires; the cost is that BoringSSL and every dependency compile again per worktree (~3-5 min cold). Only `main` uses the shared cache, because there it is a single live tree and therefore sequential by construction. Without `.envrc` a tree silently builds into its own in-repo `target/`, which no cleanup step knows about. direnv is installed via mise; the Fish hook lives in `~/.config/fish/conf.d/03-direnv.fish`.
+> ⚠️ **`.envrc` + `direnv allow` is mandatory per worktree.** In a **worktree** it points `CARGO_TARGET_DIR` at a per-tree isolated dir (`~/.cache/cargo-target/<tree-name>`), which is what #1267 requires; the cost is that BoringSSL and every dependency compile again per worktree — measured at 2 m 23 s for `cargo build --workspace`, which is cheap enough that it must never be used as an argument to share a target dir between concurrent builds (#1267). Only `main` uses the shared cache, because there it is a single live tree and therefore sequential by construction. Without `.envrc` a tree silently builds into its own in-repo `target/`, which no cleanup step knows about. direnv is installed via mise; the Fish hook lives in `~/.config/fish/conf.d/03-direnv.fish`.
 >
 > ⚠️ **Concurrent agent builds must NOT share that cache (#1267).** Two worktrees building the same binary profile concurrently overwrite each other's `debug/webfang` (same `-C metadata` hash ⇒ same output filename), so E2E runs silently execute the other tree's binary — stale links report as fresh, failures misattribute. The shared cache is for SEQUENTIAL human builds only. Isolated-build recipe (verified 2026-09-09 after 8 opaque worker deaths): `export CARGO_TARGET_DIR=~/.cache/cargo-target/<worktree>` (home disk — `/tmp` tmpfs is only 16 GB and a full workspace target dir starves both the build and sccache), `env -u RUSTC_WRAPPER -u RUSTUP_TOOLCHAIN` (sccache's Rust cache key embeds the target-dir path, so an identical source in a new isolated dir scores ZERO hits - verified with a private cache and a positive control: same dir hits, different dir misses, leaving duplicate objects for one unit. Raising `SCCACHE_CACHE_SIZE` cannot fix that, it only fits the duplicates; the wrapper also breaks `--json` parsing on isolated dirs; an exported stable toolchain shadows `rust-toolchain.toml` and its rust-lld rejects the BFD-only link flags below — F-52 evidence), `CARGO_BUILD_JOBS=2` plus `RUSTFLAGS="-C link-arg=-Wl,--no-keep-memory -C link-arg=-Wl,--reduce-memory-overheads"` (test-binary links OOM-die otherwise). The orchestrator assigns the isolated path per gate; workers never invent their own. Step 6 of the post-merge runbook deletes them - measured cost of NOT doing it: 52 GB of dead build state from three already-merged trees, invisible to `git status` and to `git worktree prune`.
 
