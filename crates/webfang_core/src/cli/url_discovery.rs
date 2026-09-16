@@ -85,6 +85,13 @@ pub struct DiscoveryOutput {
     pub urls: Vec<Url>,
     /// Captured page bodies (empty while no sink is wired).
     pub pages: Vec<CapturedPage>,
+    /// Per-page fetch failures counted by the Engine (`CrawlResult.errors`).
+    ///
+    /// The Engine never returns `Err` for a dead page: it counts the failure
+    /// and completes `Ok` with fewer URLs. Without this count an empty `urls`
+    /// is ambiguous — a seed the SSRF guard refused, a genuinely linkless
+    /// site, and a dead seed all look identical (#1381, #1443).
+    pub errors: usize,
 }
 
 /// Single discovery entry behind both dry-run and the real DOM path.
@@ -149,6 +156,7 @@ pub async fn discover_urls_unified(
     }
     let result = crawl_site_with_options(crawler_config, options, correlation).await?;
 
+    let errors = result.errors;
     let urls: Vec<Url> = result.urls.into_iter().map(|d| d.url).collect();
     let count = urls.len();
     let pages: Vec<CapturedPage> = sink
@@ -159,7 +167,11 @@ pub async fn discover_urls_unified(
         pb.finish_with_message(format!("Found {count} URLs").to_owned());
     }
 
-    Ok(DiscoveryOutput { urls, pages })
+    Ok(DiscoveryOutput {
+        urls,
+        pages,
+        errors,
+    })
 }
 
 /// Build the [`EngineOptions`] for the recursive discovery/crawl run.
