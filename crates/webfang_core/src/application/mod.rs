@@ -42,8 +42,8 @@ pub use crawler::collector::{ResultsAdapter, ResultsCollector};
 pub use crawler::content_sink::{CapturedPage, CrawlContentSink, InMemoryContentSink};
 pub use crawler::engine::EngineOptions;
 pub use crawler::{
-    crawl_site_with_options, crawl_with_sitemap, discover_urls_single_fetch, extract_content,
-    scrape_single_url,
+    crawl_site_with_options, crawl_with_sitemap, crawl_with_sitemap_session,
+    discover_urls_single_fetch, extract_content, scrape_single_url,
 };
 // #1369: the deprecated shims stay exported at their historical paths until
 // removal — the lint on the `pub use` itself is inherent to that contract
