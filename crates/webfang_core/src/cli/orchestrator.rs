@@ -466,7 +466,7 @@ async fn run_dry_run(opts: CrawlOptions, root_correlation: &domain::CorrelationI
     // with the real DOM path, so `--max-depth` is honored in previews.
     info!("Dry-run: discovering URLs without scraping...");
     let persistence_mode = resolve_persistence_mode(&opts);
-    let discovered = match crate::cli::url_discovery::discover_urls_unified(
+    let output = match crate::cli::url_discovery::discover_urls_unified(
         crawler_config,
         &opts,
         &persistence_mode,
@@ -475,9 +475,10 @@ async fn run_dry_run(opts: CrawlOptions, root_correlation: &domain::CorrelationI
     )
     .await
     {
-        Ok(output) => output.urls,
+        Ok(output) => output,
         Err(e) => return CliExit::NetworkError(format!("URL discovery failed: {e}")),
     };
+    let discovered = &output.urls;
 
     // #1381: a seed the SSRF guard cuts opens no socket, so discovery completes
     // `Ok` with zero URLs and the preview below reported "nothing to scrape" —
@@ -494,8 +495,26 @@ async fn run_dry_run(opts: CrawlOptions, root_correlation: &domain::CorrelationI
         }
     }
 
+    // #1443: a dry-run that discovered nothing AND counted fetch errors means
+    // the seed itself failed — the Engine consumes per-page failures into
+    // `CrawlResult.errors` and completes `Ok`, so without this the preview
+    // printed `Dry-run: 0 URL(s) would be scraped:` and exited 0 for a dead
+    // seed. Precondition (single seed): dry-run without `--batch-file`
+    // discovers from `opts.url` alone — the batch shape returns above — so
+    // nothing is discoverable without fetching the seed, and a live seed
+    // always lands in `urls` even when it carries no links. Runs AFTER the
+    // #1381 guard above (strict SSRF-first order): a refused seed already
+    // returned exit 2, so reaching here with errors means a real dial failed.
+    // Reuses the `NetworkError` message/exit 69 the `Err` arm already uses.
+    if discovered.is_empty() && output.errors > 0 {
+        return CliExit::NetworkError(format!(
+            "URL discovery failed: la semilla no respondió ({} error(es) de rastreo, 0 URLs descubiertas)",
+            output.errors
+        ));
+    }
+
     println!("\nDry-run: {} URL(s) would be scraped:", discovered.len());
-    for url in &discovered {
+    for url in discovered {
         println!("  {url}");
     }
     CliExit::Success

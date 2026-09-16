@@ -156,10 +156,7 @@ async fn issue_1443_dry_run_dead_seed_fails_with_network_error() {
     let closed_port = {
         let listener =
             std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral loopback port");
-        let port = listener
-            .local_addr()
-            .expect("read bound port")
-            .port();
+        let port = listener.local_addr().expect("read bound port").port();
         drop(listener);
         port
     };
