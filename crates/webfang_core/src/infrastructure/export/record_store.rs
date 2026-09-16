@@ -1263,4 +1263,44 @@ mod tests {
             "the derived counter sees the committed record without any stored counter"
         );
     }
+
+    /// #1230 made `<state>.lock` a PERMANENT sentinel (never unlinked:
+    /// `flock(2)` guards an inode, not a path, so unlink-on-drop lets a
+    /// second writer create a fresh inode and enter the critical section
+    /// while the first writer is still inside it). #1432 pins that
+    /// decision: this test fails if `Drop` ever unlinks the sentinel
+    /// again, which would resurrect the concurrent `--resume` state loss.
+    ///
+    /// The `pid=` marker is asserted by prefix only: `acquire`
+    /// truncates and rewrites the sentinel on every acquisition, so the
+    /// value legitimately varies per acquisition.
+    #[test]
+    fn dropping_the_store_lock_releases_but_never_unlinks_the_sentinel() {
+        let dir = tempdir().expect("tempdir");
+        let state_path = dir.path().join("sentinel.test.json");
+        let mut lock_os = state_path.as_os_str().to_owned();
+        lock_os.push(".lock");
+        let lock_path = PathBuf::from(lock_os);
+
+        {
+            let guard = StoreLock::acquire(&state_path).expect("acquire must succeed");
+            assert!(
+                lock_path.exists(),
+                "acquire must create the <state>.lock sentinel"
+            );
+            drop(guard);
+        }
+
+        assert!(
+            lock_path.exists(),
+            "dropping StoreLock must release the flock but NEVER unlink the sentinel (#1230)"
+        );
+        let content = fs::read_to_string(&lock_path).expect("sentinel readable");
+        assert!(
+            content.starts_with("pid="),
+            "sentinel keeps its pid= marker prefix, got {content:?}"
+        );
+        let _second = StoreLock::acquire(&state_path)
+            .expect("re-acquire after drop must succeed: drop released the lock");
+    }
 }

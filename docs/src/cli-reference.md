@@ -524,9 +524,11 @@ EXIT CODES:
   2    No URLs discovered
   3    All scrapers failed
   64   Bad CLI arguments (usage error)
-  69   WAF block or network error
+  65   Data format error (extraction without usable content)
+  69   Network error, partial success, or SSRF refusal
   74   I/O error
   76   Protocol error
+  77   All URLs blocked by robots.txt
   78   Configuration error
 
 EXAMPLES:
@@ -562,3 +564,16 @@ Options:
           Print help (see a summary with '-h')
 ````
 <!-- CLI-REFERENCE:END -->
+
+## State directory contents
+
+Companion note to `--state-dir` (documented in the generated block above).
+Each `--resume` run keeps one JSON state file per domain plus a
+`<...>.json.lock` sentinel file next to it. The sentinel is created on
+demand and intentionally **never removed**: its presence does NOT mean a
+writer is alive. The real mutual exclusion is the advisory `flock` held on
+the sentinel, which the kernel releases when the process exits — including
+after SIGKILL. There is exactly one sentinel per state file, so the leftover
+is bounded. Do not delete the `.lock` file while a run holds it: removing
+the path breaks the lock and lets two writers enter the critical section at
+once, losing state updates.

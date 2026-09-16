@@ -222,3 +222,16 @@ This shows live task states and poll times, making stuck tasks visible.
   interactive app, or not an article.
 - Try `--selector '.main-content'` (or the right CSS selector for the site),
   or enable JS rendering for SPA content.
+
+---
+
+## Leftover `.lock` files in the state directory — is my state corrupted?
+
+**Symptom.** After a `--resume` run (or a killed one) the `--state-dir`
+contains `<domain>.json.lock` files next to the `<domain>.json` state files,
+even though no writer is running.
+
+**Short answer.** No — nothing is corrupted, and nothing is stuck. The `.lock`
+file is a permanent sentinel that is created on demand and intentionally never
+removed; the real mutual exclusion is the advisory `flock` on that file, which
+the kernel releases when the process exits (including after SIGKILL).
