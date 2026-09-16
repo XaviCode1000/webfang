@@ -1,6 +1,6 @@
 //! Dry-run mode: discovers URLs but produces no files and no scrape requests.
 
-use crate::BehavioralTest;
+use crate::{cmd, BehavioralTest};
 use wiremock::matchers::method;
 use wiremock::{Mock, ResponseTemplate};
 
@@ -132,4 +132,56 @@ async fn issue_1381_dry_run_with_the_hatch_armed_keeps_reporting_a_clean_zero() 
         .arg("--quiet")
         .assert()
         .success();
+}
+
+/// #1443: a `--dry-run` against a dead seed (guaranteed-closed loopback port)
+/// must fail honestly instead of previewing a clean zero.
+///
+/// The Engine never returns `Err` for per-page fetch failures: it counts them
+/// (`CrawlResult.errors`) and completes `Ok` with zero URLs, so the preview
+/// printed `Dry-run: 0 URL(s) would be scraped:` and exited 0 — automation
+/// read a dead seed as an empty site. An empty discovery set with errors means
+/// the seed itself failed (nothing is discoverable without fetching the
+/// seed), so dry-run now leaves with the same `NetworkError` (exit 69) the
+/// `Err` arm already uses.
+///
+/// The harness arms the SSRF entry-guard hatch by default (wiremock binds
+/// loopback), so this keeps that default and binds a guaranteed-closed port
+/// instead: bind `127.0.0.1:0`, read the port, drop the listener. This is NOT
+/// the #1381 shape (guard refusal, exit 2): the seed passes the guard and the
+/// socket dial itself is refused.
+#[tokio::test]
+async fn issue_1443_dry_run_dead_seed_fails_with_network_error() {
+    let t = BehavioralTest::new().await;
+    let closed_port = {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind ephemeral loopback port");
+        let port = listener
+            .local_addr()
+            .expect("read bound port")
+            .port();
+        drop(listener);
+        port
+    };
+
+    cmd()
+        .arg("--url")
+        .arg(format!("http://127.0.0.1:{closed_port}/article"))
+        .arg("--output")
+        .arg(t.out.path())
+        .arg("--dry-run")
+        .arg("--quiet")
+        .assert()
+        .code(69)
+        .stderr(predicates::str::contains("URL discovery failed"));
+
+    let entries: Vec<_> = std::fs::read_dir(t.out.path())
+        .expect("read output dir")
+        .filter_map(|e| e.ok())
+        .collect();
+    assert!(
+        entries.is_empty(),
+        "dry-run must not create output files, found {}",
+        entries.len()
+    );
 }
