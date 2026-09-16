@@ -944,6 +944,10 @@ mod tests {
         );
     }
 
+    #[cfg_attr(
+        miri,
+        ignore = "quanta CPUID detection (raw-cpuid inline asm) unsupported by Miri"
+    )]
     #[test]
     fn batch_rate_limiter_some_at_positive_delay() {
         let base = CrawlerConfig::builder(Url::parse("https://example.com").unwrap())
