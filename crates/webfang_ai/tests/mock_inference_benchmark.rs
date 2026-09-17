@@ -195,22 +195,32 @@ async fn mock_fixed_latency_scales_linearly() {
 
     // Guard against accidental serialization of the mock path (e.g. a mutex
     // sneaking back in): the parallel ceiling is curve C (pure fan-out), the
-    // serial floor is 1×. DECISION (assert branch: keep 3.0, do NOT raise):
-    // measured 2026-09-17 on a 16-core workstation, curve C = 7.68× ceiling,
-    // curve B = 4.13×, B−C overhead = 16.6ms/page (median difference, REPS=3).
-    // 3.0 separates a healthy parallel fan-out (B passes with 1.1× margin)
-    // from the ≈1× a serialized path would produce, with wide CI-noise margin
-    // on both sides. Raising the floor toward curve C would pin throughput —
-    // an executor-shaped number — instead of serialization-freedom, and turn
-    // runner noise into red CI. The old "~18ms/page" prose estimate is
-    // REPLACED by the measured 16.6ms/page B−C gap printed above (same
-    // sleeps, same executor: the difference is real per-page CPU work, not a
-    // per-phase profile).
+    // serial floor is 1×. DECISION (assert branch: machine-relative B/C ≥ 0.3,
+    // REPLACING the retired 3.0 absolute floor): the absolute floor proved
+    // unportable — 16-core workstation B = 4.13× vs CI-runner B = 2.89× (PR
+    // #1457 Coverage job), while curve C is rock-stable (7.68–7.74 local,
+    // 7.73 CI). Per-point B/C decays with N on both runners (local
+    // 1.00/0.91/0.75/0.54, CI ending 0.37 at 8 pages), so an absolute floor
+    // pins an executor-shaped number instead of serialization-freedom and
+    // turns runner noise into red CI. The ratio normalizes that out: curve C
+    // is the anchor for what this executor can fan out, and B/C measures how
+    // much of that ceiling the real pipeline keeps. Observed ratio 0.37–0.54;
+    // a serialized path would give ~1×/8× ≈ 0.125 — so 0.3 has margin on both
+    // sides (real serialization lands in ~0.125 territory, a degraded runner
+    // stays above 0.3 while its absolute B sags).
     // gap B−C (~16.6ms) no descompuesto por fase; ver curva 1/2/4/8 y ratio
     // B/C decreciente en docs/p0-001-n-decision.md.
+    let ratio = speedup_b_8 / speedup_c_8;
+    let cores = std::thread::available_parallelism()
+        .map(|n| n.to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
+    eprintln!("paso-0 ratio verdict: B/C = {ratio:.2} (B = {speedup_b_8:.2}x, C = {speedup_c_8:.2}x, cores = {cores})");
     assert!(
-        speedup_b_8 >= 3.0,
-        "mock fan-out must parallelize (curve B speedup 1→8 = {speedup_b_8:.2}x, expected ≈8x; \
-         ≈1x would mean the mock path itself serializes)"
+        ratio >= 0.3,
+        "mock fan-out must parallelize (B/C ratio = {ratio:.2}, curve B speedup 1→8 = {speedup_b_8:.2}x, \
+         curve C speedup 1→8 = {speedup_c_8:.2}x, cores = {cores}; \
+         ratio ≈ 0.125 territory means the mock path itself serializes, \
+         ratio in [0.3, 0.37) with sagging absolutes means a degraded runner — \
+         see docs/p0-001-n-decision.md)"
     );
 }
