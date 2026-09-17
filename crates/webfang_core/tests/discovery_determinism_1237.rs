@@ -10,7 +10,7 @@
 use std::cmp::Ordering;
 
 use webfang_core::application::crawl_options::CrawlOptions;
-use webfang_core::cli::url_discovery::discover_urls_unified;
+use webfang_core::cli::url_discovery::{discover_urls_unified, DiscoveryRetry};
 use webfang_core::domain::budget::{BudgetOverrides, CrawlConcurrency};
 use webfang_core::domain::persistence::PersistenceMode;
 use webfang_core::domain::{CorrelationId, CrawlerConfig, DiscoveredUrl, ValidUrl};
@@ -186,6 +186,7 @@ async fn discover_once(seed_url: &url::Url, seed_str: &str) -> Vec<String> {
         &PersistenceMode::Disabled,
         None,
         &CorrelationId::new(),
+        DiscoveryRetry::Operator,
     )
     .await
     .expect("manylinks discovery must succeed")

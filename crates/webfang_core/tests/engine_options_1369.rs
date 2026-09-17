@@ -34,7 +34,7 @@ use webfang_core::application::crawler::InMemoryContentSink;
 use webfang_core::cli::error::{
     empty_discovery_exit_when_seed_refused, CliExit, EXIT_EMPTY_DISCOVERY,
 };
-use webfang_core::cli::url_discovery::discover_urls_unified;
+use webfang_core::cli::url_discovery::{discover_urls_unified, DiscoveryRetry};
 use webfang_core::domain::persistence::PersistenceMode;
 use webfang_core::domain::ssrf_guard::{DISABLE_ENTRY_GUARD_ENV, DISABLE_VALIDATING_RESOLVER_ENV};
 use webfang_core::domain::{CorrelationId, CrawlerConfig, ValidUrl};
@@ -252,6 +252,7 @@ async fn discovery_plain_run_propagates_ignore_robots_option() {
         &PersistenceMode::Disabled,
         None,
         &CorrelationId::new(),
+        DiscoveryRetry::Operator,
     )
     .await
     .expect("plain discovery must succeed");
@@ -296,6 +297,7 @@ async fn discovery_plain_run_enforces_robots_by_default() {
         &PersistenceMode::Disabled,
         None,
         &CorrelationId::new(),
+        DiscoveryRetry::Operator,
     )
     .await
     .expect("plain discovery must succeed");
@@ -353,6 +355,7 @@ async fn discovery_plain_run_rejects_loopback_seed_with_ssrf_guard_on() {
         &PersistenceMode::Disabled,
         None,
         &CorrelationId::new(),
+        DiscoveryRetry::Operator,
     )
     .await
     .expect("the armed guard cuts the seed pre-socket, so the run completes Ok");
@@ -416,6 +419,7 @@ async fn issue_1381_guard_refused_preview_maps_to_exit_2_while_the_library_stays
             &PersistenceMode::Disabled,
             None,
             &CorrelationId::new(),
+            DiscoveryRetry::Operator,
         )
         .await
         .expect("the armed guard cuts the seed pre-socket, so the run still completes Ok");

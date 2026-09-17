@@ -1,0 +1,5 @@
+---
+source: crates/webfang_core/tests/dry_run_fail_fast.rs
+expression: "redact_nondeterministic(out.path(), &stderr)"
+---
+<TIMESTAMP> ERROR <MODULE>: page fetch failed, error: download error: I/O error: Connection refused (os error 111), url: http://127.0.0.1:<PORT>/, stage: fetch, trace_id: "<TRACE_ID>" at <FILE>.rs:<LINE> <TIMESTAMP> WARN <MODULE>: Task error: download error: I/O error: Connection refused (os error 111) at <FILE>.rs:<LINE> Error: URL discovery failed: la semilla no respondió (1 error(es) de rastreo, 0 URLs descubiertas)

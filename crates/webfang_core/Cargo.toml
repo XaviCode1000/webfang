@@ -279,3 +279,11 @@ path = "tests/preflight_diagnostics.rs"
 [[test]]
 name = "harness_ssrf_arrivals"
 path = "tests/harness_ssrf_arrivals.rs"
+
+# ---------------------------------------------------------------------------
+# Dry-run fail-fast preview (change `dry-run-fail-fast`): CLI behavioral
+# contract — fail-fast exit 69, SSRF-first exit 2, A/B at defaults.
+# ---------------------------------------------------------------------------
+[[test]]
+name = "dry_run_fail_fast"
+path = "tests/dry_run_fail_fast.rs"
