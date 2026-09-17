@@ -85,3 +85,19 @@
   Rollback = `EngineConfig::Single`. 11 tests mock-backed verdes.
 - [ ] Barrido MEASURE + decisión N documentada + rollout (en marcha)
 - [ ] Barrido MEASURE + decisión N documentada + rollout
+
+## Seguimiento 2026-09-17 (rama `feat/1456-p0-001-mock`, sin PR, default sigue `Single`)
+
+- **Celda Batch en MEASURE** (`p0_001_measure.rs`, `batch` harness-only: 1 sesión
+  `intra_threads=16`, `run_batched_inference` por página, misma línea
+  `P0_001_CELL`): implementada y verde en check/clippy; sin números todavía
+  (el barrido release con modelos reales no se corrió aquí).
+- **Curvas mock A/B/C** (`mock_inference_benchmark.rs`, REPS=3 mediana,
+  `worker_threads=8` fijo): B = 4.13×, C = 7.68×, gap B−C = 16.6ms/página.
+  Piso de assert: se MANTIENE 3.0 (fija libertad-de-serialización, no
+  throughput); el viejo "~18ms/página" queda reemplazado por el gap medido.
+- **P2-001/002**: archivados como downstream de P0-001 (C≈8× lo demuestra);
+  `export_flow.rs` no se toca. Decisión N: PENDIENTE del barrido release.
+- **Circuit breaker**: diferido por decisión explícita; re-apertura solo como
+  gate cuando `Pool` se active vía `WEBFANG_AI_ENGINE` bajo tráfico sostenido.
+- Detalle completo: `docs/p0-001-n-decision.md`.
