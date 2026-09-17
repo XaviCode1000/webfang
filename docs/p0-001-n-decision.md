@@ -8,7 +8,7 @@ that requires the real-model release sweep, which was deliberately not run here.
 
 | Question | Verdict |
 |---|---|
-| Are P2-001/002 downstream of P0-001? | **Yes — ARCHIVED as downstream.** Curve C hits 7.68×, so the executor fans out cleanly; curve B's gap is CPU-shaped, not a second serialization. `export_flow.rs` stays untouched. |
+| Are P2-001/002 downstream of P0-001? | **Provisionally archived.** Curve C hits 7.68×, but per-point B/C falls 1.00→0.91→0.75→0.54 with N — consistent with growing contention (likely CPU-task backlog on the 8 test workers; P2 fan-out effects not excluded). `export_flow.rs` stays untouched unless the release sweep re-opens this. |
 | Assert floor: raise or keep 3.0? | **KEEP 3.0.** Curve B (4.13×) passes with margin; the floor pins serialization-freedom, not throughput. Raising toward curve C would turn runner noise into red CI. |
 | Micro-batching vs Pool{N}? | **OPEN — needs the release sweep.** The harness-only `batch` cell exists and compiles; no numbers yet. |
 | N (pool size)? | **PENDING the release sweep (not run).** Criterion stands: minimum N with speedup(8) ≥ 6.0× inside the ops RSS budget. |
@@ -51,15 +51,20 @@ attribution only; no real model runs in this harness.
   measured per-page CPU cost. It replaces the old "~18ms/page" prose estimate,
   which was never a per-phase profile and must not be cited as one.
 
-### P2-001/002 archival (was provisional, now recorded)
+### P2-001/002 archival (PROVISIONAL — declining B/C ratio, do not cite as proven)
 
 The task tracker held P2-001 (retained N×M fan-out) and P2-002 (`join_all`
 head-of-line fan-in) as `riesgo_hipotesis_no_demostrada` pending these curves.
-Curve C at 7.68× demonstrates the hypothesis: with sleeps only, the exact same
-fan-out/fan-in shape scales linearly, so neither P2 item is an independent
-cause on this path. **Archived as downstream of P0-001. No `export_flow.rs`
-redesign.** If the future release sweep shows real-model scaling that the mock
-cannot explain, re-open with those numbers — not with suspicion.
+Per-point B/C ratios from the tables above: 1.00 → 0.91 → 0.75 → **0.54**.
+That decline is NOT a constant-fraction CPU overhead: it is consistent with
+growing contention with N — most plausibly real-CPU task backlog queueing on
+the test runtime's fixed 8 workers, but fan-out/scheduler effects of the P2
+shape cannot be excluded from these numbers alone. Curve C at 7.68× shows the
+executor CAN scale the bare shape; it does not prove the B gap is
+contention-free. **Status: provisionally archived as downstream of P0-001. No
+`export_flow.rs` redesign.** Re-open triggers: release-sweep scaling the mock
+cannot explain, or per-phase (`Instant`-inside-`clean`) profiling showing
+scheduler/fan-out cost growing with N.
 
 ## N-decision: explicitly pending
 
@@ -92,7 +97,7 @@ re-opens with those numbers attached. Until that gate fires, no breaker work.
 ## Checklist
 
 - [x] Curves B + C measured, REPS=3 median, tables recorded above
-- [x] P2-001/002 archival outcome recorded (downstream, not independent cause)
+- [x] P2-001/002 archival outcome recorded (PROVISIONAL — declining B/C ratio 1.00→0.54, re-open triggers listed)
 - [x] Assert branch recorded in code comment + commit message (keep 3.0)
 - [x] Overhead estimate replaced by measured number
 - [x] Circuit-breaker deferral recorded with gate-condition trigger

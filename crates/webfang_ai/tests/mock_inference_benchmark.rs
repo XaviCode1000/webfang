@@ -241,6 +241,8 @@ async fn mock_fixed_latency_scales_linearly() {
     // REPLACED by the measured 16.6ms/page B−C gap printed above (same
     // sleeps, same executor: the difference is real per-page CPU work, not a
     // per-phase profile).
+    // gap B−C (~16.6ms) no descompuesto por fase; ver curva 1/2/4/8 y ratio
+    // B/C decreciente en docs/p0-001-n-decision.md.
     assert!(
         speedup_b_8 >= 3.0,
         "mock fan-out must parallelize (curve B speedup 1→8 = {speedup_b_8:.2}x, expected ≈8x; \
