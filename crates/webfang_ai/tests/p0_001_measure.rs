@@ -6,10 +6,16 @@
 //! skips gracefully when the cache is absent.
 //!
 //! Matrix: engine configs {Single baseline, Pool{2,4,8}(+Pool{15} when the
-//! RAM gate passes)} × pages {1,2,4,8} of synthetic ~153KB content mirroring
-//! the issue baseline (~393 chunks/page with the paso-0 fixture shape). Per
-//! cell (3 repetitions, median reported): tiempo AI, speedup vs 1 page of the
-//! same config AND vs Single-1page, plus peak RSS DELTA.
+//! RAM gate passes), Batch harness-only} × pages {1,2,4,8} of synthetic
+//! ~153KB content mirroring the issue baseline (~393 chunks/page with the
+//! paso-0 fixture shape). Per cell (3 repetitions, median reported): tiempo
+//! AI, speedup vs 1 page of the same config AND vs Single-1page, plus peak
+//! RSS DELTA.
+//!
+//! The `batch` config is harness-only (NOT `EngineConfig`/`WEBFANG_AI_ENGINE`
+//! syntax): one session with `intra_threads = 16` batching each page's chunks
+//! via `run_batched_inference`, pages in sequence. It answers the lever
+//! question (micro-batching vs Pool{N}) with the same report shape.
 //!
 //! RSS methodology (the earlier probe's monotonic-HWM caveat must not
 //! repeat): EVERY cell runs in a FRESH child process (the same test binary
@@ -32,20 +38,26 @@
 //! ```
 //!
 //! Env knobs: `WEBFANG_P0_001_VARIANT` (`97m` default, `311m`), `WEBFANG_P0_001_CONFIGS`
-//! (default `single,pool2,pool4,pool8,pool15`), `WEBFANG_P0_001_PAGES` (default
-//! `1,2,4,8`). Every spec reuses the production [`EngineConfig`] parser, so the
-//! harness syntax can never drift from the shipped `WEBFANG_AI_ENGINE` syntax.
+//! (default `single,pool2,pool4,pool8,pool15,batch`), `WEBFANG_P0_001_PAGES` (default
+//! `1,2,4,8`). Every spec except harness-only `batch` reuses the production
+//! [`EngineConfig`] parser, so the harness syntax can never drift from the
+//! shipped `WEBFANG_AI_ENGINE` syntax.
 #![cfg(feature = "ai")]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
 use futures::future::join_all;
+use ort::session::{builder::GraphOptimizationLevel, Session};
+use webfang_ai::infrastructure_ai::embedding_ops::cosine_similarity;
+use webfang_ai::infrastructure_ai::inference_engine::{run_batched_inference, InputPlan};
 use webfang_ai::infrastructure_ai::{
-    AiModel, EngineConfig, MiniLmTokenizer, ModelConfig, PooledInferenceEngine, SemanticCleanerImpl,
+    AiModel, ContentPruner, EngineConfig, HtmlChunker, LegibleContentPruner, MiniLmTokenizer,
+    ModelConfig, PooledInferenceEngine, SemanticCleanerImpl,
 };
 use webfang_ai::SemanticCleaner;
+use webfang_core::domain::DocumentChunk;
 
 /// Repetitions per cell; the reported time is the median.
 const REPS: usize = 3;
@@ -213,6 +225,218 @@ fn ram_gate(config: &EngineConfig, model_bytes: u64) -> Option<String> {
     }
 }
 
+/// Intra-op budget of the harness-only `batch` cell: the full machine budget
+/// in ONE session (this machine has 16 cores, same basis as [`CHILD_WORKERS`).
+const BATCH_INTRA_THREADS: usize = 16;
+
+/// ¿Es esta spec la celda harness-only de micro-batching? (`batch` NO es
+/// sintaxis de `EngineConfig`/`WEBFANG_AI_ENGINE`: no existe en producción y
+/// nunca debe parsearse con [`parse_config`].)
+fn is_batch_spec(spec: &str) -> bool {
+    spec.trim() == "batch"
+}
+
+/// Construye la sesión batch como el smoke test (`batched_inference_smoke.rs`:
+/// Level3, misma forma de construcción) pero con `intra_threads = 16` en vez
+/// de 1: el presupuesto total de la máquina en una sola sesión, la variable
+/// bajo medida contra Pool{N}.
+fn build_batch_session(model_path: &Path) -> Session {
+    Session::builder()
+        .expect("la construcción de la sesión ORT debe estar disponible")
+        .with_optimization_level(GraphOptimizationLevel::Level3)
+        .expect("el nivel de optimización Level3 debe aceptarse")
+        .with_intra_threads(BATCH_INTRA_THREADS)
+        .expect("intra_threads(16) debe aceptarse")
+        .commit_from_file(model_path)
+        .expect("el modelo en caché debe cargar")
+}
+
+/// Réplica harness-only del filtrado de `filter_by_relevance`
+/// (`semantic_cleaner_impl.rs`): centroide + Z-score con el mismo `threshold`
+/// de producción. Se duplica aquí porque el método es privado (solo
+/// observabilidad + puntuación, sin E/S); cualquier cambio en el algoritmo de
+/// producción debe reflejarse aquí — la paridad de conteos entre celdas en la
+/// tabla del barrido es el testigo.
+fn batch_filter_page(
+    chunks: Vec<DocumentChunk>,
+    embeddings: Vec<Vec<f32>>,
+    threshold: f32,
+) -> Vec<DocumentChunk> {
+    let mut pairs: Vec<(DocumentChunk, Vec<f32>)> = chunks.into_iter().zip(embeddings).collect();
+    let dim = pairs.first().map(|(_, e)| e.len()).unwrap_or(0);
+    assert!(dim > 0, "el filtrado batch necesita embeddings no vacíos");
+    let mut centroid = vec![0.0f32; dim];
+    for (_, embedding) in &pairs {
+        for (i, &val) in embedding.iter().enumerate() {
+            if i < centroid.len() {
+                centroid[i] += val;
+            }
+        }
+    }
+    let n = pairs.len() as f32;
+    for val in &mut centroid {
+        *val /= n;
+    }
+    let distances: Vec<f32> = pairs
+        .iter()
+        .map(|(_, emb)| 1.0 - cosine_similarity(emb, &centroid))
+        .collect();
+    let count = distances.len() as f32;
+    let mean = distances.iter().sum::<f32>() / count;
+    let variance = distances.iter().map(|d| (d - mean).powi(2)).sum::<f32>() / count;
+    let std_dev = variance.sqrt();
+    let z_limit = 3.0 * (1.0 - threshold);
+    pairs = pairs
+        .into_iter()
+        .zip(distances.iter())
+        .filter(|(_, &distance)| {
+            let z = (distance - mean).abs() / std_dev.max(1e-6);
+            z <= z_limit
+        })
+        .map(|((chunk, emb), _)| (chunk, emb))
+        .collect();
+    pairs
+        .into_iter()
+        .map(|(mut chunk, embedding)| {
+            chunk.embeddings = Some(embedding);
+            chunk
+        })
+        .collect()
+}
+
+/// Shared refs for one batch page: keeps [`batch_clean_page`] under the
+/// `too_many_arguments` lint without hiding the pipeline stages it mirrors
+/// from `clean` (chunker, tokenizer, pruner, config travel together).
+struct BatchPage<'a> {
+    plan: &'a InputPlan,
+    chunker: &'a HtmlChunker,
+    tokenizer: &'a MiniLmTokenizer,
+    pruner: &'a LegibleContentPruner,
+    config: &'a ModelConfig,
+    variant: AiModel,
+}
+/// Una página por la vía batch: prune → chunk → tokenize (idéntico a `clean`:
+/// mismos tipos, mismo chequeo `max_tokens`) y UNA llamada
+/// `run_batched_inference` con todos sus chunks. Consume y devuelve la
+/// `Session`: las páginas corren en SECUENCIA porque `&mut Session` no admite
+/// fan-out — el paralelismo batch vive en la matriz (`intra_threads = 16`),
+/// no en sesiones concurrentes. Esa es exactamente la variable bajo medida.
+async fn batch_clean_page(
+    session: Session,
+    page: &BatchPage<'_>,
+    html: &str,
+) -> (Session, Vec<DocumentChunk>) {
+    let pruner = page.pruner;
+    let chunker = page.chunker;
+    let tokenizer = page.tokenizer;
+    let config = page.config;
+    let variant = page.variant;
+    let effective = pruner.prune(html);
+    let effective = if effective.is_empty() {
+        html
+    } else {
+        &effective
+    };
+    let chunks = chunker
+        .chunk(effective)
+        .expect("el chunker batch debe funcionar");
+    if chunks.is_empty() {
+        return (session, Vec::new());
+    }
+    let mut inputs = Vec::with_capacity(chunks.len());
+    for chunk in &chunks {
+        let input = tokenizer
+            .tokenize(&chunk.content)
+            .expect("el tokenizer batch debe funcionar");
+        assert!(
+            input.seq_len() <= config.max_tokens,
+            "chunk batch excede max_tokens ({} > {})",
+            input.seq_len(),
+            config.max_tokens
+        );
+        inputs.push(input);
+    }
+    // ORT es síncrono y CPU-intensivo: fuera del reactor, como los workers de
+    // producción (`async-spawn-blocking`). La sesión viaja al worker y vuelve
+    // en la tupla (sin clonado del estado del modelo).
+    let plan_owned = page.plan.clone();
+    let (session, infer_result) = tokio::task::spawn_blocking(move || {
+        let mut session = session;
+        let out = run_batched_inference(&mut session, &plan_owned, &inputs, variant);
+        (session, out)
+    })
+    .await
+    .expect("el worker batch no debe cancelarse");
+    let embeddings =
+        infer_result.unwrap_or_else(|e| panic!("inferencia batch de la página falló: {e}"));
+    let filtered = batch_filter_page(chunks, embeddings, config.relevance_threshold);
+    (session, filtered)
+}
+
+/// Hijo batch: UNA sesión `intra_threads = 16`, páginas en secuencia, los
+/// chunks de cada página en una sola llamada batch. Misma forma de reporte
+/// (`P0_001_CELL`, mediana de [`REPS`], delta HWM en proceso fresco) que las
+/// celdas Single/Pool, para que la tabla compare peras con peras. Una sola
+/// sesión ⇒ sin RAM gate (como Single).
+async fn p0_001_batch_child(variant_tag: &str, variant: AiModel, pages: usize) {
+    let Some((model_path, tokenizer_path)) = discover_assets(variant_tag) else {
+        println!("{SKIP_PREFIX}reason=sin caché local para {variant_tag} (sin descargas)");
+        return;
+    };
+    let model_config = ModelConfig::default()
+        .with_model_variant(variant)
+        .with_offline_mode(true);
+    let mut session = build_batch_session(&model_path);
+    let plan = InputPlan::from_session(&session).expect("el plan batch debe resolverse");
+    let tokenizer = MiniLmTokenizer::from_file(&tokenizer_path)
+        .await
+        .expect("tokenizer en caché debe cargar");
+    let chunker = HtmlChunker::new();
+    let pruner = LegibleContentPruner::standard();
+
+    let hwm_load = peak_rss_kib().unwrap_or(0);
+
+    // Reps: N páginas en secuencia (la sesión no admite fan-out), los chunks
+    // de cada página en un solo batch. El cronómetro envuelve las N páginas,
+    // igual que `join_all` envuelve las N páginas en las celdas Single/Pool.
+    let html = synthetic_page();
+    let mut times_s: Vec<f64> = Vec::with_capacity(REPS);
+    let mut chunks_per_page = 0;
+    let page = BatchPage {
+        plan: &plan,
+        chunker: &chunker,
+        tokenizer: &tokenizer,
+        pruner: &pruner,
+        config: &model_config,
+        variant,
+    };
+    for _ in 0..REPS {
+        let started = Instant::now();
+        for _ in 0..pages {
+            let (s, chunks) = batch_clean_page(session, &page, &html).await;
+            session = s;
+            assert!(
+                !chunks.is_empty(),
+                "la página sintética debe producir chunks (0 = el chunker/pruner se comió el fixture)"
+            );
+            chunks_per_page = chunks.len();
+        }
+        times_s.push(started.elapsed().as_secs_f64());
+    }
+
+    let hwm_peak = peak_rss_kib().unwrap_or(0);
+    let times = times_s
+        .iter()
+        .map(|t| format!("{t:.3}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    println!(
+        "{CELL_PREFIX}config=batch variant={variant_tag} pages={pages} \
+         chunks_per_page={chunks_per_page} times_s={times} \
+         hwm_load_kib={hwm_load} hwm_peak_kib={hwm_peak} workers={CHILD_WORKERS}"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Child: one cell (one config × one page-count) in a fresh process
 // ---------------------------------------------------------------------------
@@ -234,6 +458,15 @@ async fn p0_001_measure_child() {
         parts.next().unwrap_or(""),
         parts.next().unwrap_or(""),
     );
+    // `batch` es celda harness-only: no pasa por `EngineConfig`, corre su
+    // propio hijo (una sesión) y vuelve con la misma línea `P0_001_CELL`.
+    if is_batch_spec(config_spec) {
+        let batch_variant =
+            parse_variant(variant_tag).expect("variante del hijo debe ser 97m|311m");
+        let batch_pages: usize = pages_spec.parse().expect("pages del hijo debe ser entero");
+        p0_001_batch_child(variant_tag, batch_variant, batch_pages).await;
+        return;
+    }
     let config = parse_config(config_spec).expect("config del hijo debe parsear");
     let variant = parse_variant(variant_tag).expect("variante del hijo debe ser 97m|311m");
     let pages: usize = pages_spec.parse().expect("pages del hijo debe ser entero");
@@ -399,10 +632,12 @@ fn run_cell(
     );
 }
 
-/// P0-001 MEASURE sweep: `{Single,Pool{2,4,8}(+Pool{15})}` × `{1,2,4,8}`
+/// P0-001 MEASURE sweep: `{Single,Pool{2,4,8}(+Pool{15}),Batch}` × `{1,2,4,8}`
 /// pages on the selected variant (default 97m; 311m via
 /// `WEBFANG_P0_001_VARIANT=311m` as a spot check, not the full matrix).
-///
+/// `Batch` es la celda harness-only (una sesión `intra_threads = 16`,
+/// micro-batching por página): responde si el batching compite con Pool{N}
+/// antes de fijar N.
 /// Prints the full median table (time, speedup vs 1 page same-config, speedup
 /// vs Single-1page, RSS delta). Evidence only — no numeric assertions beyond
 /// child success, so numbers can never turn this BENCH red.
@@ -414,16 +649,19 @@ fn p0_001_measure_sweep() {
         parse_variant(&variant_tag).is_some(),
         "WEBFANG_P0_001_VARIANT debe ser 97m|311m, fue {variant_tag:?}"
     );
-    let configs = env_list("WEBFANG_P0_001_CONFIGS", "single,pool2,pool4,pool8,pool15");
+    let configs = env_list(
+        "WEBFANG_P0_001_CONFIGS",
+        "single,pool2,pool4,pool8,pool15,batch",
+    );
     let pages: Vec<usize> = env_list("WEBFANG_P0_001_PAGES", "1,2,4,8")
         .iter()
         .map(|s| s.parse().expect("pages deben ser enteros"))
         .collect();
     for spec in &configs {
         assert!(
-            parse_config(spec).is_some(),
+            parse_config(spec).is_some() || is_batch_spec(spec),
             "config desconocida en WEBFANG_P0_001_CONFIGS: {spec:?} \
-             (válidas: single, pool<N> — la misma sintaxis de WEBFANG_AI_ENGINE)"
+             (válidas: single, pool<N> — la misma sintaxis de WEBFANG_AI_ENGINE — más batch harness-only)"
         );
     }
 
@@ -437,14 +675,17 @@ fn p0_001_measure_sweep() {
     );
 
     // (config, pages) → cell, in matrix order. Pool{15} (y cualquier pool que
-    // no quepa) se omite con su justificación impresa — nunca OOM.
+    // no quepa) se omite con su justificación impresa — nunca OOM. `batch`
+    // es una sola sesión: sin RAM gate, como Single.
     let mut cells: Vec<CellResult> = Vec::new();
     for spec in &configs {
-        let config = parse_config(spec).expect("configs validadas arriba");
-        if let Some(model_bytes) = model_bytes {
-            if let Some(reason) = ram_gate(&config, model_bytes) {
-                eprintln!("  SKIP {spec} (todas las páginas): {reason}");
-                continue;
+        if !is_batch_spec(spec) {
+            let config = parse_config(spec).expect("configs validadas arriba");
+            if let Some(model_bytes) = model_bytes {
+                if let Some(reason) = ram_gate(&config, model_bytes) {
+                    eprintln!("  SKIP {spec} (todas las páginas): {reason}");
+                    continue;
+                }
             }
         }
         for &npages in &pages {
