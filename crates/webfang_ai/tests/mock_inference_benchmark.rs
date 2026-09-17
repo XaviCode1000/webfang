@@ -28,10 +28,12 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::future::join_all;
-use webfang_ai::infrastructure_ai::{
-    MiniLmTokenizer, MockInferenceEngine, ModelConfig, SemanticCleanerImpl,
-};
+use webfang_ai::infrastructure_ai::{MockInferenceEngine, ModelConfig, SemanticCleanerImpl};
 use webfang_ai::SemanticCleaner;
+
+#[path = "p0_001_common.rs"]
+#[allow(dead_code)]
+mod p0_001_common;
 
 /// Fixed per-chunk latency, calibrated against the issue baseline:
 /// 393 serial chunks × 45ms ≈ 17.7s (the measured 1-page AI time).
@@ -43,47 +45,10 @@ const PAGE_COUNTS: [usize; 4] = [1, 2, 4, 8];
 /// Repetitions per cell; the reported wall time is the median.
 const REPS: usize = 3;
 
-/// Paragraphs per synthetic page. The chunker packs ≤512 chars per chunk, so
-/// ~400 × ~380-char paragraphs land at ~393 chunks — the issue's 153KB shape.
-const PARAGRAPHS_PER_PAGE: usize = 400;
-
-/// Build a minimal in-memory WordPiece tokenizer: no `tokenizer.json` file,
-/// no network. Same pattern as the `EmbeddingAdapter` unit tests.
-fn in_memory_tokenizer() -> MiniLmTokenizer {
-    use tokenizers::models::wordpiece::WordPiece;
-
-    let vocab = [
-        ("[PAD]".to_string(), 0u32),
-        ("[UNK]".to_string(), 100),
-        ("[CLS]".to_string(), 101),
-        ("[SEP]".to_string(), 102),
-        ("hello".to_string(), 5),
-        ("world".to_string(), 6),
-    ];
-    let model = WordPiece::builder()
-        .vocab(vocab)
-        .unk_token("[UNK]".to_string())
-        .build()
-        .expect("wordpiece model must build from an inline vocab");
-    MiniLmTokenizer::new(tokenizers::Tokenizer::new(model), 512)
-}
-
-/// One synthetic page: an article of identical paragraphs, each sized to fill
-/// roughly one chunk (~380 chars < 512-char chunk cap).
-fn synthetic_page() -> String {
-    const SENTENCE: &str = "hello world hello world hello world hello world hello world. ";
-    let mut html = String::from("<html><body><article>");
-    for i in 0..PARAGRAPHS_PER_PAGE {
-        html.push_str(&format!("<p>Párrafo {i}: {}</p>", SENTENCE.repeat(6)));
-    }
-    html.push_str("</article></body></html>");
-    html
-}
-
 /// Cleaner wired to the mock engine: full `clean()` path, zero model bytes.
 fn mock_cleaner() -> SemanticCleanerImpl<MockInferenceEngine> {
     let engine = Arc::new(MockInferenceEngine::new(FIXED_LATENCY));
-    let tokenizer = Arc::new(in_memory_tokenizer());
+    let tokenizer = Arc::new(p0_001_common::in_memory_tokenizer());
     SemanticCleanerImpl::from_parts(engine, tokenizer, ModelConfig::default())
 }
 
@@ -102,7 +67,7 @@ async fn sweep_curve_b(
 ) -> Vec<Duration> {
     let mut medians = Vec::with_capacity(PAGE_COUNTS.len());
     for &pages in &PAGE_COUNTS {
-        let html = synthetic_page();
+        let html = p0_001_common::synthetic_page();
         let mut samples = Vec::with_capacity(REPS);
         for _ in 0..REPS {
             let urls: Vec<String> = (0..pages)
@@ -185,7 +150,7 @@ async fn mock_fixed_latency_scales_linearly() {
     // Self-calibration: chunk count of one synthetic page (identical for all
     // pages since the content is byte-identical). Curve C reuses this count
     // so its N×M task shape matches curve B exactly.
-    let probe_page = synthetic_page();
+    let probe_page = p0_001_common::synthetic_page();
     let probe = cleaner
         .clean("https://example.com/paso-0", &probe_page)
         .await

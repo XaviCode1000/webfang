@@ -44,12 +44,12 @@
 //! shipped `WEBFANG_AI_ENGINE` syntax.
 #![cfg(feature = "ai")]
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
 use futures::future::join_all;
-use ort::session::{builder::GraphOptimizationLevel, Session};
+use ort::session::Session;
 use webfang_ai::infrastructure_ai::embedding_ops::cosine_similarity;
 use webfang_ai::infrastructure_ai::inference_engine::{run_batched_inference, InputPlan};
 use webfang_ai::infrastructure_ai::{
@@ -59,14 +59,12 @@ use webfang_ai::infrastructure_ai::{
 use webfang_ai::SemanticCleaner;
 use webfang_core::domain::DocumentChunk;
 
+#[path = "p0_001_common.rs"]
+#[allow(dead_code)]
+mod p0_001_common;
+
 /// Repetitions per cell; the reported time is the median.
 const REPS: usize = 3;
-
-/// Paragraphs per synthetic page. The chunker packs ≤512 chars per chunk, so
-/// ~400 × ~380-char paragraphs land near ~393 chunks — the issue's 153KB shape
-/// (same fixture as the paso-0 mock benchmark; the real tokenizer decides the
-/// exact count, which the child reports per cell).
-const PARAGRAPHS_PER_PAGE: usize = 400;
 
 /// Child-mode env: `WEBFANG_P0_001_CHILD="<config>|<variant>|<pages>"`, e.g.
 /// `"pool4|97m|8"`. The parent sweep re-executes this same test binary with it
@@ -94,19 +92,6 @@ const PARITY_TOLERANCE: f32 = 1e-5;
 // ---------------------------------------------------------------------------
 // Shared helpers (parent + child)
 // ---------------------------------------------------------------------------
-
-/// One synthetic page: an article of identical paragraphs, each sized to fill
-/// roughly one chunk (~380 chars < 512-char chunk cap). Same shape as the
-/// paso-0 mock fixture so chunk counts stay comparable with that verdict.
-fn synthetic_page() -> String {
-    const SENTENCE: &str = "hello world hello world hello world hello world hello world. ";
-    let mut html = String::from("<html><body><article>");
-    for i in 0..PARAGRAPHS_PER_PAGE {
-        html.push_str(&format!("<p>Párrafo {i}: {}</p>", SENTENCE.repeat(6)));
-    }
-    html.push_str("</article></body></html>");
-    html
-}
 
 /// HF cache root: `$HF_HUB_CACHE`, else `$HOME/.cache/huggingface/hub`.
 fn hub_root() -> Option<PathBuf> {
@@ -165,25 +150,6 @@ fn parse_config(spec: &str) -> Option<EngineConfig> {
     None
 }
 
-/// Current process peak RSS in KiB (`VmHWM` from `/proc/self/status`).
-/// `None` off Linux — the caller degrades to "no RSS" instead of failing.
-fn peak_rss_kib() -> Option<u64> {
-    #[cfg(target_os = "linux")]
-    {
-        let status = std::fs::read_to_string("/proc/self/status").ok()?;
-        for line in status.lines() {
-            if let Some(rest) = line.strip_prefix("VmHWM:") {
-                return rest.split_whitespace().next()?.parse().ok();
-            }
-        }
-        None
-    }
-    #[cfg(not(target_os = "linux"))]
-    {
-        None
-    }
-}
-
 /// Available RAM in KiB (`MemAvailable` from `/proc/meminfo`). `None` off Linux.
 fn mem_available_kib() -> Option<u64> {
     #[cfg(target_os = "linux")]
@@ -236,19 +202,44 @@ fn is_batch_spec(spec: &str) -> bool {
     spec.trim() == "batch"
 }
 
-/// Construye la sesión batch como el smoke test (`batched_inference_smoke.rs`:
-/// Level3, misma forma de construcción) pero con `intra_threads = 16` en vez
-/// de 1: el presupuesto total de la máquina en una sola sesión, la variable
-/// bajo medida contra Pool{N}.
-fn build_batch_session(model_path: &Path) -> Session {
-    Session::builder()
-        .expect("la construcción de la sesión ORT debe estar disponible")
-        .with_optimization_level(GraphOptimizationLevel::Level3)
-        .expect("el nivel de optimización Level3 debe aceptarse")
-        .with_intra_threads(BATCH_INTRA_THREADS)
-        .expect("intra_threads(16) debe aceptarse")
-        .commit_from_file(model_path)
-        .expect("el modelo en caché debe cargar")
+/// Child prelude shared by the batch and engine cells: locate the cached
+/// assets (graceful skip, never download) plus the offline model config.
+fn child_assets_and_config(
+    variant_tag: &str,
+    variant: AiModel,
+) -> Option<(PathBuf, PathBuf, ModelConfig)> {
+    let Some((model_path, tokenizer_path)) = discover_assets(variant_tag) else {
+        println!("{SKIP_PREFIX}reason=sin caché local para {variant_tag} (sin descargas)");
+        return None;
+    };
+    let model_config = ModelConfig::default()
+        .with_model_variant(variant)
+        .with_offline_mode(true);
+    Some((model_path, tokenizer_path, model_config))
+}
+
+/// Report one finished cell on stdout: the machine-readable result line with
+/// the per-rep times, owned by both child flavors so the parent table
+/// compares identical shapes.
+fn emit_cell_line(
+    config_spec: &str,
+    variant_tag: &str,
+    pages: usize,
+    chunks_per_page: usize,
+    times_s: &[f64],
+    hwm_load: u64,
+) {
+    let hwm_peak = p0_001_common::peak_rss_kib().unwrap_or(0);
+    let times = times_s
+        .iter()
+        .map(|t| format!("{t:.3}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    println!(
+        "{CELL_PREFIX}config={config_spec} variant={variant_tag} pages={pages} \
+         chunks_per_page={chunks_per_page} times_s={times} \
+         hwm_load_kib={hwm_load} hwm_peak_kib={hwm_peak} workers={CHILD_WORKERS}"
+    );
 }
 
 /// Réplica harness-only del filtrado de `filter_by_relevance`
@@ -379,14 +370,12 @@ async fn batch_clean_page(
 /// celdas Single/Pool, para que la tabla compare peras con peras. Una sola
 /// sesión ⇒ sin RAM gate (como Single).
 async fn p0_001_batch_child(variant_tag: &str, variant: AiModel, pages: usize) {
-    let Some((model_path, tokenizer_path)) = discover_assets(variant_tag) else {
-        println!("{SKIP_PREFIX}reason=sin caché local para {variant_tag} (sin descargas)");
+    let Some((model_path, tokenizer_path, model_config)) =
+        child_assets_and_config(variant_tag, variant)
+    else {
         return;
     };
-    let model_config = ModelConfig::default()
-        .with_model_variant(variant)
-        .with_offline_mode(true);
-    let mut session = build_batch_session(&model_path);
+    let mut session = p0_001_common::build_ort_session(&model_path, BATCH_INTRA_THREADS);
     let plan = InputPlan::from_session(&session).expect("el plan batch debe resolverse");
     let tokenizer = MiniLmTokenizer::from_file(&tokenizer_path)
         .await
@@ -394,12 +383,12 @@ async fn p0_001_batch_child(variant_tag: &str, variant: AiModel, pages: usize) {
     let chunker = HtmlChunker::new();
     let pruner = LegibleContentPruner::standard();
 
-    let hwm_load = peak_rss_kib().unwrap_or(0);
+    let hwm_load = p0_001_common::peak_rss_kib().unwrap_or(0);
 
     // Reps: N páginas en secuencia (la sesión no admite fan-out), los chunks
     // de cada página en un solo batch. El cronómetro envuelve las N páginas,
     // igual que `join_all` envuelve las N páginas en las celdas Single/Pool.
-    let html = synthetic_page();
+    let html = p0_001_common::synthetic_page();
     let mut times_s: Vec<f64> = Vec::with_capacity(REPS);
     let mut chunks_per_page = 0;
     let page = BatchPage {
@@ -424,16 +413,13 @@ async fn p0_001_batch_child(variant_tag: &str, variant: AiModel, pages: usize) {
         times_s.push(started.elapsed().as_secs_f64());
     }
 
-    let hwm_peak = peak_rss_kib().unwrap_or(0);
-    let times = times_s
-        .iter()
-        .map(|t| format!("{t:.3}"))
-        .collect::<Vec<_>>()
-        .join(",");
-    println!(
-        "{CELL_PREFIX}config=batch variant={variant_tag} pages={pages} \
-         chunks_per_page={chunks_per_page} times_s={times} \
-         hwm_load_kib={hwm_load} hwm_peak_kib={hwm_peak} workers={CHILD_WORKERS}"
+    emit_cell_line(
+        "batch",
+        variant_tag,
+        pages,
+        chunks_per_page,
+        &times_s,
+        hwm_load,
     );
 }
 
@@ -471,14 +457,12 @@ async fn p0_001_measure_child() {
     let variant = parse_variant(variant_tag).expect("variante del hijo debe ser 97m|311m");
     let pages: usize = pages_spec.parse().expect("pages del hijo debe ser entero");
 
-    let Some((model_path, tokenizer_path)) = discover_assets(variant_tag) else {
-        println!("{SKIP_PREFIX}reason=sin caché local para {variant_tag} (sin descargas)");
+    let Some((model_path, tokenizer_path, model_config)) =
+        child_assets_and_config(variant_tag, variant)
+    else {
         return;
     };
 
-    let model_config = ModelConfig::default()
-        .with_model_variant(variant)
-        .with_offline_mode(true);
     // Erased behind the `SemanticCleaner` trait: `Single` and `Pool` are
     // different concrete cleaners over the same pipeline, and only the
     // engine differs — which is exactly the variable under measurement.
@@ -510,11 +494,11 @@ async fn p0_001_measure_child() {
         "el cleaner del hijo debe reportar ready"
     );
 
-    let hwm_load = peak_rss_kib().unwrap_or(0);
+    let hwm_load = p0_001_common::peak_rss_kib().unwrap_or(0);
 
     // Reps: N identical pages through the same fan-out shape as
     // `export_flow::clean_all_pages` (`join_all` per page set).
-    let html = synthetic_page();
+    let html = p0_001_common::synthetic_page();
     let mut times_s: Vec<f64> = Vec::with_capacity(REPS);
     let mut chunks_per_page = 0;
     for _ in 0..REPS {
@@ -536,16 +520,13 @@ async fn p0_001_measure_child() {
         }
     }
 
-    let hwm_peak = peak_rss_kib().unwrap_or(0);
-    let times = times_s
-        .iter()
-        .map(|t| format!("{t:.3}"))
-        .collect::<Vec<_>>()
-        .join(",");
-    println!(
-        "{CELL_PREFIX}config={config_spec} variant={variant_tag} pages={pages} \
-         chunks_per_page={chunks_per_page} times_s={times} \
-         hwm_load_kib={hwm_load} hwm_peak_kib={hwm_peak} workers={CHILD_WORKERS}"
+    emit_cell_line(
+        config_spec,
+        variant_tag,
+        pages,
+        chunks_per_page,
+        &times_s,
+        hwm_load,
     );
 }
 
@@ -778,7 +759,7 @@ async fn p0_001_engine_parity() {
     let baseline = SemanticCleanerImpl::new(model_config())
         .await
         .expect("single offline debe construir");
-    let html = synthetic_page();
+    let html = p0_001_common::synthetic_page();
     let url = "https://example.com/p0-001-parity";
     let base_chunks: Vec<DocumentChunk> = baseline
         .clean(url, &html)

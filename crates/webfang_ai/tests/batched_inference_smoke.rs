@@ -22,18 +22,18 @@
 
 #![cfg(feature = "ai")]
 
-use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use ort::session::{builder::GraphOptimizationLevel, Session};
+use ort::session::Session;
 use webfang_ai::infrastructure_ai::embedding_ops::{l2_normalize_safe, mean_pool};
 use webfang_ai::infrastructure_ai::inference_engine::{
     run_batched_inference, InputPlan, ModelInput,
 };
 use webfang_ai::infrastructure_ai::AiModel;
 
-/// Exact read-only snapshot probed by the spike verdict (no downloads ever).
-const CACHED_MODEL: &str = "/home/xavi/.cache/huggingface/hub/models--ibm-granite--granite-embedding-97m-multilingual-r2/snapshots/835ad14087e140460703cf0fae09f97d469d65c2/onnx/model.onnx";
+#[path = "p0_001_common.rs"]
+#[allow(dead_code)]
+mod p0_001_common;
 
 /// Per-row closeness gate: identical weights + identical per-row summation
 /// order ⇒ only float-rounding diffs on unit-scale vectors; 1e-5 is slack.
@@ -41,28 +41,6 @@ const PARITY_TOLERANCE: f32 = 1e-5;
 
 /// Batch sizes for the NUMBERS sweep (identical synthetic chunks each).
 const BATCH_SIZES: [usize; 5] = [1, 2, 4, 8, 16];
-
-/// Resolve the cached model read-only, or return `None` so the caller skips.
-fn cached_model_path() -> Option<PathBuf> {
-    let path = Path::new(CACHED_MODEL);
-    if path.is_file() {
-        Some(path.to_path_buf())
-    } else {
-        None
-    }
-}
-
-/// Build the probe session exactly like production: Level3, `intra_threads(1)`.
-fn build_probe_session(model_path: &Path) -> Session {
-    Session::builder()
-        .expect("la construcción de la sesión ORT debe estar disponible")
-        .with_optimization_level(GraphOptimizationLevel::Level3)
-        .expect("el nivel de optimización Level3 debe aceptarse")
-        .with_intra_threads(1)
-        .expect("intra_threads(1) debe aceptarse")
-        .commit_from_file(model_path)
-        .expect("el modelo 97m en caché debe cargar")
-}
 
 /// Deterministic synthetic chunk: `[CLS] content… [SEP]` with small in-vocab
 /// ids (safe for any BERT-style vocab) and a dense mask.
@@ -113,20 +91,6 @@ fn run_single_reference(
     l2_normalize_safe(&truncated)
 }
 
-/// Peak RSS high-water mark (kB) of this process, or `None` off-Linux.
-fn peak_rss_kb() -> Option<u64> {
-    let status = std::fs::read_to_string("/proc/self/status").ok()?;
-    for line in status.lines() {
-        if let Some(rest) = line.strip_prefix("VmHWM:") {
-            return rest
-                .split_whitespace()
-                .next()
-                .and_then(|v| v.parse::<u64>().ok());
-        }
-    }
-    None
-}
-
 fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
     a.iter()
         .zip(b.iter())
@@ -136,13 +100,12 @@ fn max_abs_diff(a: &[f32], b: &[f32]) -> f32 {
 
 #[test]
 fn batched_parity_vs_single_runs() {
-    let Some(model_path) = cached_model_path() else {
-        println!("SKIP batched_parity_vs_single_runs: modelo en caché ausente ({CACHED_MODEL}); sin descargas.");
+    let Some(setup) = p0_001_common::setup_probe("batched_parity_vs_single_runs") else {
         return;
     };
-    let variant = AiModel::Granite97M;
-    let mut session = build_probe_session(&model_path);
-    let plan = InputPlan::from_session(&session).expect("el plan debe resolverse");
+    let variant = setup.variant;
+    let mut session = setup.session;
+    let plan = setup.plan;
 
     // N=4 with mixed sequence lengths (the padding path under test).
     let seq_lens = [7usize, 13, 5, 11];
@@ -183,13 +146,12 @@ fn batched_parity_vs_single_runs() {
 
 #[test]
 fn batched_timing_and_rss_table() {
-    let Some(model_path) = cached_model_path() else {
-        println!("SKIP batched_timing_and_rss_table: modelo en caché ausente ({CACHED_MODEL}); sin descargas.");
+    let Some(setup) = p0_001_common::setup_probe("batched_timing_and_rss_table") else {
         return;
     };
-    let variant = AiModel::Granite97M;
-    let mut session = build_probe_session(&model_path);
-    let plan = InputPlan::from_session(&session).expect("el plan debe resolverse");
+    let variant = setup.variant;
+    let mut session = setup.session;
+    let plan = setup.plan;
 
     // Untimed warm-up so the table measures steady-state runs, not arena init.
     let warmup = vec![synthetic_input(12, 99)];
@@ -209,7 +171,7 @@ fn batched_timing_and_rss_table() {
             outputs.iter().all(|v| v.len() == 384),
             "todas las filas deben ser 384d"
         );
-        let rss = peak_rss_kb()
+        let rss = p0_001_common::peak_rss_kib()
             .map(|kb| format!("{kb} kB"))
             .unwrap_or_else(|| "n/d".to_string());
         println!(
