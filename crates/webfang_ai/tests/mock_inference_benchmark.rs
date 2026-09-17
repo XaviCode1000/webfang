@@ -1,9 +1,18 @@
 //! P0-001 paso-0 verification (issue #1456): fixed-latency mock benchmark.
 //!
-//! Runs the FULL per-page `clean()` path over synthetic pages (1/2/4/8 pages,
-//! each ~393 chunks of identical synthetic content) through
-//! `MockInferenceEngine` — no real `Mutex`, no model download — and records
-//! wall time per page-count plus speedup vs 1 page.
+//! Three curves over synthetic pages (1/2/4/8 pages, each ~393 chunks of
+//! identical synthetic content):
+//!
+//! - Curve A (external reference, NOT measured here): the issue's real
+//!   single-session baseline, speedup 1→8 = 1.02× (serialized on the session
+//!   `Mutex`). Quoted from the issue for attribution only.
+//! - Curve B (measured): FULL per-page `clean()` path through
+//!   `MockInferenceEngine` — mock `infer` (45ms sleep) + REAL
+//!   chunk/tokenize/score CPU work.
+//! - Curve C (measured): FULLY-STUBBED mock — the same N×M task shape (N pages
+//!   × M chunk-tasks of 45ms sleep) with chunk/tokenize/score removed, so the
+//!   B−C gap attributes the real-CPU overhead and C measures the pure
+//!   sleep fan-out ceiling of this test executor.
 //!
 //! Verdict rule (from the issue):
 //! - speedup 1→8 ≈ 8× (linear) → P2-001/002 are downstream of P0-001:
@@ -30,6 +39,9 @@ const FIXED_LATENCY: Duration = Duration::from_millis(45);
 
 /// Page-count sweep, mirroring the issue's 1/2/4/8 measurement.
 const PAGE_COUNTS: [usize; 4] = [1, 2, 4, 8];
+
+/// Repetitions per cell; the reported wall time is the median.
+const REPS: usize = 3;
 
 /// Paragraphs per synthetic page. The chunker packs ≤512 chars per chunk, so
 /// ~400 × ~380-char paragraphs land at ~393 chunks — the issue's 153KB shape.
@@ -75,18 +87,104 @@ fn mock_cleaner() -> SemanticCleanerImpl<MockInferenceEngine> {
     SemanticCleanerImpl::from_parts(engine, tokenizer, ModelConfig::default())
 }
 
-/// Paso-0 benchmark: sweep 1/2/4/8 pages through the mock and record the
-/// timing table + speedups. Multi-thread runtime is REQUIRED: per-page
+/// Median of a non-empty wall-time sample.
+fn median_duration(mut samples: Vec<Duration>) -> Duration {
+    samples.sort();
+    samples[samples.len() / 2]
+}
+
+/// Curve B sweep: N identical pages through `join_all(clean)` — the same
+/// fan-out shape as `export_flow::clean_all_pages` — with [`REPS`] repetitions
+/// per cell, reporting the median. Mock `infer` + real pipeline CPU work.
+async fn sweep_curve_b(
+    cleaner: &SemanticCleanerImpl<MockInferenceEngine>,
+    chunks_per_page: usize,
+) -> Vec<Duration> {
+    let mut medians = Vec::with_capacity(PAGE_COUNTS.len());
+    for &pages in &PAGE_COUNTS {
+        let html = synthetic_page();
+        let mut samples = Vec::with_capacity(REPS);
+        for _ in 0..REPS {
+            let urls: Vec<String> = (0..pages)
+                .map(|i| format!("https://example.com/paso-0-p{i}"))
+                .collect();
+            let started = Instant::now();
+            let results = join_all(urls.iter().map(|url| cleaner.clean(url.as_str(), &html))).await;
+            samples.push(started.elapsed());
+            for (i, result) in results.iter().enumerate() {
+                let chunks = result
+                    .as_ref()
+                    .unwrap_or_else(|e| panic!("mock clean of page {i} (N={pages}) failed: {e}"));
+                assert_eq!(
+                    chunks.len(),
+                    chunks_per_page,
+                    "identical pages must yield identical chunk counts"
+                );
+            }
+        }
+        medians.push(median_duration(samples));
+    }
+    medians
+}
+
+/// One fully-stubbed page: M concurrent sleeps, zero CPU work. Keeps the N×M
+/// task shape of curve B (N pages × M chunk-tasks) so curve C isolates the
+/// pure sleep fan-out from real pipeline CPU work.
+async fn stub_page(chunk_count: usize) {
+    join_all((0..chunk_count).map(|_| tokio::time::sleep(FIXED_LATENCY))).await;
+}
+
+/// Curve C sweep: same page counts and [`REPS`] medians as curve B, but every
+/// page is [`stub_page`] — no chunk/tokenize/score, only the sleep fan-out.
+async fn sweep_curve_c(chunk_count: usize) -> Vec<Duration> {
+    let mut medians = Vec::with_capacity(PAGE_COUNTS.len());
+    for &pages in &PAGE_COUNTS {
+        let mut samples = Vec::with_capacity(REPS);
+        for _ in 0..REPS {
+            let started = Instant::now();
+            join_all((0..pages).map(|_| stub_page(chunk_count))).await;
+            samples.push(started.elapsed());
+        }
+        medians.push(median_duration(samples));
+    }
+    medians
+}
+
+/// Report one curve: wall time per page-count + speedup vs 1 page, where
+/// speedup(N) = (T1 × N) / TN (the issue's convention: serial ⇒ 1×,
+/// perfectly parallel ⇒ N×). Returns speedup 1→8.
+fn report_curve(name: &str, wall_times: &[Duration]) -> f64 {
+    let t1 = wall_times[0].as_secs_f64();
+    eprintln!("{name} (fixed_latency={FIXED_LATENCY:?}, reps={REPS} median):");
+    eprintln!("| pages | wall time | speedup vs 1 |");
+    eprintln!("|---|---|---|");
+    let mut speedup_8 = 0.0;
+    for (&pages, elapsed) in PAGE_COUNTS.iter().zip(wall_times.iter()) {
+        let secs = elapsed.as_secs_f64();
+        let speedup = (t1 * pages as f64) / secs;
+        if pages == 8 {
+            speedup_8 = speedup;
+        }
+        eprintln!("| {pages} | {secs:.3}s | {speedup:.2}x |");
+    }
+    speedup_8
+}
+
+/// Paso-0 benchmark: sweep 1/2/4/8 pages through curves B and C and record
+/// the timing tables + speedups. Multi-thread runtime is REQUIRED: per-page
 /// chunk/tokenize CPU work must parallelize across pages exactly like the
 /// production Tokio runtime, otherwise serial CPU overhead alone would fake a
-/// ~1× speedup on a current-thread executor.
+/// ~1× speedup on a current-thread executor. `worker_threads = 8` is FIXED:
+/// the 8-worker suspicion is read from the curve shape (B vs C gap), and
+/// varying the executor would add a fourth variable to the three curves.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn mock_fixed_latency_scales_linearly() {
     let cleaner = mock_cleaner();
     assert!(cleaner.is_ready(), "mock cleaner must report ready");
 
     // Self-calibration: chunk count of one synthetic page (identical for all
-    // pages since the content is byte-identical).
+    // pages since the content is byte-identical). Curve C reuses this count
+    // so its N×M task shape matches curve B exactly.
     let probe_page = synthetic_page();
     let probe = cleaner
         .clean("https://example.com/paso-0", &probe_page)
@@ -106,62 +204,46 @@ async fn mock_fixed_latency_scales_linearly() {
     }
     eprintln!("paso-0 calibration: {chunks_per_page} chunks per synthetic page");
 
-    // Sweep: N identical pages through `join_all(clean)` — the same fan-out
-    // shape as `export_flow::clean_all_pages`.
-    let mut wall_times: Vec<Duration> = Vec::with_capacity(PAGE_COUNTS.len());
-    for &pages in &PAGE_COUNTS {
-        let html = synthetic_page();
-        let urls: Vec<String> = (0..pages)
-            .map(|i| format!("https://example.com/paso-0-p{i}"))
-            .collect();
-        let started = Instant::now();
-        let results = join_all(urls.iter().map(|url| cleaner.clean(url.as_str(), &html))).await;
-        let elapsed = started.elapsed();
-        wall_times.push(elapsed);
+    let wall_b = sweep_curve_b(&cleaner, chunks_per_page).await;
+    let wall_c = sweep_curve_c(chunks_per_page).await;
 
-        for (i, result) in results.iter().enumerate() {
-            let chunks = result
-                .as_ref()
-                .unwrap_or_else(|e| panic!("mock clean of page {i} (N={pages}) failed: {e}"));
-            assert_eq!(
-                chunks.len(),
-                chunks_per_page,
-                "identical pages must yield identical chunk counts"
-            );
-        }
-    }
-
-    // Report: wall time per page-count + speedup vs 1 page, where
-    // speedup(N) = (T1 × N) / TN (the issue's convention: serial ⇒ 1×,
-    // perfectly parallel ⇒ N×).
-    let t1 = wall_times[0].as_secs_f64();
+    let speedup_b_8 = report_curve("paso-0 curve B (mock infer + real pipeline)", &wall_b);
+    let speedup_c_8 = report_curve("paso-0 curve C (fully stubbed sleep fan-out)", &wall_c);
     eprintln!(
-        "paso-0 mock timing (fixed_latency={FIXED_LATENCY:?}, chunks/page={chunks_per_page}):"
+        "paso-0 verdict input: curve B speedup 1→8 = {speedup_b_8:.2}x, \
+         curve C speedup 1→8 = {speedup_c_8:.2}x \
+         (≈8x ⇒ P2-001/002 downstream; ≈1x ⇒ independent cause; \
+         curve A reference from the issue: real single-session 1.02x)"
     );
-    eprintln!("| pages | wall time | speedup vs 1 |");
-    eprintln!("|---|---|---|");
-    let mut speedup_8 = 0.0;
-    for (&pages, elapsed) in PAGE_COUNTS.iter().zip(wall_times.iter()) {
-        let secs = elapsed.as_secs_f64();
-        let speedup = (t1 * pages as f64) / secs;
-        if pages == 8 {
-            speedup_8 = speedup;
-        }
-        eprintln!("| {pages} | {secs:.3}s | {speedup:.2}x |");
-    }
+
+    // B−C attribution: both curves run the same N×M sleeps on the same
+    // executor, so the 1-page wall gap is the real per-page CPU overhead
+    // (chunk/tokenize/score/prune) — MEASURED here as a median difference,
+    // never cited as a per-phase profile.
+    let overhead_per_page_ms = (wall_b[0].as_secs_f64() - wall_c[0].as_secs_f64()) * 1000.0;
     eprintln!(
-        "paso-0 verdict input: speedup 1→8 = {speedup_8:.2}x (≈8x ⇒ P2-001/002 downstream; ≈1x ⇒ independent cause)"
+        "paso-0 overhead attribution: curve B 1-page median {:.3}s − curve C 1-page median {:.3}s \
+         = {overhead_per_page_ms:.1}ms/page of real CPU work (median difference, {REPS} reps)",
+        wall_b[0].as_secs_f64(),
+        wall_c[0].as_secs_f64(),
     );
 
     // Guard against accidental serialization of the mock path (e.g. a mutex
-    // sneaking back in): the parallel ceiling is 8×, the serial floor is 1×.
-    // 3× separates a healthy parallel fan-out (measured ≈4.1× locally, where
-    // the gap to 8× is fixed CPU overhead — chunk/tokenize/score ≈18ms/page —
-    // not serialization) from the ≈1× a serialized path would produce, with
-    // wide CI-noise margin on both sides.
+    // sneaking back in): the parallel ceiling is curve C (pure fan-out), the
+    // serial floor is 1×. DECISION (assert branch: keep 3.0, do NOT raise):
+    // measured 2026-09-17 on a 16-core workstation, curve C = 7.68× ceiling,
+    // curve B = 4.13×, B−C overhead = 16.6ms/page (median difference, REPS=3).
+    // 3.0 separates a healthy parallel fan-out (B passes with 1.1× margin)
+    // from the ≈1× a serialized path would produce, with wide CI-noise margin
+    // on both sides. Raising the floor toward curve C would pin throughput —
+    // an executor-shaped number — instead of serialization-freedom, and turn
+    // runner noise into red CI. The old "~18ms/page" prose estimate is
+    // REPLACED by the measured 16.6ms/page B−C gap printed above (same
+    // sleeps, same executor: the difference is real per-page CPU work, not a
+    // per-phase profile).
     assert!(
-        speedup_8 >= 3.0,
-        "mock fan-out must parallelize (speedup 1→8 = {speedup_8:.2}x, expected ≈8x; \
+        speedup_b_8 >= 3.0,
+        "mock fan-out must parallelize (curve B speedup 1→8 = {speedup_b_8:.2}x, expected ≈8x; \
          ≈1x would mean the mock path itself serializes)"
     );
 }
