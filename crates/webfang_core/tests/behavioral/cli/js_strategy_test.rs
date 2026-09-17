@@ -157,8 +157,8 @@ fn chromium_webfang_bin() -> std::path::PathBuf {
 }
 
 /// `assert_cmd::Command` over the chromium-enabled binary with the same env
-/// sanitization the shared harness applies in `sanitize_env` (which is private
-/// to `cli_harness.rs`): strip ambient `WEBFANG_*`/`AI_MODEL_ID`, disarm the
+/// sanitization the shared harness applies (`common::strip_poisoned_env`,
+/// same floor as `sanitize_env`): strip ambient `WEBFANG_*`/`AI_MODEL_ID`, disarm the
 /// SSRF entry guard for loopback wiremock (F-06 + F-32, #1217), and give the
 /// spawned binary its own hermetic cache base.
 #[cfg(feature = "chromium")]
@@ -168,13 +168,7 @@ fn chromium_cmd(
     cache: &std::path::Path,
 ) -> assert_cmd::Command {
     let mut cmd = assert_cmd::Command::new(bin);
-    let poisoned: Vec<String> = std::env::vars()
-        .filter(|(k, _)| k.starts_with("WEBFANG_") || k == "AI_MODEL_ID")
-        .map(|(k, _)| k)
-        .collect();
-    for key in poisoned {
-        cmd.env_remove(&key);
-    }
+    crate::common::strip_poisoned_env(&mut cmd);
     cmd.env(
         webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
         "1",
