@@ -214,7 +214,7 @@ pub trait InferenceEngine: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`SemanticError::Inference`](webfang_core::error::SemanticError::Inference)
+    /// Returns [`SemanticError::Inference`]
     /// when the engine cannot serve the request.
     fn infer<'a>(
         &'a self,
@@ -601,7 +601,7 @@ impl EngineConfig {
     /// default — the user made no choice). A set-but-invalid value is a loud
     /// `Err` in Spanish: it must never silently fall back to `Single` (#874
     /// discipline: a poisoned env var fails startup instead of mismeasuring).
-    /// Pure core in [`Self::resolve_spec`] so tests stay race-free.
+    /// Pure core in `Self::resolve_spec()` so tests stay race-free.
     pub fn from_env() -> Result<Self, String> {
         Self::resolve_spec(std::env::var(Self::ENV_VAR).ok().as_deref())
     }
@@ -1195,14 +1195,14 @@ fn run_session_inference(
 /// Matryoshka `take(384)` + L2-normalize per row. Output order matches input
 /// order (determinism hard-constraint: no reordering, no cross-row fusion).
 ///
-/// The single-chunk [`run_session_inference`] path is untouched; this is the
+/// The single-chunk `run_session_inference()` path is untouched; this is the
 /// surgical batched companion behind the existing [`InferenceEngine`] seam.
 /// Single session + `intra_threads(1)` are unchanged: this probe isolates
 /// batching, not the pool.
 ///
 /// # Errors
 ///
-/// Returns [`SemanticError::Inference`](webfang_core::error::SemanticError::Inference)
+/// Returns [`SemanticError::Inference`]
 /// when the batch is empty, any input is an empty sequence, tensor
 /// construction fails, the model execution fails, or the
 /// `last_hidden_state` output has an unexpected length.

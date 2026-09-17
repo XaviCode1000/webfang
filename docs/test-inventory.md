@@ -1,6 +1,6 @@
 # Test Inventory — `#[ignore]` Catalog (Gate 0)
 
-**Source of truth:** `rg -n "#\[ignore" crates/ --glob '!target'` — **38 rows** (31 test attributes + 7 doc/comment mentions).
+**Source of truth:** `rg -n "#\[ignore" crates/ --glob '!target'` — **43 rows** (33 test attributes + 10 doc/comment mentions).
 Generated: `2026-08-21`, updated `2026-09-07`, re-baselined `2026-09-12` (#1328: composition corrected from the stale 27+5 claim to the on-disk 26+6; rows re-keyed from drifting `file:line` to stable `file` + test name). Catalogued #1368 measurement rows `2026-09-13` (#1384 decision: retain + catalogue — the corpus lives outside the repo, so the ignore is legitimate). Linked to `COMPATIBILITY-MATRIX.md`.
 
 **CI enforcement:** this baseline is a frozen budget — `scripts/check_ignored_guard.sh` runs in the CI `repo-guards` job and fails on any drift between this inventory and the live scan, **per category**: each group's declared count, the file+test-name pair set, and the per-file doc/comment counts are all checked, so a composition swap with an equal total fails even when the sum matches (the totals-only blind spot that #1328 killed). Update this file in the same PR when adding/removing an ignored test or a doc/comment mention.
@@ -9,14 +9,14 @@ Generated: `2026-08-21`, updated `2026-09-07`, re-baselined `2026-09-12` (#1328:
 
 | Group | Count | Reason pattern | Issue | Next action |
 |-------|-------|----------------|-------|-------------|
-| ONNX | 23 | `requires cached ONNX model` / `requires the granite-<tier> model in the native HF cache` | #433, #1315 | Sprint 1 promote with cache |
+| ONNX | 25 | `requires cached ONNX model` / `requires the granite-<tier> model in the native HF cache` | #433, #1315 | Sprint 1 promote with cache |
 | Network | 4 | `requires network` / DNS / client | #542, #1316 | Keep ignored; wiremock alternative in behavioral |
 | Tracing | 1 | `tracing global subscriber` | #501 | Keep ignored; subscriber race |
 | Reproduction | 2 | race window too narrow to force from a fixture; kept-RED TDD evidence | #1230, #1429 | Keep ignored; the deterministic pins are the seam test / GREEN bound pin |
 | Quantification | 1 | `one-off quantification #1368; needs WEBFANG_1368_CORPUS dir` | #1368 | Keep ignored; corpus is out-of-repo by design (#1384) — re-run by hand for loss evidence |
-| Comments/docs | 7 | doc comment mentions `#[ignore]` | #386 | Not tests — counted as their own checked category |
+| Comments/docs | 10 | doc comment mentions `#[ignore]` | #386 | Not tests — counted as their own checked category |
 
-Total: 23+4+1+2+1+7 = **38**.
+Total: 25+4+1+2+1+10 = **43**.
 
 > The former **WAF** group (1 row, `waf_gauntlet` at `waf_gauntlet_test.rs:126`, #337) is gone:
 > `waf_gauntlet_observability_trace` was un-ignored — the mock is counter-based and deterministic,
@@ -33,7 +33,7 @@ Stale roadmap claim "7 sitemap tests ignored" is **false**. Reality:
 
 Matrix: [`COMPATIBILITY-MATRIX.md`](../COMPATIBILITY-MATRIX.md).
 
-## Full catalog (38 rows)
+## Full catalog (43 rows)
 
 Rows are keyed by **file + identifier**, never by line number — inserting code above an ignored
 test must not invalidate its row. `Identifier` is the test function name for attributes and `doc`
@@ -79,6 +79,11 @@ for doc/comment mentions (compared per file by count). `Line` is not recorded on
 | 36 | Quantification | `crates/webfang_ai/src/infrastructure_ai/chunker.rs` | `measure_short_paragraph_loss_on_real_corpus` | `one-off quantification #1368; needs WEBFANG_1368_CORPUS dir` | #1368 | Keep ignored; corpus out-of-repo (#1384) — run by hand with WEBFANG_1368_CORPUS to reproduce the loss measurement |
 | 37 | Comments/docs | `crates/webfang_ai/src/infrastructure_ai/chunker.rs` | `doc` | `/// ... its tests are #[ignore]d, so it stays dormant in CI.` | #1368 | docs only |
 | 38 | Reproduction | `crates/webfang_core/src/application/crawler/sitemap_session.rs` | `sitemap_entry_max_pages_truncates_many_url_fixture` | kept RED by design: asserts the naive unbounded reading (all 9 pages with max_pages=3), fails against the truncating bound; GREEN pin `sitemap_entry_max_pages_bound_pins_inflight_drain` carries the contract | #1429 | Keep ignored; RED-evidence for the overshoot bound, never run in CI |
+| 39 | ONNX | `crates/webfang_ai/tests/p0_001_measure.rs` | `p0_001_engine_parity` | `requires cached ONNX model` (real-model parity pin, skips gracefully without cache) | #1456 | Keep ignored; run by hand with the HF cache for the N-decision numbers |
+| 40 | ONNX | `crates/webfang_ai/tests/p0_001_measure.rs` | `p0_001_measure_sweep` | `requires cached ONNX model` (real-model BENCH sweep, fresh process per cell) | #1456 | Keep ignored; BENCH-only, run by hand for the N-decision table |
+| 41 | Comments/docs | `crates/webfang_ai/tests/p0_001_measure.rs` | `doc` | `//! ... [p0_001_measure_sweep] is #[ignore]-gated, runs REAL models only ...` | #386 | docs only |
+| 42 | Comments/docs | `crates/webfang_ai/tests/p0_001_measure.rs` | `doc` | `/// ... Not #[ignore]: the parent re-executes this binary ...` | #386 | docs only |
+| 43 | Comments/docs | `crates/webfang_ai/tests/p0_001_measure.rs` | `doc` | `// Parent: the sweep (#[ignore]-gated BENCH)` | #386 | docs only |
 
 > **Guard contract (since #1328, 2026-09-12):** `check_ignored_guard.sh` compares this catalog to
 > the live scan per category — group counts, the file+test-name pair set, and per-file doc/comment
