@@ -67,8 +67,8 @@ use tracing::{debug, info, warn, Instrument};
 use crate::infrastructure_ai::cache_config::AiModel;
 use crate::infrastructure_ai::embedding_ops::cosine_similarity;
 use crate::infrastructure_ai::{
-    ContentPruner, HtmlChunker, InferencePool, LegibleContentPruner, MiniLmTokenizer,
-    RelevanceScorer,
+    build_engine, ContentPruner, EngineConfig, HtmlChunker, InferenceEngine, InferencePool,
+    LegibleContentPruner, MiniLmTokenizer, RelevanceScorer,
 };
 use webfang_core::domain::semantic_cleaner::{private, SemanticCleaner};
 use webfang_core::domain::DocumentChunk;
@@ -189,6 +189,11 @@ impl ModelConfig {
 
 /// Semantic Cleaner implementation using full RAG pipeline
 ///
+/// Generic over the inference engine ([`InferenceEngine`]): production uses
+/// the default [`InferencePool`], while the P0-001 paso-0 verification
+/// (issue #1456) instantiates `SemanticCleanerImpl<MockInferenceEngine>` via
+/// [`from_parts`](Self::from_parts) without downloading any model.
+///
 /// This is the concrete implementation of the [`SemanticCleaner`] trait.
 /// It integrates all Phase 2 and Phase 3 modules:
 /// - [`HtmlChunker`]: Semantic chunking with arena allocator
@@ -207,10 +212,11 @@ impl ModelConfig {
 /// - **Subsequent calls**: ~50-200ms per page (depending on content size)
 /// - **Memory**: Arena allocator reduces allocation overhead
 /// - **Concurrency**: Embeddings generated concurrently with `try_join_all`
-pub struct SemanticCleanerImpl {
+pub struct SemanticCleanerImpl<E: InferenceEngine + ?Sized = InferencePool> {
     // Phase 2: Core inference
-    /// ONNX inference pool (dedicated worker threads with persistent sessions)
-    inference_pool: Arc<InferencePool>,
+    /// Inference engine (real [`InferencePool`] or paso-0 mock), `Arc`-shared
+    /// so concurrent `clean()` calls fan out over the same engine.
+    inference_pool: Arc<E>,
     /// HuggingFace tokenizer (`Arc`-shared with the embedding adapter via
     /// [`shared_inference`](Self::shared_inference))
     tokenizer: Arc<MiniLmTokenizer>,
@@ -230,7 +236,7 @@ pub struct SemanticCleanerImpl {
     config: ModelConfig,
 }
 
-impl SemanticCleanerImpl {
+impl SemanticCleanerImpl<InferencePool> {
     /// Create a new semantic cleaner with full pipeline
     ///
     /// This method loads all pipeline components:
@@ -315,6 +321,72 @@ impl SemanticCleanerImpl {
             config,
         })
     }
+}
+
+impl SemanticCleanerImpl<dyn InferenceEngine + Send + Sync> {
+    /// Create a cleaner with an explicitly selected engine ([`EngineConfig`]).
+    ///
+    /// Same pipeline as [`new`](Self::new), but the inference engine is built
+    /// via [`build_engine`]: `Single` behaves exactly like `new` (one shared
+    /// session, drainer graceful-degradation included), `Pool { size }` opens N
+    /// sessions with the split thread budget. Rollback is passing
+    /// [`EngineConfig::Single`]. The MEASURE task (later) calibrates N and owns
+    /// any flag UX; this constructor takes the already-decided config, so no
+    /// CLI args are added here.
+    ///
+    /// # Errors
+    ///
+    /// Same conditions as `new`, plus engine-build failures (a pool session
+    /// that cannot be built fails fast instead of degrading).
+    pub async fn new_with_engine_config(
+        config: ModelConfig,
+        engine_config: EngineConfig,
+    ) -> Result<Self, SemanticError> {
+        info!(
+            repo = %config.repo,
+            file = %config.model_file,
+            engine = ?engine_config,
+            "Initializing semantic cleaner with selected engine"
+        );
+
+        let (model_path, tokenizer_path) = resolve_model_assets(&config).await?;
+        let tokenizer = Arc::new(MiniLmTokenizer::from_file(&tokenizer_path).await?);
+        let engine = build_engine(&engine_config, model_path, config.model_variant)?;
+        let chunker = HtmlChunker::new();
+        let scorer = RelevanceScorer::new(config.relevance_threshold);
+
+        info!("Semantic cleaner initialized successfully");
+        Ok(Self {
+            inference_pool: engine,
+            tokenizer,
+            chunker,
+            scorer,
+            pruner: LegibleContentPruner::standard(),
+            config,
+        })
+    }
+}
+
+impl<E: InferenceEngine + ?Sized> SemanticCleanerImpl<E> {
+    /// Build a cleaner around an already-constructed engine + tokenizer.    ///
+    /// Paso-0 seam (issue #1456): runs the full `clean()` path against any
+    /// [`InferenceEngine`] (e.g. the fixed-latency mock) without resolving or
+    /// downloading a model. Production keeps using `new`.
+    #[must_use]
+    pub fn from_parts(
+        engine: Arc<E>,
+        tokenizer: Arc<MiniLmTokenizer>,
+        config: ModelConfig,
+    ) -> Self {
+        Self {
+            inference_pool: engine,
+            tokenizer,
+            chunker: HtmlChunker::new(),
+            scorer: RelevanceScorer::new(config.relevance_threshold),
+            pruner: LegibleContentPruner::standard(),
+            config,
+        }
+    }
 
     /// Get the relevance threshold
     #[must_use]
@@ -324,7 +396,7 @@ impl SemanticCleanerImpl {
 
     /// Share the inference pool and tokenizer with another pipeline.
     ///
-    /// Returns cheap `Arc` clones of the ONNX [`InferencePool`] and the
+    /// Returns cheap `Arc` clones of the inference engine and the
     /// [`MiniLmTokenizer`] this cleaner was built with, so a second consumer
     /// (e.g. the
     /// [`EmbeddingAdapter`](crate::infrastructure_ai::embedding_adapter::EmbeddingAdapter))
@@ -333,7 +405,7 @@ impl SemanticCleanerImpl {
     /// exactly once across the semantic cleaner and the vault-search embedding
     /// adapter — one `resolve_model_assets` call, one `InferencePool`.
     #[must_use]
-    pub fn shared_inference(&self) -> (Arc<InferencePool>, Arc<MiniLmTokenizer>) {
+    pub fn shared_inference(&self) -> (Arc<E>, Arc<MiniLmTokenizer>) {
         (
             Arc::clone(&self.inference_pool),
             Arc::clone(&self.tokenizer),
@@ -361,9 +433,9 @@ impl SemanticCleanerImpl {
 
 // Implement the Sealed trait for SemanticCleanerImpl
 // This is required by the sealed trait pattern
-impl private::Sealed for SemanticCleanerImpl {}
+impl<E: InferenceEngine + ?Sized> private::Sealed for SemanticCleanerImpl<E> {}
 
-impl SemanticCleaner for SemanticCleanerImpl {
+impl<E: InferenceEngine + ?Sized> SemanticCleaner for SemanticCleanerImpl<E> {
     fn clean<'a>(
         &'a self,
         url: &'a str,
@@ -470,7 +542,7 @@ impl SemanticCleaner for SemanticCleanerImpl {
     }
 }
 
-impl SemanticCleanerImpl {
+impl<E: InferenceEngine + ?Sized> SemanticCleanerImpl<E> {
     /// Filter chunks by relevance score and **preserve embeddings**
     ///
     /// Pairs each chunk with its embedding, scores against the **centroid**

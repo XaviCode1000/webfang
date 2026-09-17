@@ -295,6 +295,76 @@ pub fn mean_pool(
     pooled
 }
 
+/// Batched attention-mask weighted Mean Pooling (P0-001 batch prototype).
+///
+/// Applies the same per-row math as [`mean_pool`] over a flat `(B, S, H)`
+/// row-major output with a flat `(B, S)` row-major mask. Each row is pooled
+/// independently honoring only its own mask, so right-padded lanes (mask 0)
+/// never leak into the mean. Output order matches input order.
+///
+/// The single-row [`mean_pool`] is untouched; this is the surgical batched
+/// companion used by the batch smoke probe.
+///
+/// # Arguments
+///
+/// * `token_embeddings` - Flat row-major output of the batched run
+///   (`batch_size * seq_len * embedding_dim` elements)
+/// * `batch_size` - Number of rows (N)
+/// * `seq_len` - Padded sequence length (S_max, shared by every row)
+/// * `embedding_dim` - Native per-token width (H)
+/// * `attention_masks` - Flat row-major masks (`batch_size * seq_len`
+///   elements, 1 for real tokens, 0 for padding)
+///
+/// # Returns
+///
+/// One pooled vector of length `embedding_dim` per row, in input order.
+#[must_use]
+pub fn mean_pool_batched(
+    token_embeddings: &[f32],
+    batch_size: usize,
+    seq_len: usize,
+    embedding_dim: usize,
+    attention_masks: &[i64],
+) -> Vec<Vec<f32>> {
+    debug_assert_eq!(
+        attention_masks.len(),
+        batch_size * seq_len,
+        "attention_masks length must match batch_size * seq_len"
+    );
+    debug_assert_eq!(
+        token_embeddings.len(),
+        batch_size * seq_len * embedding_dim,
+        "token_embeddings length must match batch_size * seq_len * embedding_dim"
+    );
+
+    let mut rows = Vec::with_capacity(batch_size);
+    for b in 0..batch_size {
+        let emb_base = b * seq_len * embedding_dim;
+        let mask_base = b * seq_len;
+        let mut pooled = vec![0.0f32; embedding_dim];
+        let mut mask_sum = 0.0f32;
+        for i in 0..seq_len {
+            let weight = attention_masks[mask_base + i] as f32;
+            if weight > 0.0 {
+                mask_sum += weight;
+                let offset = emb_base + i * embedding_dim;
+                for j in 0..embedding_dim {
+                    pooled[j] += token_embeddings[offset + j] * weight;
+                }
+            }
+        }
+        if mask_sum > f32::EPSILON {
+            let inv_mask_sum = 1.0 / mask_sum;
+            for v in &mut pooled {
+                *v *= inv_mask_sum;
+            }
+        }
+        // If mask_sum == 0, the row stays a zero vector (defensive).
+        rows.push(pooled);
+    }
+    rows
+}
+
 /// L2 normalize a vector, returning zero vector if magnitude is too small
 ///
 /// Unlike `normalize()`, this function never panics. If the input vector
@@ -509,6 +579,35 @@ mod tests {
         let v = vec![0.0f32, 0.0, 0.0];
         let result = l2_normalize_safe(&v);
         assert_eq!(result, vec![0.0, 0.0, 0.0]); // No panic, returns zero
+    }
+
+    #[test]
+    fn test_mean_pool_batched_matches_single_row() {
+        // Two rows with different masks over shared (B=2, S=3, H=2) output:
+        // row 0 uses tokens 0..2, row 1 uses tokens 1..3.
+        let data = vec![
+            1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0,
+        ];
+        let masks = vec![1i64, 1, 0, 0, 1, 1];
+        let rows = mean_pool_batched(&data, 2, 3, 2, &masks);
+        assert_eq!(rows.len(), 2);
+        let row0 = mean_pool(&data[0..6], 3, 2, &masks[0..3]);
+        let row1 = mean_pool(&data[6..12], 3, 2, &masks[3..6]);
+        assert_eq!(rows[0], row0);
+        assert_eq!(rows[1], row1);
+        // Row 0 = mean([1,2],[3,4]) = [2,3]; row 1 = mean([9,10],[11,12]) = [10,11].
+        assert_eq!(rows[0], vec![2.0, 3.0]);
+        assert_eq!(rows[1], vec![10.0, 11.0]);
+    }
+
+    #[test]
+    fn test_mean_pool_batched_all_pad_row_is_zero() {
+        let data = vec![1.0, 2.0, 3.0, 4.0];
+        let masks = vec![1i64, 1, 0, 0];
+        let rows = mean_pool_batched(&data, 2, 2, 1, &masks);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], vec![1.5]);
+        assert_eq!(rows[1], vec![0.0]);
     }
 
     #[test]

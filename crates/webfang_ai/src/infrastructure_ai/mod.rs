@@ -112,7 +112,10 @@ pub use semantic_cleaner_impl::{ModelConfig, SemanticCleanerImpl};
 
 pub use embedding_adapter::EmbeddingAdapter;
 
-pub use inference_engine::InferencePool;
+pub use inference_engine::{
+    build_engine, EngineConfig, InferenceEngine, InferencePool, MockInferenceEngine,
+    PooledInferenceEngine, SingleSessionEngine,
+};
 
 pub use tokenizer::{MiniLmTokenizer, TokenBatch, DEFAULT_MAX_LENGTH};
 

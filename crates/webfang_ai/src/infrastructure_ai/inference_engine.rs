@@ -27,8 +27,16 @@
 //!   starving async runtime.
 //! - **No locks across await**: Clone Arc before async operations.
 
+use std::future::Future;
+use std::num::NonZeroUsize;
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::pin::Pin;
+use std::str::FromStr;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc, Mutex,
+};
+use std::time::Duration;
 
 use ort::session::{builder::GraphOptimizationLevel, Session};
 use tracing::{debug, instrument};
@@ -187,12 +195,68 @@ impl InputPlan {
 }
 
 // ---------------------------------------------------------------------------
+// InferenceEngine: minimal seam so `SemanticCleanerImpl` can run against the
+// real `InferencePool` or the fixed-latency mock (P0-001 paso 0, issue #1456).
+// ---------------------------------------------------------------------------
+
+/// Minimal inference seam over one tokenized chunk.
+///
+/// The production [`InferencePool`] implements this; the paso-0 verification
+/// [`MockInferenceEngine`] implements it with a fixed sleep and no real mutex.
+/// Object-safe by construction: the async method is spelled as a boxed future
+/// (the same pattern as `SemanticCleaner::clean`), because native `async fn`
+/// in traits is not dyn-compatible.
+///
+/// `Send + Sync` is a supertrait bound so engines can be shared as
+/// `Arc<E>` / `Arc<dyn InferenceEngine + Send + Sync>` across Tokio workers.
+pub trait InferenceEngine: Send + Sync {
+    /// Run inference for one tokenized chunk.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SemanticError::Inference`](webfang_core::error::SemanticError::Inference)
+    /// when the engine cannot serve the request.
+    fn infer<'a>(
+        &'a self,
+        input: &'a ModelInput,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<f32>, SemanticError>> + Send + 'a>>;
+
+    /// Native embedding dimension (384 for all Granite variants).
+    fn embedding_dim(&self) -> usize;
+
+    /// Whether the engine can serve inference right now.
+    fn is_ready(&self) -> bool;
+}
+
+impl<T> InferenceEngine for Arc<T>
+where
+    T: InferenceEngine + ?Sized,
+{
+    /// Forward through the `Arc` so erased engines (`Arc<dyn InferenceEngine + Send + Sync>`)
+    /// satisfy the same generic seam (`SemanticCleanerImpl<E>`) as concrete ones.
+    fn infer<'a>(
+        &'a self,
+        input: &'a ModelInput,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<f32>, SemanticError>> + Send + 'a>> {
+        Box::pin(async move { self.as_ref().infer(input).await })
+    }
+
+    fn embedding_dim(&self) -> usize {
+        self.as_ref().embedding_dim()
+    }
+
+    fn is_ready(&self) -> bool {
+        self.as_ref().is_ready()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // InferencePool: dedicated worker threads with persistent sessions
 // ---------------------------------------------------------------------------
 
 use std::thread;
 
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Semaphore};
 use tracing::{error, info};
 
 /// Internal: a single inference request dispatched to a worker thread.
@@ -299,6 +363,10 @@ impl InferencePool {
 
     /// Run inference asynchronously by dispatching to a worker thread.
     ///
+    /// Thin inherent wrapper over the [`InferenceEngine`] implementation, kept
+    /// so existing call sites (`pool.infer(..)`) resolve unchanged: inherent
+    /// methods take precedence over trait methods with the same name.
+    ///
     /// Sends the request via the bounded channel — under backpressure the
     /// `send` is an await point that yields the task to the reactor (#1133),
     /// so `tokio::time::timeout`/cancellation keep working while the queue is
@@ -308,25 +376,8 @@ impl InferencePool {
     ///
     /// Returns `SemanticError::Inference` if the channel is closed or the
     /// worker drops the response.
-    #[instrument(skip_all)]
     pub async fn infer(&self, input: &ModelInput) -> Result<Vec<f32>, SemanticError> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        let request = WorkerRequest {
-            input: input.clone(),
-            reply_tx,
-        };
-
-        // #1133: async send on a bounded tokio channel. When all workers are
-        // busy the task waits cooperatively (cancellable) for capacity — the
-        // executor thread is released, not parked on a blocking send.
-        self.request_tx.send(request).await.map_err(|_| {
-            SemanticError::Inference("InferencePool channel closed (all workers exited)".into())
-        })?;
-
-        // Await result asynchronously — yields to Tokio, no blocking
-        reply_rx
-            .await
-            .map_err(|_| SemanticError::Inference("Worker dropped response channel".into()))?
+        <Self as InferenceEngine>::infer(self, input).await
     }
 
     /// Get embedding dimension (384 for all Granite models)
@@ -351,6 +402,546 @@ impl InferencePool {
     #[must_use]
     pub fn is_ready(&self) -> bool {
         self.worker_count > 0
+    }
+}
+
+impl InferenceEngine for InferencePool {
+    /// Dispatch one request to the worker threads (real ORT session behind
+    /// the shared `Mutex`; see the `InferencePool` docs for why it exists).
+    #[instrument(skip_all)]
+    fn infer<'a>(
+        &'a self,
+        input: &'a ModelInput,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<f32>, SemanticError>> + Send + 'a>> {
+        Box::pin(async move {
+            let (reply_tx, reply_rx) = oneshot::channel();
+            let request = WorkerRequest {
+                input: input.clone(),
+                reply_tx,
+            };
+
+            // #1133: async send on a bounded tokio channel. When all workers are
+            // busy the task waits cooperatively (cancellable) for capacity — the
+            // executor thread is released, not parked on a blocking send.
+            self.request_tx.send(request).await.map_err(|_| {
+                SemanticError::Inference("InferencePool channel closed (all workers exited)".into())
+            })?;
+
+            // Await result asynchronously — yields to Tokio, no blocking
+            reply_rx
+                .await
+                .map_err(|_| SemanticError::Inference("Worker dropped response channel".into()))?
+        })
+    }
+
+    fn embedding_dim(&self) -> usize {
+        InferencePool::embedding_dim(self)
+    }
+
+    fn is_ready(&self) -> bool {
+        InferencePool::is_ready(self)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MockInferenceEngine: fixed-latency verification mock (P0-001 paso 0)
+// ---------------------------------------------------------------------------
+
+/// Fixed-latency mock engine for the P0-001 verification (issue #1456).
+///
+/// `infer` sleeps `fixed_latency` and returns a deterministic 384-dim
+/// L2-normalized constant embedding. There is deliberately NO real `Mutex`:
+/// concurrent `infer` calls overlap fully, so any residual serialization
+/// observed through this mock is attributable to the fan-out/fan-in
+/// plumbing (`SemanticCleanerImpl::clean`, `export_flow::clean_all_pages`),
+/// not to ORT session contention.
+///
+/// Calibrate `fixed_latency` against the issue baseline: ~45ms reproduces
+/// the measured ≈17.7s for 393 serial chunks (393 × 45ms ≈ 17.7s).
+#[derive(Debug, Clone)]
+pub struct MockInferenceEngine {
+    /// Fixed sleep per `infer` call.
+    fixed_latency: Duration,
+}
+
+impl MockInferenceEngine {
+    /// Unified Granite output dimension shared by every mock embedding.
+    const EMBEDDING_DIM: usize = 384;
+
+    /// Create a mock engine that sleeps `fixed_latency` per chunk.
+    #[must_use]
+    pub fn new(fixed_latency: Duration) -> Self {
+        debug!(?fixed_latency, "MockInferenceEngine created");
+        Self { fixed_latency }
+    }
+
+    /// The fixed sleep applied per `infer` call.
+    #[must_use]
+    pub fn fixed_latency(&self) -> Duration {
+        self.fixed_latency
+    }
+
+    /// Deterministic 384-dim L2-normalized constant embedding.
+    ///
+    /// Every chunk maps to the same unit vector (`1/sqrt(384)` per lane), so
+    /// relevance filtering keeps all chunks and benchmark runs are bit-identical.
+    #[must_use]
+    pub fn deterministic_embedding() -> Vec<f32> {
+        let lane = 1.0 / (Self::EMBEDDING_DIM as f32).sqrt();
+        vec![lane; Self::EMBEDDING_DIM]
+    }
+}
+
+impl InferenceEngine for MockInferenceEngine {
+    fn infer<'a>(
+        &'a self,
+        _input: &'a ModelInput,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<f32>, SemanticError>> + Send + 'a>> {
+        Box::pin(async move {
+            tokio::time::sleep(self.fixed_latency).await;
+            Ok(Self::deterministic_embedding())
+        })
+    }
+
+    fn embedding_dim(&self) -> usize {
+        Self::EMBEDDING_DIM
+    }
+
+    fn is_ready(&self) -> bool {
+        true
+    }
+}
+
+// ---------------------------------------------------------------------------
+// N-session pool (P0-001 remediation, issue #1456).
+//
+// The single shared session behind `InferencePool` serializes every inference
+// on one `Mutex<Session>` (speedup 1→8 = 1.02×). This section adds the
+// remediation candidate: N independent `ort::Session`s behind the same
+// [`InferenceEngine`] seam, with `intra_threads = (total_cores / N).max(1)`.
+//
+// Coordination has ZERO additional centralized contention: slot selection is
+// a lock-free `AtomicUsize::fetch_add % N` start index plus `try_acquire`
+// rotation over per-slot 1-permit semaphores. There is deliberately NO second
+// centralized `Mutex<usize>` round-robin — that would reintroduce the
+// eliminated pattern (maintainer comment is explicit).
+// ---------------------------------------------------------------------------
+
+/// Engine selection: single shared session (today's behavior) or N-session pool.
+///
+/// `Single` builds exactly one [`InferencePool`] via [`InferencePool::new`]
+/// (byte-for-byte today's path: 1 session, `intra_threads(1)`, shared across
+/// workers), so rollback is a one-variant change at the single call site that
+/// picks this enum. `Pool { size }` builds [`PooledInferenceEngine`] with
+/// `size` independent sessions and `intra_threads = (total_cores / size).max(1)`.
+///
+/// The MEASURE task (later) calibrates N with numbers and owns any flag UX;
+/// this enum only names the already-decided configuration. Selection travels
+/// exclusively through [`EngineConfig::from_env`] (`WEBFANG_AI_ENGINE`): no CLI
+/// args by design — a flag could never reach the MCP daemon, which has no
+/// per-run argv and already resolves `AI_MODEL_ID` from the environment (#874).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EngineConfig {
+    /// Today's behavior: one shared session behind [`InferencePool`].
+    #[default]
+    Single,
+    /// N independent sessions; `size` is the MEASURE-calibrated dial.
+    Pool {
+        /// Session count (the MEASURE-calibrated dial; explicit override).
+        size: NonZeroUsize,
+    },
+}
+
+impl EngineConfig {
+    /// Today's behavior (rollback target).
+    #[must_use]
+    pub fn single() -> Self {
+        Self::Single
+    }
+
+    /// `Pool` with an explicit session count (MEASURE override).
+    #[must_use]
+    pub fn pool(size: NonZeroUsize) -> Self {
+        Self::Pool { size }
+    }
+
+    /// Explicit override when `Some`, otherwise the parallelism-derived default.
+    #[must_use]
+    pub fn pool_size_or_default(size: Option<NonZeroUsize>) -> NonZeroUsize {
+        size.unwrap_or_else(Self::default_pool_size)
+    }
+
+    /// Default pool size derived from system parallelism (canonical detector
+    /// seam): half the cores clamped to [2, 8]. A starting dial only — the
+    /// MEASURE task calibrates N with numbers, never intuition.
+    #[must_use]
+    pub fn default_pool_size() -> NonZeroUsize {
+        let cores = webfang_core::domain::budget::detector::system_parallelism().get();
+        NonZeroUsize::new((cores / 2).clamp(2, 8)).unwrap_or(NonZeroUsize::MIN)
+    }
+
+    /// Split `total_cores` intra-op threads across `pool_size` sessions.
+    ///
+    /// `(total_cores / pool_size).max(1)`: the N > cores edge degrades to one
+    /// thread per session instead of dividing by zero or idling sessions.
+    #[must_use]
+    pub fn split_intra_threads(total_cores: usize, pool_size: usize) -> usize {
+        total_cores
+            .checked_div(pool_size.max(1))
+            .unwrap_or(1)
+            .max(1)
+    }
+
+    /// Environment variable selecting the engine (`single` | `pool:<N>`).
+    pub const ENV_VAR: &str = "WEBFANG_AI_ENGINE";
+
+    /// Read the engine selection from [`Self::ENV_VAR`].
+    ///
+    /// Unset, empty, or whitespace-only means [`EngineConfig::Single`] (today's
+    /// default — the user made no choice). A set-but-invalid value is a loud
+    /// `Err` in Spanish: it must never silently fall back to `Single` (#874
+    /// discipline: a poisoned env var fails startup instead of mismeasuring).
+    /// Pure core in [`Self::resolve_spec`] so tests stay race-free.
+    pub fn from_env() -> Result<Self, String> {
+        Self::resolve_spec(std::env::var(Self::ENV_VAR).ok().as_deref())
+    }
+
+    /// Pure core of [`Self::from_env`], taking the raw env value so tests stay
+    /// race-free under parallel execution (no real env mutation).
+    fn resolve_spec(raw: Option<&str>) -> Result<Self, String> {
+        match raw.map(str::trim).filter(|s| !s.is_empty()) {
+            None => Ok(Self::Single),
+            Some(spec) => spec.parse(),
+        }
+    }
+}
+
+impl FromStr for EngineConfig {
+    /// `Err` is a Spanish message naming the variable and the valid values.
+    type Err = String;
+
+    /// Parse `single` (case-insensitive, trimmed) or `pool:<N>` with `N >= 1`.
+    ///
+    /// A bare `pool` (no size) is rejected loudly: guessing N would be the
+    /// silent-fallback this seam exists to prevent — the MEASURE decision doc
+    /// owns the calibrated value, never intuition.
+    fn from_str(s: &str) -> Result<Self, String> {
+        let invalid = || {
+            format!(
+                "Motor AI inválido en WEBFANG_AI_ENGINE: '{s}'. \
+                 Valores válidos: 'single', 'pool:<N>' (p. ej. 'pool:4')"
+            )
+        };
+        let lowered = s.trim().to_lowercase();
+        if lowered == "single" {
+            return Ok(Self::Single);
+        }
+        if let Some(count) = lowered.strip_prefix("pool:") {
+            let parsed: usize = count.trim().parse().map_err(|_| invalid())?;
+            let size = NonZeroUsize::new(parsed).ok_or_else(invalid)?;
+            return Ok(Self::Pool { size });
+        }
+        Err(invalid())
+    }
+}
+
+/// Build the selected engine from a model file.
+///
+/// `Single` delegates to [`InferencePool::new`] unchanged (today's behavior,
+/// including the drainer graceful-degradation contract). `Pool { size }` opens
+/// [`PooledInferenceEngine`] with the split thread budget.
+///
+/// # Errors
+///
+/// Returns [`SemanticError::Inference`] when the pool/session cannot be built.
+pub fn build_engine(
+    config: &EngineConfig,
+    model_path: std::path::PathBuf,
+    variant: AiModel,
+) -> Result<Arc<dyn InferenceEngine + Send + Sync>, SemanticError> {
+    match *config {
+        EngineConfig::Single => {
+            let pool = InferencePool::new(model_path, variant)?;
+            Ok(Arc::new(pool))
+        },
+        EngineConfig::Pool { size } => {
+            let pooled = PooledInferenceEngine::open(&model_path, variant, size)?;
+            Ok(Arc::new(pooled))
+        },
+    }
+}
+
+/// Build one pool session: file-backed weights (`commit_from_file`, so the
+/// application never materializes model bytes), `GraphOptimizationLevel::Level3`,
+/// the split intra-op budget, and `inter_threads(1)` (the transformer graph is
+/// ≈ sequential; inter-op parallelism inside a single session is measured
+/// separately with low priority per the issue).
+fn build_pool_session(model_path: &Path, intra_threads: usize) -> Result<Session, SemanticError> {
+    let mut builder = Session::builder().map_err(|e| {
+        SemanticError::Inference(format!(
+            "no se pudo crear el constructor de sesión ONNX: {e}"
+        ))
+    })?;
+    builder = builder
+        .with_optimization_level(GraphOptimizationLevel::Level3)
+        .map_err(|e| {
+            SemanticError::Inference(format!("no se pudo fijar el nivel de optimización: {e}"))
+        })?;
+    builder = builder
+        .with_intra_threads(intra_threads.max(1))
+        .map_err(|e| SemanticError::Inference(format!("no se pudo fijar intra_threads: {e}")))?;
+    builder = builder
+        .with_inter_threads(1)
+        .map_err(|e| SemanticError::Inference(format!("no se pudo fijar inter_threads: {e}")))?;
+    builder.commit_from_file(model_path).map_err(|e| {
+        SemanticError::Inference(format!(
+            "no se pudo crear la sesión ONNX desde el archivo: {e}"
+        ))
+    })
+}
+
+/// One exclusive ORT session: the pool's unit of parallelism.
+///
+/// Owns a single `ort::Session` behind its own `Mutex` (per-session, never a
+/// centralized lock: `Session::run` needs `&mut self` in ort 2.0, so some guard
+/// is unavoidable — the fix is that N guards never contend, not that guards
+/// disappear). Driven with `spawn_blocking` (`async-spawn-blocking`) so the
+/// Tokio reactor never blocks on ONNX compute.
+///
+/// Per-chunk isolation: Granite/ModernBert embedding models are feedforward
+/// (no KV-cache, no cross-request state); each `run` is a pure function of its
+/// inputs plus the frozen weights, so serving one chunk at a time per session
+/// is both sufficient and deterministic. Deliberately NOT `Clone` (#1131
+/// discipline): share via `Arc`.
+pub struct SingleSessionEngine {
+    session: Arc<Mutex<Session>>,
+    plan: InputPlan,
+    variant: AiModel,
+}
+
+impl SingleSessionEngine {
+    /// Open one session from `model_path` with the given intra-op budget.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SemanticError::Inference`] when the session cannot be built or
+    /// the graph's inputs do not satisfy the required/known contract.
+    pub fn open(
+        model_path: &Path,
+        variant: AiModel,
+        intra_threads: usize,
+    ) -> Result<Self, SemanticError> {
+        let session = build_pool_session(model_path, intra_threads)?;
+        let plan = InputPlan::from_session(&session)?;
+        Ok(Self {
+            session: Arc::new(Mutex::new(session)),
+            plan,
+            variant,
+        })
+    }
+}
+
+impl InferenceEngine for SingleSessionEngine {
+    /// Run one inference on the owned session via `spawn_blocking`.
+    ///
+    /// Reentrant (`&self`): the only shared mutation is the session `Mutex`,
+    /// held inside the blocking thread, never across `.await`
+    /// (`async-no-lock-await`). A poisoned mutex fails fast with a typed error.
+    fn infer<'a>(
+        &'a self,
+        input: &'a ModelInput,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<f32>, SemanticError>> + Send + 'a>> {
+        Box::pin(async move {
+            let session = Arc::clone(&self.session);
+            let plan = self.plan.clone();
+            let input = input.clone();
+            let variant = self.variant;
+            tokio::task::spawn_blocking(move || {
+                let mut guard = session.lock().map_err(|_| {
+                    SemanticError::Inference(
+                        "sesión ONNX envenenada por un pánico previo en worker".to_string(),
+                    )
+                })?;
+                run_session_inference(&mut guard, &input, variant, &plan)
+            })
+            .await
+            .map_err(|e| SemanticError::Inference(format!("worker de inferencia cancelado: {e}")))?
+        })
+    }
+
+    fn embedding_dim(&self) -> usize {
+        self.variant.output_dim()
+    }
+
+    fn is_ready(&self) -> bool {
+        true
+    }
+}
+
+/// One pool slot: an engine plus its own 1-permit semaphore.
+struct PoolSlot {
+    semaphore: Arc<Semaphore>,
+    engine: Arc<dyn InferenceEngine + Send + Sync>,
+}
+
+/// N-session inference pool behind the [`InferenceEngine`] seam.
+///
+/// Each slot pairs one `Arc<dyn InferenceEngine + Send + Sync>` (production: a
+/// [`SingleSessionEngine`] owning exactly one `ort::Session`) with its own
+/// 1-permit semaphore. Selection is a lock-free `AtomicUsize::fetch_add % N`
+/// start index plus `try_acquire` rotation — there is deliberately NO second
+/// centralized `Mutex<usize>` round-robin (that would reintroduce the
+/// eliminated pattern; the maintainer comment is explicit).
+///
+/// Backpressure: when every slot is busy, `infer` awaits a permit on the
+/// selected slot (cancellable, reactor-friendly) instead of failing hard, so
+/// the N+1th concurrent request queues instead of erroring. Permits are
+/// `OwnedSemaphorePermit` (RAII): released on return AND on panic unwind.
+/// `run` stays reentrant: the only shared mutation is the `Relaxed` counter
+/// (a scheduling hint, so the weakest ordering is correct per
+/// `conc-atomic-ordering`). Deliberately NOT `Clone` (#1131 discipline).
+pub struct PooledInferenceEngine {
+    slots: Vec<PoolSlot>,
+    next: AtomicUsize,
+    intra_threads: usize,
+}
+
+impl std::fmt::Debug for PooledInferenceEngine {
+    /// Slots hold `Arc<dyn InferenceEngine>` (no `Debug` bound on the seam),
+    /// so only the sizing fields are reported.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PooledInferenceEngine")
+            .field("pool_size", &self.slots.len())
+            .field("intra_threads", &self.intra_threads)
+            .finish_non_exhaustive()
+    }
+}
+
+impl PooledInferenceEngine {
+    /// Wrap pre-built engines (one per slot).
+    ///
+    /// Mock-backed tests use this: NO model download, NO ORT session — pure
+    /// coordination logic (parallel acquires, backpressure, permit release).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SemanticError::Inference`] when `engines` is empty.
+    pub fn from_engines(
+        engines: Vec<Arc<dyn InferenceEngine + Send + Sync>>,
+    ) -> Result<Self, SemanticError> {
+        if engines.is_empty() {
+            return Err(SemanticError::Inference(
+                "el pool de inferencia necesita al menos una sesión".to_string(),
+            ));
+        }
+        let slots = engines
+            .into_iter()
+            .map(|engine| PoolSlot {
+                semaphore: Arc::new(Semaphore::new(1)),
+                engine,
+            })
+            .collect();
+        Ok(Self {
+            slots,
+            next: AtomicUsize::new(0),
+            intra_threads: 1,
+        })
+    }
+
+    /// Open `size` real sessions from `model_path`, splitting the core budget.
+    ///
+    /// Unlike [`InferencePool::new`], a session-build failure fails fast with a
+    /// typed error instead of spawning a drainer: a half-populated pool would
+    /// silently misreport its parallelism budget. The drainer
+    /// graceful-degradation contract is kept for the `Single` path only.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SemanticError::Inference`] when any session cannot be built.
+    pub fn open(
+        model_path: &Path,
+        variant: AiModel,
+        size: NonZeroUsize,
+    ) -> Result<Self, SemanticError> {
+        let total = webfang_core::domain::budget::detector::system_parallelism().get();
+        let intra = EngineConfig::split_intra_threads(total, size.get());
+        let mut engines: Vec<Arc<dyn InferenceEngine + Send + Sync>> =
+            Vec::with_capacity(size.get());
+        for _ in 0..size.get() {
+            let single = SingleSessionEngine::open(model_path, variant, intra)?;
+            engines.push(Arc::new(single));
+        }
+        let mut pooled = Self::from_engines(engines)?;
+        pooled.intra_threads = intra;
+        Ok(pooled)
+    }
+
+    /// Number of sessions in the pool.
+    #[must_use]
+    pub fn pool_size(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// Intra-op thread budget each session was built with (split formula).
+    #[must_use]
+    pub fn intra_threads(&self) -> usize {
+        self.intra_threads
+    }
+}
+
+impl InferenceEngine for PooledInferenceEngine {
+    /// Run one inference on the first free slot from the rotated start index.
+    ///
+    /// Fast path takes a free permit without waiting; slow path awaits a permit
+    /// on the selected slot (backpressure, cancellable). The held permit is an
+    /// `OwnedSemaphorePermit`, not a `MutexGuard`, so holding it across the
+    /// inner `.await` is the intended semaphore pattern (`async-no-lock-await`
+    /// bans only `Mutex`/`RwLock` across await) and it releases on drop,
+    /// including panic unwind.
+    fn infer<'a>(
+        &'a self,
+        input: &'a ModelInput,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<f32>, SemanticError>> + Send + 'a>> {
+        Box::pin(async move {
+            let len = self.slots.len();
+            if len == 0 {
+                return Err(SemanticError::Inference(
+                    "el pool de inferencia no tiene sesiones".to_string(),
+                ));
+            }
+            let start = self.next.fetch_add(1, Ordering::Relaxed) % len;
+            for offset in 0..len {
+                let slot = &self.slots[(start + offset) % len];
+                if let Ok(permit) = Arc::clone(&slot.semaphore).try_acquire_owned() {
+                    let result = slot.engine.infer(input).await;
+                    drop(permit);
+                    return result;
+                }
+            }
+            let slot = &self.slots[start];
+            let permit = Arc::clone(&slot.semaphore)
+                .acquire_owned()
+                .await
+                .map_err(|_| {
+                    SemanticError::Inference(
+                        "el pool de inferencia se cerró durante la espera".to_string(),
+                    )
+                })?;
+            let result = slot.engine.infer(input).await;
+            drop(permit);
+            result
+        })
+    }
+
+    fn embedding_dim(&self) -> usize {
+        self.slots
+            .first()
+            .map(|slot| slot.engine.embedding_dim())
+            .unwrap_or_else(|| AiModel::default().output_dim())
+    }
+
+    fn is_ready(&self) -> bool {
+        !self.slots.is_empty()
     }
 }
 
@@ -595,6 +1186,147 @@ fn run_session_inference(
     Ok(embedding)
 }
 
+/// Batched inference over N right-padded inputs in a single `Session::run`.
+///
+/// Prototype probe for issue #1456 (P0-001 batch smoke run): right-pads N
+/// inputs to S_max with per-row `attention_mask` (0 = pad), executes ONE
+/// session run with shape `(N, S_max)`, applies per-row mean pooling over
+/// the `(N, S_max, H)` output honoring each row's mask, then the existing
+/// Matryoshka `take(384)` + L2-normalize per row. Output order matches input
+/// order (determinism hard-constraint: no reordering, no cross-row fusion).
+///
+/// The single-chunk [`run_session_inference`] path is untouched; this is the
+/// surgical batched companion behind the existing [`InferenceEngine`] seam.
+/// Single session + `intra_threads(1)` are unchanged: this probe isolates
+/// batching, not the pool.
+///
+/// # Errors
+///
+/// Returns [`SemanticError::Inference`](webfang_core::error::SemanticError::Inference)
+/// when the batch is empty, any input is an empty sequence, tensor
+/// construction fails, the model execution fails, or the
+/// `last_hidden_state` output has an unexpected length.
+pub fn run_batched_inference(
+    session: &mut Session,
+    plan: &InputPlan,
+    inputs: &[ModelInput],
+    model_variant: AiModel,
+) -> Result<Vec<Vec<f32>>, SemanticError> {
+    if inputs.is_empty() {
+        return Err(SemanticError::Inference(
+            "batched inference requires at least one input".to_string(),
+        ));
+    }
+    let batch_size = inputs.len();
+    let seq_max = inputs.iter().map(ModelInput::seq_len).max().unwrap_or(0);
+    if seq_max == 0 {
+        return Err(SemanticError::Inference(
+            "batched inference requires non-empty sequences".to_string(),
+        ));
+    }
+    let model_native_dim = model_variant.embedding_dim();
+    let model_output_dim = model_variant.output_dim();
+
+    // Right-pad every row to S_max (input_ids/type pad 0, mask pad 0).
+    let mut ids_flat: Vec<i64> = Vec::with_capacity(batch_size * seq_max);
+    let mut mask_flat: Vec<i64> = Vec::with_capacity(batch_size * seq_max);
+    let mut type_flat: Vec<i64> = Vec::with_capacity(batch_size * seq_max);
+    for input in inputs {
+        let pad = seq_max.saturating_sub(input.seq_len());
+        ids_flat.extend_from_slice(&input.input_ids);
+        ids_flat.extend(std::iter::repeat_n(0i64, pad));
+        mask_flat.extend_from_slice(&input.attention_mask);
+        mask_flat.extend(std::iter::repeat_n(0i64, pad));
+        type_flat.extend_from_slice(&input.token_type_ids);
+        type_flat.extend(std::iter::repeat_n(0i64, pad));
+    }
+
+    // Build named input tensors from the resolved plan, in graph order — the
+    // same contract as the single path, with shape (N, S_max).
+    let mut named_inputs: Vec<(
+        std::borrow::Cow<'_, str>,
+        ort::session::SessionInputValue<'_>,
+    )> = Vec::with_capacity(plan.names().len());
+
+    for name in plan.names() {
+        let array = match name.as_str() {
+            "input_ids" => {
+                ndarray::Array2::<i64>::from_shape_vec((batch_size, seq_max), ids_flat.clone())
+                    .map_err(|e| {
+                        SemanticError::Inference(format!(
+                            "failed to create batched input_ids array: {e}"
+                        ))
+                    })?
+            },
+            "attention_mask" => {
+                ndarray::Array2::<i64>::from_shape_vec((batch_size, seq_max), mask_flat.clone())
+                    .map_err(|e| {
+                        SemanticError::Inference(format!(
+                            "failed to create batched attention_mask array: {e}"
+                        ))
+                    })?
+            },
+            "token_type_ids" => {
+                ndarray::Array2::<i64>::from_shape_vec((batch_size, seq_max), type_flat.clone())
+                    .map_err(|e| {
+                        SemanticError::Inference(format!(
+                            "failed to create batched token_type_ids array: {e}"
+                        ))
+                    })?
+            },
+            other => {
+                return Err(SemanticError::Inference(format!(
+                    "unsupported input: {other}"
+                )));
+            },
+        };
+
+        let tensor = ort::value::Tensor::from_array(array).map_err(|e| {
+            SemanticError::Inference(format!("failed to create batched {name} tensor: {e}"))
+        })?;
+
+        named_inputs.push((std::borrow::Cow::Borrowed(name.as_str()), tensor.into()));
+    }
+
+    let outputs = session
+        .run(named_inputs)
+        .map_err(|e| SemanticError::Inference(format!("batched model execution failed: {e}")))?;
+
+    let (_shape, raw_data): (_, &[f32]) = outputs["last_hidden_state"]
+        .try_extract_tensor::<f32>()
+        .map_err(|e| {
+            SemanticError::Inference(format!("failed to extract batched last_hidden_state: {e}"))
+        })?;
+
+    let expected = batch_size * seq_max * model_native_dim;
+    if raw_data.len() != expected {
+        return Err(SemanticError::Inference(format!(
+            "unexpected batched output length: got {}, expected {expected} (N={batch_size}, S={seq_max}, H={model_native_dim})",
+            raw_data.len()
+        )));
+    }
+    let embedding_flat: Vec<f32> = raw_data.to_vec();
+
+    // Per-row mean pool honoring each row's mask, then Matryoshka + L2 per row.
+    use crate::infrastructure_ai::embedding_ops::{l2_normalize_safe, mean_pool_batched};
+    let rows = mean_pool_batched(
+        &embedding_flat,
+        batch_size,
+        seq_max,
+        model_native_dim,
+        &mask_flat,
+    );
+    let embeddings: Vec<Vec<f32>> = rows
+        .iter()
+        .map(|pooled| {
+            let truncated: Vec<f32> = pooled.iter().take(model_output_dim).copied().collect();
+            l2_normalize_safe(&truncated)
+        })
+        .collect();
+
+    Ok(embeddings)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -604,6 +1336,82 @@ mod tests {
     /// writes): `InferencePool::new` must still construct the pool and spawn
     /// the drainer, exercising the graceful-degradation contract (#1315).
     const FAKE_MODEL_PATH: &str = "/nonexistent/webfang-fake-model.onnx";
+
+    // --- EngineConfig::from_env tests (P0-001 MEASURE, issue #1456) ---
+
+    /// Unset / empty / whitespace-only env means `Single`: the user made no
+    /// choice, so the production default applies silently (only set-but-invalid
+    /// is loud). Pure `resolve_spec`, so no env mutation under parallel tests.
+    #[test]
+    fn test_engine_config_unset_or_blank_means_single() {
+        assert_eq!(EngineConfig::resolve_spec(None), Ok(EngineConfig::Single));
+        assert_eq!(
+            EngineConfig::resolve_spec(Some("")),
+            Ok(EngineConfig::Single)
+        );
+        assert_eq!(
+            EngineConfig::resolve_spec(Some("   \t")),
+            Ok(EngineConfig::Single)
+        );
+    }
+
+    /// `single` (trimmed, case-insensitive) selects today's behavior.
+    #[test]
+    fn test_engine_config_single_parses() {
+        assert_eq!(
+            EngineConfig::resolve_spec(Some("single")),
+            Ok(EngineConfig::Single)
+        );
+        assert_eq!(
+            EngineConfig::resolve_spec(Some("  Single ")),
+            Ok(EngineConfig::Single)
+        );
+    }
+
+    /// `pool:<N>` selects N sessions; `N >= 1` enforced via `NonZeroUsize`.
+    #[test]
+    fn test_engine_config_pool_sizes_parse() {
+        for n in [1usize, 2, 4, 8, 15] {
+            let size = NonZeroUsize::new(n).expect("test sizes are non-zero");
+            assert_eq!(
+                EngineConfig::resolve_spec(Some(&format!("pool:{n}"))),
+                Ok(EngineConfig::Pool { size })
+            );
+        }
+    }
+
+    /// Set-but-invalid is a loud Spanish error naming the variable and the
+    /// valid values — never a silent fallback to `Single` (#874 discipline).
+    /// A bare `pool` (no size) is rejected: guessing N would be silent fallback.
+    #[test]
+    fn test_engine_config_invalid_is_loud_spanish_error() {
+        for bad in [
+            "pool", "pool:0", "pool:-2", "pool:abc", "pool:", "turbo", "8",
+        ] {
+            let err = EngineConfig::resolve_spec(Some(bad))
+                .expect_err(&format!("{bad:?} must be rejected"));
+            assert!(
+                err.contains(EngineConfig::ENV_VAR),
+                "error must name the env var, got: {err}"
+            );
+            assert!(
+                err.contains("'single'") && err.contains("'pool:<N>'"),
+                "error must list valid values, got: {err}"
+            );
+        }
+    }
+
+    /// `from_env` agrees with the pure core for whatever the ambient
+    /// environment holds (shape check only — value cases live above, since env
+    /// mutation is racy under parallel test execution).
+    #[test]
+    fn test_engine_config_from_env_never_panics() {
+        let raw = std::env::var(EngineConfig::ENV_VAR).ok();
+        assert_eq!(
+            EngineConfig::from_env(),
+            EngineConfig::resolve_spec(raw.as_deref())
+        );
+    }
 
     // --- InferencePool tests ---
 
@@ -621,6 +1429,73 @@ mod tests {
 
         assert_send::<InferencePool>();
         assert_sync::<InferencePool>();
+    }
+
+    /// Paso 0 (#1456): the mock engine is `Send + Sync` and object-safe, so it
+    /// can replace the pool behind `Arc<E>` / `Arc<dyn InferenceEngine + Send + Sync>`.
+    #[test]
+    fn test_mock_engine_is_send_sync_and_object_safe() {
+        fn assert_send<T: Send>() {}
+        fn assert_sync<T: Sync>() {}
+
+        assert_send::<MockInferenceEngine>();
+        assert_sync::<MockInferenceEngine>();
+
+        let engine = MockInferenceEngine::new(std::time::Duration::from_millis(1));
+        let erased: &dyn super::InferenceEngine = &engine;
+        assert_eq!(erased.embedding_dim(), 384);
+        assert!(erased.is_ready());
+    }
+
+    /// Paso 0 (#1456): every mock inference returns the same 384-dim unit
+    /// vector, so benchmark runs are deterministic and relevance filtering
+    /// keeps all chunks.
+    #[tokio::test]
+    async fn test_mock_engine_returns_deterministic_unit_embedding() {
+        use super::InferenceEngine;
+
+        let engine = MockInferenceEngine::new(std::time::Duration::from_millis(1));
+        let first = ModelInput::from_tokens(vec![101, 5, 6, 102]);
+        let second = ModelInput::from_tokens(vec![101, 7, 8, 9, 102]);
+
+        let a = engine.infer(&first).await.expect("mock infer must succeed");
+        let b = engine
+            .infer(&second)
+            .await
+            .expect("mock infer must succeed");
+
+        assert_eq!(a.len(), 384, "mock embedding must be 384-dim");
+        assert_eq!(a, b, "mock embedding must be input-independent");
+        let norm: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+        assert!(
+            (norm - 1.0).abs() < 1e-5,
+            "mock embedding must be L2-normalized, got norm {norm}"
+        );
+    }
+
+    /// Paso 0 (#1456): concurrent mock infers overlap (no real mutex): N
+    /// parallel 50ms infers finish in well under N × 50ms.
+    #[tokio::test]
+    async fn test_mock_engine_infers_overlap() {
+        use super::InferenceEngine;
+
+        let engine = MockInferenceEngine::new(std::time::Duration::from_millis(50));
+        let input = ModelInput::from_tokens(vec![101, 5, 102]);
+        let started = std::time::Instant::now();
+        let (r1, r2, r3, r4) = tokio::join!(
+            engine.infer(&input),
+            engine.infer(&input),
+            engine.infer(&input),
+            engine.infer(&input)
+        );
+        let elapsed = started.elapsed();
+        for r in [r1, r2, r3, r4] {
+            r.expect("mock infer must succeed");
+        }
+        assert!(
+            elapsed < std::time::Duration::from_millis(150),
+            "4 parallel 50ms mock infers must overlap (no mutex); took {elapsed:?}"
+        );
     }
 
     /// #1131 — `InferencePool` must NOT be `Clone`.
