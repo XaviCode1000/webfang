@@ -524,6 +524,17 @@ fn semantic_inspector(
     })
 }
 
+/// Map an AI cleaner init failure to its CLI exit: download faults are
+/// transient network errors, everything else is a config error.
+#[cfg(feature = "ai")]
+fn ai_init_error(e: SemanticError) -> CliExit {
+    let msg = format!("No se pudo inicializar el limpiador semántico AI: {e}");
+    match e {
+        SemanticError::Download { .. } => CliExit::NetworkError(msg),
+        _ => CliExit::ConfigError(msg),
+    }
+}
+
 /// Build the AI semantic cleaner and its vault-search ports, surfacing the
 /// cleaner's shared ONNX assets (pool + tokenizer) so the adaptive engine can
 /// reuse them for Tier 2 semantic repair (#702) without a second model load.
@@ -612,13 +623,7 @@ async fn build_ai_cleaner(
                         ports.cleaner = cleaner.clone();
                         Ok((cleaner, ports, shared))
                     },
-                    Err(e) => {
-                        let msg = format!("No se pudo inicializar el limpiador semántico AI: {e}");
-                        Err(match e {
-                            SemanticError::Download { .. } => CliExit::NetworkError(msg),
-                            _ => CliExit::ConfigError(msg),
-                        })
-                    },
+                    Err(e) => Err(ai_init_error(e)),
                 }
             },
             webfang_ai::infrastructure_ai::EngineConfig::Pool { .. } => {
@@ -644,13 +649,7 @@ async fn build_ai_cleaner(
                         };
                         Ok((cleaner, ports, None))
                     },
-                    Err(e) => {
-                        let msg = format!("No se pudo inicializar el limpiador semántico AI: {e}");
-                        Err(match e {
-                            SemanticError::Download { .. } => CliExit::NetworkError(msg),
-                            _ => CliExit::ConfigError(msg),
-                        })
-                    },
+                    Err(e) => Err(ai_init_error(e)),
                 }
             },
         },
