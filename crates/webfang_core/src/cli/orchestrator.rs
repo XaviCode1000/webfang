@@ -13,7 +13,7 @@ use crate::cli::error::CliExit;
 use crate::cli::export_flow::{run_export, save_files, ExportConfig};
 use crate::cli::parse::parse_asset_naming;
 use crate::cli::scrape_flow::{apply_resume_mode, scrape_urls};
-use crate::cli::url_discovery::{discover_urls, discover_urls_unified};
+use crate::cli::url_discovery::{discover_urls, discover_urls_unified, DiscoveryRetry};
 use crate::domain::config::ScraperConfig;
 use crate::domain::http_config::HttpClientConfig;
 use crate::domain::persistence::PersistenceMode;
@@ -464,6 +464,9 @@ async fn run_dry_run(opts: CrawlOptions, root_correlation: &domain::CorrelationI
 
     // F-14 (#1232 slice 1): dry-run shares the unified recursive discovery
     // with the real DOM path, so `--max-depth` is honored in previews.
+    // dry-run-fail-fast: a preview reports seed reachability, so it runs a
+    // single attempt with zero backoff sleeps (`FailFast`) instead of
+    // spending the full operator retry budget before exiting 69.
     info!("Dry-run: discovering URLs without scraping...");
     let persistence_mode = resolve_persistence_mode(&opts);
     let output = match crate::cli::url_discovery::discover_urls_unified(
@@ -472,6 +475,7 @@ async fn run_dry_run(opts: CrawlOptions, root_correlation: &domain::CorrelationI
         &persistence_mode,
         None,
         root_correlation,
+        DiscoveryRetry::FailFast,
     )
     .await
     {
@@ -761,12 +765,15 @@ async fn discover_dom_with_capture(
 ) -> Result<(Vec<url::Url>, Vec<CapturedPage>), CliExit> {
     let capture_sink = std::sync::Arc::new(InMemoryContentSink::new());
     let cfg = crawler_config.clone();
+    // dry-run-fail-fast: the real DOM path keeps full operator retry
+    // semantics (`Operator`) — only the dry-run preview runs fail-fast.
     match discover_urls_unified(
         cfg,
         opts,
         persistence_mode,
         Some(capture_sink),
         root_correlation,
+        DiscoveryRetry::Operator,
     )
     .await
     {

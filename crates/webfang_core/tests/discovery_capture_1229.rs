@@ -13,7 +13,7 @@ use webfang_core::application::crawl_options::CrawlOptions;
 use webfang_core::application::crawler::InMemoryContentSink;
 use webfang_core::application::progress_observer::NoopObserver;
 use webfang_core::cli::scrape_flow::scrape_urls;
-use webfang_core::cli::url_discovery::discover_urls_unified;
+use webfang_core::cli::url_discovery::{discover_urls_unified, DiscoveryRetry};
 use webfang_core::domain::config::ScraperConfig;
 use webfang_core::domain::persistence::PersistenceMode;
 use webfang_core::domain::{CorrelationId, CrawlerConfig, ValidUrl};
@@ -119,6 +119,7 @@ async fn discovery_single_fetch_counts_requests() {
         &PersistenceMode::Disabled,
         Some(Arc::clone(&sink)),
         &CorrelationId::new(),
+        DiscoveryRetry::Operator,
     )
     .await
     .expect("star discovery must succeed");
@@ -192,6 +193,7 @@ async fn capture_stops_at_byte_cap() {
         &PersistenceMode::Disabled,
         Some(Arc::clone(&sink)),
         &CorrelationId::new(),
+        DiscoveryRetry::Operator,
     )
     .await
     .expect("capped discovery must succeed");
