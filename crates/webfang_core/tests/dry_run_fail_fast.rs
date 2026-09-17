@@ -32,19 +32,10 @@ const RUN_TIMEOUT: Duration = Duration::from_secs(120);
 /// Env var carrying the frozen pre-fix binary for the A/B gate.
 const FROZEN_BIN_ENV: &str = "WEBFANG_FROZEN_BIN";
 
-/// Strip `WEBFANG_*` / `AI_MODEL_ID` from a spawned binary command so the
-/// A/B runs are hermetic even when CI bug-discovery workflows poison the
-/// environment (same floor as the shared harness sanitizer, which stays
-/// private to `cli_harness.rs`).
-fn strip_poisoned(cmd: &mut assert_cmd::Command) {
-    let poisoned: Vec<String> = std::env::vars()
-        .filter(|(k, _)| k.starts_with("WEBFANG_") || k == "AI_MODEL_ID")
-        .map(|(k, _)| k)
-        .collect();
-    for key in poisoned {
-        cmd.env_remove(&key);
-    }
-}
+// NOTE: poisoned-env stripping (`WEBFANG_*` / `AI_MODEL_ID`) lives in the
+// shared harness (`common::strip_poisoned_env`, same floor as `sanitize_env`)
+// so the A/B runs stay hermetic even when CI bug-discovery workflows poison
+// the environment.
 
 /// Normalize captured output: strip ANSI escape sequences (`ESC[` … final
 /// byte, plus any stray `ESC`), then collapse whitespace runs (same floor
@@ -263,7 +254,7 @@ async fn real_crawl_at_defaults_matches_frozen_binary_attempt_counts() {
         // Act: identical flags and identical env treatment for both binaries
         // (entry guard disarmed for the loopback mock, poison stripped).
         let mut cmd = assert_cmd::Command::new(&bin);
-        strip_poisoned(&mut cmd);
+        common::strip_poisoned_env(&mut cmd);
         let output = cmd
             .env(
                 webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
