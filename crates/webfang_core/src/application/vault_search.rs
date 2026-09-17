@@ -127,20 +127,43 @@ impl VaultSearchService {
             return Ok(Vec::new());
         }
 
-        // Step 3: Rank by cosine similarity.
+        // Step 3: Rank by cosine similarity. Chunks whose vector
+        // dimension differs from the query embedding (mixed-model index
+        // corruption) are skipped — never ranked with a silent 0.0 — and
+        // counted for the summary warn below.
+        let expected_dim = query_embedding.len();
+        let mut skipped = 0usize;
+        let mut first_actual_dim = 0usize;
         let mut scored: Vec<VaultSearchResult> = chunks
             .into_iter()
-            .map(|chunk| {
-                let score = cosine_similarity(&query_embedding, &chunk.embedding);
-                VaultSearchResult {
-                    note_path: chunk.note_path,
-                    content: chunk.content,
-                    score,
-                    chunk_index: chunk.chunk_index,
-                    heading: None, // TODO: extract from chunk metadata when NoteChunkVector carries it
-                }
-            })
+            .filter_map(
+                |chunk| match cosine_similarity(&query_embedding, &chunk.embedding) {
+                    Some(score) => Some(VaultSearchResult {
+                        note_path: chunk.note_path,
+                        content: chunk.content,
+                        score,
+                        chunk_index: chunk.chunk_index,
+                        heading: None, // TODO: extract from chunk metadata when NoteChunkVector carries it
+                    }),
+                    None => {
+                        skipped += 1;
+                        if skipped == 1 {
+                            first_actual_dim = chunk.embedding.len();
+                        }
+                        None
+                    },
+                },
+            )
             .collect();
+
+        if skipped > 0 {
+            warn!(
+                expected_dim,
+                actual_dim = first_actual_dim,
+                skipped,
+                "vault search skipped vectors with dimension mismatch (mixed-model index?)"
+            );
+        }
 
         // Sort descending by score.
         scored.sort_by(|a, b| {
@@ -352,12 +375,17 @@ impl VaultSearchService {
 
 /// Cosine similarity between two vectors.
 ///
-/// Returns a value in [-1.0, 1.0]. For normalized embedding vectors
-/// (as produced by Granite models), this equals the dot product.
-/// Returns 0.0 for empty or zero-magnitude vectors.
-fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
-    if a.len() != b.len() || a.is_empty() {
-        return 0.0;
+/// Returns `Some(score)` with a value in [-1.0, 1.0]. For normalized
+/// embedding vectors (as produced by Granite models), this equals the dot
+/// product. Returns `Some(0.0)` for empty or zero-magnitude vectors.
+/// Returns `None` when the dimensions differ (e.g. a mixed-model index):
+/// the caller must skip the vector so corruption can never rank silently.
+fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
+    if a.len() != b.len() {
+        return None;
+    }
+    if a.is_empty() {
+        return Some(0.0);
     }
 
     let mut dot = 0.0f32;
@@ -372,9 +400,9 @@ fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
 
     let denom = mag_a.sqrt() * mag_b.sqrt();
     if denom < f32::EPSILON {
-        0.0
+        Some(0.0)
     } else {
-        dot / denom
+        Some(dot / denom)
     }
 }
 
@@ -385,7 +413,7 @@ mod tests {
     #[test]
     fn test_cosine_similarity_identical() {
         let v = vec![1.0, 0.0, 0.0];
-        let score = cosine_similarity(&v, &v);
+        let score = cosine_similarity(&v, &v).expect("same dims must score");
         assert!((score - 1.0).abs() < 1e-6, "identical vectors → 1.0");
     }
 
@@ -393,7 +421,7 @@ mod tests {
     fn test_cosine_similarity_orthogonal() {
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![0.0, 1.0, 0.0];
-        let score = cosine_similarity(&a, &b);
+        let score = cosine_similarity(&a, &b).expect("same dims must score");
         assert!(score.abs() < 1e-6, "orthogonal vectors → 0.0");
     }
 
@@ -401,27 +429,35 @@ mod tests {
     fn test_cosine_similarity_opposite() {
         let a = vec![1.0, 0.0];
         let b = vec![-1.0, 0.0];
-        let score = cosine_similarity(&a, &b);
+        let score = cosine_similarity(&a, &b).expect("same dims must score");
         assert!((score + 1.0).abs() < 1e-6, "opposite vectors → -1.0");
     }
 
     #[test]
     fn test_cosine_similarity_empty() {
-        assert_eq!(cosine_similarity(&[], &[]), 0.0);
+        assert_eq!(cosine_similarity(&[], &[]), Some(0.0));
     }
 
     #[test]
     fn test_cosine_similarity_zero_vector() {
         let a = vec![0.0, 0.0, 0.0];
         let b = vec![1.0, 2.0, 3.0];
-        assert_eq!(cosine_similarity(&a, &b), 0.0, "zero vector → 0.0");
+        assert_eq!(
+            cosine_similarity(&a, &b),
+            Some(0.0),
+            "zero vector → Some(0.0)"
+        );
     }
 
     #[test]
     fn test_cosine_similarity_dimension_mismatch() {
         let a = vec![1.0, 2.0];
         let b = vec![1.0, 2.0, 3.0];
-        assert_eq!(cosine_similarity(&a, &b), 0.0, "mismatched dims → 0.0");
+        assert_eq!(
+            cosine_similarity(&a, &b),
+            None,
+            "mismatched dims → None (skip, never a silent 0.0)"
+        );
     }
 
     #[test]
@@ -436,6 +472,37 @@ mod tests {
         let debug = format!("{result:?}");
         assert!(debug.contains("vault/rust.md"));
         assert!(debug.contains("0.95"));
+    }
+
+    #[tokio::test]
+    async fn search_skips_dimension_mismatched_vectors() {
+        // The stub embedder produces 3-dim query vectors: the 5-dim chunk
+        // simulates a stale mixed-model index entry. It must be skipped —
+        // never ranked with a silent 0.0.
+        let repo = Arc::new(InMemoryNoteRepo::default());
+        repo.chunks.lock().unwrap().extend([
+            NoteChunkVector {
+                note_path: "vault/ok.md".to_owned(),
+                content: "matching model".to_owned(),
+                chunk_index: 0,
+                embedding: vec![0.1, 0.2, 0.3],
+            },
+            NoteChunkVector {
+                note_path: "vault/stale.md".to_owned(),
+                content: "other model".to_owned(),
+                chunk_index: 0,
+                embedding: vec![0.1, 0.2, 0.3, 0.4, 0.5],
+            },
+        ]);
+        let service = test_service(repo);
+
+        let results = service.search("query", 10).await.unwrap();
+        assert_eq!(
+            results.len(),
+            1,
+            "mismatched vector must be skipped, not ranked"
+        );
+        assert_eq!(results[0].note_path, "vault/ok.md");
     }
 
     #[test]
