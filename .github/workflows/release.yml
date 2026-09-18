@@ -40,7 +40,7 @@ jobs:
       # so without this the preflight would validate main instead of the tag.
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
       - name: Resolve release channel
         id: channel
         env:
@@ -59,8 +59,11 @@ jobs:
         # resolves from the dispatch input when present, and from the pushed tag
         # ref otherwise. It used to be push-only because workflow_dispatch
         # checked out a branch, which made the comparison meaningless.
+        # `github.event.inputs.tag`, not the bare `inputs` context: this file also
+        # runs on `push`, and every existing tag/input read here already uses the
+        # github.event form (see steps.channel and the release job).
         env:
-          TAG: ${{ inputs.tag || github.ref_name }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
           TAG_VERSION="${TAG#v}"; TAG_VERSION="${TAG_VERSION%-rc.*}"
           CARGO_VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
@@ -100,7 +103,7 @@ jobs:
       # Same pin as preflight: build the requested tag, never the default branch.
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: ${{ github.event.inputs.tag || github.ref_name }}
 
       - uses: dtolnay/rust-toolchain@1.88.0
         with:
