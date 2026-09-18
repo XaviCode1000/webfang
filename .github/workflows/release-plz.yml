@@ -1,9 +1,20 @@
 # Release-plz — automated version bump + CHANGELOG + Release PR + v* tags.
 #
-# Flow: push to main -> release-plz-release pushes the `v{{ version }}` tag
-# for an already-merged version bump, which triggers release.yml (binaries +
-# GitHub Release). The Release PR itself is created MANUALLY (see #1339):
-# the release-plz-pr job cannot open one, see the note on that job below.
+# Flow: push to main -> release-plz-release pushes the `v{{ version }}` tag for
+# an already-merged version bump -> dispatch-release calls release.yml via
+# workflow_dispatch to build the binaries and publish the GitHub Release.
+#
+# The tag push does NOT trigger release.yml by itself. GitHub suppresses workflow
+# runs caused by events generated with GITHUB_TOKEN, so the tags release-plz
+# pushes as github-actions[bot] never fired release.yml's `push: tags` trigger:
+# v2.1.0 shipped its binaries only via a MANUAL dispatch, and v2.1.1 ended with a
+# tag and no Release at all. workflow_dispatch IS an exception to that
+# suppression, so the hand-off is an explicit call instead of an event.
+# (Verified in-repo: run 35403760298, event=workflow_dispatch,
+# actor=github-actions[bot].)
+#
+# The Release PR itself is created MANUALLY (see #1339): the release-plz-pr job
+# cannot open one, see the note on that job below.
 #
 # Config: release-plz.toml + cliff.toml. No registry publishing (git_only).
 
@@ -23,7 +34,8 @@ env:
 
 jobs:
   # Publish already-merged release commits: pushes the v* tag.
-  # Tag push triggers release.yml for binaries + GitHub Release.
+  # That tag push does NOT trigger release.yml (GITHUB_TOKEN suppression) — the
+  # dispatch-release job below performs the hand-off explicitly.
   release-plz-release:
     name: Release-plz release
     runs-on: ubuntu-latest
@@ -50,6 +62,112 @@ jobs:
           command: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Hand the freshly created tag to release.yml.
+  #
+  # Exists because a tag pushed with GITHUB_TOKEN does not trigger release.yml's
+  # `push: tags` trigger — GitHub suppresses workflow runs for GITHUB_TOKEN events.
+  # workflow_dispatch is an explicit exception, so this is a direct call.
+  #
+  # Runs even when release-plz-release FAILED: the known duplicate-tag 422
+  # (webfang#1341) leaves a correct tag behind while exiting 1, and that tag still
+  # needs its binaries. A cancelled run is skipped instead — a human cancel must
+  # not silently become a release.
+  dispatch-release:
+    name: Dispatch binary release
+    needs: [release-plz-release]
+    if: >-
+      ${{
+        always() &&
+        needs.release-plz-release.result != 'cancelled' &&
+        github.repository_owner == 'XaviCode1000'
+      }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write # required to create the workflow_dispatch run
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          # release-plz pushes the tag at this commit, and the candidate is
+          # resolved with `git tag --points-at HEAD`, so tags must be fetched.
+          fetch-tags: true
+          persist-credentials: false
+      - name: Dispatch release.yml for a tag missing a complete GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Assets release.yml must publish for a release to count as complete
+          # (its build matrix plus SHA256SUMS.txt).
+          EXPECTED_ASSETS=(
+            webfang-x86_64-unknown-linux-gnu.tar.gz
+            webfang-aarch64-unknown-linux-gnu.tar.gz
+            webfang-aarch64-apple-darwin.tar.gz
+            webfang-x86_64-pc-windows-msvc.zip
+            SHA256SUMS.txt
+          )
+
+          # Candidates: release tags created at THIS commit. Deliberately not
+          # `git tag -l 'v*'`: historical tags with no Release exist (v1.0.0), and
+          # release.yml now checks out the tag it is handed, so dispatching the
+          # wrong one would publish a release built from unrelated code.
+          mapfile -t tagged_at_head < <(
+            git tag --points-at HEAD \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$' || true
+          )
+
+          # Fingerprint of a release-plz-created tag: annotated, tagged by the
+          # Actions bot, subject "chore: Release package <crate> version X".
+          # Excludes human tags (v2.0.0 -> tagger Xavi, subject "v2.0.0").
+          candidates=()
+          for t in "${tagged_at_head[@]}"; do
+            tagger=$(git for-each-ref --format='%(taggername)' "refs/tags/$t")
+            subject=$(git tag -l --format='%(contents:subject)' "$t")
+            if [[ "$tagger" == "github-actions[bot]" && "$subject" == "chore: Release package "* ]]; then
+              candidates+=("$t")
+            fi
+          done
+
+          case "${#candidates[@]}" in
+            0)
+              echo "No release-plz tag points at HEAD; nothing to dispatch."
+              exit 0
+              ;;
+            1)
+              TAG="${candidates[0]}"
+              ;;
+            *)
+              echo "::error::multiple release-plz tags point at HEAD: ${candidates[*]} - refusing to guess" >&2
+              exit 1
+              ;;
+          esac
+
+          # Idempotency: skip only a Release that already carries every expected
+          # asset. A Release left incomplete by a failed upload must be retried.
+          if present=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+                        --json assets --jq '.assets[].name' 2>/dev/null); then
+            missing=()
+            for asset in "${EXPECTED_ASSETS[@]}"; do
+              grep -qxF "$asset" <<<"$present" || missing+=("$asset")
+            done
+            if [[ "${#missing[@]}" -eq 0 ]]; then
+              echo "Release $TAG is already complete; nothing to do."
+              exit 0
+            fi
+            echo "Release $TAG exists but is incomplete; missing: ${missing[*]}"
+          fi
+
+          # --ref pins the run to the tag, so release.yml resolves its version and
+          # its Cargo.toml check against the tag rather than against main.
+          gh workflow run release.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$TAG" \
+            -f tag="$TAG"
+          echo "Dispatched release.yml for $TAG"
 
   # Release PR generator. Re-enabled after upstream release-plz 0.3.168 shipped
   # #3058 ("reconstruct git-only releases without creating crate archives"),
