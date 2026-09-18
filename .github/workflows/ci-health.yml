@@ -197,6 +197,13 @@ jobs:
                 fi
               done
           }
+          # Guard: cancelled/skipped/stale runs are noise (e.g. a push run
+          # superseded by the next push). Only `failure` opens/comments and
+          # only `success` closes; anything else exits silently (see #1472).
+          if [ "$PAYLOAD_CONCLUSION" != "failure" ] && [ "$PAYLOAD_CONCLUSION" != "success" ]; then
+            echo "Conclusion=$PAYLOAD_CONCLUSION: no action (not failure/success)."
+            exit 0
+          fi
           case "$PAYLOAD_WORKFLOW" in
             "CI")
               if [ "$PAYLOAD_CONCLUSION" = "success" ]; then
@@ -254,6 +261,8 @@ jobs:
                 gh issue create --title "$title" --body "$(printf '%s\n\nRun: %s\n\nReconciled latest %s on %s.' "$title" "$url" "$wname" "$BRANCH")" --label "$LABEL" --label "$LABEL_AUTO"
               fi
             else
+              # reconcile: only `failure` opens, only `success` closes.
+              # `cancelled` (superseded push) / unknown = no action (#1472).
               echo "$wname: conclusion=$concl, no action."
             fi
           }
