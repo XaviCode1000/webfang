@@ -795,18 +795,35 @@ merge PR to main
          version bump ([workspace.package] in Cargo.toml) + CHANGELOG.md (cliff.toml)
    merge Release PR (human review — the ONE place to polish changelog text)
    └─> release-plz-release job: pushes tag v{{ version }} (single lockstep version)
-         └─> release.yml: 4 binaries + SHA256SUMS + GitHub Release
-             (linux x86_64/aarch64, macOS Apple Silicon, Windows x86_64 —
-             Intel macOS is not built: ONNX Runtime dropped x64 macOS as of
-             1.24.1, so the `ai` feature has no prebuilt to link against)
+         │   The tag push does NOT trigger release.yml — see the note below.
+         └─> dispatch-release job: calls release.yml via workflow_dispatch
+             └─> release.yml: 4 binaries + SHA256SUMS + GitHub Release
+                 (linux x86_64/aarch64, macOS Apple Silicon, Windows x86_64 —
+                 Intel macOS is not built: ONNX Runtime dropped x64 macOS as of
+                 1.24.1, so the `ai` feature has no prebuilt to link against)
 ```
+
+> ⚠️ **The `v*` tag push does NOT trigger `release.yml`, and never did (#1478).** GitHub
+> suppresses workflow runs caused by `GITHUB_TOKEN`-generated events, and `release-plz` pushes
+> the tag as `github-actions[bot]` — so `release.yml`'s `push: tags: v*` trigger never fired for
+> an automated tag. Evidence: `v2.0.0` (human tagger) ran `release.yml` via `event: push`, while
+> `v2.1.0` shipped its binaries only through a **manual** dispatch and `v2.1.1` ended with a tag
+> and **no Release at all**. The hand-off is therefore an explicit `workflow_dispatch` call from
+> the `dispatch-release` job — `workflow_dispatch` and `repository_dispatch` are the documented
+> exceptions to that suppression (proven in-repo: run 35403760298,
+> `actor=github-actions[bot]`). Do not "restore" a tag-push-based hand-off: under `GITHUB_TOKEN`
+> it cannot work.
 
 Configuration lives in `release-plz.toml` (workspace: `git_only = true`, `git_tag_name = "v{{
 version }}"`, `version_group = "webfang"` on every processed crate, `publish = false`) and
 `cliff.toml` (Keep a Changelog sections with the emoji vocabulary).
 
 - All crates share ONE version and ONE tag per release — the tag must keep the `v*` shape or
-  `release.yml` will not trigger (`git_tag_name` is load-bearing).
+  the dispatcher filter and `release.yml` preflight reject it (`git_tag_name` is load-bearing).
+- The hand-off from `release-plz` to `release.yml` is `workflow_dispatch`, never the tag push
+  (see the note above). The dispatcher only ever fires for a tag that both sits at the pushed
+  commit and carries the `release-plz` fingerprint (`tagger=github-actions[bot]` + subject
+  `chore: Release package …`), so historical or human tags are never built and published.
 - `webfang_benchmark` and `webfang_test_utils` are excluded (`release = false`).
 - Breaking changes: declare `BREAKING CHANGE: <why>` in the commit footer → major bump; `feat:`
   → minor; `fix:`/`perf:` → patch.
