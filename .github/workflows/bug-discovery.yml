@@ -140,10 +140,14 @@ jobs:
         # blob (this job provisions only 97M); measure_short_paragraph_loss_on_real_corpus
         # requires WEBFANG_1368_CORPUS, a local corpus dir. Both document their
         # manual contract at their definition sites (see #1436).
+        # Plus sitemap_entry_max_pages_truncates_many_url_fixture: kept RED by
+        # design (TDD evidence of the naive unbounded reading, "never run in
+        # CI"); the GREEN pin sitemap_entry_max_pages_bound_pins_inflight_drain
+        # asserts the real bound (see #1469, W-03).
         run: |
           set -o pipefail
           cargo nextest run --workspace --all-features --run-ignored only --no-fail-fast \
-            -E 'not(test(/session_pool/) | test(/vault_detector/) | test(/cli_binary_test/) | test(/tier_311m_peak_rss_under_budget/) | test(/measure_short_paragraph_loss_on_real_corpus/))' \
+            -E 'not(test(/session_pool/) | test(/vault_detector/) | test(/cli_binary_test/) | test(/tier_311m_peak_rss_under_budget/) | test(/measure_short_paragraph_loss_on_real_corpus/) | test(/sitemap_entry_max_pages_truncates_many_url_fixture/))' \
             --test-threads 2 \
             2>&1 | tee /tmp/ignored-tests-nextest.log
       - name: Publish failure names
