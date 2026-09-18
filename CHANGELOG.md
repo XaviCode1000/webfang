@@ -36,11 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Skip dimension-mismatched vectors instead of silent 0.0 ([#1461](https://github.com/XaviCode1000/webfang/pull/1461))
 - Surface preflight diagnostics, finish exit-code table, pin state-lock sentinel ([#1442](https://github.com/XaviCode1000/webfang/pull/1442))
 
-### 🔧 Other
+### 📦 Other
 
 - Single canonical literal per SSRF hatch family ([#1372](https://github.com/XaviCode1000/webfang/pull/1372))
 - Canonical entry_guard_off helper + narrow #1308 rule text ([#1413](https://github.com/XaviCode1000/webfang/pull/1413))
-- Release-plz advisory + durable Miri flags (PRs #1416 + #1417) ([#1425](https://github.com/XaviCode1000/webfang/pull/1425))
+- Release-plz advisory + durable Miri flags (#1425, PRs #1416 + #1417)
 - Gate quanta-CPUID victims behind cfg_attr(miri, ignore) ([#1454](https://github.com/XaviCode1000/webfang/pull/1454))
 
 ### 🧪 Testing
