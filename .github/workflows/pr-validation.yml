@@ -113,6 +113,13 @@ jobs:
         run: |
           set -euo pipefail
           HEAD_REF=$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefName --jq '.headRefName')
+          # Exempt release-plz bot branches: `chore/release-<ISO-timestamp>Z`
+          # carries uppercase T/Z and colons that the human branch regex
+          # below never accepted (see #1474: PR #1463 blocked). Bot-owned
+          # release flow, not a human naming violation.
+          case "$HEAD_REF" in
+            chore/release-*) echo "OK: release-plz bot branch (exempt)."; exit 0 ;;
+          esac
           if ! printf '%s' "$HEAD_REF" | grep -qE '^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert)/[a-z0-9._-]+$'; then
             echo "::error::La rama '$HEAD_REF' debe seguir el patron type/description (ej: fix/mi-bug)."
             exit 1
