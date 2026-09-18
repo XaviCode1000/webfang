@@ -35,7 +35,12 @@ jobs:
     outputs:
       prerelease: ${{ steps.channel.outputs.prerelease }}
     steps:
+      # Pin the checkout to the tag being released. On workflow_dispatch the
+      # default checkout resolves to the ref the run was started from (a branch),
+      # so without this the preflight would validate main instead of the tag.
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
       - name: Resolve release channel
         id: channel
         env:
@@ -50,14 +55,17 @@ jobs:
             exit 1
           fi
       - name: Verify Cargo.toml matches tag
-        # Only on tag push: on workflow_dispatch the checkout is a branch,
-        # so the comparison is meaningless (manual test runs keep working).
-        if: github.event_name == 'push'
+        # Valid on every trigger now that the checkout is pinned to the tag: TAG
+        # resolves from the dispatch input when present, and from the pushed tag
+        # ref otherwise. It used to be push-only because workflow_dispatch
+        # checked out a branch, which made the comparison meaningless.
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          TAG_VERSION="${GITHUB_REF_NAME#v}"; TAG_VERSION="${TAG_VERSION%-rc.*}"
+          TAG_VERSION="${TAG#v}"; TAG_VERSION="${TAG_VERSION%-rc.*}"
           CARGO_VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
           [[ "$TAG_VERSION" == "$CARGO_VERSION" ]] || {
-            echo "::error::${GITHUB_REF_NAME} no coincide con Cargo.toml (${CARGO_VERSION})" >&2; exit 1; }
+            echo "::error::${TAG} no coincide con Cargo.toml (${CARGO_VERSION})" >&2; exit 1; }
 
   # ============================================================================
   # BUILD: Cross-compile for all platforms
@@ -89,7 +97,10 @@ jobs:
             archive: zip
 
     steps:
+      # Same pin as preflight: build the requested tag, never the default branch.
       - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
 
       - uses: dtolnay/rust-toolchain@1.88.0
         with:
