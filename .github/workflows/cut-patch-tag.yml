@@ -2,8 +2,14 @@ name: Cut patch tag (manual)
 
 # The ONLY action that creates a tag on support/*. Always manual
 # (workflow_dispatch): patch releases are maintainer decisions, never
-# reactions to push. Tag push triggers release.yml, whose preflight
-# re-verifies Cargo.toml == tag as defense in depth.
+# reactions to push.
+#
+# The tag push does NOT trigger release.yml: GitHub suppresses workflow runs for
+# GITHUB_TOKEN-generated events, and this workflow pushes the tag with the
+# Actions token, so release.yml's `push: tags` trigger never fires here — the
+# same restriction that stranded v2.1.1 (#1478). The hand-off is therefore an
+# explicit workflow_dispatch below, the pattern release-plz.yml uses.
+# release.yml's preflight re-verifies Cargo.toml == tag as defense in depth.
 on:
   workflow_dispatch:
     inputs:
@@ -18,6 +24,7 @@ on:
 
 permissions:
   contents: write
+  actions: write # required to dispatch release.yml
 
 jobs:
   tag:
@@ -43,3 +50,18 @@ jobs:
         run: |
           git tag "v${{ inputs.version }}"
           git push origin "v${{ inputs.version }}"
+      - name: Dispatch release.yml for the new tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: "v${{ inputs.version }}"
+        run: |
+          set -euo pipefail
+          # --ref pins the run to the tag, so release.yml resolves its version and
+          # its Cargo.toml check against the tag rather than against main. The
+          # checkout pin in release.yml (ref: github.event.inputs.tag) is the
+          # second half of that guarantee — see #1478.
+          gh workflow run release.yml \
+            --repo "$GITHUB_REPOSITORY" \
+            --ref "$TAG" \
+            -f tag="$TAG"
+          echo "Dispatched release.yml for $TAG"
