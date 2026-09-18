@@ -51,12 +51,24 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  # KNOWN ISSUE (webfang#1337): this job fails whenever there is something to
-  # release. In git_only mode release-plz runs `cargo package --allow-dirty
-  # --workspace` in a worktree at the last release tag, and our inter-crate deps
-  # are { path, version } on crates that are never published (binaries-only), so
-  # crates.io resolution can never succeed. Manual Release PRs are the operating
-  # convention (see #1339) until release-plz supports skipping the packaging step.
+  # Release PR generator. Re-enabled after upstream release-plz 0.3.168 shipped
+  # #3058 ("reconstruct git-only releases without creating crate archives"),
+  # merged upstream 2026-09-17 — the exact step that made this job
+  # structurally unsatisfiable (webfang#1387/#1337): in git_only mode the
+  # next-version determination ran `cargo package --workspace` in a worktree at
+  # the last `v*` tag, and our inter-crate deps are { path, version } on crates
+  # that are never published (binaries-only), so crates.io resolution could
+  # never succeed.
+  #
+  # Verified 2026-09-18 with CLI 0.3.168 against a clone of main: next-version
+  # determination completed for all 6 packages (2.1.0 → 2.1.1) with zero
+  # `cargo package` invocation. `release-plz/action@v0.5` is intentionally
+  # unpinned and resolves the latest CLI, so no pin is needed here.
+  #
+  # `continue-on-error` is deliberately GONE (webfang#1476): while it was set,
+  # the job reported `completed/success` over a logged
+  # `##[error]Process completed with exit code 1` (run 35063811850) — it removed
+  # the failure signal AND kept the green, which is worse than a red job.
   release-plz-pr:
     name: Release-plz PR
     runs-on: ubuntu-latest
@@ -81,10 +93,8 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Run release-plz
-        # continue-on-error: true  # Advisory: webfang#1387; upstream release-plz#3054 to #3058
         uses: release-plz/action@v0.5
         with:
           command: release-pr
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: true
