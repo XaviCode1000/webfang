@@ -56,12 +56,33 @@ jobs:
           persist-credentials: false
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+      # The duplicate-tag 422 (webfang#1341) makes `release-plz release` exit 1
+      # AFTER it has created the correct tag, inside the SAME run — measured on
+      # v2.1.1, where the tag is authored by this bot at 18:04:23, inside the run
+      # window 18:03:58-18:04:43. With git_only + publish=false +
+      # git_release_enable=false (release-plz.toml), the tag IS the entire product
+      # of this job, so the outcome is decided by VERIFYING that tag — not by the
+      # exit code of a command whose only side effect is that tag.
+      #
+      # This is NOT the `continue-on-error` pattern removed in webfang#1476. There,
+      # the job reported success with NOTHING re-evaluating the failure. Here the
+      # failure is re-evaluated by the step right below, which fails the job on
+      # anything that is not a verified correct tag. Green means verified tag.
       - name: Run release-plz
+        id: release
+        continue-on-error: true
         uses: release-plz/action@v0.5
         with:
           command: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # The decision lives in scripts/verify-release-tag.sh: it is testable there
+      # (a bash block embedded in YAML is not), and it keeps the trust predicate in
+      # one place. It fails the job on anything that is not a verified correct tag.
+      - name: Verify the release tag
+        env:
+          RELEASE_OUTCOME: ${{ steps.release.outcome }}
+        run: bash scripts/verify-release-tag.sh
 
   # Hand the freshly created tag to release.yml.
   #
@@ -115,22 +136,14 @@ jobs:
           # `git tag -l 'v*'`: historical tags with no Release exist (v1.0.0), and
           # release.yml now checks out the tag it is handed, so dispatching the
           # wrong one would publish a release built from unrelated code.
-          mapfile -t tagged_at_head < <(
-            git tag --points-at HEAD \
-              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$' || true
-          )
-
-          # Fingerprint of a release-plz-created tag: annotated, tagged by the
-          # Actions bot, subject "chore: Release package <crate> version X".
-          # Excludes human tags (v2.0.0 -> tagger Xavi, subject "v2.0.0").
-          candidates=()
-          for t in "${tagged_at_head[@]}"; do
-            tagger=$(git for-each-ref --format='%(taggername)' "refs/tags/$t")
-            subject=$(git tag -l --format='%(contents:subject)' "$t")
-            if [[ "$tagger" == "github-actions[bot]" && "$subject" == "chore: Release package "* ]]; then
-              candidates+=("$t")
-            fi
-          done
+          # Candidates: the release-plz tags created at THIS commit. The trust
+          # predicate (annotated + github-actions[bot] + "chore: Release package
+          # ...") lives in scripts/release-plz-tags-at-head.sh, shared with the
+          # release-tag verification above so the two cannot drift apart. It
+          # deliberately excludes human tags: v1.0.0 has no Release, and
+          # release.yml checks out the tag it is handed, so dispatching the wrong
+          # one would publish a release built from unrelated code.
+          mapfile -t candidates < <(bash scripts/release-plz-tags-at-head.sh)
 
           case "${#candidates[@]}" in
             0)
