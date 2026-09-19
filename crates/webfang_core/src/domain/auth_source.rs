@@ -123,6 +123,21 @@ fn default_identity_path() -> std::path::PathBuf {
 
 /// Resuelve la identidad `age`: env si está configurado (override de CI),
 /// si no el archivo local por defecto. Verifica permisos 0600 en el archivo.
+///
+/// Operativa (contrato del wizard):
+/// - **Generación**: la crea el wizard en el primer run (`age` genera la
+///   identity, escribe con 0600). Si `~/.config/webfang/` no es escribible,
+///   el wizard falla con el `io::Error` original — no hay fallback silencioso.
+/// - **Pérdida**: si `identity.key` se pierde, TODAS las credenciales cifradas
+///   con ella quedan inaccesibles. La única salida es re-configurar el
+///   provider (nueva identity + re-cifrar). Esto es by-design (age no tiene
+///   recovery) y el wizard debe decirlo al generar, no descubrirse en
+///   producción.
+/// - **Fail closed en permisos**: filesystems sin permisos POSIX (FAT32,
+///   `/mnt/c` de WSL, NFS sin ACL) reportan modos laxos siempre y el chequeo
+///   `0600` los rechaza — deliberado. La salida es mover el config a un FS
+///   POSIX o usar el override de env de forma consciente, nunca relajar el
+///   chequeo global.
 fn resolve_identity() -> Result<age::x25519::Identity, AuthError> {
     use std::io::Read as _;
 

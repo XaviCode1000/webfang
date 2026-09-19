@@ -93,11 +93,24 @@ impl OpenAiLlmClient {
             .secure_client(builder)
             .build()
             .map_err(|e| ScraperError::Config(format!("no se pudo crear el cliente LLM: {e}")))?;
-        Ok(Self {
+        Ok(Self::with_http(client, base_url, api_key))
+    }
+
+    /// Variante con un cliente HTTP ya construido (cliente compartido del
+    /// proceso o wiremock en tests).
+    ///
+    /// # Contrato SSRF
+    ///
+    /// El caller es responsable de que el cliente inyectado esté protegido:
+    /// `build_default_http_client` (provider) aplica el `SsrfGuard`; los tests
+    /// que apuntan a wiremock loopback usan los hatches de `webfang_test_utils`.
+    #[must_use]
+    pub fn with_http(client: wreq::Client, base_url: Url, api_key: ApiKey) -> Self {
+        Self {
             client,
             base_url,
             api_key,
-        })
+        }
     }
 }
 
