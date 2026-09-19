@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-09-19
+
+
+### 🎉 Added
+
+- P0-001 session-pool remediation with mock-measured evidence ([#1457](https://github.com/XaviCode1000/webfang/pull/1457))
 ## [2.1.1] - 2026-09-18
 
 
