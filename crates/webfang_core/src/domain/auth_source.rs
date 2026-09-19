@@ -50,7 +50,7 @@ pub enum AuthError {
 }
 
 /// De dónde se obtiene la API key de un proveedor.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum AuthSource {
     /// Credencial en el almacén de secretos del sistema
