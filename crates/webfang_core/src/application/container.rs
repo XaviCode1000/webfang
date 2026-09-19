@@ -801,6 +801,14 @@ impl Container {
     /// Takes `Arc<dyn LlmPort>` — the concrete `OpenAiLlmClient` is built in
     /// the CLI/MCP layer and injected here. Absence stays the default no-op.
     ///
+    /// Política `None` (contrato ai-providers): el Container NO falla en
+    /// startup sin provider. El servicio que necesita LLM
+    /// (`LlmExtractionService::extract`) devuelve `ScraperError::Config`
+    /// honesto en la llamada (`absent_llm_port_is_config_error`). La capa
+    /// binaria (CLI/MCP) decide si la ausencia es error de arranque según su
+    /// propio argv (p. ej. `--extract-with-llm` sin provider configurado),
+    /// nunca el Container.
+    ///
     /// Injection is at-most-once ([`OnceCell`] semantics): a second call keeps
     /// the first port.
     pub fn with_llm_port(self, port: Arc<dyn LlmPort>) -> Self {

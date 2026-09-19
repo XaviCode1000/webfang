@@ -128,11 +128,14 @@ fn default_identity_path() -> std::path::PathBuf {
 /// - **Generación**: la crea el wizard en el primer run (`age` genera la
 ///   identity, escribe con 0600). Si `~/.config/webfang/` no es escribible,
 ///   el wizard falla con el `io::Error` original — no hay fallback silencioso.
-/// - **Pérdida**: si `identity.key` se pierde, TODAS las credenciales cifradas
-///   con ella quedan inaccesibles. La única salida es re-configurar el
-///   provider (nueva identity + re-cifrar). Esto es by-design (age no tiene
-///   recovery) y el wizard debe decirlo al generar, no descubrirse en
-///   producción.
+///   El wizard lo dice en voz alta (doc `ai-providers-design.md` §8a): sin ese
+///   mensaje el usuario asume "seguro por magia" y nunca hace backup.
+/// - **Pérdida → rotate, no "re-configurar"**: si `identity.key` se pierde,
+///   TODOS los ciphertexts cifrados con ella quedan indescifrables a la vez
+///   (tantos providers como usen esa identity). La única salida es el comando
+///   explícito de **rotate** del wizard: nueva identity + re-cifrar lo que el
+///   usuario provea de nuevo + borrar los `.age` huérfanos. "Re-configurar"
+///   deja archivos muertos tirados que parecen estar en uso.
 /// - **Fail closed en permisos**: filesystems sin permisos POSIX (FAT32,
 ///   `/mnt/c` de WSL, NFS sin ACL) reportan modos laxos siempre y el chequeo
 ///   `0600` los rechaza — deliberado. La salida es mover el config a un FS

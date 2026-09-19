@@ -182,6 +182,30 @@ pub struct DetectedStore {
 
 **No es un runtime resolver.** Durante la ejecución normal, `AuthSource::resolve()` es quien obtiene las credenciales. `LocalSecretStore::detect()` solo se usa en el wizard de setup inicial para guiar al usuario.
 
+### 8. Wizard — contrato UX (implementación pendiente, decisiones cerradas)
+
+Las decisiones de producto del wizard, fijadas en revisión antes de escribirlo:
+
+- **(a) Primer run en Linux: genera la identity automáticamente** (modelo SSH:
+  archivo con 0600, no passphrase interactiva). Pero el wizard **lo dice en
+  voz alta**: "voy a crear una identity en `~/.config/webfang/identity.key`;
+  si la perdés, vas a tener que rotar tus providers". Sin ese mensaje,
+  `EncryptedFile` parece "seguro por magia" y el usuario nunca hace backup.
+- **(b) `None` no falla en startup.** El Container nunca falla sin provider; el
+  servicio falla con `ScraperError::Config` honesto en la llamada. La capa
+  binaria (CLI/MCP) decide si la ausencia es error de arranque según su argv
+  (p. ej. `--extract-with-llm` sin provider), nunca el Container.
+- **(c) Dos flujos, sin abstracción unificadora.** Linux (`EncryptedFile`:
+  identity + permisos + rotación) y macOS/Windows (`Keyring` si el backend
+  responde) son flujos distintos. El wizard los implementa por separado; una
+  abstracción común que "simplifique" el caso Linux es un bug de diseño.
+- **Rotate, no "re-configurar".** Si `identity.key` se pierde, TODOS los
+  ciphertexts cifrados con ella quedan indescifrables a la vez (tantos
+  providers como usen esa identity). El wizard ofrece un comando explícito de
+  **rotate**: genera nueva identity, re-cifra lo que el usuario provea de
+  nuevo, borra los `.age` huérfanos. "Re-configurar" deja archivos muertos
+  tirados que parecen estar en uso.
+
 ---
 
 ## Flujo de implementación propuesto
