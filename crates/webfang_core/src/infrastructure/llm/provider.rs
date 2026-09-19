@@ -90,11 +90,16 @@ pub fn build_default_http_client() -> Result<wreq::Client, ProviderInitError> {
 /// Sin `Debug` deliberado: contiene la credencial resuelta (vía el cliente).
 /// Los diagnósticos usan `config()` + `id()`, nunca el secreto.
 ///
-/// Política `None` (contrato del Container): la ausencia de provider NO falla
-/// en startup. El servicio que lo necesita
-/// (`LlmExtractionService::extract`) falla con `ScraperError::Config` honesto
-/// en la llamada. El Container nunca inventa un provider ni degrada en
-/// silencio: `llm_port()` es `None` hasta que la capa binaria inyecta uno.
+/// Política `None` (contrato del Container): el Container es permisivo — la
+/// ausencia de provider NO falla en construcción. Pero permisivo no es
+/// opcional: todo binario de servicio que arranque con un feature LLM
+/// habilitado DEBE validar `llm_port().is_some()` en startup y salir con
+/// error claro si falta. Si ningún binario valida, el fallo llega tarde en
+/// la primera llamada (`ScraperError::Config` en `extract`) — daemon que dice
+/// OK al arrancar y falla cuando un usuario/cron invoca el feature, con
+/// reintentos amplificando antes de que nadie lo note.
+/// El Container nunca inventa un provider ni degrada en silencio:
+/// `llm_port()` es `None` hasta que la capa binaria inyecta uno.
 pub struct OpenAiCompatibleProvider {
     client: OpenAiLlmClient,
     config: ProviderConfig,

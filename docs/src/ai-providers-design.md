@@ -191,10 +191,15 @@ Las decisiones de producto del wizard, fijadas en revisión antes de escribirlo:
   voz alta**: "voy a crear una identity en `~/.config/webfang/identity.key`;
   si la perdés, vas a tener que rotar tus providers". Sin ese mensaje,
   `EncryptedFile` parece "seguro por magia" y el usuario nunca hace backup.
-- **(b) `None` no falla en startup.** El Container nunca falla sin provider; el
-  servicio falla con `ScraperError::Config` honesto en la llamada. La capa
-  binaria (CLI/MCP) decide si la ausencia es error de arranque según su argv
-  (p. ej. `--extract-with-llm` sin provider), nunca el Container.
+- **(b) Container permisivo, binario valida en startup.** El Container NO falla
+  en construcción sin provider; pero todo binario de servicio que arranque con
+  un feature LLM habilitado DEBE validar `llm_port().is_some()` en startup y
+  salir con error claro si falta (falla en startup si el feature está
+  habilitado; no falla si no lo está). Sin esa validación el fallo llega tarde
+  en la primera llamada — daemon que dice OK al arrancar y falla cuando un
+  usuario/cron invoca el feature, con reintentos amplificando antes de que
+  nadie lo note. `absent_llm_port_is_config_error` testea el comportamiento
+  del Container, no lo justifica como contrato del servicio.
 - **(c) Dos flujos, sin abstracción unificadora.** Linux (`EncryptedFile`:
   identity + permisos + rotación) y macOS/Windows (`Keyring` si el backend
   responde) son flujos distintos. El wizard los implementa por separado; una
