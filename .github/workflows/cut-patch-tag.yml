@@ -35,21 +35,26 @@ jobs:
           ref: ${{ inputs.branch }}
           fetch-tags: true
       - name: Verify contract
+        env:
+          INPUT_BRANCH: ${{ inputs.branch }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           set -euo pipefail
-          case "${{ inputs.branch }}" in
+          case "$INPUT_BRANCH" in
             support/*) ;;
             *) echo "::error::solo ramas support/*" >&2; exit 1 ;;
           esac
-          [[ "${{ inputs.version }}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::versión X.Y.Z" >&2; exit 1; }
-          git rev-parse "v${{ inputs.version }}" >/dev/null 2>&1 && { echo "::error::tag ya existe" >&2; exit 1; }
+          [[ "$INPUT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::versión X.Y.Z" >&2; exit 1; }
+          git rev-parse "v$INPUT_VERSION" >/dev/null 2>&1 && { echo "::error::tag ya existe" >&2; exit 1; }
           CARGO_VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
-          [[ "$CARGO_VERSION" == "${{ inputs.version }}" ]] || {
-            echo "::error::bump el commit primero: Cargo.toml=${CARGO_VERSION}, pedido=${{ inputs.version }}" >&2; exit 1; }
+          [[ "$CARGO_VERSION" == "$INPUT_VERSION" ]] || {
+            echo "::error::bump el commit primero: Cargo.toml=${CARGO_VERSION}, pedido=$INPUT_VERSION" >&2; exit 1; }
       - name: Tag and push
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          git tag "v${{ inputs.version }}"
-          git push origin "v${{ inputs.version }}"
+          git tag "v$INPUT_VERSION"
+          git push origin "v$INPUT_VERSION"
       - name: Dispatch release.yml for the new tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

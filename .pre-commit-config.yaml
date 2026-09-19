@@ -75,6 +75,18 @@ repos:
         files: ^\.github/workflows/.*\.ya?ml$
         pass_filenames: false
 
+      # Auditoría estática de seguridad de GitHub Actions (zizmor).
+      # Detecta inyección de plantillas, persistencia indebida de credenciales
+      # y permisos excesivos.
+      - id: zizmor
+        name: zizmor (security audit)
+        description: Security audit GitHub Actions workflows
+        entry: zizmor
+        args: ["--config", ".github/zizmor.yml", "--min-severity", "high", ".github/workflows"]
+        language: system
+        files: ^\.github/workflows/.*\.ya?ml$
+        pass_filenames: false
+
   # =============================================================================
   # Universal hooks
   # =============================================================================

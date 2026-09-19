@@ -109,7 +109,8 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - uses: Swatinem/rust-cache@v2
+      # zizmor: ignore[cache-poisoning] — save-if ensures cache writes ONLY happen on git tags, not manual dispatches.
+      - uses: Swatinem/rust-cache@v2 # zizmor: ignore[cache-poisoning]
         with:
           key: release-${{ matrix.target }}
           # Tag-only saves: manual workflow_dispatch test runs restore the

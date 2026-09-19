@@ -30,7 +30,7 @@
 name: CI Health Observer
 
 on:
-  workflow_run:
+  workflow_run: # zizmor: ignore[dangerous-triggers]
     workflows: ["CI", "Production Bug Discovery", "Benches"]
     types: [completed]
   schedule:

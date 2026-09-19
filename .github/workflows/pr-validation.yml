@@ -23,16 +23,18 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEAD_REF: ${{ github.event.pull_request.head.ref || github.event.merge_group.head_ref }}
           REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          HEAD_OWNER: ${{ github.event.pull_request.head.repo.owner.login || github.repository_owner }}
         run: |
           set -euo pipefail
           if [ -z "$HEAD_REF" ]; then
-            echo "::error::No se pudo resolver el head ref del PR (evento: ${{ github.event_name }})."
+            echo "::error::No se pudo resolver el head ref del PR (evento: $EVENT_NAME)."
             exit 1
           fi
           # REST API (deterministic): the "head" filter requires user:branch format.
-          PR=$(gh api "repos/$REPO/pulls?state=open&head=${{ github.event.pull_request.head.repo.owner.login || github.repository_owner }}:$HEAD_REF" --jq '.[0].number' 2>&1 || true)
+          PR=$(gh api "repos/$REPO/pulls?state=open&head=$HEAD_OWNER:$HEAD_REF" --jq '.[0].number' 2>&1 || true)
           if ! printf '%s' "$PR" | grep -qE '^[0-9]+$'; then
-            echo "::error::No se pudo resolver el PR para la rama '$HEAD_REF' (evento: ${{ github.event_name }}). Detalle: $PR"
+            echo "::error::No se pudo resolver el PR para la rama '$HEAD_REF' (evento: $EVENT_NAME). Detalle: $PR"
             exit 1
           fi
           echo "pr=$PR" >> "$GITHUB_OUTPUT"
