@@ -282,6 +282,20 @@ jobs:
           SC_EXCLUDE="$(IFS=,; echo "${SHELLCHECK_IGNORE[*]}")"
           "$DIR/shellcheck" -x --exclude="$SC_EXCLUDE" --format=gcc scripts/*.sh
 
+      # Static analysis security testing for GitHub Actions workflows (zizmor).
+      # Catches template injection, credential persistence (artipacked),
+      # excessive permissions, and dangerous workflow triggers.
+      - name: Security audit GitHub Actions workflows (zizmor)
+        run: |
+          ZM_VERSION=1.30.1
+          ZM_SHA256=e65324f4430c2717591937edcec90ccbefaf14c174f8ec9415e03ca875b46e1a
+          DIR=$(mktemp -d)
+          curl -fsSL "https://github.com/zizmorcore/zizmor/releases/download/v${ZM_VERSION}/zizmor-x86_64-unknown-linux-gnu.tar.gz" -o "${DIR}/zizmor.tar.gz"
+          echo "${ZM_SHA256}  ${DIR}/zizmor.tar.gz" | sha256sum -c -
+          tar -xzf "${DIR}/zizmor.tar.gz" -C "$DIR" zizmor
+          "$DIR/zizmor" --version
+          "$DIR/zizmor" --config .github/zizmor.yml --min-severity high .github/workflows
+
   # ============================================================================
   # TIER 1: FORMAT GATE (30-60 seconds)
   # No compilation needed — instant feedback on style.

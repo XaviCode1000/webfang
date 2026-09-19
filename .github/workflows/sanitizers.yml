@@ -4,6 +4,9 @@ on:
     - cron: "0 3 * * 1"  # Lunes 3AM (no bloquea PRs)
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+
 jobs:
   miri:
     runs-on: ubuntu-latest
@@ -14,6 +17,8 @@ jobs:
       RUSTUP_TOOLCHAIN: nightly
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@nightly
         with: { components: miri }
       - run: cargo miri setup
@@ -31,9 +36,11 @@ jobs:
         continue-on-error: true
       - name: Publish Miri Summary
         if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: |
           echo "## Miri Results" >> $GITHUB_STEP_SUMMARY
-          echo "Status: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "Status: $JOB_STATUS" >> $GITHUB_STEP_SUMMARY
 
   # ThreadSanitizer with full std instrumentation (-Zbuild-std).
   # Without -Zbuild-std, ABI mismatch between instrumented and non-instrumented
@@ -48,6 +55,8 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - name: Install nightly + rust-src
         run: rustup toolchain install nightly --component rust-src
       - name: Install cmake
@@ -74,10 +83,12 @@ jobs:
           fi
       - name: Publish TSan Summary
         if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: |
           echo "## ThreadSanitizer Results (-Zbuild-std)" >> $GITHUB_STEP_SUMMARY
           echo "Scope: infrastructure::bridge + infrastructure::network::session_pool + infrastructure::downloader::resource_governor" >> $GITHUB_STEP_SUMMARY
-          echo "Status: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "Status: $JOB_STATUS" >> $GITHUB_STEP_SUMMARY
       - name: Upload TSan output
         uses: actions/upload-artifact@v5
         if: always()
@@ -89,6 +100,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@nightly
       - name: LeakSanitizer
         run: |
@@ -97,6 +110,8 @@ jobs:
         continue-on-error: true
       - name: Publish LSan Summary
         if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
         run: |
           echo "## LeakSanitizer Results" >> $GITHUB_STEP_SUMMARY
-          echo "Status: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "Status: $JOB_STATUS" >> $GITHUB_STEP_SUMMARY

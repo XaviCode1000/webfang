@@ -1,0 +1,14 @@
+# Configuration for zizmor (GitHub Actions SAST security linter)
+# https://docs.zizmor.sh/configuration/
+
+rules:
+  # Unpinned actions (@v4, @v5) are tracked as supply chain debt.
+  # Disabled until a dedicated commit-SHA pinning sweep is scheduled.
+  unpinned-uses:
+    disable: true
+
+  # ci-health is a read-only observer triggered on workflow_run completions on main.
+  # It does not download untrusted PR artifacts or run untrusted code.
+  dangerous-triggers:
+    ignore:
+      - .github/workflows/ci-health.yml

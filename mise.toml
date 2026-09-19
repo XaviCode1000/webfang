@@ -25,6 +25,7 @@ typos = "1.42.3"                       # spell checker (aqua shorthand, pinned f
 "cargo:bacon" = "latest"                # watch-mode background checker (uses repo bacon.toml)
 "aqua:rhysd/actionlint" = "1.7.12"      # GitHub Actions workflow linter — catches block-scalar nesting bugs YAML parsers miss (#836)
 "aqua:koalaman/shellcheck" = "0.11.0"   # required by actionlint's shellcheck rule — without it, `run: |` nesting bugs go undetected (#836)
+"aqua:zizmorcore/zizmor" = "1.30.1"     # GitHub Actions security linter (SAST) — catches injection, credentials & permission bugs
 "aqua:rust-lang/mdBook" = "0.4.51"
 "aqua:jgm/pandoc" = "3.10.1"
 
