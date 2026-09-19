@@ -11,7 +11,7 @@ members = [
 exclude = ["fuzz"]
 
 [workspace.package]
-version = "2.1.1"
+version = "2.2.0"
 edition = "2021"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
@@ -23,10 +23,10 @@ homepage = "https://github.com/XaviCode1000/webfang"
 # Internal crates — version is REQUIRED for `cargo package` (used by the
 # release-plz git_only change detection). release-plz keeps these in sync
 # with the workspace version on every bump.
-webfang_core = { path = "crates/webfang_core", version = "2.1.1" }
-webfang_ai = { path = "crates/webfang_ai", version = "2.1.1" }
-webfang_mcp = { path = "crates/webfang_mcp", version = "2.1.1" }
-webfang_cli = { path = "crates/webfang_cli", version = "2.1.1" }
+webfang_core = { path = "crates/webfang_core", version = "2.2.0" }
+webfang_ai = { path = "crates/webfang_ai", version = "2.2.0" }
+webfang_mcp = { path = "crates/webfang_mcp", version = "2.2.0" }
+webfang_cli = { path = "crates/webfang_cli", version = "2.2.0" }
 webfang_test_utils = { path = "crates/webfang_test_utils" }
 
 # Async runtime
