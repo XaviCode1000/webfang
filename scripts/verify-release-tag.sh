@@ -25,7 +25,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TAGS_SCRIPT="$REPO_ROOT/scripts/release-plz-tags-at-head.sh"
+TAGS_SCRIPT="$REPO_ROOT/scripts/release-plz-tags.sh"
 
 # `steps.release.outcome` is the RAW result, before `continue-on-error` rewrites
 # it — which is exactly what we need, since the whole point is to re-evaluate it.
@@ -53,7 +53,7 @@ case "${#trusted[@]}" in
     # — the exact shape that lost v2.1.1.
     mapfile -t unrecognised < <(bash "$TAGS_SCRIPT" --any)
     if [[ "${#unrecognised[@]}" -gt 0 ]]; then
-      echo "::error::${unrecognised[*]} points at HEAD but does not match the release-plz fingerprint (annotated + github-actions[bot] + 'chore: Release package ...'). Either release-plz changed its tag format - update scripts/release-plz-tags-at-head.sh - or a human tag landed here. This tag would ship with no binaries." >&2
+      echo "::error::${unrecognised[*]} points at HEAD but does not match the release-plz fingerprint (annotated + github-actions[bot] + 'chore: Release package ...'). Either release-plz changed its tag format - update scripts/release-plz-tags.sh - or a human tag landed here. This tag would ship with no binaries." >&2
       exit 1
     fi
     echo "No releasable tag at HEAD and release-plz succeeded: this push carried no version bump. Nothing to release."
