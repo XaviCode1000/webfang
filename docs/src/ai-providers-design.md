@@ -200,6 +200,9 @@ Las decisiones de producto del wizard, fijadas en revisión antes de escribirlo:
   usuario/cron invoca el feature, con reintentos amplificando antes de que
   nadie lo note. `absent_llm_port_is_config_error` testea el comportamiento
   del Container, no lo justifica como contrato del servicio.
+  **Caducidad del DEBE**: el lint/test que lo enforce nace con el primer
+  binario que exponga un flag tipo `--extract-with-llm` — ese PR no mergea sin
+  él. Un DEBE sin fecha es el octavo binario sin validación que nadie notó.
 - **(c) Dos flujos, sin abstracción unificadora.** Linux (`EncryptedFile`:
   identity + permisos + rotación) y macOS/Windows (`Keyring` si el backend
   responde) son flujos distintos. El wizard los implementa por separado; una

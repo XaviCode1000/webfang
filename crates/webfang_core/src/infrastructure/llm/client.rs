@@ -350,4 +350,83 @@ mod tests {
             "finish_reason=length must be Validation, got: {err:?}"
         );
     }
+
+    /// Fixture de contrato: el wire shape exacto que sale por el cable.
+    ///
+    /// Fija los 5 campos (`model`, `messages`, `response_format`,
+    /// `temperature`, `max_tokens`) contra un golden. Cualquier cambio de
+    /// serialización — campo agregado, renombrado, `temperature` distinta —
+    /// rompe este test ANTES de romper compatibilidad con OpenAI/Ollama/vLLM
+    /// en producción. El cambio entonces se decide explícitamente (actualizar
+    /// el golden + justificar), nunca en silencio.
+    #[tokio::test]
+    async fn wire_shape_matches_contract_golden() {
+        use std::sync::{Arc, Mutex};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, Respond};
+
+        struct Capture(Arc<Mutex<Option<serde_json::Value>>>);
+        impl Respond for Capture {
+            fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+                *self.0.lock().unwrap_or_else(|p| p.into_inner()) =
+                    Some(serde_json::from_slice(&request.body).expect("body es JSON"));
+                ResponseTemplate::new(200).set_body_string(VALID_BODY)
+            }
+        }
+
+        let server = MockServer::start().await;
+        let captured: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(Capture(captured.clone()))
+            .mount(&server)
+            .await;
+
+        client_for(&server)
+            .send_completion(test_request())
+            .await
+            .expect("200 + valid JSON succeeds");
+
+        let body = captured
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .expect("el mock debió capturar el body");
+        let expected = serde_json::json!({
+            "model": "stub-model",
+            "messages": [{"role": "user", "content": "extract"}],
+            "response_format": {"type": "json_object"},
+            "temperature": 0.0,
+            "max_tokens": 64,
+        });
+        assert_eq!(
+            body, expected,
+            "wire shape cambió: actualizar el golden solo con justificación explícita"
+        );
+    }
+
+    /// Fixture de contrato (lado respuesta): los cuerpos reales traen campos
+    /// extra (`id`, `created`, `model`, `system_fingerprint`, ...). El parse
+    /// debe ignorarlos — fija que nadie ponga `deny_unknown_fields` ni haga
+    /// el parse estricto, lo que rompería contra cualquier provider real.
+    #[tokio::test]
+    async fn provider_extra_response_fields_are_ignored() {
+        let server = MockServer::start().await;
+        mount(
+            &server,
+            200,
+            r#"{"id":"chatcmpl-abc123","object":"chat.completion","created":1700000000,
+                "model":"gpt-test-2024","system_fingerprint":"fp_abc",
+                "choices":[{"index":0,"message":{"role":"assistant","content":"{\"items\":[]}"},
+                "logprobs":null,"finish_reason":"stop"}],
+                "usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}"#,
+        )
+        .await;
+        let result = client_for(&server)
+            .send_completion(test_request())
+            .await
+            .expect("campos extra del provider no deben romper el parse");
+        assert_eq!(result.content, r#"{"items":[]}"#);
+        assert_eq!((result.input_tokens, result.output_tokens), (11, 7));
+    }
 }
