@@ -388,11 +388,14 @@ targeted_cargo() {
   # Unit + mock integration/behavioral for the affected crates. Default
   # nextest runs NEVER include #[ignore] model tests, so no AI inference
   # happens here; coverage/release/mutation are main-tier concerns.
+  # --all-features is load-bearing, not strictness: webfang_ai's whole
+  # infrastructure_ai tree (lib AND integration tests) is ai-gated, so
+  # without it a targeted -p run discovers 0 tests and fails vacuous-green.
   # shellcheck disable=SC2068
-  run_step "nextest unit (-p ${pkgs[*]} --lib)" cargo nextest run $(printf -- '-p %s ' ${pkgs[@]}) --lib --test-threads 4 --retries 2
+  run_step "nextest unit (-p ${pkgs[*]} --lib, all features)" cargo nextest run $(printf -- '-p %s ' ${pkgs[@]}) --all-features --lib --test-threads 4 --retries 2
   if [[ "$tests_changed" == "true" || "$crawler_changed" == "true" || "$downloader_changed" == "true" || "$cli_changed" == "true" || "$mcp_changed" == "true" ]]; then
     # shellcheck disable=SC2068
-    run_step "nextest integration (-p ${pkgs[*]} --tests)" cargo nextest run $(printf -- '-p %s ' ${pkgs[@]}) --tests --test-threads 4 --retries 2
+    run_step "nextest integration (-p ${pkgs[*]} --tests, all features)" cargo nextest run $(printf -- '-p %s ' ${pkgs[@]}) --all-features --tests --test-threads 4 --retries 2
   else
     skip_step "nextest integration" "no runtime-area flags (crawler/downloader/cli/mcp/tests)"
   fi

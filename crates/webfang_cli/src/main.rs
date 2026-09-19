@@ -524,6 +524,17 @@ fn semantic_inspector(
     })
 }
 
+/// Map an AI cleaner init failure to its CLI exit: download faults are
+/// transient network errors, everything else is a config error.
+#[cfg(feature = "ai")]
+fn ai_init_error(e: SemanticError) -> CliExit {
+    let msg = format!("No se pudo inicializar el limpiador semántico AI: {e}");
+    match e {
+        SemanticError::Download { .. } => CliExit::NetworkError(msg),
+        _ => CliExit::ConfigError(msg),
+    }
+}
+
 /// Build the AI semantic cleaner and its vault-search ports, surfacing the
 /// cleaner's shared ONNX assets (pool + tokenizer) so the adaptive engine can
 /// reuse them for Tier 2 semantic repair (#702) without a second model load.
@@ -574,6 +585,18 @@ async fn build_ai_cleaner(
         }
     };
 
+    // Engine selection (P0-001 MEASURE, issue #1456): env-first via
+    // `WEBFANG_AI_ENGINE` (`single` | `pool:<N>`), unset meaning `Single`
+    // (today's default — the user made no choice). Set-but-invalid is a loud
+    // startup error, never a silent fallback (#874 discipline shared with
+    // `AI_MODEL_ID` above). No `--ai-engine` flag by design: a flag could
+    // never reach the MCP daemon (no per-run argv), while the env var reaches
+    // both entry points from the shared `webfang_ai` layer.
+    let engine_config = match webfang_ai::infrastructure_ai::EngineConfig::from_env() {
+        Ok(config) => config,
+        Err(e) => return Err(CliExit::ConfigError(e)),
+    };
+
     let model_config = ModelConfig::default()
         .with_model_variant(model_variant)
         .with_relevance_threshold(opts.ai_config.threshold)
@@ -583,27 +606,51 @@ async fn build_ai_cleaner(
         });
 
     match model_config {
-        Ok(config) => match SemanticCleanerImpl::new(config).await {
-            Ok(cleaner) => {
-                // Share the cleaner's ONNX pool + tokenizer (#433) so the
-                // vault-search embedding adapter reuses the SAME model — one
-                // `resolve_model_assets` call, one `InferencePool` on `--ai`.
-                // Extracted before type-erasing the cleaner behind the trait.
-                let (pool, tokenizer) = cleaner.shared_inference();
-                // Surface a second Arc pair for Tier 2 wiring (#702); the vault
-                // ports consume the originals below.
-                let shared = Some((Arc::clone(&pool), Arc::clone(&tokenizer)));
-                let cleaner: Option<Arc<dyn SemanticCleaner>> = Some(Arc::new(cleaner));
-                let mut ports = build_vault_ports(pool, tokenizer).await;
-                ports.cleaner = cleaner.clone();
-                Ok((cleaner, ports, shared))
+        Ok(config) => match engine_config {
+            webfang_ai::infrastructure_ai::EngineConfig::Single => {
+                match SemanticCleanerImpl::new(config).await {
+                    Ok(cleaner) => {
+                        // Share the cleaner's ONNX pool + tokenizer (#433) so the
+                        // vault-search embedding adapter reuses the SAME model — one
+                        // `resolve_model_assets` call, one `InferencePool` on `--ai`.
+                        // Extracted before type-erasing the cleaner behind the trait.
+                        let (pool, tokenizer) = cleaner.shared_inference();
+                        // Surface a second Arc pair for Tier 2 wiring (#702); the vault
+                        // ports consume the originals below.
+                        let shared = Some((Arc::clone(&pool), Arc::clone(&tokenizer)));
+                        let cleaner: Option<Arc<dyn SemanticCleaner>> = Some(Arc::new(cleaner));
+                        let mut ports = build_vault_ports(pool, tokenizer).await;
+                        ports.cleaner = cleaner.clone();
+                        Ok((cleaner, ports, shared))
+                    },
+                    Err(e) => Err(ai_init_error(e)),
+                }
             },
-            Err(e) => {
-                let msg = format!("No se pudo inicializar el limpiador semántico AI: {e}");
-                Err(match e {
-                    SemanticError::Download { .. } => CliExit::NetworkError(msg),
-                    _ => CliExit::ConfigError(msg),
-                })
+            webfang_ai::infrastructure_ai::EngineConfig::Pool { .. } => {
+                // Pool mode (MEASURE plumbing): the N-session engine behind the
+                // same `clean()` seam. The vault-search embedding adapter and
+                // the Tier 2 inspector stay typed to the concrete single
+                // `InferencePool`, so those ports degrade honestly (same as the
+                // `--ai` off path) with a loud warning instead of a second
+                // model load. Default stays `Single`; rollout needs explicit
+                // approval (see `docs/p0-001-n-decision.md`).
+                match SemanticCleanerImpl::new_with_engine_config(config, engine_config).await {
+                    Ok(cleaner) => {
+                        tracing::warn!(
+                            engine = ?engine_config,
+                            "motor AI en modo pool: puertos vault/embedding e inspector \
+                             Tier 2 degradados (seam concreto de sesión única fuera de \
+                             alcance); limpieza AI activa"
+                        );
+                        let cleaner: Option<Arc<dyn SemanticCleaner>> = Some(Arc::new(cleaner));
+                        let ports = webfang_core::application::container::VaultAiPorts {
+                            cleaner: cleaner.clone(),
+                            ..Default::default()
+                        };
+                        Ok((cleaner, ports, None))
+                    },
+                    Err(e) => Err(ai_init_error(e)),
+                }
             },
         },
         Err(e) => Err(CliExit::ConfigError(format!(
