@@ -122,28 +122,15 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Assets release.yml must publish for a release to count as complete
-          # (its build matrix plus SHA256SUMS.txt).
-          EXPECTED_ASSETS=(
-            webfang-x86_64-unknown-linux-gnu.tar.gz
-            webfang-aarch64-unknown-linux-gnu.tar.gz
-            webfang-aarch64-apple-darwin.tar.gz
-            webfang-x86_64-pc-windows-msvc.zip
-            SHA256SUMS.txt
-          )
-
-          # Candidates: release tags created at THIS commit. Deliberately not
-          # `git tag -l 'v*'`: historical tags with no Release exist (v1.0.0), and
-          # release.yml now checks out the tag it is handed, so dispatching the
-          # wrong one would publish a release built from unrelated code.
           # Candidates: the release-plz tags created at THIS commit. The trust
           # predicate (annotated + github-actions[bot] + "chore: Release package
-          # ...") lives in scripts/release-plz-tags-at-head.sh, shared with the
-          # release-tag verification above so the two cannot drift apart. It
-          # deliberately excludes human tags: v1.0.0 has no Release, and
-          # release.yml checks out the tag it is handed, so dispatching the wrong
-          # one would publish a release built from unrelated code.
-          mapfile -t candidates < <(bash scripts/release-plz-tags-at-head.sh)
+          # ...") lives in scripts/release-plz-tags.sh, shared with the release-tag
+          # verification above and with the reconciliation sweep, so the three
+          # cannot drift apart. It deliberately excludes human tags: v1.0.0 has no
+          # Release, and release.yml checks out the tag it is handed, so
+          # dispatching the wrong one would publish a release built from unrelated
+          # code.
+          mapfile -t candidates < <(bash scripts/release-plz-tags.sh)
 
           case "${#candidates[@]}" in
             0)
@@ -159,28 +146,12 @@ jobs:
               ;;
           esac
 
-          # Idempotency: skip only a Release that already carries every expected
-          # asset. A Release left incomplete by a failed upload must be retried.
-          if present=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
-                        --json assets --jq '.assets[].name' 2>/dev/null); then
-            missing=()
-            for asset in "${EXPECTED_ASSETS[@]}"; do
-              grep -qxF "$asset" <<<"$present" || missing+=("$asset")
-            done
-            if [[ "${#missing[@]}" -eq 0 ]]; then
-              echo "Release $TAG is already complete; nothing to do."
-              exit 0
-            fi
-            echo "Release $TAG exists but is incomplete; missing: ${missing[*]}"
-          fi
-
-          # --ref pins the run to the tag, so release.yml resolves its version and
-          # its Cargo.toml check against the tag rather than against main.
-          gh workflow run release.yml \
-            --repo "$GITHUB_REPOSITORY" \
-            --ref "$TAG" \
-            -f tag="$TAG"
-          echo "Dispatched release.yml for $TAG"
+          # Now hand the tag to release.yml. The expected-asset list, the
+          # idempotency check and the bounded retry live in
+          # scripts/ensure-release.sh, shared with the scheduled sweep
+          # (release-reconcile.yml) so the two cannot disagree about what
+          # "complete" means, or about how a failed dispatch is retried.
+          bash scripts/ensure-release.sh "$TAG"
 
   # Release PR generator. Re-enabled after upstream release-plz 0.3.168 shipped
   # #3058 ("reconstruct git-only releases without creating crate archives"),

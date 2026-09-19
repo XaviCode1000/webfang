@@ -1,0 +1,53 @@
+# Release reconciliation sweep — the safety net for a dispatch that never happened.
+#
+# dispatch-release (release-plz.yml) fires ONCE, on the push that carries the tag.
+# If its call to `gh workflow run` fails, nothing retries it, and the failure is
+# silent BY CONSTRUCTION: a dispatch that never happened produces no workflow run,
+# so an observer that reads run states (ci-health.yml) has nothing to observe —
+# there is no red run to report. That is how v2.1.1 sat as a tag with no GitHub
+# Release until a human backfilled it by hand (webfang#1484).
+#
+# This workflow closes the gap by looking at the OUTCOME instead of at events: for
+# every release-plz tag in history, it checks whether the GitHub Release is
+# complete, and dispatches release.yml for the ones that are not. Idempotent — a
+# complete Release is a no-op, so a re-run costs API calls and changes nothing.
+#
+# Scope note: the trust predicate, not `git tag -l 'v*'`. See
+# scripts/reconcile-releases.sh for why that distinction is load-bearing.
+
+name: Release reconcile
+
+on:
+  schedule:
+    # Daily, off the hour and between the other scheduled workflows (bug-discovery
+    # at 06:00 UTC, ci-health at 07:00) so they never contend for the same slot.
+    - cron: "23 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: write # required to create the workflow_dispatch run
+
+concurrency:
+  group: release-reconcile
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    name: Reconcile releases
+    runs-on: ubuntu-latest
+    if: ${{ github.repository_owner == 'XaviCode1000' }}
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          # fetch-tags is load-bearing: without the tags the trust predicate sees
+          # nothing and the sweep silently reports "nothing to reconcile".
+          fetch-tags: true
+          persist-credentials: false
+      - name: Dispatch release.yml for any tag missing a complete Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash scripts/reconcile-releases.sh

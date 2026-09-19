@@ -35,6 +35,9 @@ REPO_ROOT="${RELEASE_DISPATCH_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && 
 RELEASE_PLZ_YML="$REPO_ROOT/.github/workflows/release-plz.yml"
 RELEASE_YML="$REPO_ROOT/.github/workflows/release.yml"
 CUT_PATCH_YML="$REPO_ROOT/.github/workflows/cut-patch-tag.yml"
+RECONCILE_YML="$REPO_ROOT/.github/workflows/release-reconcile.yml"
+ENSURE_SH="$REPO_ROOT/scripts/ensure-release.sh"
+RECONCILE_SH="$REPO_ROOT/scripts/reconcile-releases.sh"
 
 for f in "$RELEASE_PLZ_YML" "$RELEASE_YML" "$CUT_PATCH_YML"; do
   [[ -f "$f" ]] || {
@@ -86,13 +89,31 @@ else
       FAIL=1
     fi
   done
-  # --ref pins the dispatched run to the tag. Without it the run resolves the
-  # version and Cargo.toml check against whatever ref it was started from.
-  if grep -qE 'gh workflow run release\.yml' <<< "$BLOCK" && grep -qE '^\s*--ref\b' <<< "$BLOCK"; then
-    step "  job dispatches release.yml with --ref" "ok"
+  # The dispatch must hand the tag as an INPUT, and must NOT pin `--ref`.
+  # The input is what pins the artifact (release.yml points both checkouts at
+  # `inputs.tag || github.ref_name`); `--ref <tag>` would instead make the run
+  # execute that tag's HISTORICAL release.yml, which matters because this helper
+  # is shared with the history-scoped reconciliation sweep: a sweep for an old
+  # tag would then run the pipeline as it existed back then.
+  # The call lives in scripts/ensure-release.sh, shared with the sweep, so the
+  # property is asserted THERE: asserting it on the job block would now fail for
+  # the right reason at the wrong place.
+  # Scoped to the INVOCATION, never the whole file: the helper also contains the
+  # string `-f tag=` inside its recovery error message, so a file-wide grep still
+  # passed after the real input was removed (measured — that is why this extracts
+  # the call first). An invocation is `gh workflow run ...` plus its backslash
+  # continuations, terminated by the `;`.
+  DISPATCH_INVOCATION="$(perl -0ne 'print $& if /gh workflow run release\.yml(?:[^\n]*\\\n){0,6}[^\n]*;/' "$ENSURE_SH" 2>/dev/null || true)"
+  if [[ -z "$DISPATCH_INVOCATION" ]]; then
+    echo "::error::check_release_dispatch: could not extract the 'gh workflow run release.yml' invocation from scripts/ensure-release.sh, so the pinning of the build cannot be verified. Fail-closed on purpose: a check that cannot see the invocation must not report success."
+    step "  dispatch passes the tag as an input (shared helper)" "UNVERIFIABLE"
+    FAIL=1
+  elif grep -qF -- '-f tag=' <<<"$DISPATCH_INVOCATION" \
+    && ! grep -qE -- '(^|[[:space:]])--ref([[:space:]]|$)' <<<"$DISPATCH_INVOCATION"; then
+    step "  dispatch passes the tag as an input (shared helper)" "ok"
   else
-    echo "::error::check_release_dispatch: dispatch-release does not call 'gh workflow run release.yml' with '--ref <tag>'. Dispatching without --ref runs release.yml against the ref the run started from, not the tag being released."
-    step "  job dispatches release.yml with --ref" "MISSING"
+    echo "::error::check_release_dispatch: scripts/ensure-release.sh must call 'gh workflow run release.yml ... -f tag=<tag>' and must NOT pass '--ref <tag>'. The input is what pins the build (release.yml points both checkouts at it); '--ref' would instead run that tag's historical release.yml, so a reconciliation sweep for an old tag would not use the hardened pipeline."
+    step "  dispatch passes the tag as an input (shared helper)" "MISSING"
     FAIL=1
   fi
 fi
@@ -125,13 +146,13 @@ continue-on-error: true|the failing step is allowed to continue
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. One trust predicate, consumed by BOTH decision points. The fingerprint that
-# decides which tags may be trusted is security-relevant, and two copies of it
-# drift. It lives in scripts/release-plz-tags-at-head.sh, consumed by the
-# dispatcher (which hands a tag to release.yml) and by the verifier (which
-# decides the release job's outcome).
+# 4. One trust predicate, consumed by EVERY decision point. The fingerprint that
+# decides which tags may be trusted is security-relevant, and copies of it drift.
+# It lives in scripts/release-plz-tags.sh, consumed by the dispatcher (which hands
+# a tag to release.yml), by the verifier (which decides the release job's outcome)
+# and by the sweep (which selects historical tags), so all three agree.
 # ─────────────────────────────────────────────────────────────────────────────
-PREDICATE="scripts/release-plz-tags-at-head.sh"
+PREDICATE="scripts/release-plz-tags.sh"
 VERIFIER_SH="$REPO_ROOT/scripts/verify-release-tag.sh"
 if grep -qF -- "$PREDICATE" "$RELEASE_PLZ_YML" && [[ -f "$VERIFIER_SH" ]] && grep -qF -- "$PREDICATE" "$VERIFIER_SH"; then
   step "one trust predicate used by dispatcher + verifier" "ok"
@@ -142,7 +163,46 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5. release.yml: EVERY checkout is pinned to the tag being released.
+# 5. The reconciliation sweep (webfang#1484). A dispatch that never happened
+# produces no workflow run, so nothing that reads run STATES can observe it —
+# the failure is silent by construction, which is how v2.1.1 ended as a tag with
+# no binaries until a human noticed. The sweep is the only thing that looks at
+# the OUTCOME instead. Asserted: the workflow is scheduled and runs the sweep,
+# the sweep uses the shared trust predicate over history, and the dispatcher
+# delegates to the shared dispatch helper rather than rolling its own.
+#
+# The sweep's BEHAVIOUR (that it retries a transient failure, that it never
+# dispatches a human tag) is proven by scripts/test_release_reconcile.sh, not by
+# grepping for a loop here.
+# ─────────────────────────────────────────────────────────────────────────────
+if [[ -f "$RECONCILE_YML" ]] && grep -qE '^[[:space:]]*schedule:' "$RECONCILE_YML" \
+   && grep -qF -- "scripts/reconcile-releases.sh" "$RECONCILE_YML"; then
+  step "release-reconcile.yml: scheduled sweep wired" "ok"
+else
+  echo "::error::check_release_dispatch: the reconciliation sweep is missing, unscheduled, or not invoked. Without it a dispatch that never happened stays invisible forever: no run to observe, no retry, and the only recovery is a human spotting a tag with no binaries (webfang#1484)."
+  step "release-reconcile.yml: scheduled sweep wired" "MISSING"
+  FAIL=1
+fi
+
+if [[ -f "$RECONCILE_SH" ]] && grep -qF -- "$PREDICATE" "$RECONCILE_SH" \
+   && grep -qF -- '--all' "$RECONCILE_SH"; then
+  step "sweep uses the shared trust predicate (--all)" "ok"
+else
+  echo "::error::check_release_dispatch: scripts/reconcile-releases.sh does not sweep via $PREDICATE --all. A sweep over raw tag history would dispatch human tags too (v1.0.0 has no Release), publishing binaries built from unrelated code."
+  step "sweep uses the shared trust predicate (--all)" "MISSING"
+  FAIL=1
+fi
+
+if [[ -f "$ENSURE_SH" ]] && grep -qF -- 'bash scripts/ensure-release.sh' "$RELEASE_PLZ_YML"; then
+  step "dispatcher delegates to the shared dispatch helper" "ok"
+else
+  echo "::error::check_release_dispatch: the dispatcher no longer goes through scripts/ensure-release.sh. The expected-asset list, the idempotency check and the bounded retry would then exist in two places and drift, so one of the two paths could dispatch without retrying."
+  step "dispatcher delegates to the shared dispatch helper" "MISSING"
+  FAIL=1
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 6. release.yml: EVERY checkout is pinned to the tag being released.
 # Asserted as a count so ADDING an unpinned checkout fails too, not only
 # reverting one of the existing two. The preflight checkout alone is not
 # enough: pinning only it would validate the tag while the build job compiles
@@ -163,7 +223,7 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6. release.yml: the version check is not gated back to push-only.
+# 7. release.yml: the version check is not gated back to push-only.
 # On workflow_dispatch the checkout is pinned but the tag INPUT is what names
 # the release, so a tag whose version disagrees with Cargo.toml must still be
 # rejected. The original defect was exactly `if: github.event_name == 'push'`
@@ -186,7 +246,7 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 7. cut-patch-tag.yml: the second tag-creating path has the same obligation.
+# 8. cut-patch-tag.yml: the second tag-creating path has the same obligation.
 # It pushes vX.Y.Z with GITHUB_TOKEN, so it is affected by the same suppression
 # and must hand the tag over explicitly (webfang#1480).
 # ─────────────────────────────────────────────────────────────────────────────
