@@ -98,7 +98,51 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3. release.yml: EVERY checkout is pinned to the tag being released.
+# 3. release-plz.yml: the duplicate-tag 422 (webfang#1341) is tolerated ONLY
+# behind a verification that can fail the job. Asserted as a triple: the
+# verification is invoked, the failing step is allowed to continue so the
+# verification is reachable at all, and the raw outcome is consumed.
+# Losing the first turns the job red again; losing the second or third turns the
+# tolerance into the green lie removed in webfang#1476.
+# ─────────────────────────────────────────────────────────────────────────────
+RELEASE_JOB="$(job_block "$RELEASE_PLZ_YML" release-plz-release)"
+if [[ -z "$RELEASE_JOB" ]]; then
+  echo "::error::check_release_dispatch: release-plz.yml has no 'release-plz-release' job to inspect — the guard cannot tell whether the duplicate-tag 422 is still tolerated safely. Update this guard if the job was renamed."
+  step "release-plz.yml: release job tolerates the 422 safely" "UNVERIFIABLE"
+  FAIL=1
+else
+  while IFS='|' read -r needle why; do
+    if grep -qF -- "$needle" <<< "$RELEASE_JOB"; then
+      step "  release job: $why" "ok"
+    else
+      echo "::error::check_release_dispatch: the 'release-plz-release' job no longer has '$needle' ($why). Without it the duplicate-tag 422 either turns the job red again (webfang#1341), or the tolerance becomes a green lie with nothing re-evaluating the failure (webfang#1476)."
+      step "  release job: $why" "MISSING"
+      FAIL=1
+    fi
+  done <<< "bash scripts/verify-release-tag.sh|the verification step is invoked
+continue-on-error: true|the failing step is allowed to continue
+.outcome|the raw outcome is consumed by the verification"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4. One trust predicate, consumed by BOTH decision points. The fingerprint that
+# decides which tags may be trusted is security-relevant, and two copies of it
+# drift. It lives in scripts/release-plz-tags-at-head.sh, consumed by the
+# dispatcher (which hands a tag to release.yml) and by the verifier (which
+# decides the release job's outcome).
+# ─────────────────────────────────────────────────────────────────────────────
+PREDICATE="scripts/release-plz-tags-at-head.sh"
+VERIFIER_SH="$REPO_ROOT/scripts/verify-release-tag.sh"
+if grep -qF -- "$PREDICATE" "$RELEASE_PLZ_YML" && [[ -f "$VERIFIER_SH" ]] && grep -qF -- "$PREDICATE" "$VERIFIER_SH"; then
+  step "one trust predicate used by dispatcher + verifier" "ok"
+else
+  echo "::error::check_release_dispatch: $PREDICATE is not consumed by BOTH the dispatcher (release-plz.yml) and the verifier (scripts/verify-release-tag.sh). A duplicated trust predicate drifts, and the two would then disagree about which tags are safe to release."
+  step "one trust predicate used by dispatcher + verifier" "MISSING"
+  FAIL=1
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 5. release.yml: EVERY checkout is pinned to the tag being released.
 # Asserted as a count so ADDING an unpinned checkout fails too, not only
 # reverting one of the existing two. The preflight checkout alone is not
 # enough: pinning only it would validate the tag while the build job compiles
@@ -119,7 +163,7 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 4. release.yml: the version check is not gated back to push-only.
+# 6. release.yml: the version check is not gated back to push-only.
 # On workflow_dispatch the checkout is pinned but the tag INPUT is what names
 # the release, so a tag whose version disagrees with Cargo.toml must still be
 # rejected. The original defect was exactly `if: github.event_name == 'push'`
@@ -142,7 +186,7 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5. cut-patch-tag.yml: the second tag-creating path has the same obligation.
+# 7. cut-patch-tag.yml: the second tag-creating path has the same obligation.
 # It pushes vX.Y.Z with GITHUB_TOKEN, so it is affected by the same suppression
 # and must hand the tag over explicitly (webfang#1480).
 # ─────────────────────────────────────────────────────────────────────────────
