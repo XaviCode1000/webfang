@@ -110,6 +110,18 @@ pub(crate) fn cmd() -> Command {
     sanitize_env(Command::new(webfang_path()))
 }
 
+/// Strip `WEBFANG_*` / `AI_MODEL_ID` from a spawned binary command so runs
+/// stay hermetic even when CI bug-discovery workflows poison the environment.
+pub(crate) fn strip_poisoned_env(cmd: &mut Command) {
+    let poisoned: Vec<String> = std::env::vars()
+        .filter(|(k, _)| k.starts_with("WEBFANG_") || k == "AI_MODEL_ID")
+        .map(|(k, _)| k)
+        .collect();
+    for key in poisoned {
+        cmd.env_remove(&key);
+    }
+}
+
 /// Remove all `WEBFANG_*`, `WEBFANG_AI_MODEL_ID`, and `AI_MODEL_ID` env
 /// vars from a command so tests are hermetic even when CI bug-discovery
 /// workflows poison the environment, and point `XDG_CACHE_HOME` at a fresh
@@ -132,13 +144,7 @@ pub(crate) fn cmd() -> Command {
 /// wiremock test. Giving each spawned binary its own cache base keeps both
 /// state files per-test without changing any production default.
 fn sanitize_env(mut cmd: Command) -> Command {
-    let poisoned: Vec<String> = std::env::vars()
-        .filter(|(k, _)| k.starts_with("WEBFANG_") || k == "AI_MODEL_ID")
-        .map(|(k, _)| k)
-        .collect();
-    for key in poisoned {
-        cmd.env_remove(&key);
-    }
+    strip_poisoned_env(&mut cmd);
     // SSRF entry-guard allowance (F-06 + F-32, #1217): every behavioral
     // mock binds 127.0.0.1 — a forbidden literal the production request
     // path now rejects — so the harness disarms ONLY the entry layer for

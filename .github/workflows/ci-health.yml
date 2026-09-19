@@ -1,0 +1,272 @@
+# CI Health Observer (auditoría webfang W-01..W-08) — SHIPS DORMANT.
+#
+# Workflow SEPARADO y solo-observador: NO toca ci.yml, bug-discovery.yml ni
+# benches.yml. No compila, no testea, solo lee el estado de los otros
+# workflows vía API y abre/actualiza/cierra tracking issues idempotentes.
+#
+# Por qué existe (auditoría 2026-09-18):
+#   W-01: el job `notify` de ci.yml usa `if: failure()` / `if: success()` a
+#     nivel de step (su propio estado), nunca abre el tracking issue
+#     "Scheduled CI failed on main" aunque el schedule lleve 10+ semanas rojo.
+#   W-02: `CI Gate` no incluye miri* ni test-ai en su `needs:` → verde con
+#     4 jobs en failure. Este observer mira los JOBS reales, no el gate.
+#   W-03/W-04: Bug Discovery recoge un test #[ignore] "kept RED by design"
+#     (rojo permanente) y no crea issues. Este observer lo clasifica como
+#     falso-positivo-conocido y lo reporta sin ruido.
+#   W-05: Benches muere con exit 143/SIGTERM compilando webfang_ai.
+#   W-08: 0 watchers → sin este observer nadie se entera.
+#
+# Diseño:
+#   - Trigger `workflow_run` (completed) sobre CI, Production Bug Discovery y
+#     Benches + `schedule` diario 07:00 UTC como red de seguridad (si el
+#     evento workflow_run se pierde) + `workflow_dispatch` manual.
+#   - Ramas main/develop solamente.
+#   - Idempotente: UNA issue por fuente (títulos fijos abajo), un comentario
+#     por run fallido, auto-cierre al volver a verde.
+#   - Etiquetas: `ci-health` + `automated`. Nunca toca issues sin `ci-health`.
+#
+# Convention: repo pins actions by tag, so this file follows tags, not SHAs.
+
+name: CI Health Observer
+
+on:
+  workflow_run:
+    workflows: ["CI", "Production Bug Discovery", "Benches"]
+    types: [completed]
+  schedule:
+    - cron: "0 7 * * *" # Diario 07:00 UTC, tras Bug Discovery (06:00)
+  workflow_dispatch:
+    inputs:
+      backfill:
+        description: "Reconcile open tracking issues against latest runs"
+        required: false
+        default: "false"
+
+concurrency:
+  group: ci-health-${{ github.ref }}
+  cancel-in-progress: false # never drop a tracking update mid-write
+
+permissions:
+  actions: read # listar runs y jobs de los workflows observados
+  issues: write # abrir/comentar/cerrar SOLO issues con label ci-health
+  contents: read
+
+env:
+  LABEL: ci-health
+  LABEL_AUTO: automated
+  LABEL_KNOWN_FP: known-false-positive
+  # Test marcado "kept RED by design / never run in CI" (W-03).
+  KNOWN_RED_TEST: sitemap_entry_max_pages_truncates_many_url_fixture
+  TITLE_CI: "Scheduled CI failed on main [ci-health]"
+  TITLE_DISCOVERY: "Bug Discovery findings [ci-health]"
+  TITLE_BENCH: "Benches nightly failing [ci-health]"
+
+jobs:
+  observe:
+    name: Observe and reconcile tracking issues
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || github.event_name == 'workflow_run' }}
+    steps:
+      - name: Ensure tracking labels exist (idempotent)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh label create "$LABEL" --color "0E8A16" --description "Auto-managed by CI Health Observer" 2>/dev/null || true
+          gh label create "$LABEL_AUTO" --color "BFD4F2" --description "Created by automation" 2>/dev/null || true
+          gh label create "$LABEL_KNOWN_FP" --color "FBCA04" --description "Known false positive, kept RED by design" 2>/dev/null || true
+
+      - name: Resolve triggering run
+        id: src
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          PAYLOAD_WORKFLOW: ${{ github.event.workflow_run.name }}
+          PAYLOAD_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          PAYLOAD_ID: ${{ github.event.workflow_run.id }}
+          PAYLOAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          set -euo pipefail
+          BRANCH="${GITHUB_REF_NAME:-main}"
+          echo "event=$EVENT branch=$BRANCH"
+          {
+            echo "branch=$BRANCH"
+            echo "mode=event"
+          } >> "$GITHUB_OUTPUT"
+          if [ "$EVENT" = "workflow_run" ]; then
+            {
+              echo "workflow=$PAYLOAD_WORKFLOW"
+              echo "conclusion=$PAYLOAD_CONCLUSION"
+              echo "run_id=$PAYLOAD_ID"
+              echo "run_branch=$PAYLOAD_BRANCH"
+            } >> "$GITHUB_OUTPUT"
+            echo "Observed $PAYLOAD_WORKFLOW #$PAYLOAD_ID -> $PAYLOAD_CONCLUSION (branch $PAYLOAD_BRANCH)"
+            exit 0
+          fi
+          echo "mode=reconcile" >> "$GITHUB_OUTPUT"
+          for WF in "CI" "Production Bug Discovery" "Benches"; do
+            CONCLUSION="$(gh run list --workflow "$WF" --branch "$BRANCH" --limit 1 --json conclusion --jq '.[0].conclusion // "unknown"')"
+            RUNID="$(gh run list --workflow "$WF" --branch "$BRANCH" --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
+            KEY="$(echo "$WF" | tr -cd '[:alnum:]')"
+            {
+              echo "${KEY}_conclusion=$CONCLUSION"
+              echo "${KEY}_run=$RUNID"
+            } >> "$GITHUB_OUTPUT"
+            echo "$WF -> $CONCLUSION (#$RUNID)"
+          done
+
+      - name: Fetch failed jobs of triggering run
+        id: jobs
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          JOBS_JSON="$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/jobs?per_page=100" --jq '[.jobs[] | {name, conclusion}]')"
+          echo "$JOBS_JSON" | jq .
+          FAILED="$(echo "$JOBS_JSON" | jq -r '[.[] | select(.conclusion != "success" and .conclusion != "skipped") | .name] | join(",")')"
+          echo "failed=$FAILED" >> "$GITHUB_OUTPUT"
+          echo "failed_jobs=$FAILED"
+
+      - name: Classify Bug Discovery result (W-03 known RED vs real finding)
+        id: classify
+        # Skipped (not failed) when the trigger wasn't Bug Discovery: KNOWN_ONLY
+        # stays empty and the CI/Benches branches ignore it. `failure()` would
+        # be wrong here (W-01 lesson): it reflects THIS job's own state.
+        if: github.event.workflow_run.name == 'Production Bug Discovery'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -euo pipefail
+          LOG_SNIPPET="$(gh run view "$RUN_ID" --log 2>/dev/null | grep -E "$KNOWN_RED_TEST" || true)"
+          if [ -n "$LOG_SNIPPET" ]; then
+            echo "known_only=true" >> "$GITHUB_OUTPUT"
+            echo "W-03 known RED evidence seen; known-false-positive."
+          else
+            echo "known_only=false" >> "$GITHUB_OUTPUT"
+            echo "Real or unclassified finding (or log unavailable)."
+          fi
+
+      - name: Upsert tracking issue for triggering run
+        if: github.event_name == 'workflow_run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          PAYLOAD_WORKFLOW: ${{ github.event.workflow_run.name }}
+          PAYLOAD_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          PAYLOAD_ID: ${{ github.event.workflow_run.id }}
+          FAILED_JOBS: ${{ steps.jobs.outputs.failed }}
+          KNOWN_ONLY: ${{ steps.classify.outputs.known_only }}
+        run: |
+          set -euo pipefail
+          SERVER="${GITHUB_SERVER_URL:-https://github.com}"
+          RUN_URL="$SERVER/$GH_REPO/actions/runs/$PAYLOAD_ID"
+          open_or_comment() {
+            title="$1"; extra="$2"; xlabel="$3"
+            count="$(gh issue list --state open --search "${title} in:title" --json number --jq 'length')"
+            if [ "$count" -eq 0 ]; then
+              body="$(printf '%s\n\nRun: %s\n\n%s\n\nAuto-managed by CI Health Observer.' "$title" "$RUN_URL" "$extra")"
+              if [ -n "$xlabel" ]; then
+                gh issue create --title "$title" --body "$body" --label "$LABEL" --label "$LABEL_AUTO" --label "$xlabel"
+              else
+                gh issue create --title "$title" --body "$body" --label "$LABEL" --label "$LABEL_AUTO"
+              fi
+            else
+              number="$(gh issue list --state open --search "${title} in:title" --json number --jq '.[0].number')"
+              gh issue comment "$number" --body "$(printf 'Still failing: %s\n\n%s' "$RUN_URL" "$extra")"
+              if [ -n "$xlabel" ]; then
+                gh issue edit "$number" --add-label "$xlabel"
+              fi
+            fi
+          }
+          close_mine() {
+            title="$1"
+            gh issue list --state open --search "${title} in:title" --json number --jq '.[].number' |
+              while read -r number; do
+                if gh issue view "$number" --json labels --jq '.labels[].name' | grep -qx "$LABEL"; then
+                  [ -n "$number" ] && gh issue close "$number" --comment "Green again: $RUN_URL"
+                else
+                  echo "Skip #$number: missing label $LABEL"
+                fi
+              done
+          }
+          # Guard: cancelled/skipped/stale runs are noise (e.g. a push run
+          # superseded by the next push). Only `failure` opens/comments and
+          # only `success` closes; anything else exits silently (see #1472).
+          if [ "$PAYLOAD_CONCLUSION" != "failure" ] && [ "$PAYLOAD_CONCLUSION" != "success" ]; then
+            echo "Conclusion=$PAYLOAD_CONCLUSION: no action (not failure/success)."
+            exit 0
+          fi
+          case "$PAYLOAD_WORKFLOW" in
+            "CI")
+              if [ "$PAYLOAD_CONCLUSION" = "success" ]; then
+                close_mine "$TITLE_CI"
+              else
+                open_or_comment "$TITLE_CI" "Failed jobs: ${FAILED_JOBS:-unknown}. Gate may be green (W-02)." ""
+              fi
+              ;;
+            "Production Bug Discovery")
+              if [ "$PAYLOAD_CONCLUSION" = "success" ]; then
+                close_mine "$TITLE_DISCOVERY"
+              elif [ "$KNOWN_ONLY" = "true" ]; then
+                open_or_comment "$TITLE_DISCOVERY" "Known FP only (W-03): $KNOWN_RED_TEST kept RED by design." "$LABEL_KNOWN_FP"
+              else
+                open_or_comment "$TITLE_DISCOVERY" "Findings to triage (W-04). Failed: ${FAILED_JOBS:-unknown}." ""
+              fi
+              ;;
+            "Benches")
+              if [ "$PAYLOAD_CONCLUSION" = "success" ]; then
+                close_mine "$TITLE_BENCH"
+              else
+                open_or_comment "$TITLE_BENCH" "Nightly failing (W-05, exit 143?). Failed: ${FAILED_JOBS:-unknown}." ""
+              fi
+              ;;
+          esac
+
+      - name: Reconcile from latest runs (schedule safety net)
+        if: github.event_name != 'workflow_run'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          BRANCH: ${{ steps.src.outputs.branch }}
+          CI_C: ${{ steps.src.outputs.CI_conclusion }}
+          CI_R: ${{ steps.src.outputs.CI_run }}
+          PD_C: ${{ steps.src.outputs.ProductionBugDiscovery_conclusion }}
+          PD_R: ${{ steps.src.outputs.ProductionBugDiscovery_run }}
+          BE_C: ${{ steps.src.outputs.Benches_conclusion }}
+          BE_R: ${{ steps.src.outputs.Benches_run }}
+        run: |
+          set -euo pipefail
+          SERVER="${GITHUB_SERVER_URL:-https://github.com}"
+          reconcile_one() {
+            title="$1"; concl="$2"; rid="$3"; wname="$4"
+            url="$SERVER/$GH_REPO/actions/runs/$rid"
+            if [ "$concl" = "success" ]; then
+              gh issue list --state open --search "${title} in:title" --json number --jq '.[].number' |
+                while read -r number; do
+                  if gh issue view "$number" --json labels --jq '.labels[].name' | grep -qx "$LABEL"; then
+                    [ -n "$number" ] && gh issue close "$number" --comment "Green again: $url"
+                  fi
+                done
+            elif [ "$concl" = "failure" ]; then
+              count="$(gh issue list --state open --search "${title} in:title" --json number --jq 'length')"
+              if [ "$count" -eq 0 ]; then
+                gh issue create --title "$title" --body "$(printf '%s\n\nRun: %s\n\nReconciled latest %s on %s.' "$title" "$url" "$wname" "$BRANCH")" --label "$LABEL" --label "$LABEL_AUTO"
+              fi
+            else
+              # reconcile: only `failure` opens, only `success` closes.
+              # `cancelled` (superseded push) / unknown = no action (#1472).
+              echo "$wname: conclusion=$concl, no action."
+            fi
+          }
+          reconcile_one "$TITLE_CI" "$CI_C" "$CI_R" "CI"
+          reconcile_one "$TITLE_DISCOVERY" "$PD_C" "$PD_R" "Bug Discovery"
+          reconcile_one "$TITLE_BENCH" "$BE_C" "$BE_R" "Benches"
+

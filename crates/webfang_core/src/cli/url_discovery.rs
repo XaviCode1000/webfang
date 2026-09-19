@@ -94,6 +94,22 @@ pub struct DiscoveryOutput {
     pub errors: usize,
 }
 
+/// Retry-knob override for discovery (dry-run-fail-fast).
+///
+/// `Operator` threads the `CrawlOptions.network` retry knobs (real-crawl
+/// semantics); `FailFast` zeroes the whole bundle (preview: a single
+/// attempt, zero backoff sleeps). `Default = Operator` is fail-closed: a
+/// caller that forgets the override gets slow-but-correct behavior, never
+/// fail-fast-by-accident.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DiscoveryRetry {
+    /// Real-crawl semantics: `opts.network.max_retries/backoff_*`.
+    #[default]
+    Operator,
+    /// Preview semantics: `max_retries = 0`, backoffs zeroed.
+    FailFast,
+}
+
 /// Single discovery entry behind both dry-run and the real DOM path.
 ///
 /// Survivor is the recursive Engine path (`crawl_site` /
@@ -123,12 +139,18 @@ pub struct DiscoveryOutput {
 /// own root, so the "run identity" event and every discovery/crawl span
 /// share ONE `trace_id`. (Before #1439 the engine entry minted a second
 /// root milliseconds apart, silently splitting the run in the trace.)
+///
+/// `retry` (dry-run-fail-fast) selects the retry bundle: `Operator` threads
+/// the operator knobs for real crawls, `FailFast` zeroes them for previews.
+/// There is intentionally no default argument — every caller names it, so
+/// preview semantics stay visible at the call site.
 pub async fn discover_urls_unified(
     crawler_config: CrawlerConfig,
     opts: &CrawlOptions,
     persistence_mode: &PersistenceMode,
     sink: Option<Arc<InMemoryContentSink>>,
     correlation: &CorrelationId,
+    retry: DiscoveryRetry,
 ) -> ScraperResult<DiscoveryOutput> {
     let discovery_pb = build_discovery_progress_bar(opts, "Discovering URLs (recursive)...");
 
@@ -149,6 +171,7 @@ pub async fn discover_urls_unified(
         crawler_config.ignore_robots,
         sink.clone()
             .map(|concrete| concrete as Arc<dyn CrawlContentSink>),
+        retry,
     );
     if let Some(cfg) = checkpoint {
         options.checkpoint_path = Some(cfg.dir.clone());
@@ -185,15 +208,33 @@ pub async fn discover_urls_unified(
 /// `CrawlOptions`) honoured them. `Engine::with_js_strategy` only *records* a
 /// strategy when it cannot build a router for it, so the drop was invisible —
 /// same shape as the `ignore_robots` propagation gap #1229 already fixed.
+/// `retry` (dry-run-fail-fast) selects the retry bundle: `Operator` carries
+/// `opts.network.max_retries/backoff_base_ms/backoff_max_ms` (at defaults
+/// 3/1000/10000 = `EngineOptions::default()` = today's behavior, so the
+/// real path is a no-op by construction); `FailFast` zeroes all three
+/// (single attempt — with `max_retries = 0` the backoff sleeps are
+/// unreachable, so zeroing is belt-and-braces documenting intent).
 fn build_discovery_engine_options(
     opts: &CrawlOptions,
     ignore_robots: bool,
     content_sink: Option<Arc<dyn CrawlContentSink>>,
+    retry: DiscoveryRetry,
 ) -> EngineOptions {
+    let (max_retries, backoff_base_ms, backoff_max_ms) = match retry {
+        DiscoveryRetry::Operator => (
+            opts.network.max_retries,
+            opts.network.backoff_base_ms,
+            opts.network.backoff_max_ms,
+        ),
+        DiscoveryRetry::FailFast => (0, 0, 0),
+    };
     EngineOptions {
         ignore_robots,
         js_strategy: opts.network.js_strategy,
         content_sink,
+        max_retries,
+        backoff_base_ms,
+        backoff_max_ms,
         // F-52-b: carry the post-load wait mode into the engine path.
         post_load_wait: opts.network.post_load_wait,
         // F-52-c: carry the gate-certified Chrome binary into the engine
@@ -243,6 +284,8 @@ fn build_discovery_engine_options(
 ///
 /// Compatibility shim over [`discover_urls_unified`] (F-14, #1232): keeps the
 /// `Vec<Url>` call shape while the orchestrator migrates to the unified output.
+/// The shim keeps real-crawl semantics by passing
+/// [`DiscoveryRetry::default()`] (`Operator`) — its signature is unchanged.
 ///
 /// `correlation` (#1439) is the caller's run-root, forwarded verbatim to the
 /// unified entry — the shim never mints an identity of its own.
@@ -252,8 +295,15 @@ pub async fn discover_urls_recursive(
     persistence_mode: &PersistenceMode,
     correlation: &CorrelationId,
 ) -> ScraperResult<Vec<Url>> {
-    let output =
-        discover_urls_unified(crawler_config, opts, persistence_mode, None, correlation).await?;
+    let output = discover_urls_unified(
+        crawler_config,
+        opts,
+        persistence_mode,
+        None,
+        correlation,
+        DiscoveryRetry::default(),
+    )
+    .await?;
     Ok(output.urls)
 }
 
@@ -274,7 +324,7 @@ mod tests {
         for strategy in [JsStrategy::Static, JsStrategy::Hybrid, JsStrategy::Full] {
             let mut opts = CrawlOptions::default();
             opts.network.js_strategy = strategy;
-            let built = build_discovery_engine_options(&opts, true, None);
+            let built = build_discovery_engine_options(&opts, true, None, DiscoveryRetry::Operator);
             assert_eq!(
                 built.js_strategy, strategy,
                 "--js-strategy {strategy} must reach EngineOptions"
@@ -293,8 +343,12 @@ mod tests {
     fn discovery_engine_options_propagate_ignore_robots_and_sink() {
         let opts = CrawlOptions::default();
         let sink = Arc::new(InMemoryContentSink::default());
-        let built =
-            build_discovery_engine_options(&opts, true, Some(sink as Arc<dyn CrawlContentSink>));
+        let built = build_discovery_engine_options(
+            &opts,
+            true,
+            Some(sink as Arc<dyn CrawlContentSink>),
+            DiscoveryRetry::Operator,
+        );
         assert!(built.ignore_robots);
         assert!(built.content_sink.is_some());
     }
@@ -313,12 +367,71 @@ mod tests {
         ] {
             let mut opts = CrawlOptions::default();
             opts.network.post_load_wait = mode;
-            let built = build_discovery_engine_options(&opts, true, None);
+            let built = build_discovery_engine_options(&opts, true, None, DiscoveryRetry::Operator);
             assert_eq!(
                 built.post_load_wait, mode,
                 "--js-wait {mode} must reach EngineOptions"
             );
         }
+    }
+
+    /// dry-run-fail-fast: `Operator` threads the operator retry knobs into
+    /// the engine. At defaults this MUST equal today's hardcoded values
+    /// (`EngineOptions::default()` = 3/1000/10000), so the real path is a
+    /// no-op by construction (fail-closed proof).
+    #[test]
+    fn discovery_engine_options_propagate_discovery_retry_operator() {
+        let opts = CrawlOptions::default();
+        let built = build_discovery_engine_options(&opts, true, None, DiscoveryRetry::Operator);
+        assert_eq!(
+            built.max_retries, 3,
+            "default max_retries must thread through"
+        );
+        assert_eq!(
+            built.backoff_base_ms, 1000,
+            "default backoff base must thread through"
+        );
+        assert_eq!(
+            built.backoff_max_ms, 10000,
+            "default backoff max must thread through"
+        );
+    }
+
+    /// dry-run-fail-fast: `FailFast` zeroes the whole bundle regardless of
+    /// the operator knobs — single attempt, zero backoff sleeps.
+    #[test]
+    fn discovery_engine_options_propagate_discovery_retry_failfast() {
+        let opts = CrawlOptions::default();
+        let built = build_discovery_engine_options(&opts, true, None, DiscoveryRetry::FailFast);
+        assert_eq!(built.max_retries, 0, "fail-fast must attempt exactly once");
+        assert_eq!(
+            built.backoff_base_ms, 0,
+            "fail-fast must sleep zero backoff"
+        );
+        assert_eq!(built.backoff_max_ms, 0, "fail-fast must sleep zero backoff");
+    }
+
+    /// dry-run-fail-fast triangulation: fail-fast dominates custom operator
+    /// knobs — a non-default `--max-retries` must not leak into previews.
+    #[test]
+    fn discovery_engine_options_propagate_discovery_retry_custom_network_failfast() {
+        let mut opts = CrawlOptions::default();
+        opts.network.max_retries = 7;
+        opts.network.backoff_base_ms = 250;
+        opts.network.backoff_max_ms = 5000;
+        let built = build_discovery_engine_options(&opts, true, None, DiscoveryRetry::FailFast);
+        assert_eq!(
+            built.max_retries, 0,
+            "fail-fast dominates custom max_retries"
+        );
+        assert_eq!(
+            built.backoff_base_ms, 0,
+            "fail-fast dominates custom backoff base"
+        );
+        assert_eq!(
+            built.backoff_max_ms, 0,
+            "fail-fast dominates custom backoff max"
+        );
     }
 
     // T-2.1: discover_urls returns Result (compile-time + runtime verification)

@@ -229,6 +229,21 @@ jobs:
             exit 1
           fi
           echo "OK: no string-match sitemap coupling in crates/*/src"
+      # Regression guard for the release hand-off (#1478/#1480). GitHub
+      # suppresses workflow runs for events generated with GITHUB_TOKEN, so the
+      # tags release-plz and cut-patch-tag.yml push CANNOT trigger release.yml's
+      # own `push: tags` trigger — the hand-off is an explicit workflow_dispatch
+      # call. Fails if that call, its `--ref` pin, or release.yml's checkout pin
+      # is removed: the shape that left v2.1.1 with a tag and no GitHub Release.
+      - name: Release hand-off gate
+        run: bash scripts/check_release_dispatch.sh
+      # Semantics harness for the reconciliation path (#1484): proves on mktemp
+      # fixtures that the dispatch is actually RETRIED, that a terminal failure is
+      # loud and names the tag, and that the sweep never dispatches a human tag.
+      # Grepping for a retry loop proves none of those, and a retry that does not
+      # retry is worse than no retry — it buys false confidence.
+      - name: Release reconcile semantics harness
+        run: bash scripts/test_release_reconcile.sh
       # Regression guard for #836: block-scalar nesting bugs in workflow YAML
       # (steps swallowed into a `run: |` block) stay valid YAML and only fail
       # at runtime post-merge (#833→#835). actionlint + shellcheck catch them

@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-09-18
+
+
+### 🏗️ Architecture Improvements
+
+- Route MCP crawl_site through session-owned with_options ([#1353](https://github.com/XaviCode1000/webfang/pull/1353))
+- RobotsPort returns a typed RobotsDecision ([#1359](https://github.com/XaviCode1000/webfang/pull/1359))
+- Deprecate crawl_site in favor of crawl_site_with_options ([#1374](https://github.com/XaviCode1000/webfang/pull/1374))
+- Split the entry guard's verdict from its WARN log
+
+### 🔧 Fixed
+
+- Inject the downloader factory for every JS strategy in crawl_site ([#1360](https://github.com/XaviCode1000/webfang/pull/1360))
+- Stop HtmlChunker dropping sub-100-char paragraphs ([#1384](https://github.com/XaviCode1000/webfang/pull/1384))
+- Document test env reader-guard rule, serialize parity setup ([#1350](https://github.com/XaviCode1000/webfang/pull/1350))
+- Carry real navigation status on Chromium path ([#1352](https://github.com/XaviCode1000/webfang/pull/1352))
+- Serialize test-env access under ENV_LOCK and enforce it ([#1358](https://github.com/XaviCode1000/webfang/pull/1358))
+- Halve model RSS via commit_from_file and emit structured pull events ([#1363](https://github.com/XaviCode1000/webfang/pull/1363))
+- --dry-run names the SSRF refusal instead of a clean zero
+- Single run-root trace_id across sitemap discovery and scrape spans ([#1412](https://github.com/XaviCode1000/webfang/pull/1412))
+- Construct the fallback downloader only when urls are non-empty ([#1427](https://github.com/XaviCode1000/webfang/pull/1427))
+- Pace the batch path, stop the 403 double rotation, and pin both in CI ([#1434](https://github.com/XaviCode1000/webfang/pull/1434))
+- Propagate the caller run-root through the engine seam ([#1439](https://github.com/XaviCode1000/webfang/pull/1439)) ([#1440](https://github.com/XaviCode1000/webfang/pull/1440))
+- Crawl_with_sitemap produces a session-owned run ([#1441](https://github.com/XaviCode1000/webfang/pull/1441))
+- Dry-run contra semilla muerta sale con error de red (69) ([#1453](https://github.com/XaviCode1000/webfang/pull/1453))
+- --dry-run on dead seed fails fast (single attempt, zero backoff) ([#1459](https://github.com/XaviCode1000/webfang/pull/1459))
+- Skip dimension-mismatched vectors instead of silent 0.0 ([#1461](https://github.com/XaviCode1000/webfang/pull/1461))
+- Surface preflight diagnostics, finish exit-code table, pin state-lock sentinel ([#1442](https://github.com/XaviCode1000/webfang/pull/1442))
+
+### 📦 Other
+
+- Single canonical literal per SSRF hatch family ([#1372](https://github.com/XaviCode1000/webfang/pull/1372))
+- Canonical entry_guard_off helper + narrow #1308 rule text ([#1413](https://github.com/XaviCode1000/webfang/pull/1413))
+- Release-plz advisory + durable Miri flags (#1425, PRs #1416 + #1417)
+- Gate quanta-CPUID victims behind cfg_attr(miri, ignore) ([#1454](https://github.com/XaviCode1000/webfang/pull/1454))
+
+### 🧪 Testing
+
+- Serve HTML fixtures as text/html — the #1354 'idle settle' was never a drain bug ([#1364](https://github.com/XaviCode1000/webfang/pull/1364))
+- One text/html page mount for every MCP fixture — dedupe #1354's copies ([#1371](https://github.com/XaviCode1000/webfang/pull/1371)) ([#1373](https://github.com/XaviCode1000/webfang/pull/1373))
+- Adopt entry-hatch posture in sitemap suites over loopback mocks ([#1382](https://github.com/XaviCode1000/webfang/pull/1382))
+- Wrap explicit-half parses hermetically under poisoned env ([#1405](https://github.com/XaviCode1000/webfang/pull/1405))
 ## [2.1.0] - 2026-09-11
 
 

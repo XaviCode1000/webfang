@@ -9,7 +9,7 @@
 //! so this guard compares sets.
 
 use webfang_core::application::crawl_options::CrawlOptions;
-use webfang_core::cli::url_discovery::discover_urls_unified;
+use webfang_core::cli::url_discovery::{discover_urls_unified, DiscoveryRetry};
 use webfang_core::domain::persistence::PersistenceMode;
 use webfang_core::domain::CorrelationId;
 use webfang_core::domain::CrawlerConfig;
@@ -107,6 +107,7 @@ async fn dry_run_parity_with_real_discovery() {
         &PersistenceMode::Disabled,
         None,
         &CorrelationId::new(),
+        DiscoveryRetry::FailFast,
     )
     .await
     .expect("dry-run shaped unified discovery must succeed");
@@ -120,6 +121,7 @@ async fn dry_run_parity_with_real_discovery() {
         &PersistenceMode::Disabled,
         None,
         &CorrelationId::new(),
+        DiscoveryRetry::Operator,
     )
     .await
     .expect("DOM shaped unified discovery must succeed");

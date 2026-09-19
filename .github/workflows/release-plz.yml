@@ -1,9 +1,20 @@
 # Release-plz — automated version bump + CHANGELOG + Release PR + v* tags.
 #
-# Flow: push to main -> release-plz-release pushes the `v{{ version }}` tag
-# for an already-merged version bump, which triggers release.yml (binaries +
-# GitHub Release). The Release PR itself is created MANUALLY (see #1339):
-# the release-plz-pr job cannot open one, see the note on that job below.
+# Flow: push to main -> release-plz-release pushes the `v{{ version }}` tag for
+# an already-merged version bump -> dispatch-release calls release.yml via
+# workflow_dispatch to build the binaries and publish the GitHub Release.
+#
+# The tag push does NOT trigger release.yml by itself. GitHub suppresses workflow
+# runs caused by events generated with GITHUB_TOKEN, so the tags release-plz
+# pushes as github-actions[bot] never fired release.yml's `push: tags` trigger:
+# v2.1.0 shipped its binaries only via a MANUAL dispatch, and v2.1.1 ended with a
+# tag and no Release at all. workflow_dispatch IS an exception to that
+# suppression, so the hand-off is an explicit call instead of an event.
+# (Verified in-repo: run 35403760298, event=workflow_dispatch,
+# actor=github-actions[bot].)
+#
+# The Release PR itself is created MANUALLY (see #1339): the release-plz-pr job
+# cannot open one, see the note on that job below.
 #
 # Config: release-plz.toml + cliff.toml. No registry publishing (git_only).
 
@@ -23,7 +34,8 @@ env:
 
 jobs:
   # Publish already-merged release commits: pushes the v* tag.
-  # Tag push triggers release.yml for binaries + GitHub Release.
+  # That tag push does NOT trigger release.yml (GITHUB_TOKEN suppression) — the
+  # dispatch-release job below performs the hand-off explicitly.
   release-plz-release:
     name: Release-plz release
     runs-on: ubuntu-latest
@@ -44,19 +56,121 @@ jobs:
           persist-credentials: false
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+      # The duplicate-tag 422 (webfang#1341) makes `release-plz release` exit 1
+      # AFTER it has created the correct tag, inside the SAME run — measured on
+      # v2.1.1, where the tag is authored by this bot at 18:04:23, inside the run
+      # window 18:03:58-18:04:43. With git_only + publish=false +
+      # git_release_enable=false (release-plz.toml), the tag IS the entire product
+      # of this job, so the outcome is decided by VERIFYING that tag — not by the
+      # exit code of a command whose only side effect is that tag.
+      #
+      # This is NOT the `continue-on-error` pattern removed in webfang#1476. There,
+      # the job reported success with NOTHING re-evaluating the failure. Here the
+      # failure is re-evaluated by the step right below, which fails the job on
+      # anything that is not a verified correct tag. Green means verified tag.
       - name: Run release-plz
+        id: release
+        continue-on-error: true
         uses: release-plz/action@v0.5
         with:
           command: release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # The decision lives in scripts/verify-release-tag.sh: it is testable there
+      # (a bash block embedded in YAML is not), and it keeps the trust predicate in
+      # one place. It fails the job on anything that is not a verified correct tag.
+      - name: Verify the release tag
+        env:
+          RELEASE_OUTCOME: ${{ steps.release.outcome }}
+        run: bash scripts/verify-release-tag.sh
 
-  # KNOWN ISSUE (webfang#1337): this job fails whenever there is something to
-  # release. In git_only mode release-plz runs `cargo package --allow-dirty
-  # --workspace` in a worktree at the last release tag, and our inter-crate deps
-  # are { path, version } on crates that are never published (binaries-only), so
-  # crates.io resolution can never succeed. Manual Release PRs are the operating
-  # convention (see #1339) until release-plz supports skipping the packaging step.
+  # Hand the freshly created tag to release.yml.
+  #
+  # Exists because a tag pushed with GITHUB_TOKEN does not trigger release.yml's
+  # `push: tags` trigger — GitHub suppresses workflow runs for GITHUB_TOKEN events.
+  # workflow_dispatch is an explicit exception, so this is a direct call.
+  #
+  # Runs even when release-plz-release FAILED: the known duplicate-tag 422
+  # (webfang#1341) leaves a correct tag behind while exiting 1, and that tag still
+  # needs its binaries. A cancelled run is skipped instead — a human cancel must
+  # not silently become a release.
+  dispatch-release:
+    name: Dispatch binary release
+    needs: [release-plz-release]
+    if: >-
+      ${{
+        always() &&
+        needs.release-plz-release.result != 'cancelled' &&
+        github.repository_owner == 'XaviCode1000'
+      }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: write # required to create the workflow_dispatch run
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          # release-plz pushes the tag at this commit, and the candidate is
+          # resolved with `git tag --points-at HEAD`, so tags must be fetched.
+          fetch-tags: true
+          persist-credentials: false
+      - name: Dispatch release.yml for a tag missing a complete GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # Candidates: the release-plz tags created at THIS commit. The trust
+          # predicate (annotated + github-actions[bot] + "chore: Release package
+          # ...") lives in scripts/release-plz-tags.sh, shared with the release-tag
+          # verification above and with the reconciliation sweep, so the three
+          # cannot drift apart. It deliberately excludes human tags: v1.0.0 has no
+          # Release, and release.yml checks out the tag it is handed, so
+          # dispatching the wrong one would publish a release built from unrelated
+          # code.
+          mapfile -t candidates < <(bash scripts/release-plz-tags.sh)
+
+          case "${#candidates[@]}" in
+            0)
+              echo "No release-plz tag points at HEAD; nothing to dispatch."
+              exit 0
+              ;;
+            1)
+              TAG="${candidates[0]}"
+              ;;
+            *)
+              echo "::error::multiple release-plz tags point at HEAD: ${candidates[*]} - refusing to guess" >&2
+              exit 1
+              ;;
+          esac
+
+          # Now hand the tag to release.yml. The expected-asset list, the
+          # idempotency check and the bounded retry live in
+          # scripts/ensure-release.sh, shared with the scheduled sweep
+          # (release-reconcile.yml) so the two cannot disagree about what
+          # "complete" means, or about how a failed dispatch is retried.
+          bash scripts/ensure-release.sh "$TAG"
+
+  # Release PR generator. Re-enabled after upstream release-plz 0.3.168 shipped
+  # #3058 ("reconstruct git-only releases without creating crate archives"),
+  # merged upstream 2026-09-17 — the exact step that made this job
+  # structurally unsatisfiable (webfang#1387/#1337): in git_only mode the
+  # next-version determination ran `cargo package --workspace` in a worktree at
+  # the last `v*` tag, and our inter-crate deps are { path, version } on crates
+  # that are never published (binaries-only), so crates.io resolution could
+  # never succeed.
+  #
+  # Verified 2026-09-18 with CLI 0.3.168 against a clone of main: next-version
+  # determination completed for all 6 packages (2.1.0 → 2.1.1) with zero
+  # `cargo package` invocation. `release-plz/action@v0.5` is intentionally
+  # unpinned and resolves the latest CLI, so no pin is needed here.
+  #
+  # `continue-on-error` is deliberately GONE (webfang#1476): while it was set,
+  # the job reported `completed/success` over a logged
+  # `##[error]Process completed with exit code 1` (run 35063811850) — it removed
+  # the failure signal AND kept the green, which is worse than a red job.
   release-plz-pr:
     name: Release-plz PR
     runs-on: ubuntu-latest
@@ -81,10 +195,8 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
       - name: Run release-plz
-        # continue-on-error: true  # Advisory: webfang#1387; upstream release-plz#3054 to #3058
         uses: release-plz/action@v0.5
         with:
           command: release-pr
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        continue-on-error: true
