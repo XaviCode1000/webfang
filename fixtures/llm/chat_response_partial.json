@@ -1,0 +1,27 @@
+{
+  "id": "chatcmpl-filter-001",
+  "object": "chat.completion",
+  "created": 1700000001,
+  "model": "aggregator-v1",
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": null,
+        "tool_calls": [
+          {
+            "id": "call_1",
+            "type": "function",
+            "function": {
+              "name": "extract",
+              "arguments": "{}"
+            }
+          }
+        ]
+      },
+      "finish_reason": "content_filter"
+    }
+  ],
+  "usage": null
+}

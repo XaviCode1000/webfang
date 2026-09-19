@@ -28,6 +28,9 @@ pub mod scraper;
 // entry-point validator and the `wreq` redirect callbacks.
 pub mod ssrf;
 pub mod user_agent;
+// Wizard de setup inicial de providers (ai-providers §8) — setup interactivo,
+// NO runtime resolver.
+pub mod wizard;
 
 // Elastic ingestion (Issue #51) — hardware autotuning + SQLite persistence.
 pub mod autotuning;

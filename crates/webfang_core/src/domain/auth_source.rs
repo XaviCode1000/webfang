@@ -113,7 +113,11 @@ const AGE_IDENTITY_ENV: &str = "WEBFANG_AGE_IDENTITY";
 
 /// Ruta por defecto de la identidad `age` local (`~/.config/webfang/identity.key`),
 /// respetando `XDG_CONFIG_HOME`.
-fn default_identity_path() -> std::path::PathBuf {
+///
+/// `pub(crate)`: el wizard (`infrastructure::wizard`) reutiliza esta ruta para
+/// generar el archivo — una sola definición de "dónde vive la identity", no dos
+/// que puedan divergir.
+pub(crate) fn default_identity_path() -> std::path::PathBuf {
     let dir = std::env::var_os("XDG_CONFIG_HOME")
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::home_dir().map(|h| h.join(".config")))
