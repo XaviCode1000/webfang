@@ -100,10 +100,64 @@ fn resolve_keyring(service: &str, account: &str) -> Result<ApiKey, AuthError> {
     }
 }
 
-/// Variable de entorno con la identidad `age` (clave privada X25519) usada
-/// para descifrar credenciales `EncryptedFile`. Debe inyectarse de forma
-/// segura (p. ej. por el agente de sesión), nunca commitearse.
+/// Variable de entorno con la identidad `age` (clave privada X25519). SOLO
+/// override explícito para CI/entornos headless donde no hay disco de usuario
+/// confiable. En máquina normal la identidad vive en
+/// `~/.config/webfang/identity.key` con permisos 0600 (modelo `~/.ssh/id_ed25519`).
+///
+/// Regla de seguridad (decisión cerrada): la identidad NO se diseña para vivir
+/// en env de forma permanente — `/proc/<pid>/environ` es legible por cualquier
+/// proceso del mismo usuario y aparece en crash dumps. El env es el camino
+/// corto de CI, nunca el default que el wizard recomienda.
 const AGE_IDENTITY_ENV: &str = "WEBFANG_AGE_IDENTITY";
+
+/// Ruta por defecto de la identidad `age` local (`~/.config/webfang/identity.key`),
+/// respetando `XDG_CONFIG_HOME`.
+fn default_identity_path() -> std::path::PathBuf {
+    let dir = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::home_dir().map(|h| h.join(".config")))
+        .unwrap_or_else(|| std::path::PathBuf::from(".config"));
+    dir.join("webfang").join("identity.key")
+}
+
+/// Resuelve la identidad `age`: env si está configurado (override de CI),
+/// si no el archivo local por defecto. Verifica permisos 0600 en el archivo.
+fn resolve_identity() -> Result<age::x25519::Identity, AuthError> {
+    use std::io::Read as _;
+
+    if let Ok(env_identity) = std::env::var(AGE_IDENTITY_ENV) {
+        return env_identity.trim().parse().map_err(|e| {
+            AuthError::Invalid(format!("identity de {AGE_IDENTITY_ENV} inválida: {e}"))
+        });
+    }
+    let path = default_identity_path();
+    if !path.exists() {
+        return Err(AuthError::FileNotFound(path));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        let mode = std::fs::metadata(&path)
+            .map_err(|e| AuthError::FileRead(path.clone(), e.to_string()))?
+            .permissions()
+            .mode();
+        if mode & 0o077 != 0 {
+            return Err(AuthError::Invalid(format!(
+                "permisos inseguros en {}: {:o} (requerido 0600, visible para grupo/otros)",
+                path.display(),
+                mode & 0o777
+            )));
+        }
+    }
+    let mut key = String::new();
+    std::fs::File::open(&path)
+        .and_then(|mut f| f.read_to_string(&mut key))
+        .map_err(|e| AuthError::FileRead(path.clone(), e.to_string()))?;
+    key.trim()
+        .parse()
+        .map_err(|e| AuthError::Invalid(format!("identity inválida en {}: {e}", path.display())))
+}
 
 fn resolve_encrypted_file(path: &std::path::Path) -> Result<ApiKey, AuthError> {
     use std::io::Read as _;
@@ -111,16 +165,7 @@ fn resolve_encrypted_file(path: &std::path::Path) -> Result<ApiKey, AuthError> {
     if !path.exists() {
         return Err(AuthError::FileNotFound(path.to_path_buf()));
     }
-    let identity_str = std::env::var(AGE_IDENTITY_ENV).map_err(|_| {
-        AuthError::Decrypt(
-            path.to_path_buf(),
-            format!("variable {AGE_IDENTITY_ENV} (identity age) no configurada"),
-        )
-    })?;
-    let identity: age::x25519::Identity = identity_str
-        .trim()
-        .parse()
-        .map_err(|e| AuthError::Decrypt(path.to_path_buf(), format!("identity inválida: {e}")))?;
+    let identity = resolve_identity()?;
     let ciphertext =
         std::fs::read(path).map_err(|e| AuthError::FileRead(path.to_path_buf(), e.to_string()))?;
     let decryptor = age::Decryptor::new(ciphertext.as_slice())
@@ -264,11 +309,89 @@ mod tests {
         let path = tmp.path().join("cred.age");
         std::fs::write(&path, &ciphertext).expect("write ciphertext");
 
+        // La identidad vive en el archivo local (modelo ~/.ssh/id_ed25519),
+        // NO en env. Un SOLO guard: dos EnvGuard simultáneos = deadlock
+        // (ENV_LOCK, política #1349).
         let identity_str = identity.to_string().expose_secret().to_string();
-        let guard = webfang_test_utils::EnvGuard::with(&[(AGE_IDENTITY_ENV, identity_str.trim())]);
+        let mut env = webfang_test_utils::EnvGuard::with(&[(
+            "XDG_CONFIG_HOME",
+            tmp.path().to_str().expect("utf8 tmp"),
+        )]);
+        let id_path = default_identity_path();
+        std::fs::create_dir_all(id_path.parent().expect("parent")).expect("mkdir identity dir");
+        std::fs::write(&id_path, identity_str.trim()).expect("write identity");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&id_path, std::fs::Permissions::from_mode(0o600))
+                .expect("chmod 0600");
+        }
+        env.remove(AGE_IDENTITY_ENV);
         let source = AuthSource::EncryptedFile { path };
         let key = source.resolve().expect("roundtrip debe resolver");
         assert_eq!(key.expose_secret(), plaintext);
-        drop(guard);
+    }
+
+    /// Regla de seguridad: la identidad JAMÁS se toma de env por defecto ni
+    /// se recomienda ahí; `EncryptedFile` en Linux es real solo porque la
+    /// identidad vive en disco con 0600 (modelo ~/.ssh/id_ed25519).
+    #[cfg(unix)]
+    #[test]
+    fn identity_file_with_loose_permissions_is_rejected() {
+        use age::secrecy::ExposeSecret as _;
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let identity = age::x25519::Identity::generate();
+        let tmp = tempfile::TempDir::new().expect("tmpdir");
+        let mut env = webfang_test_utils::EnvGuard::with(&[(
+            "XDG_CONFIG_HOME",
+            tmp.path().to_str().expect("utf8 tmp"),
+        )]);
+        // Sin override de env: si existiera WEBFANG_AGE_IDENTITY, taparía el
+        // check de permisos del archivo.
+        env.remove(AGE_IDENTITY_ENV);
+        let id_path = default_identity_path();
+        std::fs::create_dir_all(id_path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&id_path, identity.to_string().expose_secret().trim()).expect("write");
+        // 0644: legible por grupo/otros — debe rechazarse antes de parsear.
+        std::fs::set_permissions(&id_path, std::fs::Permissions::from_mode(0o644))
+            .expect("chmod 0644");
+
+        let err = match resolve_identity() {
+            Err(e) => e,
+            Ok(_) => panic!("0644 debe rechazarse"),
+        };
+        assert!(
+            err.to_string().contains("permisos inseguros"),
+            "el error debe nombrar los permisos, no fallar con otra cosa: {err}"
+        );
+    }
+
+    /// El override de CI: si WEBFANG_AGE_IDENTITY está configurado, gana sobre
+    /// el archivo (y no requiere que exista el archivo local).
+    #[test]
+    fn env_identity_overrides_file() {
+        use age::secrecy::ExposeSecret as _;
+
+        let identity = age::x25519::Identity::generate();
+        // XDG apunta a un dir SIN identity.key: si el env no ganara, sería
+        // FileNotFound. Con el env, debe resolver. Un solo guard (#1349).
+        let tmp = tempfile::TempDir::new().expect("tmpdir");
+        let mut env = webfang_test_utils::EnvGuard::with(&[(
+            "XDG_CONFIG_HOME",
+            tmp.path().to_str().expect("utf8 tmp"),
+        )]);
+        env.set(
+            AGE_IDENTITY_ENV,
+            identity.to_string().expose_secret().trim(),
+        );
+        let resolved = match resolve_identity() {
+            Ok(id) => id,
+            Err(e) => panic!("env override debe resolver, falló: {e}"),
+        };
+        assert_eq!(
+            resolved.to_string().expose_secret().trim(),
+            identity.to_string().expose_secret().trim()
+        );
     }
 }
