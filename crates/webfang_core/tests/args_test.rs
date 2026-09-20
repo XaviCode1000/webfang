@@ -1,7 +1,7 @@
 use clap::Parser;
 use proptest::prelude::*;
 use std::path::{Path, PathBuf};
-use webfang_core::cli::args::{AiArgs, Args, CrawlerArgs, ExportArgs, ObsidianArgs};
+use webfang_core::cli::args::{AiArgs, Args, CrawlerArgs, ExportArgs, LlmArgs, ObsidianArgs};
 use webfang_core::domain::ValidUrl;
 use webfang_core::infrastructure::autotuning::ElasticOverrides;
 
@@ -177,6 +177,7 @@ fn args_with_all_fields_set() -> Args {
         },
 
         ai: AiArgs::default(),
+        llm: LlmArgs::default(),
     }
 }
 
@@ -793,6 +794,7 @@ proptest! {
                 obsidian_rich_metadata: rich_metadata,
             },
             ai: AiArgs::default(),
+            llm: LlmArgs::default(),
         };
 
         let opts = webfang_core::application::crawl_options::CrawlOptions::from(args);
@@ -893,6 +895,7 @@ proptest! {
             },
             obsidian: ObsidianArgs::default(),
             ai: AiArgs::default(),
+            llm: LlmArgs::default(),
         };
 
         let opts = webfang_core::application::crawl_options::CrawlOptions::from(args);
@@ -984,6 +987,7 @@ proptest! {
             },
             obsidian: ObsidianArgs::default(),
             ai: AiArgs::default(),
+            llm: LlmArgs::default(),
         };
 
         let expected_selector = args.crawler.selector.clone();
@@ -1073,6 +1077,7 @@ proptest! {
                 ..Default::default()
             },
             ai: AiArgs::default(),
+            llm: LlmArgs::default(),
         };
 
         let opts = webfang_core::application::crawl_options::CrawlOptions::from(args);
@@ -1158,6 +1163,7 @@ proptest! {
             },
             obsidian: ObsidianArgs::default(),
             ai: AiArgs::default(),
+            llm: LlmArgs::default(),
         };
 
         let opts = webfang_core::application::crawl_options::CrawlOptions::from(args);
@@ -1242,6 +1248,7 @@ proptest! {
                 ..Default::default()
             },
             ai: AiArgs::default(),
+            llm: LlmArgs::default(),
         };
 
         let opts = webfang_core::application::crawl_options::CrawlOptions::from(args);
@@ -1321,6 +1328,7 @@ proptest! {
             },
             obsidian: ObsidianArgs::default(),
             ai: AiArgs::default(),
+            llm: LlmArgs::default(),
         };
 
         let opts = webfang_core::application::crawl_options::CrawlOptions::from(args);

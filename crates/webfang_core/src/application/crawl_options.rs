@@ -90,6 +90,14 @@ pub struct CrawlOptions {
     pub download_concurrency: Option<usize>,
     /// AI semantic-cleaning settings (from CLI AI flags).
     pub ai_config: AiConfig,
+    /// Run structured extraction through the configured remote LLM provider
+    /// (`--extract-with-llm`). The binary validates the container's
+    /// `llm_port()` at startup whenever this is `true`
+    /// (`docs/src/ai-providers-design.md` §8b).
+    pub extract_with_llm: bool,
+    /// Provider id selected for [`Self::extract_with_llm`]. `None` picks the
+    /// first provider declaring the `completion` capability.
+    pub llm_provider: Option<String>,
     /// Operator-level budget overrides (design D4). Feeds
     /// `BudgetModel::build` at engine/orchestrator entry; the default
     /// (`rate_burst: None`) reproduces today's derived numbers exactly.
@@ -400,6 +408,8 @@ impl Default for CrawlOptions {
             asset_naming: "hash".to_string(),
             download_concurrency: None,
             ai_config: AiConfig::default(),
+            extract_with_llm: false,
+            llm_provider: None,
             budget_overrides: crate::domain::budget::BudgetOverrides::default(),
         }
     }

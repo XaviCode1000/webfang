@@ -94,6 +94,9 @@ pub mod options_spec;
 /// Persistence mode — unified control-plane for `--resume`/`--state-dir` and
 /// `--checkpoint-interval`/`--no-checkpoint` (domain pure, no IO).
 pub mod persistence;
+/// Multi-provider AI configuration + registry (`ai-providers-design.md`).
+/// Domain-only: declarative config and typed lookup, no I/O.
+pub mod providers;
 /// System RAM-usage probe port — domain-owned seam for autoscale-loop
 /// reads so `application` stops importing `infrastructure::downloader`
 /// (ADR-0012 sub-slice 3.B-1c).

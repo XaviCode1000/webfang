@@ -9,10 +9,14 @@
 //! - El cliente HTTP se comparte a nivel proceso vía
 //!   [`build_default_http_client`]; el provider lo acepta con `with_http`.
 
-use crate::domain::auth_source::{AuthError, AuthSource};
+use crate::domain::auth_source::AuthError;
 use crate::domain::llm_port::LlmPort;
 use crate::infrastructure::llm::client::OpenAiLlmClient;
-use url::Url;
+
+/// Configuración declarativa del provider: `crate::domain::providers::ProviderConfig`
+/// (con `kind`, `capabilities`, `model`, `embedding_dim`). Se re-exporta aquí
+/// como `ProviderConfig` para no romper import paths existentes.
+pub use crate::domain::providers::ProviderConfig;
 
 /// Error de inicialización de un provider.
 ///
@@ -47,22 +51,7 @@ pub enum ProviderInitError {
     HttpClient(String),
 }
 
-/// Configuración declarativa de un provider (serde: el wizard la escribe en
-/// el config file).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ProviderConfig {
-    /// Identificador único del provider (p. ej. "openai", "ollama-local").
-    pub id: String,
-    /// Nombre visible.
-    pub display_name: String,
-    /// URL base OpenAI-compatible (p. ej. `https://api.openai.com/v1`).
-    pub base_url: Url,
-    /// Fuente de credencial declarada. Se resuelve UNA VEZ en `new`.
-    pub auth: AuthSource,
-    /// Modelo por defecto para chat/completions.
-    pub default_model: String,
-}
-
+/// Configuración re-exportada arriba: `crate::domain::providers::ProviderConfig`.
 /// Build the process-wide shared HTTP client for providers.
 ///
 /// Un solo `wreq::Client` (Chrome145, timeouts, SSRF guard) compartido por
@@ -174,6 +163,7 @@ impl LlmPort for OpenAiCompatibleProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::auth_source::AuthSource;
     use crate::domain::llm_port::{ChatMessage, LlmRequest};
     use wiremock::matchers::{header, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -182,9 +172,12 @@ mod tests {
         ProviderConfig {
             id: "test-provider".to_string(),
             display_name: "Test".to_string(),
-            base_url: Url::parse("https://api.example.com/v1").expect("url"),
+            kind: crate::domain::providers::ProviderKind::OpenAiCompatible,
+            base_url: url::Url::parse("https://api.example.com/v1").expect("url"),
             auth,
-            default_model: "gpt-test".to_string(),
+            capabilities: vec![crate::domain::providers::Capability::Completion],
+            model: Some("gpt-test".to_string()),
+            embedding_dim: None,
         }
     }
 
@@ -232,7 +225,7 @@ mod tests {
             "sk-wireup-test-key",
         )]);
         let cfg = ProviderConfig {
-            base_url: Url::parse(&server.uri()).expect("url"),
+            base_url: url::Url::parse(&server.uri()).expect("url"),
             ..config_with(AuthSource::Env {
                 var: "WEBFANG_TEST_WIREUP_OK_VAR".to_string(),
             })

@@ -37,6 +37,15 @@ pub struct ConfigDefaults {
     /// Default explicit rate-limiter burst permits (budget model Q1 knob;
     /// 0 is rejected at staging with a Spanish error).
     pub rate_limit_burst: Option<u32>,
+    /// LLM provider declarations (`ai-providers-design.md` §4).
+    ///
+    /// TOML shape: `[[providers]]` entries with `id`, `display_name`, `kind`,
+    /// `base_url`, `auth`, `capabilities`, and optional `model` /
+    /// `embedding_dim`. Absent section = no providers (the default); a
+    /// malformed section falls back to defaults with a loud `error!` — same
+    /// contract as the rest of this file.
+    #[serde(default)]
+    pub providers: Vec<crate::domain::providers::ProviderConfig>,
 }
 
 impl ConfigDefaults {

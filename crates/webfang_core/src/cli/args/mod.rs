@@ -4,12 +4,15 @@ pub mod ai;
 pub mod crawler;
 /// Export format and output configuration arguments.
 pub mod export;
+/// LLM provider flags: `--extract-with-llm` + provider selection.
+pub mod llm;
 /// Obsidian vault integration arguments.
 pub mod obsidian;
 
 pub use ai::AiArgs;
 pub use crawler::CrawlerArgs;
 pub use export::ExportArgs;
+pub use llm::LlmArgs;
 pub use obsidian::ObsidianArgs;
 
 use crate::domain::ValidUrl;
@@ -100,6 +103,10 @@ pub struct Args {
     /// AI-powered semantic cleaning settings.
     #[command(flatten)]
     pub ai: AiArgs,
+
+    /// LLM extraction provider settings.
+    #[command(flatten)]
+    pub llm: LlmArgs,
 }
 
 /// Subcommands.
@@ -296,6 +303,8 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
             asset_naming: args.crawler.asset_naming,
             download_concurrency: args.crawler.download_concurrency,
             ai_config,
+            extract_with_llm: args.llm.extract_with_llm,
+            llm_provider: args.llm.llm_provider.clone(),
             budget_overrides: crate::domain::budget::BudgetOverrides {
                 // #897 item 2 ("Zero Silent Loss"): an explicit `0` is
                 // rejected by `parse_rate_limit_burst`, and that rejection
