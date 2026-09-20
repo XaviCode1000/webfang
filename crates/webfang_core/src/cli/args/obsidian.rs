@@ -69,8 +69,8 @@ mod spec_parity_tests {
     //! so any future spec drift fails here first.
     use super::*;
     use crate::cli::args::test_support::{
-        assert_defaults, assert_help, assert_long_short_alias_env_heading,
-        assert_structural, assert_surface_covered, collect_args, parse_args_hermetic,
+        assert_defaults, assert_help, assert_long_short_alias_env_heading, assert_structural,
+        assert_surface_covered, collect_args, parse_args_hermetic,
     };
     use crate::domain::options_spec as spec;
     use clap::Args as _;

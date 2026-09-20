@@ -35,7 +35,11 @@ pub(crate) mod test_support {
 
     /// Find one arg by id, panicking with the owning group's name so
     /// failures point at the right harness.
-    pub(crate) fn arg_by_id<'a>(args: &'a [clap::Arg], id: &str, owner: &'static str) -> &'a clap::Arg {
+    pub(crate) fn arg_by_id<'a>(
+        args: &'a [clap::Arg],
+        id: &str,
+        owner: &'static str,
+    ) -> &'a clap::Arg {
         args.iter()
             .find(|a| a.get_id() == id)
             .unwrap_or_else(|| panic!("arg `{id}` missing from {owner} command"))
