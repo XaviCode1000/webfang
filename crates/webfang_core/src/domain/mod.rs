@@ -167,8 +167,7 @@ pub use waf::{
 };
 
 pub use providers::{
-    Capability, ProviderConfig, ProviderKind, ProviderRegistry, ProvidersConfig,
-    RegistryError,
+    Capability, ProviderConfig, ProviderKind, ProviderRegistry, ProvidersConfig, RegistryError,
 };
 
 /// Compression types supported for sitemap parsing
