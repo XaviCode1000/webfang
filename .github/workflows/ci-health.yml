@@ -166,6 +166,8 @@ jobs:
           KNOWN_ONLY: ${{ steps.classify.outputs.known_only }}
         run: |
           set -euo pipefail
+          # shellcheck disable=SC1091
+          . "$GITHUB_WORKSPACE/scripts/ci-health-close.sh"
           SERVER="${GITHUB_SERVER_URL:-https://github.com}"
           RUN_URL="$SERVER/$GH_REPO/actions/runs/$PAYLOAD_ID"
           open_or_comment() {
@@ -186,17 +188,8 @@ jobs:
               fi
             fi
           }
-          close_mine() {
-            title="$1"
-            gh issue list --state open --search "${title} in:title" --json number --jq '.[].number' |
-              while read -r number; do
-                if gh issue view "$number" --json labels --jq '.labels[].name' | grep -qx "$LABEL"; then
-                  [ -n "$number" ] && gh issue close "$number" --comment "Green again: $RUN_URL"
-                else
-                  echo "Skip #$number: missing label $LABEL"
-                fi
-              done
-          }
+          # Shared close semantics: close_mine is sourced from
+          # scripts/ci-health-close.sh above (single implementation).
           # Guard: cancelled/skipped/stale runs are noise (e.g. a push run
           # superseded by the next push). Only `failure` opens/comments and
           # only `success` closes; anything else exits silently (see #1472).
@@ -244,17 +237,14 @@ jobs:
           BE_R: ${{ steps.src.outputs.Benches_run }}
         run: |
           set -euo pipefail
+          # shellcheck disable=SC1091
+          . "$GITHUB_WORKSPACE/scripts/ci-health-close.sh"
           SERVER="${GITHUB_SERVER_URL:-https://github.com}"
           reconcile_one() {
             title="$1"; concl="$2"; rid="$3"; wname="$4"
             url="$SERVER/$GH_REPO/actions/runs/$rid"
             if [ "$concl" = "success" ]; then
-              gh issue list --state open --search "${title} in:title" --json number --jq '.[].number' |
-                while read -r number; do
-                  if gh issue view "$number" --json labels --jq '.labels[].name' | grep -qx "$LABEL"; then
-                    [ -n "$number" ] && gh issue close "$number" --comment "Green again: $url"
-                  fi
-                done
+              close_mine "$title" "$url"
             elif [ "$concl" = "failure" ]; then
               count="$(gh issue list --state open --search "${title} in:title" --json number --jq 'length')"
               if [ "$count" -eq 0 ]; then
