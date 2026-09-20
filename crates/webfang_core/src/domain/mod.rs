@@ -166,6 +166,11 @@ pub use waf::{
     WafEvidence, WafInspectorPort, WafTier, WafVerdict,
 };
 
+pub use providers::{
+    Capability, ProviderConfig, ProviderKind, ProviderRegistry, ProvidersConfig,
+    RegistryError,
+};
+
 /// Compression types supported for sitemap parsing
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CompressionType {
