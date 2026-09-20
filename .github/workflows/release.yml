@@ -230,34 +230,9 @@ jobs:
           CHANGELOG_URL: https://github.com/XaviCode1000/webfang/blob/main/CHANGELOG.md
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          cat > /tmp/release-notes.md <<'RELEASE_EOF'
-## What's Changed
-
-See [CHANGELOG]($CHANGELOG_URL) for details.
-
-## Installation
-
-### Binary download
-Download the binary for your platform from the assets below.
-
-### Cargo
-```bash
-cargo install webfang --version $TAG
-```
-
-### From source
-```bash
-git clone https://github.com/XaviCode1000/webfang
-cd webfang
-cargo build --release --features "ai mcp"
-```
-
-## Verification
-Verify the checksum of your downloaded binary:
-```bash
-sha256sum -c SHA256SUMS.txt --ignore-missing
-```
-RELEASE_EOF
+          echo 'IyMgV2hhdCdzIENoYW5nZWQKClNlZSBbQ0hBTkdFTE9HXSgkQ0hBTkdFTE9HX1VSTCkgZm9yIGRldGFpbHMuCgojIyBJbnN0YWxsYXRpb24KCiMjIyBCaW5hcnkgZG93bmxvYWQKRG93bmxvYWQgdGhlIGJpbmFyeSBmb3IgeW91ciBwbGF0Zm9ybSBmcm9tIHRoZSBhc3NldHMgYmVsb3cuCgojIyMgQ2FyZ28KYGBgYmFzaApjYXJnbyBpbnN0YWxsIHdlYmZhbmcgLS12ZXJzaW9uICRUQUcKYGBgCgojIyMgRnJvbSBzb3VyY2UKYGBgYmFzaApnaXQgY2xvbmUgaHR0cHM6Ly9naXRodWIuY29tL1hhdmlDb2RlMTAwMC93ZWJmYW5nCmNkIHdlYmZhbmcKY2FyZ28gYnVpbGQgLS1yZWxlYXNlIC0tZmVhdHVyZXMgImFpIG1jcCIKYGBgCgojIyBWZXJpZmljYXRpb24KVmVyaWZ5IHRoZSBjaGVja3N1bSBvZiB5b3VyIGRvd25sb2FkZWQgYmluYXJ5OgpgYGBiYXNoCnNoYTI1NnN1bSAtYyBTSEEyNTZTVU1TLnR4dCAtLWlnbm9yZS1taXNzaW5nCmBgYA==' | base64 -d > /tmp/release-notes.md
+          # Substitute the CHANGELOG_URL variable
+          sed -i "s|\$CHANGELOG_URL|$CHANGELOG_URL|g" /tmp/release-notes.md
           gh release create "$TAG" \
             --title "WebFang $TAG" \
             --notes-file /tmp/release-notes.md \
