@@ -184,10 +184,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: [poisoned-env, ignored-tests]
     if: always()
-    steps:
-
     permissions:
       contents: read
+    steps:
       - name: Triage gate (green = no findings, red = findings)
         env:
           POISONED_ENV_RESULT: ${{ needs.poisoned-env.result }}

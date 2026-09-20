@@ -230,7 +230,7 @@ jobs:
           CHANGELOG_URL: https://github.com/XaviCode1000/webfang/blob/main/CHANGELOG.md
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          GH_RELEASE_NOTES=$(cat <<'EOF'
+          cat > /tmp/release-notes.md <<'RELEASE_EOF'
 ## What's Changed
 
 See [CHANGELOG]($CHANGELOG_URL) for details.
@@ -257,6 +257,10 @@ Verify the checksum of your downloaded binary:
 ```bash
 sha256sum -c SHA256SUMS.txt --ignore-missing
 ```
-EOF
-)
-          gh release create "$TAG"             --title "WebFang $TAG"             --notes "$GH_RELEASE_NOTES"             artifacts/webfang-*             artifacts/SHA256SUMS.txt             ${{ needs.preflight.outputs.prerelease == 'true' && '--prerelease' || '' }}
+RELEASE_EOF
+          gh release create "$TAG" \
+            --title "WebFang $TAG" \
+            --notes-file /tmp/release-notes.md \
+            artifacts/webfang-* \
+            artifacts/SHA256SUMS.txt \
+            ${{ needs.preflight.outputs.prerelease == 'true' && '--prerelease' || '' }}
