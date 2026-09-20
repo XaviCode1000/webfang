@@ -271,6 +271,14 @@ EOF
   else
     skip_step "workflow validation" "no changed workflows"
   fi
+  # CI Health close semantics harness (slice4-branch-guard): offline fake-gh
+  # proof that the shared close_mine owns all close behavior. Runs only when a
+  # file in the close path changed; cheap enough (<1s) to never skip otherwise.
+  if grep -Eq '^(scripts/ci-health-close\.sh|scripts/test_ci_health_close\.sh|\.github/workflows/ci-health\.yml)$' "$UNION_TMP" 2>/dev/null; then
+    run_step "ci-health close harness (offline)" bash scripts/test_ci_health_close.sh
+  else
+    skip_step "ci-health close harness" "no ci-health close files changed"
+  fi
 }
 
 # --- shared: fmt + repo guards ----------------------------------------------------
