@@ -10,6 +10,9 @@ on:
 
 jobs:
   poisoned-env:
+
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     # No continue-on-error: a failing job is a FINDING, not tolerated noise.
     # Honesty is enforced end-to-end by the `discovery-gate` job below.
@@ -23,13 +26,15 @@ jobs:
       WEBFANG_OBSIDIAN_WIKI_LINKS: "true"
       OTEL_EXPORTER_OTLP_ENDPOINT: "http://poison:4317"
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
           # No PR trigger (schedule/dispatch on main); only main saves (#1171)
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@e88e69ecdb9658bd172693dcdc2c84e7f0ab6a11
       - name: Run tests with poisoned environment
         run: |
           set -o pipefail
@@ -55,17 +60,22 @@ jobs:
   ignored-tests:
     runs-on: ubuntu-latest
     # No continue-on-error: a failing job means bugs were found (or infra broke);
+
+    permissions:
+      contents: read
     # either way the scheduled run must conclude RED, not hide behind a green check.
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
           # No PR trigger (schedule/dispatch on main); only main saves (#1171)
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@e88e69ecdb9658bd172693dcdc2c84e7f0ab6a11
       - name: Cache ONNX model (Granite-97M)
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
         with:
           # Stable key: never bump the suffix so the cached model survives across
           # merges. A changing key would invalidate the cache and force a re-download
@@ -175,6 +185,9 @@ jobs:
     needs: [poisoned-env, ignored-tests]
     if: always()
     steps:
+
+    permissions:
+      contents: read
       - name: Triage gate (green = no findings, red = findings)
         env:
           POISONED_ENV_RESULT: ${{ needs.poisoned-env.result }}

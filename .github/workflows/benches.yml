@@ -36,6 +36,9 @@ env:
 jobs:
   bench:
     name: Criterion suite
+
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
@@ -44,13 +47,15 @@ jobs:
       - name: Free disk space
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
-          docker rmi $(docker images -q) 2>/dev/null || true
+          docker rmi "$(docker images -q)" 2>/dev/null || true
           sudo apt-get clean
           df -h /
 
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
 
       # NOTE: deliberately NO Swatinem/rust-cache here (review finding,
       # PR #959). Repo Actions-cache usage is at the ~10 GB eviction
@@ -99,7 +104,7 @@ jobs:
 
       - name: Upload criterion reports
         if: always()
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
         with:
           name: criterion-reports-${{ github.run_id }}
           path: target/criterion
