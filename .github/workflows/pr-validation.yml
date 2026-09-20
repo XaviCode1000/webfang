@@ -122,19 +122,17 @@ jobs:
           case "$HEAD_REF" in
             chore/release-*) echo "OK: release-plz bot branch (exempt)."; exit 0 ;;
           esac
-          if ! printf '%s' "$HEAD_REF" | grep -qE '^(feat|fix|chore|docs|style|refactor|perf|test|build|ci|revert)/[a-z0-9._-]+$'; then
+          if ! printf '%s' "$HEAD_REF" | grep -qE '^(feat|fix|hotfix|chore|docs|style|refactor|perf|test|build|ci|revert|release|support)/[a-z0-9._-]+$'; then
             echo "::error::La rama '$HEAD_REF' debe seguir el patron type/description (ej: fix/mi-bug)."
             exit 1
           fi
           echo "OK: nombre de rama."
 
-      - name: Validate branch topology (warn-only)
-        # Warn-only until the release/support-line model lands: reports
-        # misrouted PRs (e.g. hotfix/* against main) without failing.
-        # To enforce: delete the continue-on-error line AND extend the
-        # conventional-branch regex above with release/*, support/*,
-        # hotfix/* (it would reject those heads today).
-        continue-on-error: true
+      - name: Validate branch topology (enforcing)
+        # Enforcing: misrouted PRs (e.g. hotfix/* against main) fail this
+        # required check. The conventional-branch regex above admits the
+        # support-line heads (hotfix/*, release/*, support/*) so no enforced
+        # arm is dead on arrival.
         env:
           HEAD_REF: ${{ github.head_ref || github.event.merge_group.head_ref }}
           BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref }}
