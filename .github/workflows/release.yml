@@ -31,6 +31,9 @@ jobs:
   # ============================================================================
   preflight:
     name: Validate tag
+
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     outputs:
       prerelease: ${{ steps.channel.outputs.prerelease }}
@@ -38,9 +41,10 @@ jobs:
       # Pin the checkout to the tag being released. On workflow_dispatch the
       # default checkout resolves to the ref the run was started from (a branch),
       # so without this the preflight would validate main instead of the tag.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           ref: ${{ github.event.inputs.tag || github.ref_name }}
+          persist-credentials: false
       - name: Resolve release channel
         id: channel
         env:
@@ -76,6 +80,9 @@ jobs:
   build:
     needs: [preflight]
     name: Build ${{ matrix.target }}
+
+    permissions:
+      contents: read
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -101,16 +108,16 @@ jobs:
 
     steps:
       # Same pin as preflight: build the requested tag, never the default branch.
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           ref: ${{ github.event.inputs.tag || github.ref_name }}
-
-      - uses: dtolnay/rust-toolchain@1.88.0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@688313b0823df1393bcebb1b4add0438a6d36884
         with:
           targets: ${{ matrix.target }}
 
       # zizmor: ignore[cache-poisoning] — save-if ensures cache writes ONLY happen on git tags, not manual dispatches.
-      - uses: Swatinem/rust-cache@v2 # zizmor: ignore[cache-poisoning]
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c # zizmor: ignore[cache-poisoning]
         with:
           key: release-${{ matrix.target }}
           # Tag-only saves: manual workflow_dispatch test runs restore the
@@ -169,7 +176,7 @@ jobs:
           7z a ../../../webfang-${{ matrix.target }}.zip webfang.exe
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
         with:
           name: webfang-${{ matrix.target }}
           path: webfang-${{ matrix.target }}.*
@@ -181,9 +188,11 @@ jobs:
     name: Generate checksums
     needs: [build]
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         with:
           path: artifacts
           pattern: webfang-*
@@ -196,7 +205,7 @@ jobs:
           cat SHA256SUMS.txt
 
       - name: Upload checksums
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
         with:
           name: checksums
           path: artifacts/SHA256SUMS.txt
@@ -212,48 +221,46 @@ jobs:
       contents: write
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         with:
           path: artifacts
           merge-multiple: true
-
       - name: Create release
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
-          name: "WebFang ${{ github.event.inputs.tag || github.ref_name }}"
-          body: |
-            ## What's Changed
-
-            See [CHANGELOG](https://github.com/XaviCode1000/webfang/blob/main/CHANGELOG.md) for details.
-
-            ## Installation
-
-            ### Binary download
-            Download the binary for your platform from the assets below.
-
-            ### Cargo
-            ```bash
-            cargo install webfang --version ${{ github.event.inputs.tag || github.ref_name }}
-            ```
-
-            ### From source
-            ```bash
-            git clone https://github.com/XaviCode1000/webfang
-            cd webfang
-            cargo build --release --features "ai mcp"
-            ```
-
-            ## Verification
-            Verify the checksum of your downloaded binary:
-            ```bash
-            sha256sum -c SHA256SUMS.txt --ignore-missing
-            ```
-          files: |
-            artifacts/webfang-*
-            artifacts/SHA256SUMS.txt
-          draft: false
-          # Channel resolved by preflight: RC tags publish as pre-release,
-          # stable tags as full releases. Manual dispatch test runs resolve
-          # their channel from the input tag the same way.
-          prerelease: ${{ needs.preflight.outputs.prerelease }}
+        env:
+          CHANGELOG_URL: https://github.com/XaviCode1000/webfang/blob/main/CHANGELOG.md
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          {
+            echo "## What's Changed"
+            echo ""
+            echo "See [CHANGELOG]($CHANGELOG_URL) for details."
+            echo ""
+            echo "## Installation"
+            echo ""
+            echo "### Binary download"
+            echo "Download the binary for your platform from the assets below."
+            echo ""
+            echo "### Cargo"
+            echo '```bash'
+            echo "cargo install webfang --version $TAG"
+            echo '```'
+            echo ""
+            echo "### From source"
+            echo '```bash'
+            echo "git clone https://github.com/XaviCode1000/webfang"
+            echo "cd webfang"
+            echo 'cargo build --release --features "ai mcp"'
+            echo '```'
+            echo ""
+            echo "## Verification"
+            echo "Verify the checksum of your downloaded binary:"
+            echo '```bash'
+            echo "sha256sum -c SHA256SUMS.txt --ignore-missing"
+            echo '```'
+          } > /tmp/release-notes.md
+          gh release create "$TAG" \
+            --title "WebFang $TAG" \
+            --notes-file /tmp/release-notes.md \
+            artifacts/webfang-* \
+            artifacts/SHA256SUMS.txt \
+            ${{ needs.preflight.outputs.prerelease == 'true' && '--prerelease' || '' }}

@@ -40,13 +40,14 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           fetch-depth: 0
           # fetch-tags is load-bearing: without the tags the trust predicate sees
           # nothing and the sweep silently reports "nothing to reconcile".
           fetch-tags: true
           persist-credentials: false
+
       - name: Dispatch release.yml for any tag missing a complete Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

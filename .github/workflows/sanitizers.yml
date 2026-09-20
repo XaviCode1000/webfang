@@ -9,6 +9,9 @@ permissions:
 
 jobs:
   miri:
+
+    permissions:
+      contents: read
     runs-on: ubuntu-latest
     env:
       # rust-toolchain.toml pins 1.88.0 and would override nightly for
@@ -16,10 +19,11 @@ jobs:
       # higher precedence than rust-toolchain.toml (mirrors ci.yml, #750).
       RUSTUP_TOOLCHAIN: nightly
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: dtolnay/rust-toolchain@be39649afda95dbf70f87cce95f68b8d5797b296
         with: { components: miri }
       - run: cargo miri setup
       - name: Miri on concurrency code
@@ -54,9 +58,10 @@ jobs:
     # Phase 1: advisory — report warnings but don't block CI
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           persist-credentials: false
+
       - name: Install nightly + rust-src
         run: rustup toolchain install nightly --component rust-src
       - name: Install cmake
@@ -90,7 +95,7 @@ jobs:
           echo "Scope: infrastructure::bridge + infrastructure::network::session_pool + infrastructure::downloader::resource_governor" >> $GITHUB_STEP_SUMMARY
           echo "Status: $JOB_STATUS" >> $GITHUB_STEP_SUMMARY
       - name: Upload TSan output
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
         if: always()
         with:
           name: tsan-output
@@ -99,10 +104,11 @@ jobs:
   lsan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@nightly
+
+      - uses: dtolnay/rust-toolchain@be39649afda95dbf70f87cce95f68b8d5797b296
       - name: LeakSanitizer
         run: |
           RUSTFLAGS="-Zsanitizer=leak" \

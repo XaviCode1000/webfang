@@ -66,10 +66,11 @@ jobs:
     timeout-minutes: 90
     # NO continue-on-error: a surviving mutant (exit 2) blocks the PR.
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           fetch-depth: 0
 
+          persist-credentials: false
       - name: Generate PR diff
         env:
           BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref }}
@@ -119,7 +120,7 @@ jobs:
 
       - name: Install stable toolchain
         if: steps.hotpath.outputs.changed == 'true'
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
 
       - name: Install cmake
         if: steps.hotpath.outputs.changed == 'true'
@@ -127,13 +128,13 @@ jobs:
 
       - name: Install cargo-mutants
         if: steps.hotpath.outputs.changed == 'true'
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73
         with:
           tool: cargo-mutants@27.1.0
 
       - name: Cache Rust artifacts
         if: steps.hotpath.outputs.changed == 'true'
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
 
       - name: Run mutation testing (PR diff)
         if: steps.hotpath.outputs.changed == 'true'
@@ -147,7 +148,7 @@ jobs:
 
       - name: Upload results
         if: always() && steps.hotpath.outputs.changed == 'true'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
         with:
           name: mutants-pr
           path: mutants-output.txt
@@ -166,16 +167,18 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64]
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
 
       - name: Install stable toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
 
       - name: Install cmake
         run: sudo apt-get install -y cmake
 
       - name: Install cargo-mutants
-        uses: taiki-e/install-action@v2
+        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73
         with:
           tool: cargo-mutants@27.1.0
 
@@ -210,7 +213,7 @@ jobs:
           fi
 
       - name: Upload results
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
         if: always()
         with:
           name: mutants-${{ matrix.shard }}
@@ -224,7 +227,7 @@ jobs:
     needs: mutants-weekly
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         with:
           pattern: mutants-*
           merge-multiple: true

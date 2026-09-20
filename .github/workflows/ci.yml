@@ -78,6 +78,9 @@ env:
   CARGO_PROFILE_DEV_DEBUG: "0"
   CARGO_PROFILE_DEV_INCREMENTAL: "false"
 
+permissions:
+  contents: read
+
 jobs:
   # ============================================================================
   # TIER 0: TOOLCHAIN GATE (< 30 seconds)
@@ -90,9 +93,13 @@ jobs:
     name: Verify rust-version
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
       - name: Check rust-version >= Cargo.toml minimum
         run: |
           REQUIRED=$(grep '^rust-version' Cargo.toml | head -1 | sed 's/.*"\(.*\)"/\1/')
@@ -130,6 +137,8 @@ jobs:
     name: Change scope
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
     outputs:
       run_code_jobs: ${{ steps.scope.outputs.run_code_jobs }}
       needs_ai: ${{ steps.scope.outputs.needs_ai }}
@@ -137,9 +146,10 @@ jobs:
       needs_mutation_hotpath: ${{ steps.scope.outputs.needs_mutation_hotpath }}
       snapshot_changed: ${{ steps.scope.outputs.snapshot_changed }}
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           fetch-depth: 0
+          persist-credentials: false
       - name: Classify changed paths
         id: scope
         run: |
@@ -174,8 +184,12 @@ jobs:
     name: Repo guards
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
       # Regression guard for Wave 3 (#402): all tests must be crate-local.
       # Fails if anyone re-adds a .rs file under root tests/ (dead test).
       - name: Dead test detection
@@ -307,17 +321,21 @@ jobs:
     if: ${{ needs.change-scope.outputs.run_code_jobs == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
     steps:
       # Free ~30GB: remove pre-installed Android SDK, .NET, Haskell, CodeQL, Docker images
       - name: Free disk space
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
-          docker rmi $(docker images -q) 2>/dev/null || true
+          docker rmi "$(docker images -q)" 2>/dev/null || true
           sudo apt-get clean
           df -h /
 
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
@@ -332,12 +350,16 @@ jobs:
     needs: [toolchain, change-scope]
     if: ${{ needs.change-scope.outputs.run_code_jobs == 'true' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
           # PRs restore main's cache lineage; only main saves — pool must not scale with open PRs (#1171)
           save-if: ${{ github.ref == 'refs/heads/main' }}
@@ -357,10 +379,14 @@ jobs:
     needs: [clippy]
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install stable toolchain for jscpd-rs (MSRV 1.93)
@@ -384,13 +410,17 @@ jobs:
     needs: [toolchain, change-scope]
     if: ${{ needs.change-scope.outputs.run_code_jobs == 'true' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@e88e69ecdb9658bd172693dcdc2c84e7f0ab6a11
       - name: Pre-build test binary
         run: cargo build -p webfang_cli --bin webfang
       - name: Unit tests (lib)
@@ -407,13 +437,17 @@ jobs:
     needs: [change-scope]
     if: ${{ needs.change-scope.outputs.run_code_jobs == 'true' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@e88e69ecdb9658bd172693dcdc2c84e7f0ab6a11
       # NOTE: no ONNX model download here. test-full runs zero AI inference
       # (all --features compile + test, no --ignored); the only --ignored
       # consumer is the test-ai job, which keeps its own download. Skipping
@@ -440,11 +474,15 @@ jobs:
     timeout-minutes: 20
     env:
       RUSTFLAGS: --cfg tokio_unstable
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
       # no rust-cache (#1171): non-gate job, compiles cold — cache pool budget, benches.yml:55-60 precedent
-      - uses: taiki-e/install-action@nextest
+      - uses: taiki-e/install-action@e88e69ecdb9658bd172693dcdc2c84e7f0ab6a11
       - name: Compile proof (webfang_cli with console under unstable cfg)
         run: cargo check -p webfang_cli --features console
       - name: Console smoke test (delta ceiling + baseline recovery)
@@ -468,12 +506,16 @@ jobs:
     if: ${{ needs.change-scope.outputs.run_code_jobs == 'true' && needs.change-scope.outputs.needs_ai == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
       # no rust-cache (#1171): non-gate job, compiles cold — cache pool budget, benches.yml:55-60 precedent
       - name: Cache ONNX model (Granite-97M)
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: ~/.cache/huggingface/hub/
           key: onnx-model-${{ runner.os }}-granite-97m-v1
@@ -562,10 +604,14 @@ jobs:
     needs: [toolchain]
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: taiki-e/install-action@cargo-deny
-      - uses: taiki-e/install-action@cargo-audit
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@347438fa49c6c030ac9a8f98ea84f0e151483e84
+      - uses: taiki-e/install-action@fd94a048c157f8a2d1975d01ffb26bd0de4f192e
       - name: Advisories + licenses + bans + sources
         run: cargo deny check
       # --ignore flags mirror deny.toml [advisories] ignore list.
@@ -585,10 +631,14 @@ jobs:
   doc-quality:
     name: Documentation quality
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Rustdoc (links + missing_docs)
@@ -615,6 +665,7 @@ jobs:
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions: {}
     steps:
       - name: Verify all required jobs succeeded
         env:
@@ -717,13 +768,17 @@ jobs:
     needs: [clippy]
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - uses: taiki-e/install-action@cargo-hack
+      - uses: taiki-e/install-action@4787a8cb96c211ae024644db52123a03bf511c68
       - name: Feature matrix check
         run: cargo hack check --each-feature --workspace --no-dev-deps
       # `cargo hack check` never compiles test targets (and `--no-dev-deps` drops
@@ -745,10 +800,14 @@ jobs:
     needs: [test-full, change-scope]
     if: ${{ needs.test-full.result == 'success' && needs.change-scope.outputs.run_code_jobs == 'true' && needs.change-scope.outputs.needs_mcp == 'true' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build MCP server
@@ -758,7 +817,7 @@ jobs:
         run: |
           ./target/debug/webfang-mcp &
           MCP_PID=$!
-          for i in $(seq 1 15); do
+          for _ in $(seq 1 15); do
             if curl -sf --max-time 2 http://127.0.0.1:8080/mcp -X POST \
               -H "Content-Type: application/json" \
               -H "Accept: application/json, text/event-stream" \
@@ -783,12 +842,16 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           target: x86_64-unknown-linux-gnu
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build optimized binary
@@ -798,7 +861,7 @@ jobs:
           strip target/release/webfang
           ls -lh target/release/webfang
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
         with:
           name: webfang-linux-x86_64
           path: target/release/webfang
@@ -836,6 +899,8 @@ jobs:
     # of headroom past the observed full-suite pace.
     timeout-minutes: 60
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
     env:
       # rust-toolchain.toml pins 1.88.0 and would override the nightly toolchain
       # for `cargo miri` (miri is nightly-only). RUSTUP_TOOLCHAIN (env var) has
@@ -856,7 +921,9 @@ jobs:
           - group: domain
             filter: "-- domain::"
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
       # Miri nightly pin (#991): nightly-2026-08-27 was the last known-good
       # date for both the core and infra-slow Miri jobs on SHA e2b4aa10
       # (green 2026-08-27 21:31, run 33118500969). Pinning freezes the aliasing
@@ -865,12 +932,12 @@ jobs:
       # commands against the new nightly on a representative commit and
       # update all three `dtolnay/rust-toolchain` toolchain inputs
       # below + the sysroot cache key (`miri-sysroot-...-YYYY-MM-DD`).
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
           toolchain: nightly-2026-08-27
           components: miri
       - name: Cache Miri sysroot
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: ~/.cache/miri
           key: miri-sysroot-${{ runner.os }}-2026-08-27
@@ -905,19 +972,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
     env:
       # Must name the SAME pinned toolchain installed below — RUSTUP_TOOLCHAIN
       # has the highest rustup precedence (see the `miri` job rationale).
       RUSTUP_TOOLCHAIN: nightly-2026-08-27
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
       # See the Miri nightly pin rationale in the `miri` job above (#991).
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
           toolchain: nightly-2026-08-27
           components: miri
       - name: Cache Miri sysroot
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: ~/.cache/miri
           key: miri-sysroot-${{ runner.os }}-2026-08-27
@@ -952,19 +1023,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: read
     env:
       # Must name the SAME pinned toolchain installed below — RUSTUP_TOOLCHAIN
       # has the highest rustup precedence (see the `miri` job rationale).
       RUSTUP_TOOLCHAIN: nightly-2026-08-27
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
       # See the Miri nightly pin rationale in the `miri` job above (#991).
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de
         with:
           toolchain: nightly-2026-08-27
           components: miri
       - name: Cache Miri sysroot
-        uses: actions/cache@v5
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
         with:
           path: ~/.cache/miri
           key: miri-sysroot-${{ runner.os }}-2026-08-27
@@ -998,11 +1073,15 @@ jobs:
       # `-C incremental` additionally marks every unit non-cacheable for a compiler
       # cache. Only the profile-config form is used here, to match the repo.
       CARGO_PROFILE_DEV_INCREMENTAL: "false"
+    permissions:
+      contents: read
     steps:
-      - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
       # no rust-cache (#1171): non-gate job, compiles cold — cache pool budget, benches.yml:55-60 precedent
-      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: taiki-e/install-action@166cdddc0349c6f3c1da17f66a8fc88ec3bc4dd5
       - name: Generate coverage
         run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info -- --skip test_mcp
       - name: Report coverage
@@ -1010,7 +1089,7 @@ jobs:
           cargo llvm-cov report --lcov | tail -5
           echo "Coverage report generated successfully"
       - name: Upload to Codecov
-        uses: codecov/codecov-action@v7
+        uses: codecov/codecov-action@f9fe539f5290016afa014f8ef31597d3a61c2dea
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info

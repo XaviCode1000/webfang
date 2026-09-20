@@ -45,7 +45,7 @@ jobs:
       pull-requests: read
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           fetch-depth: 0
           # actions/checkout does NOT fetch tags by default (fetch-tags: false)
@@ -54,8 +54,9 @@ jobs:
           # initial release (observed on the first automated run).
           fetch-tags: true
           persist-credentials: false
+
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
       # The duplicate-tag 422 (webfang#1341) makes `release-plz release` exit 1
       # AFTER it has created the correct tag, inside the SAME run — measured on
       # v2.1.1, where the tag is authored by this bot at 18:04:23, inside the run
@@ -71,7 +72,7 @@ jobs:
       - name: Run release-plz
         id: release
         continue-on-error: true
-        uses: release-plz/action@v0.5
+        uses: release-plz/action@26c577bbc3f9ecc178fc9e9afc34ee43e6f4a080
         with:
           command: release
         env:
@@ -109,13 +110,14 @@ jobs:
       actions: write # required to create the workflow_dispatch run
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           fetch-depth: 0
           # release-plz pushes the tag at this commit, and the candidate is
           # resolved with `git tag --points-at HEAD`, so tags must be fetched.
           fetch-tags: true
           persist-credentials: false
+
       - name: Dispatch release.yml for a tag missing a complete GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -183,7 +185,7 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           fetch-depth: 0
           # actions/checkout does NOT fetch tags by default (fetch-tags: false)
@@ -192,10 +194,11 @@ jobs:
           # initial release (observed on the first automated run).
           fetch-tags: true
           persist-credentials: false
+
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
       - name: Run release-plz
-        uses: release-plz/action@v0.5
+        uses: release-plz/action@26c577bbc3f9ecc178fc9e9afc34ee43e6f4a080
         with:
           command: release-pr
         env:
