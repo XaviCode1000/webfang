@@ -13,7 +13,15 @@ jobs:
   validate:
     name: Validate PR metadata
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
     steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
       # Resolve the real PR for both pull_request and merge_group runs.
       # Fail closed: this is a required check — if the PR cannot be
       # resolved, the check fails instead of silently passing.
