@@ -519,6 +519,17 @@ AI Settings:
           
           [env: WEBFANG_AI_MODEL_ID=]
 
+LLM Extraction:
+      --extract-with-llm
+          Run structured extraction through the configured LLM provider (requires a provider with the `completion` capability; fails at startup otherwise)
+          
+          [env: WEBFANG_EXTRACT_WITH_LLM=]
+
+      --llm-provider <LLM_PROVIDER>
+          Provider id to use for LLM extraction (default: first provider declaring the `completion` capability)
+          
+          [env: WEBFANG_LLM_PROVIDER=]
+
 EXIT CODES:
   0    Success
   2    No URLs discovered
