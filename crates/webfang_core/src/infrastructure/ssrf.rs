@@ -31,8 +31,9 @@
 //! `impl SsrfGuard for DefaultSsrfGuard` below — the domain-owned
 //! `DefaultSsrfGuard` type cannot reference infrastructure I/O, so the impl
 //! lives here (infrastructure → domain is the allowed direction). No production
-//! call site may hand-wire either layer: `secure_client` is the only place
-//! `redirect_policy()` and `ValidatingResolver::new()` are composed.
+//! call site may hand-wire either layer: `secure_client` and its parameterized
+//! sibling `secure_client_with_loopback` are the only places the redirect
+//! policy and the validating resolver are composed.
 //!
 //! Layer boundaries verified against wreq 6.0.0-rc.29: its HTTP connector
 //! parses IP-literal hosts directly (`dns::SocketAddrs::try_parse`) and never
@@ -53,7 +54,8 @@
 #[cfg(test)]
 pub(crate) use crate::domain::ssrf_guard::DISABLE_REDIRECT_GUARD_ENV;
 use crate::domain::ssrf_guard::{
-    is_forbidden_ip, redirect_policy, DISABLE_VALIDATING_RESOLVER_ENV,
+    is_forbidden_ip_with, redirect_policy, redirect_policy_with_loopback,
+    DISABLE_VALIDATING_RESOLVER_ENV,
 };
 
 use std::net::IpAddr;
@@ -105,9 +107,15 @@ pub struct ForbiddenResolutionError {
 /// resolver, so this type only ever sees hostname connections; literal-IP
 /// targets are covered by entry validation and
 /// [`$1`].
+///
+/// The per-client loopback permit (#1462) travels as a plain `bool` captured
+/// at construction alongside the escape hatch: a resolver built with
+/// [`ValidatingResolver::with_allow_loopback`] permits answers that resolve
+/// to exactly `127.0.0.1` / `::1`, every other forbidden range stays denied.
 #[derive(Debug, Clone)]
 pub struct ValidatingResolver {
     validation_enabled: bool,
+    allow_loopback: bool,
 }
 
 impl ValidatingResolver {
@@ -120,6 +128,22 @@ impl ValidatingResolver {
         Self {
             validation_enabled: std::env::var(DISABLE_VALIDATING_RESOLVER_ENV).as_deref()
                 != Ok("1"),
+            allow_loopback: false,
+        }
+    }
+
+    /// Builds a resolver with the per-client loopback permit (#1462).
+    ///
+    /// The escape hatch is still read once at construction (same semantics
+    /// as [`new`](Self::new)); `allow_loopback` additionally permits answers
+    /// resolving to exactly `127.0.0.1` / `::1` for self-hosted endpoints.
+    /// The flag lives on this instance — never in the process registry.
+    #[must_use]
+    pub fn with_allow_loopback(allow_loopback: bool) -> Self {
+        Self {
+            validation_enabled: std::env::var(DISABLE_VALIDATING_RESOLVER_ENV).as_deref()
+                != Ok("1"),
+            allow_loopback,
         }
     }
 
@@ -134,12 +158,13 @@ impl ValidatingResolver {
     async fn gai_lookup(
         host: String,
         validate: bool,
+        allow_loopback: bool,
     ) -> Result<Addrs, Box<dyn std::error::Error + Send + Sync>> {
         let addrs: Vec<std::net::SocketAddr> =
             tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
 
         if validate {
-            Self::fail_closed_scan(&host, &addrs)?;
+            Self::fail_closed_scan(&host, &addrs, allow_loopback)?;
         }
 
         Ok(Box::new(addrs.into_iter()) as Addrs)
@@ -152,11 +177,17 @@ impl ValidatingResolver {
     ///
     /// Pure function over the answer slice so the empty-set edge is unit-
     /// testable without depending on nondeterministic `getaddrinfo` behavior.
+    /// `allow_loopback` narrows the deny list to the exact loopback addresses
+    /// (#1462); every other range fails closed as before.
     fn fail_closed_scan(
         host: &str,
         addrs: &[std::net::SocketAddr],
+        allow_loopback: bool,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let Some(offending) = addrs.iter().find(|addr| is_forbidden_ip(&addr.ip())) else {
+        let Some(offending) = addrs
+            .iter()
+            .find(|addr| is_forbidden_ip_with(&addr.ip(), allow_loopback))
+        else {
             if addrs.is_empty() {
                 tracing::warn!(host = %host, "Empty DNS answer rejected (SSRF validating resolver)");
                 return Err(Box::new(std::io::Error::other(format!(
@@ -189,7 +220,11 @@ impl Resolve for ValidatingResolver {
         // `Name` carries only the hostname (`Name::as_str`); the request URI's
         // explicit port overrides whatever we return, and port 0 falls back to
         // the scheme default — see trait docs in wreq.
-        let fut = Self::gai_lookup(name.as_str().to_owned(), self.validation_enabled);
+        let fut = Self::gai_lookup(
+            name.as_str().to_owned(),
+            self.validation_enabled,
+            self.allow_loopback,
+        );
         Box::pin(fut)
     }
 }
@@ -209,6 +244,16 @@ impl crate::domain::ssrf_guard::SsrfGuard for crate::domain::ssrf_guard::Default
         builder
             .redirect(redirect_policy())
             .dns_resolver(ValidatingResolver::new())
+    }
+
+    fn secure_client_with_loopback(
+        &self,
+        builder: wreq::ClientBuilder,
+        allow_loopback: bool,
+    ) -> wreq::ClientBuilder {
+        builder
+            .redirect(redirect_policy_with_loopback(allow_loopback))
+            .dns_resolver(ValidatingResolver::with_allow_loopback(allow_loopback))
     }
 }
 
@@ -273,8 +318,33 @@ mod tests {
         fn fail_closed_scan_rejects_empty_answer_set() {
             // An empty DNS answer can never yield a connectable address:
             // fail closed regardless of which (if any) record was expected.
-            let outcome = ValidatingResolver::fail_closed_scan("empty.test", &[]);
+            let outcome = ValidatingResolver::fail_closed_scan("empty.test", &[], false);
             assert!(outcome.is_err(), "empty answer set must fail closed");
+        }
+
+        // #1462 (U2): per-client loopback permit. The flag travels with the
+        // resolver instance — never through the keep-first process registry.
+        #[tokio::test]
+        async fn allow_loopback_permits_loopback_literal_resolution() {
+            let _guard = webfang_test_utils::EnvGuard::clean(&[DISABLE_VALIDATING_RESOLVER_ENV]);
+            let resolver = ValidatingResolver::with_allow_loopback(true);
+
+            let addrs = resolved_addrs(&resolver, "127.0.0.1").await;
+            assert_eq!(addrs[0].ip().to_string(), "127.0.0.1");
+        }
+
+        #[tokio::test]
+        async fn allow_loopback_still_rejects_private_literals() {
+            let _guard = webfang_test_utils::EnvGuard::clean(&[DISABLE_VALIDATING_RESOLVER_ENV]);
+            let resolver = ValidatingResolver::with_allow_loopback(true);
+
+            for host in ["10.0.0.1", "127.0.0.2", "0.0.0.0"] {
+                let outcome = resolver.resolve(Name::from(host)).await;
+                assert!(
+                    outcome.is_err(),
+                    "{host} must stay rejected with allow_loopback"
+                );
+            }
         }
 
         #[tokio::test]
@@ -438,6 +508,89 @@ mod tests {
                 format!("{err:?}").contains("ForbiddenResolutionError"),
                 "guard trait object must apply the validating resolver: {err:?}"
             );
+        }
+
+        // #1462 (U2): the parameterized variant carries the flag through the
+        // trait object — a loopback dial succeeds past resolution (and fails
+        // later at CONNECT, never with an SSRF rejection), with no env hatch
+        // and no registry mutation.
+        #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+        #[tokio::test]
+        async fn secure_client_with_loopback_permits_loopback_dial() {
+            let _guard = webfang_test_utils::EnvGuard::clean(&[DISABLE_VALIDATING_RESOLVER_ENV]);
+            let guarded: std::sync::Arc<dyn crate::domain::ssrf_guard::SsrfGuard> =
+                std::sync::Arc::new(crate::domain::ssrf_guard::DefaultSsrfGuard);
+            let client = guarded
+                .secure_client_with_loopback(wreq::Client::builder(), true)
+                .build()
+                .expect("test client must build");
+
+            // Port 9 (discard): nothing listens; resolution succeeds and the
+            // failure must be a CONNECT error, never an SSRF rejection.
+            let err = client
+                .get("http://localhost:9/")
+                .send()
+                .await
+                .expect_err("nothing listens on port 9");
+            assert!(
+                !format!("{err:?}").contains("forbidden address"),
+                "parameterized permit must not reject loopback: {err:?}"
+            );
+        }
+
+        // #1462 (U2): redirect-chain proof for the parameterized policy.
+        // Server A 302-redirects to server B's loopback-literal URL: with the
+        // flag off the guard stops the redirect synchronously (302 surfaces);
+        // with the flag on the chain is followed to the loopback target (200).
+        // IP literals bypass the custom resolver (wreq dials them directly),
+        // so this needs no env hatch — the policy alone decides.
+        #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+        #[tokio::test]
+        async fn redirect_policy_with_loopback_gates_wiremock_chain() {
+            use wiremock::matchers::method;
+            use wiremock::{Mock, MockServer, ResponseTemplate};
+
+            let target = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
+                .mount(&target)
+                .await;
+            let source = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(
+                    ResponseTemplate::new(302).insert_header("location", target.uri().as_str()),
+                )
+                .mount(&source)
+                .await;
+
+            let denied = crate::domain::ssrf_guard::DefaultSsrfGuard
+                .secure_client_with_loopback(wreq::Client::builder(), false)
+                .build()
+                .expect("test client must build");
+            let stopped = denied
+                .get(source.uri())
+                .send()
+                .await
+                .expect("stopped redirect surfaces the 302 response");
+            assert_eq!(
+                stopped.status().as_u16(),
+                302,
+                "deny policy must stop the loopback redirect synchronously"
+            );
+
+            let allowed = crate::domain::ssrf_guard::DefaultSsrfGuard
+                .secure_client_with_loopback(wreq::Client::builder(), true)
+                .build()
+                .expect("test client must build");
+            let body = allowed
+                .get(source.uri())
+                .send()
+                .await
+                .expect("permitted redirect must be followed")
+                .text()
+                .await
+                .expect("target body must read");
+            assert_eq!(body, "ok");
         }
     }
 }

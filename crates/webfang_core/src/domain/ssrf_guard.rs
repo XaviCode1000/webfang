@@ -33,7 +33,9 @@
 //!    redirects whose target is a *literal* forbidden IP synchronously,
 //!    before any resolution happens.
 //!
-//! All layers share [`is_forbidden_ip`] as the single deny list.
+//! All layers share [`is_forbidden_ip`] as the single deny list; the
+//! per-client loopback opt-in ([`is_forbidden_ip_with`], #1462) narrows it
+//! for exactly `127.0.0.1` / `::1` and nothing else.
 //!
 //! # Third-party types in `domain/` — accepted deliberately
 //!
@@ -191,6 +193,36 @@ pub fn is_forbidden_ip(ip: &IpAddr) -> bool {
     }
 }
 
+/// Whether `ip` is one of the two loopback addresses the per-client
+/// `allow_loopback` opt-in permits (#1462): exactly `127.0.0.1` and `::1`.
+///
+/// Deliberately narrow: the rest of `127.0.0.0/8`, IPv4-mapped/compatible
+/// forms (`::ffff:127.0.0.1`), NAT64/6to4 embeddings and every other range
+/// stay denied even with the flag set — the opt-in is for a self-hosted
+/// endpoint on the same machine, not a wider hole.
+#[must_use]
+pub fn is_permitted_loopback(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => *v4 == Ipv4Addr::LOCALHOST,
+        IpAddr::V6(v6) => v6.is_loopback(),
+    }
+}
+
+/// Parameterized deny-list verdict (#1462): [`is_forbidden_ip`] with a
+/// per-client loopback permit.
+///
+/// `allow_loopback` opens exactly [`is_permitted_loopback`] and nothing
+/// else. The flag travels as a call parameter from the provider config —
+/// never through the keep-first process registry, which cannot express
+/// "this client may dial loopback while every other client may not".
+#[must_use]
+pub fn is_forbidden_ip_with(ip: &IpAddr, allow_loopback: bool) -> bool {
+    if allow_loopback && is_permitted_loopback(ip) {
+        return false;
+    }
+    is_forbidden_ip(ip)
+}
+
 /// Returns `true` if `v4` is within the CGNAT range 100.64.0.0/10
 /// (100.64.0.0 – 100.127.255.255).
 #[must_use]
@@ -281,6 +313,17 @@ pub fn is_ipv6_teredo(v6: &Ipv6Addr) -> bool {
 #[must_use]
 pub fn is_forbidden_literal_host(host: &str) -> bool {
     parse_ip_literal(host).is_some_and(|ip| is_forbidden_ip(&ip))
+}
+
+/// Parameterized literal-host verdict (#1462): [`is_forbidden_literal_host`]
+/// with the per-client loopback permit threaded through.
+///
+/// Alternate spellings of a permitted address (`0x7f000001`, `127.1`) stay
+/// permitted — the permit is on the address, not its spelling — while every
+/// other forbidden literal stays denied even with the flag set.
+#[must_use]
+pub fn is_forbidden_literal_host_with(host: &str, allow_loopback: bool) -> bool {
+    parse_ip_literal(host).is_some_and(|ip| is_forbidden_ip_with(&ip, allow_loopback))
 }
 
 /// Parses `host` as an IP literal in every encoding the URL/HTTP stacks
@@ -490,6 +533,41 @@ pub fn redirect_policy() -> Policy {
     })
 }
 
+/// Pure verdict behind both redirect policies: does a redirect to `host`
+/// stop synchronously under `allow_loopback`? (#1462)
+///
+/// Unit-testable without building a client; both [`redirect_policy`] (with
+/// `false`) and [`redirect_policy_with_loopback`] delegate here.
+#[must_use]
+pub fn redirect_literal_blocked(host: Option<&str>, allow_loopback: bool) -> bool {
+    host.is_some_and(|h| is_forbidden_literal_host_with(h, allow_loopback))
+}
+
+/// Redirect policy with a per-client loopback permit (#1462).
+///
+/// Same 10-hop base as [`redirect_policy`], but the synchronous literal-IP
+/// stop honors `allow_loopback` instead of the process-env hatch: a
+/// self-hosted endpoint that 302-redirects within loopback (or is addressed
+/// by a loopback literal) stays reachable for the permitted client only.
+/// Unlike [`redirect_policy`], this variant reads NO environment — the flag
+/// is explicit at the call site.
+#[must_use]
+pub fn redirect_policy_with_loopback(allow_loopback: bool) -> Policy {
+    let base = Policy::default();
+    Policy::custom(move |attempt| {
+        if redirect_literal_blocked(attempt.uri.host(), allow_loopback) {
+            tracing::warn!(
+                target_uri = %attempt.uri,
+                allow_loopback,
+                "Redirect to forbidden literal IP blocked (SSRF guard)"
+            );
+            attempt.stop()
+        } else {
+            base.redirect(attempt)
+        }
+    })
+}
+
 /// Default concrete guard — the type lives in `domain`, its [`SsrfGuard`]
 /// impl lives in the infrastructure `ssrf` module.
 ///
@@ -520,6 +598,21 @@ pub trait SsrfGuard: Send + Sync + sealed::Sealed {
     /// Apply the full SSRF guard (redirect policy + validating resolver) to a
     /// client builder. Consuming: `wreq::ClientBuilder` is not `Clone`.
     fn secure_client(&self, builder: wreq::ClientBuilder) -> wreq::ClientBuilder;
+
+    /// Parameterized variant of [`secure_client`](Self::secure_client) (#1462):
+    /// when `allow_loopback` is set, dials to exactly `127.0.0.1` / `::1`
+    /// are permitted (self-hosted endpoints); every other forbidden range
+    /// stays denied, in the redirect policy and in the validating resolver
+    /// alike.
+    ///
+    /// The flag travels with this single builder call — never through the
+    /// keep-first process registry, which cannot express "this client may
+    /// dial loopback while every other client may not".
+    fn secure_client_with_loopback(
+        &self,
+        builder: wreq::ClientBuilder,
+        allow_loopback: bool,
+    ) -> wreq::ClientBuilder;
 }
 
 /// Process-wide SSRF guard instance, populated by the composition root
@@ -914,6 +1007,14 @@ mod tests {
             fn secure_client(&self, builder: wreq::ClientBuilder) -> wreq::ClientBuilder {
                 builder
             }
+
+            fn secure_client_with_loopback(
+                &self,
+                builder: wreq::ClientBuilder,
+                _allow_loopback: bool,
+            ) -> wreq::ClientBuilder {
+                builder
+            }
         }
         fn assert_dyn(_: &dyn SsrfGuard) {}
         let fake = FakeGuard;
@@ -930,9 +1031,25 @@ mod tests {
             fn secure_client(&self, builder: wreq::ClientBuilder) -> wreq::ClientBuilder {
                 builder
             }
+
+            fn secure_client_with_loopback(
+                &self,
+                builder: wreq::ClientBuilder,
+                _allow_loopback: bool,
+            ) -> wreq::ClientBuilder {
+                builder
+            }
         }
         impl SsrfGuard for FakeGuard2 {
             fn secure_client(&self, builder: wreq::ClientBuilder) -> wreq::ClientBuilder {
+                builder
+            }
+
+            fn secure_client_with_loopback(
+                &self,
+                builder: wreq::ClientBuilder,
+                _allow_loopback: bool,
+            ) -> wreq::ClientBuilder {
                 builder
             }
         }
@@ -962,5 +1079,60 @@ mod tests {
             client.is_ok(),
             "unarmed accessor must yield a guard able to build a client"
         );
+    }
+
+    // #1462 (U2): parameterized loopback permit — a per-client parameter,
+    // never registry state. Only the exact loopback addresses open; every
+    // other range stays denied even with the flag set.
+    #[test]
+    fn loopback_permit_opens_exact_loopback_only_with_flag() {
+        assert!(!is_forbidden_ip_with(&addr("127.0.0.1"), true));
+        assert!(!is_forbidden_ip_with(&addr("::1"), true));
+        assert!(is_forbidden_ip_with(&addr("127.0.0.1"), false));
+        assert!(is_forbidden_ip_with(&addr("::1"), false));
+    }
+
+    #[test]
+    fn loopback_permit_never_opens_other_ranges() {
+        for host in [
+            "127.0.0.2", // loopback range, but not the permitted address
+            "10.0.0.1",
+            "172.16.0.1",
+            "192.168.1.1",
+            "169.254.169.254",
+            "0.0.0.0",
+            "100.64.1.1",
+            "::ffff:127.0.0.1", // mapped form is not the ::1 permit
+            "fe80::1",
+        ] {
+            assert!(
+                is_forbidden_ip_with(&addr(host), true),
+                "{host} must stay forbidden even with allow_loopback"
+            );
+        }
+        assert!(!is_forbidden_ip_with(&addr("8.8.8.8"), true));
+        assert!(!is_forbidden_ip_with(&addr("8.8.8.8"), false));
+    }
+
+    #[test]
+    fn literal_host_permit_mirrors_address_permit() {
+        assert!(!is_forbidden_literal_host_with("127.0.0.1", true));
+        assert!(!is_forbidden_literal_host_with("[::1]", true));
+        // Alternate spellings of the same permitted address stay permitted.
+        assert!(!is_forbidden_literal_host_with("0x7f000001", true));
+        assert!(is_forbidden_literal_host_with("127.0.0.1", false));
+        assert!(is_forbidden_literal_host_with("127.0.0.2", true));
+        assert!(is_forbidden_literal_host_with("10.0.0.1", true));
+        assert!(!is_forbidden_literal_host_with("example.com", true));
+    }
+
+    #[test]
+    fn redirect_literal_blocked_honors_the_flag() {
+        assert!(redirect_literal_blocked(Some("127.0.0.1"), false));
+        assert!(!redirect_literal_blocked(Some("127.0.0.1"), true));
+        assert!(!redirect_literal_blocked(Some("[::1]"), true));
+        assert!(redirect_literal_blocked(Some("10.0.0.1"), true));
+        assert!(!redirect_literal_blocked(Some("example.com"), false));
+        assert!(!redirect_literal_blocked(None, false));
     }
 }
