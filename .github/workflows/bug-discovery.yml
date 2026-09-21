@@ -59,6 +59,10 @@ jobs:
 
   ignored-tests:
     runs-on: ubuntu-latest
+    # The filtered ignored-universe (with the P0-001 sweep subset, see the run
+    # step below) fits comfortably in 60 min: the nextest profile.cap global
+    # timeout is 45m (.config/nextest.toml [profile.discovery]).
+    timeout-minutes: 60
     # No continue-on-error: a failing job means bugs were found (or infra broke);
 
     permissions:
@@ -154,11 +158,24 @@ jobs:
         # design (TDD evidence of the naive unbounded reading, "never run in
         # CI"); the GREEN pin sitemap_entry_max_pages_bound_pins_inflight_drain
         # asserts the real bound (see #1469, W-03).
+        # #1510: p0_001_measure_sweep is a MEASUREMENT CAMPAIGN (7 engine
+        # configs × 4 pages × 3 reps, each cell spawns child processes and
+        # reloads the ONNX model; single×1p alone medians 33.5s) — 40-120 min
+        # total, impossible inside any daily CI budget. The full sweep stays a
+        # manual command (same contract as tier_311m_peak_rss_under_budget and
+        # measure_short_paragraph_loss_on_real_corpus, #1436). The daily job
+        # runs a smoke subset via the env knobs the test itself documents:
+        # single/pool2/pool4 × pages 1,2 ≈ 18 cells ≈ 10-18 min. The timeout
+        # problem is additionally covered by the dedicated nextest profile
+        # `discovery` (slow-timeout 600s, global 45m).
+        env:
+          WEBFANG_P0_001_CONFIGS: "single,pool2,pool4"
+          WEBFANG_P0_001_PAGES: "1,2"
         run: |
           set -o pipefail
           cargo nextest run --workspace --all-features --run-ignored only --no-fail-fast \
+            --profile discovery \
             -E 'not(test(/session_pool/) | test(/vault_detector/) | test(/cli_binary_test/) | test(/tier_311m_peak_rss_under_budget/) | test(/measure_short_paragraph_loss_on_real_corpus/) | test(/sitemap_entry_max_pages_truncates_many_url_fixture/))' \
-            --test-threads 2 \
             2>&1 | tee /tmp/ignored-tests-nextest.log
       - name: Publish failure names
         if: always()
