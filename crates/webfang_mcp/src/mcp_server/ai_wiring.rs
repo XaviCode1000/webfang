@@ -48,25 +48,9 @@ pub async fn wire_ai_ports(
     pool: Arc<webfang_ai::InferencePool>,
     tokenizer: Arc<webfang_ai::MiniLmTokenizer>,
 ) {
-    // 0. Remote embedding first (#1462): when the config-file default
-    //    embedding slot resolves to `open_ai_compatible`, the remote adapter
-    //    is injected BEFORE the local one — `inject_vault_ports` is
-    //    at-most-once per slot, so the remote wins and the local assembly
-    //    below degrades to chunker/notes only. No argv reaches the daemon,
-    //    so only the default slot applies (never `--embedding-provider`).
-    //    Any failure (no remote configured, credential, probe) degrades to
-    //    local with a warning — the MCP convention is to keep serving, the
-    //    opposite of the CLI's fail-closed startup.
-    match try_remote_embedding_port().await {
-        Some(adapter) => {
-            container.inject_vault_ports(VaultAiPorts {
-                embedding_port: Some(adapter),
-                ..Default::default()
-            });
-            tracing::info!("vault-search embedding served by remote provider (lazy MCP wiring)");
-        },
-        None => {},
-    }
+    // 0. Remote embedding first (#1462) — extracted so this orchestrator
+    //    stays under the cognitive-complexity ratchet.
+    inject_remote_embedding_first(container).await;
 
     // 1. Embedding port (ONNX adapter) — shares the cleaner's pool + tokenizer,
     //    so this is infallible (no model resolution happens here).
@@ -117,6 +101,26 @@ pub async fn wire_ai_ports(
             dim,
             "vault-search AI ports wired (embedding + chunker); enable `persistence` for note storage"
         );
+    }
+}
+
+/// Inject the remote embedding adapter BEFORE the local one (#1462).
+///
+/// When the config-file default embedding slot resolves to
+/// `open_ai_compatible`, the probed remote adapter is injected first —
+/// `inject_vault_ports` is at-most-once per slot, so the remote wins and
+/// the local assembly in [`wire_ai_ports`] degrades to chunker/notes only.
+/// No argv reaches the daemon, so only the default slot applies (never
+/// `--embedding-provider`). Any failure (no remote configured, credential,
+/// probe) degrades to local with a warning — the MCP convention is to keep
+/// serving, the opposite of the CLI's fail-closed startup.
+async fn inject_remote_embedding_first(container: &Container) {
+    if let Some(adapter) = try_remote_embedding_port().await {
+        container.inject_vault_ports(VaultAiPorts {
+            embedding_port: Some(adapter),
+            ..Default::default()
+        });
+        tracing::info!("vault-search embedding served by remote provider (lazy MCP wiring)");
     }
 }
 
