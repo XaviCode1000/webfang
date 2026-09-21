@@ -178,6 +178,7 @@ mod tests {
             capabilities: vec![crate::domain::providers::Capability::Completion],
             model: Some("gpt-test".to_string()),
             embedding_dim: None,
+            allow_loopback: false,
         }
     }
 

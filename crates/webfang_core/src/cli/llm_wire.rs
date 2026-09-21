@@ -100,6 +100,7 @@ mod tests {
             capabilities: vec![Capability::Completion],
             model: Some("gpt-test".to_string()),
             embedding_dim: None,
+            allow_loopback: false,
         }
     }
 
