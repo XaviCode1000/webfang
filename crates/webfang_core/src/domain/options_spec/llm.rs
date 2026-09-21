@@ -63,5 +63,33 @@ pub const LLM_PROVIDER: OptionSpec = OptionSpec {
     value_delimiter: None,
 };
 
+/// `--embedding-provider <EMBEDDING_PROVIDER>` (env `WEBFANG_EMBEDDING_PROVIDER`).
+///
+/// Selects which configured provider serves the embedding slot (vault search
+/// query/chunk vectorization, #1462). Absent, the first provider declaring
+/// the `embedding` capability wins (config order) — the same rule as
+/// [`crate::domain::providers::ProviderRegistry::resolve_default_embedding`].
+/// A `local_onnx` selection (or no embedding provider at all) serves the
+/// local pool adapter with no network probe; an `open_ai_compatible`
+/// selection builds the remote adapter and verifies the served dimension at
+/// startup (exit 78 on mismatch).
+pub const EMBEDDING_PROVIDER: OptionSpec = OptionSpec {
+    id: "embedding_provider",
+    value_name: "EMBEDDING_PROVIDER",
+    long: "embedding-provider",
+    short: None,
+    aliases: &[],
+    env: Some("WEBFANG_EMBEDDING_PROVIDER"),
+    default: None,
+    help: "Provider id to use for embeddings (default: first provider declaring the `embedding` capability; local pool when unset or local)",
+    heading: Some("LLM Extraction"),
+    kind: ValueKind::Text,
+    visible_aliases: &[],
+    nullable: false,
+    description_override: None,
+    feature_gate: None,
+    value_delimiter: None,
+};
+
 /// All LLM-group options, in `LlmArgs` field-declaration order.
-pub const GROUP: &[OptionSpec] = &[EXTRACT_WITH_LLM, LLM_PROVIDER];
+pub const GROUP: &[OptionSpec] = &[EXTRACT_WITH_LLM, LLM_PROVIDER, EMBEDDING_PROVIDER];
