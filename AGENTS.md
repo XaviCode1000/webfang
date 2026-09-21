@@ -151,7 +151,7 @@ Domain defines ports (traits) → Infrastructure implements them → Application
 | New domain entity | `entities.rs` | `domain/` — struct + constructor + `TryFrom` validation, `Display`+`Debug`+`PartialEq` |
 | New adapter | `crawler/` | `infrastructure/` — domain trait → impl, module with `mod.rs` |
 | New error type | `error.rs` | `cli/` — `thiserror::Error` + `From` impls, Spanish user-facing |
-| New behavioral test | `cli_harness.rs` | `tests/common/` — `BehavioralTest` + wiremock + TempDir + insta snapshots |
+| New behavioral test | `cli_harness.rs` | `crates/webfang_core/tests/common/` — `BehavioralTest` + wiremock + TempDir + insta snapshots |
 
 **Avoid:** oversized components such as `infrastructure/mcp_server/mod.rs` (1404 lines) — keep new components focused.
 
@@ -186,7 +186,7 @@ ValidUrl (entry) → rate limit (pre-fetch pacing) → per-attempt request:
 | 2. Rate limit (pacing) | Scrape path: token bucket in `scrape_urls` (`cli/scrape_flow.rs` — lands with PR #1249, tracking #1255: cancel-aware `until_ready_or_cancel`, zero overhead at `delay_ms = 0`). Crawl path: `rate_limiter_config` (`crawler/engine.rs:152`) from `delay_ms` + budget-tier burst. | The wait happens BEFORE the network is touched — a cancelled wait counts as skipped (#509), never as a blocked fetch. |
 | 3a. Timeout | `Client` builder (`downloader/wreq_downloader.rs:169-170`): request timeout + connect timeout (connect is clamped) | Per-request ceiling; see stage 4 for why a timeout is terminal, not retriable. |
 | 3b. Redirect policy | `redirect_policy` (`domain/ssrf_guard.rs`): 10-hop limit + synchronous stop on redirects whose target is a literal forbidden IP | Every redirect hop re-enters the chain — it is a new dial, not a free pass. |
-| 3c. SSRF at socket dial | `ssrf_guard()` wrapping the `Client` (`wreq_downloader.rs:180`, `domain/ssrf_guard.rs`): resolver-level check on EVERY connection — private/link-local/loopback ranges rejected before the socket exists | Nothing may connect to a forbidden address, including via DNS names and redirect hops (E2E-proven: `tests/ssrf_rfc1918_e2e_test.rs`, PR #1251 — pre-socket rejection of RFC1918/CGNAT/NAT64/mapped targets, exit 69, zero outbound packets). |
+| 3c. SSRF at socket dial | `ssrf_guard()` wrapping the `Client` (`wreq_downloader.rs:180`, `domain/ssrf_guard.rs`): resolver-level check on EVERY connection — private/link-local/loopback ranges rejected before the socket exists | Nothing may connect to a forbidden address, including via DNS names and redirect hops (E2E-proven: `crates/webfang_core/tests/ssrf_rfc1918_e2e_test.rs`, PR #1251 — pre-socket rejection of RFC1918/CGNAT/NAT64/mapped targets, exit 69, zero outbound packets). |
 | 4. Retry classification | `fetch_inner` retry loop (`wreq_downloader.rs`): mid-body transients (`ConnectionReset`/`UnexpectedEof`) retry (#649); 429 → `max(Retry-After, exponential backoff)`; 5xx → exponential; 403 → one rotated-UA retry ONLY with unpinned UA (#503), capturing the rotated status; **timeouts are retried** (F-08: recovery can be served after a transient timeout — pinned by `timeout_is_retried_and_recovery_is_served`, #1249); terminal 4xx and builder errors (F-09) reported as-is; retries exhausted report the LAST observed status, never a hardcoded one; WARN only when there actually is a retry | Classification decides spend: whether to sleep, rotate, or fail. It runs BEFORE any body is read. |
 | 5. Body read | `read_body_capped` (`wreq_downloader.rs:426`, #1249): streaming read capped at `DEFAULT_MAX_PAGE_BYTES` = 50 MiB (`downloader_factory.rs:69`), error `BodyTooLarge` beyond the cap | The read is bounded so a huge page or gzip bomb cannot balloon memory (pinned by tests). No fetch path may read an unbounded body. |
 
@@ -239,18 +239,20 @@ An agent suggesting "clean up duplicate dependencies" must be stopped. These con
 
 ### Framework & harness
 
-Root `tests/` integration tests are wired into `webfang_core` via explicit `[[test]]` entries in `crates/webfang_core/Cargo.toml`. The workspace root `Cargo.toml` is virtual (no `[package]`), so root `tests/` files need explicit `[[test]]` wiring — they are **never auto-discovered**.
+Integration tests live in `crates/webfang_core/tests/` and are auto-discovered by Cargo by default — one file per test target. Explicit `[[test]]` entries in `crates/webfang_core/Cargo.toml` exist only for cases auto-discovery does not cover (subdirectories such as `tests/compile_fail/`, special features).
 
-Test harness lives in `tests/common/cli_harness.rs`:
+Test harness lives in `crates/webfang_core/tests/common/cli_harness.rs`:
 
 - `BehavioralTest` — wiremock `MockServer` + `tempfile::TempDir`, `scraper_cmd()`, `find_files()`, `read_md_content()`.
 - Snapshot helpers: `assert_snapshot`, `redact_nondeterministic`, `assert_snapshot_redacted`, `assert_snapshot_plain`.
+
+Import it via `#[path = "common/mod.rs"] mod common;` + `use common::cli_harness::{...}` (see `tests/crash_matrix_test.rs`).
 
 ### Binary resolution: `webfang_path()`
 
 **NEVER use `assert_cmd::cargo_bin(...)` in integration tests.** The `CARGO_BIN_EXE_*` env var is only set for the owning crate. In this virtual workspace, `webfang` is built by `webfang_cli` — a sibling crate. Tests running under `webfang_core` cannot resolve it via `cargo_bin`.
 
-Always use `webfang_path()` from `tests/common/cli_harness.rs`. **Golden rule:** `Command::new(webfang_path())`, never `Command::cargo_bin(...)`.
+Always use `webfang_path()` from `crates/webfang_core/tests/common/cli_harness.rs`. **Golden rule:** `Command::new(webfang_path())`, never `Command::cargo_bin(...)`.
 
 ### Snapshot testing (`insta`)
 
@@ -273,11 +275,11 @@ When writing or modifying tests, apply this 6-node diagnostic:
 
 If the Arrange phase is complex, fix the production design, not the test.
 
-### Creating a new root integration test
+### Creating a new integration test
 
-1. Create the test file in `tests/`.
-2. Add a `[[test]]` entry in `crates/webfang_core/Cargo.toml`: `name = "my_test"`, `path = "../../tests/my_test.rs"`.
-3. Use `use crate::common::*;` for the shared harness, `webfang_path()` for binary resolution, snapshots for output validation.
+1. Create the test file in `crates/webfang_core/tests/` — no `[[test]]` entry needed (Cargo auto-discovers it).
+2. Only for cases auto-discovery does not cover (subdirectory, special features), add a `[[test]]` entry in `crates/webfang_core/Cargo.toml`: `name = "my_test"`, `path = "tests/compile_fail/my_test.rs"`.
+3. Import the shared harness via `#[path = "common/mod.rs"] mod common;` + `use common::cli_harness::{...}`, use `webfang_path()` for binary resolution, snapshots for output validation.
 4. Run `cargo nextest run --test my_test` to verify.
 
 ---
@@ -663,7 +665,7 @@ The repository currently does not use GitHub Merge Queue; `merge-when-green.sh` 
 - Read any file in the repo.
 - `cargo check`, `cargo clippy`, `cargo fmt`, `cargo nextest run`.
 - Both intelligence tools: CodeDB MCP, CodeGraph MCP.
-- Edit files within `crates/`, `tests/`, `benches/`, `examples/`.
+- Edit files within `crates/`, `crates/*/tests/`, `benches/`, `examples/`.
 - Worktree management: `git worktree add`, `remove`, `list`, `prune`.
 - Read-only cross-branch inspection: `git show <branch>:<file>`, `git log <branch>`.
 
@@ -674,7 +676,7 @@ The repository currently does not use GitHub Merge Queue; `merge-when-green.sh` 
 - Deleting files.
 - `cargo build --release` or `cargo llvm-cov`.
 - Modifying CI/CD (`.github/`).
-- New files outside `crates/`, `tests/`, `benches/`, `examples/`.
+- New files outside `crates/`, `crates/*/tests/`, `benches/`, `examples/`.
 
 ### Never
 
