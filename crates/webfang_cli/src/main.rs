@@ -25,8 +25,6 @@
 use webfang_core::cli::orchestrator;
 
 use std::panic;
-
-#[cfg(any(feature = "ai", feature = "adaptive-selectors"))]
 use std::sync::Arc;
 #[cfg(feature = "ai")]
 use webfang_ai::{ModelConfig, SemanticCleanerImpl, SemanticError};
@@ -665,7 +663,69 @@ async fn build_ai_cleaner(
 /// cleaner's shared ONNX assets to wire Tier 2 semantic repair. The argument
 /// list passed to the orchestrator depends on which optional features are
 /// compiled in, so each combination is spelled out explicitly.
+///
+/// If `--extract-with-llm` is set, builds the LLM provider from config,
+/// injects it into a Container, and validates startup (caducidad del DEBE §8b:
+/// el binario DEBE validar llm_port().is_some() en startup cuando el flag está
+/// activo).
 async fn build_and_run(opts: CrawlOptions) -> CliExit {
+    // Build LLM provider if --extract-with-llm is set.
+    // This is NOT gated by the `ai` feature — the remote provider port lives
+    // in webfang_core unconditionally (docs/src/ai-providers-design.md §8).
+    let llm_port = if opts.extract_with_llm {
+        let providers_cfg = ConfigDefaults::load(&resolve_config_path());
+        let registry = webfang_core::domain::providers::ProviderRegistry::new(
+            webfang_core::domain::providers::ProvidersConfig {
+                providers: providers_cfg.providers,
+            },
+        );
+        let provider_cfg = match registry.resolve_default_completion() {
+            Ok(cfg) => cfg,
+            Err(e) => {
+                return CliExit::ConfigError(format!(
+                    "--extract-with-llm activado pero no hay proveedor completion configurado: {e}"
+                ));
+            },
+        };
+        let http = match webfang_core::infrastructure::llm::provider::build_default_http_client() {
+            Ok(h) => h,
+            Err(e) => return CliExit::ConfigError(format!("cliente HTTP: {e}")),
+        };
+        let provider =
+            match webfang_core::infrastructure::llm::provider::OpenAiCompatibleProvider::with_http(
+                provider_cfg.clone(),
+                http,
+            ) {
+                Ok(p) => p,
+                Err(e) => return CliExit::ConfigError(format!("provider LLM: {e}")),
+            };
+
+        // Build Container and inject provider — validates startup per §8b
+        let container = match webfang_core::application::container::Container::new(
+            webfang_core::domain::CrawlerConfig::new(opts.url.as_url().clone()),
+            webfang_core::domain::config::ScraperConfig::default(),
+        )
+        .await
+        {
+            Ok(c) => c,
+            Err(e) => return CliExit::ConfigError(format!("contenedor: {e}")),
+        }
+        .with_llm_port(Arc::new(provider));
+
+        // DEBE §8b: validar en startup que el puerto está disponible
+        let llm_port = match container.llm_port() {
+            Some(p) => p,
+            None => {
+                return CliExit::ConfigError(
+                    "fallo interno: llm_port() es None tras inyección".to_string(),
+                );
+            },
+        };
+        Some(llm_port)
+    } else {
+        None
+    };
+
     #[cfg(feature = "ai")]
     let (ai_cleaner, vault_ports, shared) = match build_ai_cleaner(&opts).await {
         Ok(v) => v,
@@ -701,19 +761,19 @@ async fn build_and_run(opts: CrawlOptions) -> CliExit {
 
     #[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
     {
-        orchestrator::run(opts, ai_cleaner, adaptive_engine, vault_ports).await
+        orchestrator::run(opts, ai_cleaner, adaptive_engine, vault_ports, llm_port).await
     }
     #[cfg(all(feature = "ai", not(feature = "adaptive-selectors")))]
     {
-        orchestrator::run(opts, ai_cleaner, vault_ports).await
+        orchestrator::run(opts, ai_cleaner, vault_ports, llm_port).await
     }
     #[cfg(all(not(feature = "ai"), feature = "adaptive-selectors"))]
     {
-        orchestrator::run(opts, adaptive_engine, vault_ports).await
+        orchestrator::run(opts, adaptive_engine, vault_ports, llm_port).await
     }
     #[cfg(all(not(feature = "ai"), not(feature = "adaptive-selectors")))]
     {
-        orchestrator::run(opts, vault_ports).await
+        orchestrator::run(opts, vault_ports, llm_port).await
     }
 }
 

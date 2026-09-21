@@ -95,6 +95,7 @@ aho-corasick = { workspace = true }
 whatlang = { workspace = true }
 url-normalize = { workspace = true }
 secrecy = { workspace = true }
+age = "0.11"
 
 # HTML to Markdown
 html-to-markdown-rs = { workspace = true }
@@ -287,3 +288,12 @@ path = "tests/harness_ssrf_arrivals.rs"
 [[test]]
 name = "dry_run_fail_fast"
 path = "tests/dry_run_fail_fast.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["linux-native", "crypto-rust"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["apple-native"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+keyring = { version = "3", default-features = false, features = ["windows-native"] }

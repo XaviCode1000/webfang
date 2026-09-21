@@ -329,6 +329,19 @@ fn manual_threshold() -> clap::Arg {
 }
 
 // ---------------------------------------------------------------------------
+// LLM provider group
+// ---------------------------------------------------------------------------
+
+/// All LLM-group args in declaration order — pure spec build. Always present:
+/// the remote provider port is not behind the `ai` cargo feature.
+pub(crate) fn llm_args(headings: Headings) -> Vec<clap::Arg> {
+    options_spec::llm::GROUP
+        .iter()
+        .map(|s| build_arg(s, headings))
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // Obsidian group
 // ---------------------------------------------------------------------------
 

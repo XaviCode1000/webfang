@@ -33,6 +33,16 @@ struct CompletionRequest<'a> {
 }
 
 /// Wire response: only the fields this client consumes.
+///
+/// Tolerancia deliberada (fixtures de contrato en `fixtures/llm/`):
+/// - `content` es `Option`: tool-calls y `content_filter` devuelven
+///   `content: null` presente — `String` fallaría el parse donde `Option`
+///   lo tolera. Un `None` aquí es `Extraction` honesto en `send_completion`,
+///   nunca silencio.
+/// - `usage` ya es `Option` + `#[serde(default)]`: vendors que no computan
+///   uso devuelven `usage: null` o lo omiten — ambos dan `(0, 0)`.
+/// - Sin `deny_unknown_fields` jamás: los cuerpos reales traen `id`,
+///   `created`, `system_fingerprint`, `logprobs`, `total_tokens`, ...
 #[derive(Deserialize)]
 struct CompletionResponse {
     choices: Vec<Choice>,
@@ -49,7 +59,8 @@ struct Choice {
 
 #[derive(Deserialize)]
 struct ChoiceMessage {
-    content: String,
+    #[serde(default)]
+    content: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -93,11 +104,24 @@ impl OpenAiLlmClient {
             .secure_client(builder)
             .build()
             .map_err(|e| ScraperError::Config(format!("no se pudo crear el cliente LLM: {e}")))?;
-        Ok(Self {
+        Ok(Self::with_http(client, base_url, api_key))
+    }
+
+    /// Variante con un cliente HTTP ya construido (cliente compartido del
+    /// proceso o wiremock en tests).
+    ///
+    /// # Contrato SSRF
+    ///
+    /// El caller es responsable de que el cliente inyectado esté protegido:
+    /// `build_default_http_client` (provider) aplica el `SsrfGuard`; los tests
+    /// que apuntan a wiremock loopback usan los hatches de `webfang_test_utils`.
+    #[must_use]
+    pub fn with_http(client: wreq::Client, base_url: Url, api_key: ApiKey) -> Self {
+        Self {
             client,
             base_url,
             api_key,
-        })
+        }
     }
 }
 
@@ -166,8 +190,17 @@ impl LlmPort for OpenAiLlmClient {
                 .map(|u| (u.prompt_tokens, u.completion_tokens))
                 .unwrap_or((0, 0));
 
+            // `content: null` (tool-calls, content_filter) es Extraction
+            // honesto — nunca silencio, nunca éxito con contenido vacío.
+            let content = choice.message.content.clone().ok_or_else(|| {
+                ScraperError::Extraction(
+                    "el proveedor LLM devolvió content null (tool-calls o content_filter)"
+                        .to_string(),
+                )
+            })?;
+
             Ok(LlmResponse {
-                content: choice.message.content.clone(),
+                content,
                 input_tokens,
                 output_tokens,
             })
@@ -336,5 +369,133 @@ mod tests {
             matches!(err, ScraperError::Validation(_)),
             "finish_reason=length must be Validation, got: {err:?}"
         );
+    }
+
+    /// Fixture de contrato: el wire shape exacto que sale por el cable.
+    ///
+    /// Golden en `fixtures/llm/chat_request.golden.json` (patrón `fixtures/waf`
+    /// + `waf_fixtures_test.rs`): el archivo vive en el repo, el diff del PR lo
+    /// muestra aislado y el revisor decide. Regla de actualización — escrita
+    /// aquí para que sobreviva al archivo que la contiene: **actualizar el
+    /// golden requiere commit separado con la justificación en el mensaje**.
+    /// "Arreglo test roto" en un commit de dos líneas mezclado con otros
+    /// cambios invalida la protección — el golden pasa a molestar sin proteger.
+    /// Cualquier cambio de serialización — campo agregado, renombrado,
+    /// `temperature` distinta — rompe este test ANTES de romper compatibilidad
+    /// con OpenAI/Ollama/vLLM en producción.
+    #[tokio::test]
+    async fn wire_shape_matches_contract_golden() {
+        use std::sync::{Arc, Mutex};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, Respond};
+
+        struct Capture(Arc<Mutex<Option<serde_json::Value>>>);
+        impl Respond for Capture {
+            fn respond(&self, request: &wiremock::Request) -> ResponseTemplate {
+                *self.0.lock().unwrap_or_else(|p| p.into_inner()) =
+                    Some(serde_json::from_slice(&request.body).expect("body es JSON"));
+                ResponseTemplate::new(200).set_body_string(VALID_BODY)
+            }
+        }
+
+        let server = MockServer::start().await;
+        let captured: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+        Mock::given(method("POST"))
+            .and(path("/chat/completions"))
+            .respond_with(Capture(captured.clone()))
+            .mount(&server)
+            .await;
+
+        client_for(&server)
+            .send_completion(test_request())
+            .await
+            .expect("200 + valid JSON succeeds");
+
+        let body = captured
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone()
+            .expect("el mock debió capturar el body");
+        let golden_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/llm/chat_request.golden.json");
+        let golden: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&golden_path).expect("golden legible"))
+                .expect("golden es JSON válido");
+        assert_eq!(
+            body, golden,
+            "wire shape cambió: ver regla de actualización en el doc-comment (commit separado + justificación)"
+        );
+    }
+
+    /// Carga un fixture de respuesta desde `fixtures/llm/`.
+    fn load_response_fixture(name: &str) -> String {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join(format!("../../fixtures/llm/{name}"));
+        std::fs::read_to_string(&path).expect("fixture legible")
+    }
+
+    /// Fixture de contrato (lado respuesta, cuerpo completo): los cuerpos
+    /// reales traen campos extra (`id`, `created`, `model`,
+    /// `system_fingerprint`, ...). El parse debe ignorarlos — fija que nadie
+    /// ponga `deny_unknown_fields` ni haga el parse estricto, lo que rompería
+    /// contra cualquier provider real.
+    #[tokio::test]
+    async fn provider_extra_response_fields_are_ignored() {
+        let server = MockServer::start().await;
+        mount(
+            &server,
+            200,
+            &load_response_fixture("chat_response_full.json"),
+        )
+        .await;
+        let result = client_for(&server)
+            .send_completion(test_request())
+            .await
+            .expect("campos extra del provider no deben romper el parse");
+        assert_eq!(result.content, r#"{"items":[]}"#);
+        assert_eq!((result.input_tokens, result.output_tokens), (11, 7));
+    }
+
+    /// Fixture de contrato (lado respuesta, cuerpo parcial): aggregators y
+    /// vendors reales devuelven `content: null` (tool-calls, `content_filter`)
+    /// y `usage: null` (sin cómputo de uso). `#[serde(default)]` cubre
+    /// "ausente", NO "presente pero null" — `content: String` fallaba el parse
+    /// aquí. La decisión fijada: `content` es `Option`, `None` es `Extraction`
+    /// honesto (nunca silencio, nunca éxito vacío), `usage: null` da `(0, 0)`.
+    #[tokio::test]
+    async fn provider_null_content_maps_to_extraction_error() {
+        let server = MockServer::start().await;
+        mount(
+            &server,
+            200,
+            &load_response_fixture("chat_response_partial.json"),
+        )
+        .await;
+        let err = client_for(&server)
+            .send_completion(test_request())
+            .await
+            .expect_err("content null debe fallar, no parsear en silencio");
+        assert!(
+            matches!(err, ScraperError::Extraction(_)),
+            "content null debe ser Extraction, got: {err:?}"
+        );
+    }
+
+    /// `usage` ausente (no solo null) también da `(0, 0)`: cubre vendors que
+    /// omiten el campo en vez de mandarlo null.
+    #[tokio::test]
+    async fn provider_missing_usage_gives_zero_tokens() {
+        let server = MockServer::start().await;
+        mount(
+            &server,
+            200,
+            r#"{"choices":[{"message":{"content":"{\"items\":[]}"},"finish_reason":"stop"}]}"#,
+        )
+        .await;
+        let result = client_for(&server)
+            .send_completion(test_request())
+            .await
+            .expect("usage ausente no debe romper el parse");
+        assert_eq!((result.input_tokens, result.output_tokens), (0, 0));
     }
 }

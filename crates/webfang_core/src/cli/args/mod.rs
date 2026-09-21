@@ -4,12 +4,15 @@ pub mod ai;
 pub mod crawler;
 /// Export format and output configuration arguments.
 pub mod export;
+/// LLM provider flags: `--extract-with-llm` + provider selection.
+pub mod llm;
 /// Obsidian vault integration arguments.
 pub mod obsidian;
 
 pub use ai::AiArgs;
 pub use crawler::CrawlerArgs;
 pub use export::ExportArgs;
+pub use llm::LlmArgs;
 pub use obsidian::ObsidianArgs;
 
 use crate::domain::ValidUrl;
@@ -18,6 +21,181 @@ use clap::Parser;
 /// Test-only helpers shared by the per-group arg modules.
 #[cfg(test)]
 pub(crate) mod test_support {
+    use crate::domain::options_spec::OptionSpec;
+    use clap::Parser as _;
+
+    /// Collect every clap arg from an already-augmented command.
+    ///
+    /// Call sites pass their group's augmented command
+    /// (`LlmArgs::augment_args(Command::new(...))`); the returned args are
+    /// then fed to the `assert_*` builders below with the group's spec.
+    pub(crate) fn collect_args(cmd: clap::Command) -> Vec<clap::Arg> {
+        cmd.get_arguments().cloned().collect()
+    }
+
+    /// Find one arg by id, panicking with the owning group's name so
+    /// failures point at the right harness.
+    pub(crate) fn arg_by_id<'a>(
+        args: &'a [clap::Arg],
+        id: &str,
+        owner: &'static str,
+    ) -> &'a clap::Arg {
+        args.iter()
+            .find(|a| a.get_id() == id)
+            .unwrap_or_else(|| panic!("arg `{id}` missing from {owner} command"))
+    }
+
+    /// Parse a full `Args` from synthetic argv (non-hermetic: ambient
+    /// `WEBFANG_*` env fallbacks leak in — prefer [`parse_args_hermetic`]).
+    pub(crate) fn parse_args(extra: &[&str]) -> Result<crate::Args, String> {
+        let mut argv = vec!["webfang"];
+        argv.extend_from_slice(extra);
+        crate::Args::try_parse_from(argv).map_err(|e| e.to_string())
+    }
+
+    /// Parse a full `Args` with ambient clap env fallbacks cleared.
+    pub(crate) fn parse_args_hermetic(extra: &[&str]) -> Result<crate::Args, String> {
+        with_clap_env_cleared(|| parse_args(extra))
+    }
+
+    /// Every non-builtin clap arg must have an `OptionSpec` entry.
+    pub(crate) fn assert_surface_covered(args: &[clap::Arg], group: &[OptionSpec]) {
+        for arg in args {
+            if matches!(arg.get_id().as_str(), "help" | "version") {
+                continue;
+            }
+            assert!(
+                group.iter().any(|s| s.id == arg.get_id()),
+                "clap arg `{}` has no OptionsSpec entry — spec is out of sync",
+                arg.get_id()
+            );
+        }
+    }
+
+    /// Long, short, aliases, env, and help heading must match the spec.
+    pub(crate) fn assert_long_short_alias_env_heading(args: &[clap::Arg], group: &[OptionSpec]) {
+        for s in group {
+            let arg = arg_by_id(args, s.id, "spec group");
+            assert_eq!(arg.get_long(), Some(s.long), "long mismatch for `{}`", s.id);
+            assert_eq!(arg.get_short(), s.short, "short mismatch for `{}`", s.id);
+            let aliases = arg.get_aliases().unwrap_or_default();
+            assert_eq!(aliases, s.aliases, "alias mismatch for `{}`", s.id);
+            let env = arg.get_env().map(|e| e.to_string_lossy().into_owned());
+            assert_eq!(env.as_deref(), s.env, "env var mismatch for `{}`", s.id);
+            assert_eq!(
+                arg.get_help_heading(),
+                s.heading,
+                "help heading mismatch for `{}`",
+                s.id
+            );
+        }
+    }
+
+    /// Clap defaults must match the spec's canonical defaults.
+    pub(crate) fn assert_defaults(args: &[clap::Arg], group: &[OptionSpec]) {
+        for s in group {
+            let arg = arg_by_id(args, s.id, "spec group");
+            let defaults: Vec<String> = arg
+                .get_default_values()
+                .iter()
+                .map(|v| v.to_string_lossy().into_owned())
+                .collect();
+            let expected: Vec<String> = s.default.map(|d| vec![d.to_string()]).unwrap_or_default();
+            assert_eq!(defaults, expected, "default mismatch for `{}`", s.id);
+        }
+    }
+
+    /// Help text must match the spec verbatim.
+    pub(crate) fn assert_help(args: &[clap::Arg], group: &[OptionSpec]) {
+        for s in group {
+            let arg = arg_by_id(args, s.id, "spec group");
+            let help = arg
+                .get_long_help()
+                .or_else(|| arg.get_help())
+                .unwrap_or_else(|| panic!("arg `{}` has no help text", s.id))
+                .to_string();
+            assert_eq!(
+                help.trim(),
+                s.help.trim(),
+                "help text mismatch for `{}`",
+                s.id
+            );
+        }
+    }
+
+    /// Structural clap surface must match the spec: action per value kind,
+    /// SCREAMING value name, possible values for enums only, delimiter
+    /// round-trip, and no long help.
+    pub(crate) fn assert_structural(args: &[clap::Arg], group: &[OptionSpec]) {
+        use crate::domain::options_spec::ValueKind;
+        for s in group {
+            let arg = arg_by_id(args, s.id, "spec group");
+            match s.kind {
+                ValueKind::Bool => {
+                    assert!(
+                        matches!(arg.get_action(), clap::ArgAction::SetTrue),
+                        "bool `{}` must use SetTrue",
+                        s.id
+                    );
+                },
+                // A `TextList` (`Option<Vec<String>>` derive) resolves to
+                // `ArgAction::Append`, so repeated occurrences append. The
+                // spec builder mirrors that exactly.
+                ValueKind::TextList => {
+                    assert!(
+                        matches!(arg.get_action(), clap::ArgAction::Append),
+                        "text list `{}` must use Append",
+                        s.id
+                    );
+                },
+                _ => {
+                    assert!(
+                        matches!(arg.get_action(), clap::ArgAction::Set),
+                        "value option `{}` must use Set",
+                        s.id
+                    );
+                },
+            }
+            let names: Vec<String> = arg
+                .get_value_names()
+                .unwrap_or_default()
+                .iter()
+                .map(|id| id.to_string())
+                .collect();
+            assert_eq!(
+                names,
+                vec![s.id.to_ascii_uppercase()],
+                "value name mismatch for `{}`",
+                s.id
+            );
+            let possible: Vec<String> = arg
+                .get_possible_values()
+                .into_iter()
+                .map(|v| v.get_name().to_string())
+                .collect();
+            if let ValueKind::Enum { variants } = s.kind {
+                assert_eq!(possible, variants, "possible values for `{}`", s.id);
+            } else if !matches!(s.kind, ValueKind::Bool) {
+                assert!(
+                    possible.is_empty(),
+                    "`{}` must have no possible values",
+                    s.id
+                );
+            }
+            assert_eq!(
+                arg.get_value_delimiter(),
+                s.value_delimiter,
+                "value_delimiter mismatch for `{}`",
+                s.id
+            );
+            assert!(
+                arg.get_long_help().is_none(),
+                "`{}` must not carry long help",
+                s.id
+            );
+        }
+    }
+
     /// Runs `f` with every ambient environment variable that could leak into
     /// clap's `env` fallbacks (`WEBFANG_*`, `AI_MODEL_ID`) temporarily
     /// removed, restoring them afterwards.
@@ -100,6 +278,10 @@ pub struct Args {
     /// AI-powered semantic cleaning settings.
     #[command(flatten)]
     pub ai: AiArgs,
+
+    /// LLM extraction provider settings.
+    #[command(flatten)]
+    pub llm: LlmArgs,
 }
 
 /// Subcommands.
@@ -296,6 +478,8 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
             asset_naming: args.crawler.asset_naming,
             download_concurrency: args.crawler.download_concurrency,
             ai_config,
+            extract_with_llm: args.llm.extract_with_llm,
+            llm_provider: args.llm.llm_provider.clone(),
             budget_overrides: crate::domain::budget::BudgetOverrides {
                 // #897 item 2 ("Zero Silent Loss"): an explicit `0` is
                 // rejected by `parse_rate_limit_burst`, and that rejection

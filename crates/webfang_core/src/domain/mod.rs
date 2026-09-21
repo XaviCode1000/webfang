@@ -13,6 +13,7 @@
 
 use url::Url;
 
+pub mod auth_source;
 pub mod axtree_port;
 pub mod body_cap;
 pub mod clock;
@@ -35,6 +36,7 @@ pub mod http_port;
 pub mod js_strategy;
 pub mod link_extractor;
 pub mod llm;
+pub mod local_secret_store;
 /// Typed 8-state page lifecycle (persisted enum + compile-time
 /// typestate wrapper). See module docs for the legacy-encoding mapping.
 pub mod page_state;
@@ -92,6 +94,9 @@ pub mod options_spec;
 /// Persistence mode — unified control-plane for `--resume`/`--state-dir` and
 /// `--checkpoint-interval`/`--no-checkpoint` (domain pure, no IO).
 pub mod persistence;
+/// Multi-provider AI configuration + registry (`ai-providers-design.md`).
+/// Domain-only: declarative config and typed lookup, no I/O.
+pub mod providers;
 /// System RAM-usage probe port — domain-owned seam for autoscale-loop
 /// reads so `application` stops importing `infrastructure::downloader`
 /// (ADR-0012 sub-slice 3.B-1c).
@@ -159,6 +164,10 @@ pub use value_objects::{CorrelationId, Sha256Hex, ValidUrl};
 pub use waf::{
     is_t2_blocking_status, set_waf_inspector, waf_inspector, EvidenceSource, InspectionContext,
     WafEvidence, WafInspectorPort, WafTier, WafVerdict,
+};
+
+pub use providers::{
+    Capability, ProviderConfig, ProviderKind, ProviderRegistry, ProvidersConfig, RegistryError,
 };
 
 /// Compression types supported for sitemap parsing

@@ -81,7 +81,8 @@ fn output_vectors_gate(opts: &CrawlOptions) -> Option<CliExit> {
 /// 2. Scraping with progress
 /// 3. Export results
 /// 4. Report failures + exit code
-#[instrument(level = "info", skip(opts, ai_cleaner, adaptive_engine, vault_ports), fields(url = %opts.url))]
+#[allow(clippy::too_many_lines)]
+#[instrument(level = "info", skip(opts, ai_cleaner, adaptive_engine, vault_ports, llm_port), fields(url = %opts.url))]
 pub async fn run(
     opts: CrawlOptions,
     #[cfg(feature = "ai")] ai_cleaner: Option<std::sync::Arc<dyn SemanticCleaner>>,
@@ -89,6 +90,7 @@ pub async fn run(
         std::sync::Arc<AdaptiveSelectorEngine>,
     >,
     vault_ports: crate::application::container::VaultAiPorts,
+    llm_port: Option<std::sync::Arc<dyn crate::domain::llm_port::LlmPort>>,
 ) -> CliExit {
     // Run-root correlation identity (#501, #1439): the whole operation owns
     // ONE root, minted HERE at the orchestration entry and propagated into
@@ -140,6 +142,7 @@ pub async fn run(
             #[cfg(feature = "ai")]
             ai_cleaner,
             vault_ports,
+            llm_port,
             &cancel,
             &root_correlation,
         )
@@ -984,6 +987,7 @@ async fn run_batch(
     opts: CrawlOptions,
     #[cfg(feature = "ai")] ai_cleaner: Option<std::sync::Arc<dyn SemanticCleaner>>,
     vault_ports: crate::application::container::VaultAiPorts,
+    _llm_port: Option<std::sync::Arc<dyn crate::domain::llm_port::LlmPort>>,
     cancel: &tokio_util::sync::CancellationToken,
     root_correlation: &domain::CorrelationId,
 ) -> CliExit {
@@ -2722,10 +2726,16 @@ mod tests {
             opts,
             None,
             crate::application::container::VaultAiPorts::default(),
+            None,
         )
         .await;
         #[cfg(not(feature = "adaptive-selectors"))]
-        let exit = run(opts, crate::application::container::VaultAiPorts::default()).await;
+        let exit = run(
+            opts,
+            crate::application::container::VaultAiPorts::default(),
+            None,
+        )
+        .await;
 
         assert!(
             matches!(exit, CliExit::ConfigError(_)),
@@ -2743,6 +2753,7 @@ mod tests {
         let exit = run_batch(
             opts,
             crate::application::container::VaultAiPorts::default(),
+            None,
             &cancel,
             &crate::domain::CorrelationId::new(),
         )
@@ -2772,6 +2783,7 @@ mod tests {
             None,
             None,
             crate::application::container::VaultAiPorts::default(),
+            None,
         )
         .await;
         #[cfg(not(feature = "adaptive-selectors"))]
@@ -2779,6 +2791,7 @@ mod tests {
             opts,
             None,
             crate::application::container::VaultAiPorts::default(),
+            None,
         )
         .await;
 
@@ -2799,6 +2812,7 @@ mod tests {
             opts,
             None,
             crate::application::container::VaultAiPorts::default(),
+            None,
             &cancel,
             &crate::domain::CorrelationId::new(),
         )

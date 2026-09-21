@@ -64,7 +64,7 @@ Two complementary tools. Pick by mission, not by habit. **Load the matching skil
 
 - Before editing any symbol → CodeGraph `explore` it (callers + impact). NEVER edit blind.
 - Before renaming → check ALL usages first via `codedb_callers` / CodeGraph `explore`.
-- Before commit → run `cargo check` + `cargo clippy` + `cargo fmt` and re-read the diff.
+- Before commit → run `cargo check` + `cargo clippy` + `cargo fmt --all -- --check` and re-read the diff. Bare `cargo fmt` rewrites files and **exits 0 unconditionally** — it is a fixer, never a verification.
 - **Legitimate `grep`/`rg` exceptions:** logs, CI output, `.env`/config text, files outside the index — never for source code.
 
 ### 2.3 Worktree intelligence — CRITICAL
@@ -836,10 +836,12 @@ version }}"`, `version_group = "webfang"` on every processed crate, `publish = f
 ### Pre-commit gate (every commit)
 
 ```bash
-cargo check && cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines && cargo fmt && env "RUSTDOCFLAGS=-D warnings" cargo doc --workspace --all-features --no-deps
+cargo check && cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines && cargo fmt --all -- --check && env "RUSTDOCFLAGS=-D warnings" cargo doc --workspace --all-features --no-deps
 ```
 
 > ⚠️ **The clippy command MUST match CI exactly.** CI runs the strict gate above, which enables the `#516` complexity ratchets (`clippy::cognitive_complexity` + `clippy::too_many_lines`, thresholds in `clippy.toml`). Running a bare `cargo clippy -- -D warnings` locally will PASS while CI FAILS on any function >100 lines or over the cognitive-complexity limit. Always use the full command above before pushing.
+
+> ⚠️ **`cargo fmt` MUST be run as `cargo fmt --all -- --check` in every verification chain.** A bare `cargo fmt` is a *fixer*: it rewrites the working tree and exits **0 whether or not it changed anything**, so a green run proves nothing about what is committed. Reporting "cargo fmt ✓" from it is not verification — an agent that runs it, sees exit 0 and moves on leaves the rewrite **uncommitted**, and CI's `cargo fmt --all -- --check` then fails on exactly that file. Observed on PR #1493: `crates/webfang_core/src/domain/mod.rs` was dirty in the worktree (the fix already applied) while the pushed commit was still unformatted, so local passed and CI failed. Fix with `cargo fmt --all` if needed, then **verify** with `--check`, then commit the result.
 
 > 🚨 **`--all-features` is a safety flag here, not a strictness preference.** This crate has `chromium`-gated code whose only consumers are behind `#[cfg(feature = "chromium")]`. Running clippy **without** `--all-features` makes those imports look dead, and `clippy --fix` will **delete live code** — `cargo check` with default features then still passes, so the loss is invisible until `--all-features` fails. This bit the main checkout twice during #994 (see #1006). Never run `clippy --fix`, and never wire an auto-fixing tool, against a feature set narrower than the build's. `.pi-lens.json` disables the pi-lens autofix paths for exactly this reason; do not re-enable them.
 
@@ -863,7 +865,7 @@ gh run list --workflow=ci.yml --branch "$(git branch --show-current)" --limit 1 
 ### PR checklist
 
 - [ ] `bash scripts/ci_fast_gate.sh` GREEN (lane-aware local gate: runs the cargo gates below only when code changed)
-- [ ] `cargo check` + `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines` + `cargo fmt`
+- [ ] `cargo check` + `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines` + `cargo fmt --all -- --check` (never a bare `cargo fmt` — it exits 0 after rewriting)
 - [ ] rustdoc covered when library source changed: `env "RUSTDOCFLAGS=-D warnings" cargo doc --workspace --all-features --no-deps` GREEN (path-gated inside `ci_fast_gate.sh` on `crates/*/src/**.rs`; the full lane always runs it)
 - [ ] `cargo nextest run` (at least affected module)
 - [ ] Review `git diff --stat main...HEAD` to confirm only expected symbols/files changed
@@ -1050,7 +1052,7 @@ merged as `84dc0c1`. Saved ~54 min of CI (3 × 27 min → 1 × 27 min).
 git branch --show-current    # Verify correct worktree BEFORE any edit
 cargo check                  # Verify compilation
 cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines  # Fix ALL warnings (matches CI strict gate, #516 ratchets)
-cargo fmt                    # Format
+cargo fmt --all -- --check   # Verify formatting (bare `cargo fmt` rewrites files and exits 0 => never evidence)
 ```
 
 **Moderate (< 5 min):**

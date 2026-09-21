@@ -667,6 +667,10 @@ pub mod ai;
 
 /// Obsidian flag group (ADR-002 slice 5a): mirrors `cli::args::ObsidianArgs`.
 pub mod obsidian;
+
+/// LLM provider flag group: mirrors `cli::args::LlmArgs`. Not gated by the
+/// `ai` cargo feature — the remote provider port is always compiled.
+pub mod llm;
 #[cfg(test)]
 mod tests {
     use super::{crawler, export, schema_object, BoundError, DefaultValue, OptionSpecError};

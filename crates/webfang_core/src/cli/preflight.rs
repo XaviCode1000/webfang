@@ -1245,6 +1245,63 @@ fn check_export_format_vector_with(ai_enabled: bool, opts: &CrawlOptions) -> Res
 }
 
 // ============================================================================
+// LLM extraction provider gate (§8b)
+// ============================================================================
+
+/// Preflight: `--extract-with-llm` without a configured `completion` provider
+/// must fail at startup, not on the first invocation (`ai-providers-design.md`
+/// §8b).
+///
+/// This is the **expiry of the §8b DEBE**: the Container stays permissive
+/// (`llm_port()` is `None` without a provider, by contract), but every service
+/// binary that exposes an LLM flag MUST validate the port is present before
+/// doing any work. Without this gate a daemon reports OK at boot and then
+/// fails when a user or cron invokes the feature, with retries amplifying the
+/// failure before anyone notices.
+///
+/// The check is deliberately **static** (flag + config presence) rather than a
+/// probe of the constructed port: a reachable-but-broken provider is a runtime
+/// concern with its own error classification, while a missing configuration is
+/// a startup configuration error (exit 78).
+///
+/// # Errors
+///
+/// Returns [`crate::CliExit::ConfigError`] (exit 78) when `--extract-with-llm`
+/// is set but the config declares no provider with the `completion`
+/// capability, or when `--llm-provider` names an id that is unknown or lacks
+/// the capability.
+pub fn check_extract_with_llm(
+    opts: &CrawlOptions,
+    providers: &crate::domain::providers::ProvidersConfig,
+) -> Result<(), CliExit> {
+    if !opts.extract_with_llm {
+        return Ok(());
+    }
+
+    let registry = crate::domain::providers::ProviderRegistry::new(providers.clone());
+    let resolution = match opts.llm_provider.as_deref() {
+        Some(id) => registry.resolve(id, crate::domain::providers::Capability::Completion),
+        None => registry.resolve_default_completion(),
+    };
+
+    match resolution {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            warn!(
+                requested_provider = ?opts.llm_provider,
+                error = %e,
+                "--extract-with-llm rejected: no usable completion provider"
+            );
+            Err(CliExit::ConfigError(format!(
+                "'--extract-with-llm' requiere un provider LLM configurado \
+                 con la capacidad `completion`: {e}. Configurá un provider \
+                 en el archivo de configuración o quitá el flag."
+            )))
+        },
+    }
+}
+
+// ============================================================================
 // Pre-flight HTTP Connectivity Check (T-070)
 // ============================================================================
 
