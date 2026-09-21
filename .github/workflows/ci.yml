@@ -258,6 +258,13 @@ jobs:
       # retry is worse than no retry — it buys false confidence.
       - name: Release reconcile semantics harness
         run: bash scripts/test_release_reconcile.sh
+      # Semantics harness for the CI Health close path (slice4-branch-guard):
+      # proves on a fake gh that the shared close_mine closes exactly the
+      # labeled tracking issues, skips unlabeled lookalikes visibly, treats an
+      # empty set as a no-op, and that no workflow step carries its own inline
+      # close implementation. Offline, no real issues touched.
+      - name: CI health close semantics harness
+        run: bash scripts/test_ci_health_close.sh
       # Regression guard for #836: block-scalar nesting bugs in workflow YAML
       # (steps swallowed into a `run: |` block) stay valid YAML and only fail
       # at runtime post-merge (#833→#835). actionlint + shellcheck catch them
