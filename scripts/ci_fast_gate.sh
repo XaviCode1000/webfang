@@ -281,6 +281,70 @@ EOF
   fi
 }
 
+# run_pinned_lint_changed_scope: degraded local equivalent of CI's
+# "Lint GitHub Actions workflows and shell scripts" step. CI downloads
+# pinned actionlint+shellcheck and scans the whole repo; that download is
+# forbidden pre-push, so this lints ONLY changed files (from $UNION_TMP)
+# with already-installed tools and degrades loudly otherwise: workflows
+# fall back to a python3-yaml parse, scripts warn-skip. NEVER curl-installs
+# pinned binaries locally.
+run_pinned_lint_changed_scope() {
+  # Same ignore vocabulary as the repo-guards job in .github/workflows/ci.yml
+  # and lane_ci above: structural findings stay fatal, style debt stays ignored.
+  local ignore="SC2010,SC2012,SC2027,SC2034,SC2046,SC2086,SC2126,SC2129"
+  local -a script_files=()
+  local -a workflow_files=()
+  # mapfile returns non-zero on empty input, hence `|| true` under `set -u`.
+  mapfile -t script_files < <(grep -E '^scripts/[^/]*\.sh$' "$UNION_TMP" || true) || true
+  mapfile -t workflow_files < <(grep -E '^\.github/workflows/[^/]*\.ya?ml$' "$UNION_TMP" || true) || true
+  if [[ ${#script_files[@]} -eq 0 && ${#workflow_files[@]} -eq 0 ]]; then
+    skip_step "pinned lint (changed scope)" "no changed scripts/workflows"
+    return 0
+  fi
+  if [[ ${#script_files[@]} -gt 0 ]]; then
+    run_step "bash syntax (changed scripts, pinned lint scope)" bash -n "${script_files[@]}"
+    if command -v shellcheck >/dev/null 2>&1; then
+      run_step "shellcheck (changed scripts, shared ignore list)" shellcheck -x --exclude="$ignore" --format=gcc "${script_files[@]}"
+    else
+      skip_step "shellcheck (changed scripts)" "not installed (no download pre-push)"
+    fi
+  else
+    skip_step "shell syntax/shellcheck (changed scope)" "no changed scripts"
+  fi
+  if [[ ${#workflow_files[@]} -gt 0 ]]; then
+    if command -v actionlint >/dev/null 2>&1; then
+      run_step "actionlint (changed workflows)" actionlint -ignore SC2010 -ignore SC2012 -ignore SC2027 -ignore SC2034 -ignore SC2046 -ignore SC2086 -ignore SC2126 -ignore SC2129 "${workflow_files[@]}"
+    elif python3 -c "import yaml" 2>/dev/null; then
+      run_step "workflow YAML parse (actionlint absent)" python3 - "${workflow_files[@]}" <<'EOF'
+import glob, sys, yaml
+for p in sys.argv[1:]:
+    yaml.safe_load(open(p))
+print('OK: changed workflow YAML parses')
+EOF
+    else
+      skip_step "workflow validation (changed scope)" "neither actionlint nor python3-yaml available"
+    fi
+  else
+    skip_step "workflow validation (changed scope)" "no changed workflows"
+  fi
+}
+
+# run_zizmor_cached_only: degraded local equivalent of CI's zizmor audit.
+# Runs ONLY when a zizmor binary is already cached on PATH, with the repo's
+# .github/zizmor.yml config unchanged and `--min-severity high` (fail-closed
+# on findings). Otherwise warn-skips with reason. NEVER downloads pre-push.
+run_zizmor_cached_only() {
+  if ! command -v zizmor >/dev/null 2>&1; then
+    skip_step "zizmor audit (cached only)" "zizmor not installed (no download pre-push)"
+    return 0
+  fi
+  if [[ ! -f .github/zizmor.yml ]]; then
+    skip_step "zizmor audit (cached only)" ".github/zizmor.yml absent"
+    return 0
+  fi
+  run_step "zizmor audit (cached, --min-severity high)" zizmor --config .github/zizmor.yml --min-severity high .github/workflows
+}
+
 # --- shared: fmt + repo guards ----------------------------------------------------
 # Mirrors the `repo-guards` job + `fmt` tier of .github/workflows/ci.yml.
 # Cheap greps/scripts only; every guard present in scripts/ runs, missing
@@ -332,6 +396,15 @@ lane_fmt_and_guards() {
       echo 'use ScraperError::SitemapEmpty, never message matching'; exit 1
     fi
     echo 'OK: no string-match sitemap coupling'"
+  # Release hand-off gate (as-is via run_guard, same pass/fail as CI).
+  run_guard "release hand-off gate" scripts/check_release_dispatch.sh \
+    bash scripts/check_release_dispatch.sh
+  # Release reconcile semantics harness (hermetic mktemp fixtures, no network).
+  run_guard "release reconcile semantics harness" scripts/test_release_reconcile.sh \
+    bash scripts/test_release_reconcile.sh
+  # Degraded lint + audit guards (changed-scope / cached-only, never download).
+  run_pinned_lint_changed_scope
+  run_zizmor_cached_only
 }
 
 # run_rustdoc_gate <mode>: mirrors the CI `doc-quality` rustdoc step
