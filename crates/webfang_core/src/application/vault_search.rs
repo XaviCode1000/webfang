@@ -127,6 +127,26 @@ impl VaultSearchService {
             return Ok(Vec::new());
         }
 
+        // #1462: wholesale dim mismatch fail-closed. When NO stored vector
+        // matches the serving dim, the whole index was built by another
+        // backend (e.g. a 384d vault now served by an 8d remote adapter) and
+        // ranking would silently degrade to nothing — fail with re-index
+        // guidance instead of empty results. A MIXED index keeps the
+        // skip-with-warn path below (search is the read path that must not
+        // serve corrupt ranking; `sync_vault` stays the repair path that
+        // re-indexes stale vectors).
+        let serving_dim = query_embedding.len();
+        if !chunks
+            .iter()
+            .any(|chunk| chunk.embedding.len() == serving_dim)
+        {
+            let stored_dim = chunks.first().map_or(0, |chunk| chunk.embedding.len());
+            return Err(ScraperError::Config(format!(
+                "la bóveda usa dim {stored_dim} pero el adaptador de embeddings sirve \
+                 dim {serving_dim}: re-indexe la bóveda con el modelo actual"
+            )));
+        }
+
         // Step 3: Rank by cosine similarity. Chunks whose vector
         // dimension differs from the query embedding (mixed-model index
         // corruption) are skipped — never ranked with a silent 0.0 — and
@@ -503,6 +523,47 @@ mod tests {
             "mismatched vector must be skipped, not ranked"
         );
         assert_eq!(results[0].note_path, "vault/ok.md");
+    }
+
+    #[tokio::test]
+    async fn search_wholesale_dim_mismatch_fails_closed_with_reindex_guidance() {
+        // #1462: the whole index was built by another backend (e.g. vault
+        // indexed at 384d now served by an 8d remote adapter) — no stored
+        // vector matches the serving dim, so ranking would silently degrade.
+        // Fail closed with re-index guidance instead of empty results.
+        let repo = Arc::new(InMemoryNoteRepo::default());
+        repo.chunks.lock().unwrap().extend([
+            NoteChunkVector {
+                note_path: "vault/a.md".to_owned(),
+                content: "old model".to_owned(),
+                chunk_index: 0,
+                embedding: vec![0.1, 0.2, 0.3, 0.4, 0.5],
+            },
+            NoteChunkVector {
+                note_path: "vault/b.md".to_owned(),
+                content: "old model".to_owned(),
+                chunk_index: 0,
+                embedding: vec![0.5, 0.4, 0.3, 0.2, 0.1],
+            },
+        ]);
+        let service = test_service(repo);
+
+        let err = service
+            .search("query", 10)
+            .await
+            .expect_err("wholesale dim mismatch must fail closed");
+        let rendered = match err {
+            ScraperError::Config(msg) => msg,
+            other => panic!("wholesale mismatch must be Config, got: {other:?}"),
+        };
+        assert!(
+            rendered.contains("re-indexe"),
+            "mismatch must guide to re-index, got: {rendered}"
+        );
+        assert!(
+            rendered.contains('5') && rendered.contains('3'),
+            "mismatch must name stored and serving dims, got: {rendered}"
+        );
     }
 
     #[test]

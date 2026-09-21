@@ -727,12 +727,39 @@ async fn build_and_run(opts: CrawlOptions) -> CliExit {
     };
 
     #[cfg(feature = "ai")]
-    let (ai_cleaner, vault_ports, shared) = match build_ai_cleaner(&opts).await {
+    let (ai_cleaner, mut vault_ports, shared) = match build_ai_cleaner(&opts).await {
         Ok(v) => v,
         Err(e) => return e,
     };
     #[cfg(not(feature = "ai"))]
-    let vault_ports = webfang_core::application::container::VaultAiPorts::default();
+    let mut vault_ports = webfang_core::application::container::VaultAiPorts::default();
+
+    // Remote embedding slot (#1462): an explicit `--embedding-provider`
+    // always resolves (fail fast even without `ai`, so vault search works
+    // with no local model); with `ai` the default slot may also select a
+    // remote provider. Otherwise no config load and no probe — plain runs
+    // never dial an embeddings endpoint.
+    if opts.embedding_provider.is_some() || opts.ai {
+        let providers_cfg = ConfigDefaults::load(&resolve_config_path());
+        let providers = webfang_core::domain::providers::ProvidersConfig {
+            providers: providers_cfg.providers,
+        };
+        match webfang_core::cli::llm_wire::build_embedding_provider(
+            &opts,
+            &providers,
+            opts.ai_config.offline,
+        )
+        .await
+        {
+            Ok(Some(adapter)) => {
+                // Explicit remote wins over the local pool adapter: same
+                // `embedding_port` slot, overwritten (not merged).
+                vault_ports.embedding_port = Some(adapter);
+            },
+            Ok(None) => {},
+            Err(e) => return e,
+        }
+    }
 
     #[cfg(feature = "adaptive-selectors")]
     // Inference worker bound derives from the budget model's Operation.inference
