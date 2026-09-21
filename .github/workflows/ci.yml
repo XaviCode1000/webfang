@@ -944,9 +944,11 @@ jobs:
     # set when Miri (core) aborted in ~20 min on servo_arc UB; once that UB
     # was gated (#765), core started interpreting its full 691-test universe
     # and ran out the wall exactly at 30:00 with 422 tests completed and no
-    # UB/FAIL anywhere (run 32049909561, 2026-08-17). 60 min leaves ~25 min
-    # of headroom past the observed full-suite pace.
-    timeout-minutes: 60
+    # UB/FAIL anywhere (run 32049909561, 2026-08-17).
+    # #1512: 120 min — a job timeout CANCELS THE WHOLE RUN even under
+    # continue-on-error (the flag absorbs a `failure` conclusion, not the
+    # cancellation signal), so this budget must fit the slowest advisory job.
+    timeout-minutes: 120
     # #1510: advisory. Miri cannot execute BoringSSL FFI (TLS_method), inline
     # assembly (raw-cpuid via quanta/governor) nor recent syscalls, so the
     # weekly scheduled run has been structurally red every Monday since July
@@ -1019,15 +1021,17 @@ jobs:
             ${{ matrix.filter }}
 
   # ============================================================================
-  # MIRI INFRA-FAST: 10 modules, needs 60 min timeout (compilation under Miri
-  # is 5-10x slower; 10 modules × instrumented build exceeds the 30m default).
+  # MIRI INFRA-FAST: 10 modules, needs a 120 min timeout (#1512: a job
+  # timeout cancels the whole run — see the `miri` job rationale; compilation
+  # under Miri is 5-10x slower).
   # NOTE: Positive module filters — new infrastructure:: modules must be
   # explicitly assigned to one of the two infra jobs to run under Miri.
   # ============================================================================
   miri-infra-fast:
     name: Miri (infra-fast)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # #1512: see the `miri` job rationale — a job timeout cancels the run.
+    timeout-minutes: 120
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
@@ -1062,7 +1066,7 @@ jobs:
 
   # ============================================================================
   # MIRI INFRA-SLOW: crawler/obsidian/export/http/network/converter + pure-Rust
-  # downloader submodules. 60 min timeout for the same reason as infra-fast.
+  # downloader submodules. 120 min timeout (#1512) — see the `miri` job rationale.
   # syntax_highlight is excluded at source via #[cfg(all(test, not(miri)))];
   # wikilinks (pure pulldown_cmark, no FFI) runs and passes under Miri. The
   # trailing `--skip wikilinks`/`--skip syntax_highlight` flags are inert
@@ -1073,12 +1077,16 @@ jobs:
   # resource_governor is covered by TSan (sanitizers.yml), where sysconf works.
   # Budget (#751): memory_manager's test_handle_disk_swapping_with_swap is
   # #[cfg_attr(miri, ignore)] — it alone burned ~27 min wall, leaving the rest
-  # of this job at ~30–33 min of the 60 min timeout (knife-edge resolved).
+  # of this job at ~30–33 min of the old 60 min timeout (knife-edge then);
+  # as of #1512 the job outgrew that budget — measured 60m20s, killed at the
+  # cap in run 35621757387, whose cancellation took the whole run down —
+  # so the budget is now 120 min.
   # ============================================================================
   miri-infra-slow:
     name: Miri (infra-slow)
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    # #1512: see the `miri` job rationale — a job timeout cancels the run.
+    timeout-minutes: 120
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
