@@ -68,6 +68,15 @@ jobs:
     timeout-minutes: 10
     if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || github.event_name == 'workflow_run' }}
     steps:
+      # The upsert/reconcile steps source scripts/ci-health-close.sh from the
+      # repo tree. Without a checkout $GITHUB_WORKSPACE is empty on the
+      # workflow_run path and the step dies with "No such file or directory"
+      # (see issue #1508). Pinned to the same commit as the other workflows
+      # (SHA pin convention from #1505); persist-credentials: false.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+        with:
+          persist-credentials: false
+
       - name: Ensure tracking labels exist (idempotent)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -200,14 +209,14 @@ jobs:
           case "$PAYLOAD_WORKFLOW" in
             "CI")
               if [ "$PAYLOAD_CONCLUSION" = "success" ]; then
-                close_mine "$TITLE_CI"
+                close_mine "$TITLE_CI" "$RUN_URL"
               else
                 open_or_comment "$TITLE_CI" "Failed jobs: ${FAILED_JOBS:-unknown}. Gate may be green (W-02)." ""
               fi
               ;;
             "Production Bug Discovery")
               if [ "$PAYLOAD_CONCLUSION" = "success" ]; then
-                close_mine "$TITLE_DISCOVERY"
+                close_mine "$TITLE_DISCOVERY" "$RUN_URL"
               elif [ "$KNOWN_ONLY" = "true" ]; then
                 open_or_comment "$TITLE_DISCOVERY" "Known FP only (W-03): $KNOWN_RED_TEST kept RED by design." "$LABEL_KNOWN_FP"
               else
@@ -216,7 +225,7 @@ jobs:
               ;;
             "Benches")
               if [ "$PAYLOAD_CONCLUSION" = "success" ]; then
-                close_mine "$TITLE_BENCH"
+                close_mine "$TITLE_BENCH" "$RUN_URL"
               else
                 open_or_comment "$TITLE_BENCH" "Nightly failing (W-05, exit 143?). Failed: ${FAILED_JOBS:-unknown}." ""
               fi
