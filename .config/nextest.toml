@@ -78,3 +78,20 @@ failure-output = "immediate-final"
 
 # Timeouts conservadores para evitar timeouts de agentes
 slow-timeout = { period = "45s", terminate-after = 2, grace-period = "5s" }
+
+[profile.discovery]
+# Perfil del job `ignored-tests` de Production Bug Discovery (bug-discovery.yml,
+# #1510): ejecuta a diario el universo `#[ignore]`. slow-timeout debe superar
+# con margen el test ignorado legítimo más pesado hoy (p0_001_engine_parity:
+# 82s medidos) — 600s = 10 min por test con terminate-after 1 (sin reintentos
+# de tests de medición, que no son flaky sino largos). global-timeout 45m
+# cubre la corrida filtrada completa; el job tiene timeout-minutes: 60.
+test-threads = 2
+threads-required = 1
+retries = { backoff = "exponential", count = 2, delay = "1s" }
+fail-fast = false
+slow-timeout = { period = "600s", terminate-after = 1, grace-period = "30s" }
+global-timeout = "45m"
+failure-output = "final"
+success-output = "final"
+status-level = "skip"

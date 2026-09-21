@@ -730,17 +730,21 @@ jobs:
   # created on first failure, one comment per failing run, closed
   # automatically when a scheduled run goes green again (McQuaid, "Make
   # GitHub Actions Do More For You", 2026-06).
-  # `needs` covers the full scheduled matrix: `gate` aggregates the core
-  # producers, but the schedule-only Miri jobs sit OUTSIDE `gate` — a run
-  # with all 4 Miri jobs red still reports `CI Gate: success`. `release` and
-  # `coverage` are push/PR-only and never run on schedule, so they are not
-  # listed.
+  # `needs` covers the core producers only (#1510): the three Miri jobs are
+  # advisory (continue-on-error: true) and deliberately OUTSIDE `needs` —
+  # their structural red (BoringSSL FFI, inline asm, recent syscalls) must not
+  # keep the weekly schedule red forever. They are still REPORTED: the Miri
+  # step below mirrors any red Miri job into the tracking issue with the run
+  # link. `release` and `coverage` are push/PR-only and never run on schedule,
+  # so they are not listed.
   # ============================================================================
   notify:
     name: Notify (scheduled CI result)
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [gate, code-quality, tokio-console-smoke, test-ai, feature-matrix, mcp, miri, miri-infra-fast, miri-infra-slow]
+    needs: [gate, code-quality, tokio-console-smoke, test-ai, feature-matrix, mcp]
+    # #1510: Miri jobs (miri, miri-infra-fast, miri-infra-slow) are advisory
+    # and intentionally absent from this needs list.
     if: ${{ !cancelled() && github.event_name == 'schedule' }}
     permissions:
       issues: write
@@ -751,6 +755,34 @@ jobs:
       TITLE: "Scheduled CI failed on main"
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
+      - name: Report advisory Miri jobs into the tracking issue
+        id: miri-report
+        # continue-on-error shields the WORKFLOW conclusion from Miri, but the
+        # JOB still concludes failure. Query the real per-job state and mirror
+        # it into the tracking issue so the red stays visible without gating
+        # the scheduled run on it (#1510). miri_red gates the close step below:
+        # without it, the same job would open the tracking issue here and
+        # immediately close it in the success() step.
+        env:
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          gh label create "ci-health" --color "0E8A16" --description "Auto-managed by CI Health Observer" 2>/dev/null || true
+          RED_MIRI="$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
+            --jq '[.jobs[] | select(.name | startswith("Miri")) | select(.conclusion != "success" and .conclusion != "skipped") | .name] | join(", ")')"
+          if [ -z "$RED_MIRI" ]; then
+            echo "All Miri jobs green — nothing to report."
+            echo "miri_red=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "miri_red=true" >> "$GITHUB_OUTPUT"
+          COUNT="$(gh issue list --state open --search "${TITLE} in:title" --json number --jq 'length')"
+          if [ "${COUNT}" -eq 0 ]; then
+            gh issue create --title "${TITLE}" --label "ci-health" --label "automated" --body "$(printf 'Scheduled ci.yml run: advisory Miri jobs red (core producers green).\n\nRun: %s\n\nRed Miri jobs: %s\n\nThese jobs are continue-on-error by design (structural Miri limits: BoringSSL FFI, inline asm, syscalls). The scheduled run itself is green when the core producers pass; this issue closes itself when a scheduled run goes fully green.' "${RUN_URL}" "${RED_MIRI}")"
+          else
+            NUMBER="$(gh issue list --state open --search "${TITLE} in:title" --json number --jq '.[0].number')"
+            gh issue comment "${NUMBER}" --body "Advisory Miri still red (${RED_MIRI}): ${RUN_URL}"
+          fi
+
       - name: Open or update tracking issue on failure
         if: failure()
         run: |
@@ -762,7 +794,11 @@ jobs:
             gh issue comment "${NUMBER}" --body "Still failing: ${RUN_URL}"
           fi
       - name: Close tracking issue when green again
-        if: success()
+        # success() here = every NON-advisory need green (Miri is shielded by
+        # continue-on-error and out of needs). Skip the close when this same
+        # run just reported a red advisory Miri job, otherwise the issue would
+        # be created and closed within the same job (#1510).
+        if: success() && steps.miri-report.outputs.miri_red != 'true'
         run: |
           gh issue list --state open --search "${TITLE} in:title" --json number --jq '.[].number' |
             while read -r number; do
@@ -911,6 +947,14 @@ jobs:
     # UB/FAIL anywhere (run 32049909561, 2026-08-17). 60 min leaves ~25 min
     # of headroom past the observed full-suite pace.
     timeout-minutes: 60
+    # #1510: advisory. Miri cannot execute BoringSSL FFI (TLS_method), inline
+    # assembly (raw-cpuid via quanta/governor) nor recent syscalls, so the
+    # weekly scheduled run has been structurally red every Monday since July
+    # (10 consecutive failures) regardless of repo health. continue-on-error
+    # keeps the UB sweep running and its failures visible per-job WITHOUT
+    # keeping the whole schedule red; the `notify` job reports any red Miri
+    # job into the tracking issue explicitly instead of gating on it.
+    continue-on-error: true
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
