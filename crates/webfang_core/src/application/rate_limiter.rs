@@ -14,8 +14,11 @@ use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
+#[cfg(miri)]
+use governor::clock::MonotonicClock;
+#[cfg(not(miri))]
+use governor::clock::QuantaClock;
 use governor::{
-    clock::QuantaClock,
     state::{InMemoryState, NotKeyed},
     Quota, RateLimiter as GovernorLimiter,
 };
@@ -23,8 +26,38 @@ use tokio_util::sync::CancellationToken;
 
 use crate::error::ScraperError;
 
+/// Clock used by the governor rate limiters.
+///
+/// Production builds use governor's `QuantaClock` (quanta TSC probing, ~100ns
+/// resolution). Miri cannot execute quanta's `raw-cpuid` inline assembly
+/// (`unsupported operation: inline assembly is not supported`, #1514), so
+/// Miri builds swap in governor's `MonotonicClock` — pure `std::time::Instant`,
+/// no FFI, no inline asm. Spacing semantics are identical; only the time-source
+/// resolution differs, and only under `cfg(miri)`.
+#[cfg(miri)]
+/// Miri build: pure `std::time::Instant` clock (no quanta probing).
+pub type GovernorClock = MonotonicClock;
+#[cfg(not(miri))]
+/// Production build: quanta TSC-backed clock (~100ns resolution).
+pub type GovernorClock = QuantaClock;
+
+/// Middleware matching `GovernorClock`.
+///
+/// governor's default middleware parameter is anchored to
+/// `<DefaultClock as Clock>::Instant` (= `QuantaInstant` with the `quanta`
+/// feature), so under Miri — where `GovernorClock` is `MonotonicClock` with
+/// `Instant = std::time::Instant` — the default would mismatch the 3-generic
+/// limiter type. Mirror the default explicitly per cfg (#1514).
+#[cfg(miri)]
+/// Miri build: middleware over `std::time::Instant`.
+pub type GovernorMiddleware = governor::middleware::NoOpMiddleware<std::time::Instant>;
+#[cfg(not(miri))]
+/// Production build: governor's default (middleware over `QuantaInstant`).
+pub type GovernorMiddleware = governor::middleware::NoOpMiddleware;
+
 /// Type alias for the rate limiter - allows swapping implementations
-pub type CrawlRateLimiter = GovernorLimiter<NotKeyed, InMemoryState, QuantaClock>;
+pub type CrawlRateLimiter =
+    GovernorLimiter<NotKeyed, InMemoryState, GovernorClock, GovernorMiddleware>;
 
 /// Rate limiter configuration
 #[derive(Debug, Clone)]
@@ -84,7 +117,7 @@ impl SharedRateLimiter {
                 .ok_or_else(|| ScraperError::Config("Concurrency must be > 0".into()))?,
         );
 
-        let limiter = GovernorLimiter::direct(quota);
+        let limiter = GovernorLimiter::direct_with_clock(quota, &GovernorClock::default());
         Ok(Self(Arc::new(limiter)))
     }
 
@@ -114,8 +147,12 @@ impl SharedRateLimiter {
     }
 }
 
-impl From<GovernorLimiter<NotKeyed, InMemoryState, QuantaClock>> for SharedRateLimiter {
-    fn from(limiter: GovernorLimiter<NotKeyed, InMemoryState, QuantaClock>) -> Self {
+impl From<GovernorLimiter<NotKeyed, InMemoryState, GovernorClock, GovernorMiddleware>>
+    for SharedRateLimiter
+{
+    fn from(
+        limiter: GovernorLimiter<NotKeyed, InMemoryState, GovernorClock, GovernorMiddleware>,
+    ) -> Self {
         Self(Arc::new(limiter))
     }
 }

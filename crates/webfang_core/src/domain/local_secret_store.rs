@@ -101,15 +101,27 @@ fn default_encrypted_file_path() -> PathBuf {
 
 /// Comprueba el backend de keyring compilado para la plataforma actual.
 fn detect_keyring() -> bool {
-    let Ok(entry) = keyring::Entry::new("webfang-setup-probe", "detect") else {
-        return false;
-    };
-    // Una entrada inexistente con backend operativo devuelve NoEntry, no error
-    // de plataforma: eso significa "keyring disponible".
-    !matches!(
-        entry.get_password(),
-        Err(keyring::Error::PlatformFailure(_) | keyring::Error::Ambiguous(_))
-    )
+    #[cfg(miri)]
+    {
+        // Miri no puede ejecutar la syscall `keyctl` del kernel
+        // (linux-keyutils: "unsupported syscall number 250", #1514). El
+        // diagnóstico del wizard es informativo: bajo Miri se reporta el
+        // backend como no disponible y las pruebas ya toleran cualquier
+        // valor de `keyring_available`.
+        false
+    }
+    #[cfg(not(miri))]
+    {
+        let Ok(entry) = keyring::Entry::new("webfang-setup-probe", "detect") else {
+            return false;
+        };
+        // Una entrada inexistente con backend operativo devuelve NoEntry, no
+        // error de plataforma: eso significa "keyring disponible".
+        !matches!(
+            entry.get_password(),
+            Err(keyring::Error::PlatformFailure(_) | keyring::Error::Ambiguous(_))
+        )
+    }
 }
 
 fn detect_default_encrypted_file() -> Option<PathBuf> {

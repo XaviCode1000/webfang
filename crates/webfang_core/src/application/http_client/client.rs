@@ -11,9 +11,10 @@ use crate::domain::session_port::{SessionId, SessionPort};
 use crate::domain::user_agent::fallback_agents;
 use crate::domain::waf::{waf_inspector, InspectionContext};
 use crate::error::ScraperError;
-use governor::clock::DefaultClock;
 use governor::state::{InMemoryState, NotKeyed};
 use governor::{Quota, RateLimiter};
+
+use crate::application::rate_limiter::{GovernorClock, GovernorMiddleware};
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -49,7 +50,10 @@ pub struct HttpClient {
     /// Pool of user agents for rotation
     user_agents: Vec<String>,
     /// Rate limiter for requests per minute
-    rate_limiter: Option<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>,
+    ///
+    /// `GovernorClock` = `QuantaClock` in production, `MonotonicClock` under
+    /// Miri (quanta's raw-cpuid inline asm is not executable under Miri, #1514).
+    rate_limiter: Option<RateLimiter<NotKeyed, InMemoryState, GovernorClock, GovernorMiddleware>>,
     /// Per-domain session health pool (optional)
     session_pool: Option<Arc<dyn SessionPort>>,
 }
@@ -83,7 +87,10 @@ impl HttpClient {
                 Quota::per_minute(NonZeroU32::new(rpm).expect(
                     "invariant: rpm > 0 was already checked above — NonZeroU32 cannot fail",
                 ));
-            Some(RateLimiter::direct(quota))
+            Some(RateLimiter::direct_with_clock(
+                quota,
+                &GovernorClock::default(),
+            ))
         } else {
             None
         };

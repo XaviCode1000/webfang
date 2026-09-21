@@ -86,17 +86,31 @@ impl AuthSource {
 }
 
 fn resolve_keyring(service: &str, account: &str) -> Result<ApiKey, AuthError> {
-    let entry = keyring::Entry::new(service, account).map_err(|_| AuthError::KeyringUnavailable)?;
-    match entry.get_password() {
-        Ok(secret) if secret.is_empty() => Err(AuthError::Invalid(format!(
-            "credencial vacía en keyring {service}/{account}"
-        ))),
-        Ok(secret) => Ok(ApiKey::new(secret)),
-        Err(keyring::Error::NoEntry) => Err(AuthError::CredentialNotFound {
-            service: service.to_string(),
-            account: account.to_string(),
-        }),
-        Err(err) => Err(AuthError::KeyringFailure(err.to_string())),
+    #[cfg(miri)]
+    {
+        // Miri cannot execute the kernel keyctl syscall (linux-keyutils:
+        // "unsupported syscall number 250", #1514). Under Miri the keyring
+        // backend is reported as unavailable — `AuthError::KeyringUnavailable`
+        // is already a documented outcome of this resolver and the no-fallback
+        // contract is unaffected.
+        let _ = (service, account);
+        return Err(AuthError::KeyringUnavailable);
+    }
+    #[cfg(not(miri))]
+    {
+        let entry =
+            keyring::Entry::new(service, account).map_err(|_| AuthError::KeyringUnavailable)?;
+        match entry.get_password() {
+            Ok(secret) if secret.is_empty() => Err(AuthError::Invalid(format!(
+                "credencial vacía en keyring {service}/{account}"
+            ))),
+            Ok(secret) => Ok(ApiKey::new(secret)),
+            Err(keyring::Error::NoEntry) => Err(AuthError::CredentialNotFound {
+                service: service.to_string(),
+                account: account.to_string(),
+            }),
+            Err(err) => Err(AuthError::KeyringFailure(err.to_string())),
+        }
     }
 }
 
