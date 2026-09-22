@@ -80,7 +80,12 @@ git -C "$FIXTURE" -c user.name='github-actions[bot]' -c user.email='bot@github.c
 # The human tag: same shape, wrong provenance. v1.0.0 has no GitHub Release.
 git -C "$FIXTURE" tag -a v1.0.0 -m "v1.0.0"
 mkdir -p "$FIXTURE/scripts"
+# release-tag-trust.sh travels with release-plz-tags.sh: the latter SOURCES it for
+# the shared trust predicate. Copying only the caller makes the `source` fail inside
+# the fixture, `mapfile` swallows the error, and the sweep silently reports "no
+# trusted tags" — a red that looks like a missing tag, not a missing file.
 cp "$REPO_ROOT/scripts/release-plz-tags.sh" \
+   "$REPO_ROOT/scripts/release-tag-trust.sh" \
    "$REPO_ROOT/scripts/ensure-release.sh" \
    "$REPO_ROOT/scripts/reconcile-releases.sh" "$FIXTURE/scripts/"
 
@@ -193,6 +198,35 @@ ASSETS
 run_fixture reconcile-releases.sh >/dev/null 2>&1 || true
 after="$(dispatched | grep -c . || true)"
 check "sweep is idempotent once complete (no new dispatch)" "$before" "$after"
+
+# 7. A BROKEN TRUST PREDICATE MUST NEVER READ AS "nothing to reconcile".
+#    This is the regression that made the library split dangerous: release-plz-tags.sh
+#    sources release-tag-trust.sh, and a failed `source` exits non-zero with EMPTY
+#    stdout. `mapfile` discards that status, so the sweep used to print "No release-plz
+#    tags in history; nothing to reconcile." and exit 0 - a green safety net sitting on
+#    top of a dead filter (the webfang#1476 shape: failure signal removed, green kept).
+#    The fixture is copied into a scratch dir so this check never mutates the real one.
+BROKEN="$WORK/repo-broken"
+cp -r "$FIXTURE" "$BROKEN"
+rm -f "$BROKEN/scripts/release-tag-trust.sh"
+if err="$( cd "$BROKEN" && PATH="$BIN:$PATH" FAKE_STATE="$STATE" \
+            GITHUB_REPOSITORY="owner/repo" \
+            bash scripts/reconcile-releases.sh 2>&1 )"; then rc=0; else rc=$?; fi
+check "dead trust predicate -> sweep does NOT exit 0" "1" "$rc"
+case "$err" in
+  *"nothing to reconcile"*) check "dead predicate -> no false 'nothing to reconcile'" "absent" "present" ;;
+  *) check "dead predicate -> no false 'nothing to reconcile'" "absent" "absent" ;;
+esac
+# The producer itself must be loud, not empty-and-nonzero.
+rm -f "$FIXTURE/scripts/release-tag-trust.sh"
+if err="$( cd "$FIXTURE" && bash scripts/release-plz-tags.sh --all 2>&1 >/dev/null )"; then rc=0; else rc=$?; fi
+check "producer with missing library -> non-zero" "1" "$(( rc > 0 ? 1 : 0 ))"
+case "$err" in
+  *"missing trust predicate library"*) check "producer -> names the missing library" "yes" "yes" ;;
+  *) check "producer -> names the missing library" "yes" "no" ;;
+esac
+# Restore the fixture for any later check; the trap cleans the whole tree anyway.
+cp "$REPO_ROOT/scripts/release-tag-trust.sh" "$FIXTURE/scripts/"
 
 echo "test_release_reconcile: PASS=$PASS FAIL=$FAIL"
 if (( FAIL > 0 )); then

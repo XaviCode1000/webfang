@@ -23,12 +23,17 @@
 # default branch always runs the current definition, hardened, with the input
 # pinning the build. This is the same choice the v2.1.1 backfill made by hand.
 #
-# Usage: ensure-release.sh <tag>
+# L1 Provenance: the dispatch now also passes `expected_sha` (the commit the tag
+# resolves to) so release.yml's preflight can verify L1.1 Identity (Shape 2:
+# default-branch dispatch requires PROV_EXPECTED_SHA).
+#
+# Usage: ensure-release.sh <tag> [expected_sha]
 set -euo pipefail
 
 TAG="${1:-}"
+EXPECTED_SHA="${2:-}"
 if [[ -z "$TAG" ]]; then
-  echo "usage: $(basename "$0") <tag>" >&2
+  echo "usage: $(basename "$0") <tag> [expected_sha]" >&2
   exit 2
 fi
 
@@ -63,10 +68,20 @@ fi
 ATTEMPTS=3
 RELEASE_DISPATCH_BACKOFF_SECONDS="${RELEASE_DISPATCH_BACKOFF_SECONDS:-10}"
 for (( attempt = 1; attempt <= ATTEMPTS; attempt++ )); do
-  if gh workflow run release.yml \
-       --repo "$GITHUB_REPOSITORY" \
-       -f tag="$TAG"; then
-    echo "Dispatched release.yml for $TAG (attempt $attempt)."
+  # Build the dispatch command with optional expected_sha
+  # Format matches the extraction regex in check_release_dispatch.sh:
+  # backslash-continued lines ending with ; OR ${DISPATCH_CMD[@]} form
+  DISPATCH_CMD=(
+    gh workflow run release.yml
+    --repo "$GITHUB_REPOSITORY"
+    -f tag="$TAG"
+  )
+  if [[ -n "$EXPECTED_SHA" ]]; then
+    DISPATCH_CMD+=(-f expected_sha="$EXPECTED_SHA")
+  fi
+
+  if "${DISPATCH_CMD[@]}"; then
+    echo "Dispatched release.yml for $TAG (attempt $attempt)${EXPECTED_SHA:+ with expected_sha=$EXPECTED_SHA}."
     exit 0
   fi
   echo "::warning::dispatch attempt $attempt/$ATTEMPTS for $TAG failed." >&2
@@ -77,5 +92,5 @@ for (( attempt = 1; attempt <= ATTEMPTS; attempt++ )); do
   fi
 done
 
-echo "::error::could not dispatch release.yml for $TAG after $ATTEMPTS attempts - that tag now has no binaries. Recover with: gh workflow run release.yml --repo $GITHUB_REPOSITORY -f tag=$TAG" >&2
+echo "::error::could not dispatch release.yml for $TAG after $ATTEMPTS attempts - that tag now has no binaries. Recover with: gh workflow run release.yml --repo $GITHUB_REPOSITORY -f tag=$TAG${EXPECTED_SHA:+ -f expected_sha=$EXPECTED_SHA}" >&2
 exit 1
