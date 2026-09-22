@@ -523,6 +523,9 @@ mod tests {
     async fn embedding_remote_unresolvable_credential_is_config_error() {
         use wiremock::MockServer;
         let server = MockServer::start().await;
+        // Hermetic: a leaked value would let construction proceed to the
+        // probe (nextest isolates, plain cargo test does not).
+        let _clean = webfang_test_utils::EnvGuard::clean(&["WEBFANG_TEST_EMB_MISSING_VAR"]);
         let mut providers = remote_providers_for(&server, |_| {});
         providers.providers[0].auth = AuthSource::Env {
             var: "WEBFANG_TEST_EMB_MISSING_VAR".to_string(),
