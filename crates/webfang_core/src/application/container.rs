@@ -1149,6 +1149,14 @@ mod tests {
             fn secure_client(&self, builder: wreq::ClientBuilder) -> wreq::ClientBuilder {
                 builder // test sentinel: no guard behavior
             }
+
+            fn secure_client_with_loopback(
+                &self,
+                builder: wreq::ClientBuilder,
+                _allow_loopback: bool,
+            ) -> wreq::ClientBuilder {
+                builder // test sentinel: no guard behavior
+            }
         }
 
         let sentinel: std::sync::Arc<dyn crate::domain::ssrf_guard::SsrfGuard> =
