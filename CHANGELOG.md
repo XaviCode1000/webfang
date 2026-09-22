@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-09-22
+
+
+### 🎉 Added
+
+- Slot resolution plus serde contract plus per-client SSRF loopback permit ([#1517](https://github.com/XaviCode1000/webfang/pull/1517))
+- RemoteEmbeddingAdapter plus preflight plus embedding-provider flag ([#1518](https://github.com/XaviCode1000/webfang/pull/1518))
+- Remote slot wiring in CLI plus MCP plus vault fail-closed plus gate ([#1519](https://github.com/XaviCode1000/webfang/pull/1519))
 ## [2.2.0] - 2026-09-22
 
 
