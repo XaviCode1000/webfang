@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-09-22
+
+
+### 🎉 Added
+
+- P0-001 session-pool remediation with mock-measured evidence ([#1457](https://github.com/XaviCode1000/webfang/pull/1457))
+- Wire-up --extract-with-llm + startup validation (§8b) ([#1493](https://github.com/XaviCode1000/webfang/pull/1493))
+
+### 🔧 Fixed
+
+- Gatear keyring/quanta tras cfg(miri) para eliminar el rojo advisory ([#1520](https://github.com/XaviCode1000/webfang/pull/1520))
 ## [2.1.1] - 2026-09-18
 
 
