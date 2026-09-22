@@ -101,7 +101,7 @@ The ruleset check is invoked as **L1.5** in `check_release_provenance.sh`:
 bash scripts/check_release_provenance.sh ruleset
 ```
 
-This is called from `release.yml`'s preflight job. The preflight job requires `administration:read` permission on the token to query the ruleset. If the token lacks this permission, the check fails closed (exit 2).
+This is called from `release.yml`'s preflight job, which runs with `contents: read` only — GITHUB_TOKEN has no `administration` scope, so the L1.5 ruleset read (Metadata-classified) runs fail-closed (exit 2 on non-200/403/404, never silent pass). A positive read is optionally available via a `RULESET_READER_TOKEN` secret (fine-grained PAT, Metadata:read); no secret wiring is added.
 
 The `check_release_dispatch.sh` guard (check 13) also verifies that `cut-patch-tag.yml` creates annotated tags and dispatches release.yml without `--ref`, passing `expected_sha`.
 

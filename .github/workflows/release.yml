@@ -48,10 +48,13 @@ jobs:
   preflight:
     name: L1 Provenance Preflight
     permissions:
+      # GITHUB_TOKEN has no `administration` scope (docs.github.com workflow-syntax
+      # #permissions table; actionlint rejects it). Ruleset reads are
+      # Metadata-classified, so the L1.5 step with GITHUB_TOKEN runs fail-closed
+      # (non-200/403/404 → exit 2 block, never silent pass). Positive read
+      # optionally via RULESET_READER_TOKEN secret (fine-grained PAT,
+      # Metadata:read) — optional, no secret wiring added here.
       contents: read
-      # administration:read is REQUIRED for the L1.5 ruleset check — with
-      # contents:read alone the subcommand returns exit 2 and the job fails closed.
-      administration: read
     runs-on: ubuntu-latest
     outputs:
       validated_commit: ${{ steps.prov.outputs.validated_commit }}
