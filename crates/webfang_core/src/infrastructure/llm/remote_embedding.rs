@@ -1,7 +1,7 @@
 //! OpenAI-compatible wreq adapter for `POST {base_url}/embeddings` (#1462).
 //!
-//! Implements [`EmbeddingPort`](crate::domain::embedding_port::EmbeddingPort)
-//! for [`ProviderKind::OpenAiCompatible`](crate::domain::providers::ProviderKind)
+//! Implements [`EmbeddingPort`] for
+//! [`ProviderKind::OpenAiCompatible`](crate::domain::providers::ProviderKind)
 //! so vault search works without the `ai` feature and with non-384d dims.
 //! Default stays local ONNX; this adapter is strictly opt-in through the
 //! embedding provider slot (`--embedding-provider` / default resolution).
