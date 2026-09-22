@@ -252,6 +252,16 @@ jobs:
     permissions:
       contents: write
     steps:
+      # scripts/check_release_provenance.sh must exist in the workspace —
+      # the L1.4 step runs it below. Checkout the VALIDATED commit so the
+      # gate bytes are the ones preflight approved (re-asserts L1.1).
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ needs.preflight.outputs.validated_commit }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
       - name: Download all artifacts
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         with:
@@ -263,6 +273,9 @@ jobs:
       - name: L1.4 TOCTOU re-read
         id: prov_publish
         env:
+          # gh api inside the publish subcommand needs the explicit token —
+          # runners have no ambient gh auth (same class as the preflight fix).
+          GH_TOKEN: ${{ github.token }}
           PROV_VALIDATED_COMMIT: ${{ needs.preflight.outputs.validated_commit }}
           PROV_TAG: ${{ needs.preflight.outputs.tag }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -272,6 +285,7 @@ jobs:
 
       - name: Create release with provenance attestation
         env:
+          GH_TOKEN: ${{ github.token }}
           CHANGELOG_URL: https://github.com/XaviCode1000/webfang/blob/main/CHANGELOG.md
           TAG: ${{ needs.preflight.outputs.tag }}
           VALIDATED_COMMIT: ${{ needs.preflight.outputs.validated_commit }}
