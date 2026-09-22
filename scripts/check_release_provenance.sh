@@ -271,6 +271,15 @@ case "$SUBCOMMAND" in
   ruleset)
     # Delegate to apply-tag-ruleset.sh check.
     # Capture the real exit code to distinguish 1 (not protected) from 2 (cannot tell).
+    #
+    # GITHUB_REPOSITORY is required to even ask the API. Without it we cannot tell
+    # whether the tags are protected — that is a "cannot tell" (exit 2), NOT
+    # "not protected" (exit 1), matching the preflight/publish fail-closed style.
+    GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-}"
+    if [[ -z "$GITHUB_REPOSITORY" ]]; then
+      echo "::error::L1.5 Ruleset: GITHUB_REPOSITORY is required - cannot tell whether the tags are protected" >&2
+      exit 2
+    fi
     rc=0
     bash "$REPO_ROOT/scripts/apply-tag-ruleset.sh" check || rc=$?
     case $rc in

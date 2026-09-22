@@ -27,6 +27,18 @@ mkdir -p "$BIN" "$STATE"
 # State-file override: if $STATE/ref-<tag> exists, the ref endpoint returns
 # the SHA from that file instead of the actual local tag. This is how we test
 # TOCTOU drift (I.7, I.11) and unreadable server (I.16).
+#
+# RULESET WRITE VALIDATION mirrors the LIVE GitHub contract (probed 2026-09-22
+# against XaviCode1000/webfang) — the previous stub accepted payloads the real
+# API 422s, so 54/54 rows were green while `apply` failed live:
+#   - update with "parameters": {}  -> 422 "Invalid property /rules/0: data
+#     matches no possible input." (probe A). update WITHOUT a parameters key is
+#     accepted (probe D); parameters, when present, must carry the boolean
+#     update_allows_fetch_and_merge (probe C).
+#   - include ["v*"] -> 422 "Invalid target patterns: 'v*'" (probe B); the only
+#     accepted form is fully qualified, e.g. ["refs/tags/v*"].
+#   - deletion with "parameters": {} is accepted by live (probe E) but our
+#     payload omits the key (matches the GET shape); the stub does not reject it.
 cat > "$BIN/gh" <<'FAKE'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -45,16 +57,83 @@ shift
 # server, so an unrecognised call is still a hard 99.
 endpoint=""
 method="GET"
+input_file=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --method) method="${2:-GET}"; shift 2 ;;
-    --input|--field|-H|--header|--jq|-q|--cache|-q|-R|-X)
+    --input) input_file="${2:-}"; shift 2 ;;
+    --field|-H|--header|--jq|-q|--cache|-q|-R|-X)
       [[ "$1" == "-X" ]] && method="${2:-GET}"
       shift 2 ;;
-    -*) shift ;;
+    -* ) shift ;;
     *) if [[ -z "$endpoint" ]]; then endpoint="$1"; shift; else shift; fi ;;
   esac
 done
+
+# Read the request body when --input was given (`-` = stdin, e.g. <<<"$payload").
+body=""
+if [[ -n "$input_file" ]]; then
+  if [[ "$input_file" == "-" ]]; then
+    body="$(cat)"
+  else
+    body="$(cat "$input_file" 2>/dev/null)" || body=""
+  fi
+fi
+
+reject422() {
+  # Shape matches `gh api` on a live 422: JSON body on stdout, gh: line on stderr.
+  printf '{"message":"%s","documentation_url":"https://docs.github.com/rest/repos/rules","status":"422"}\n' "$1"
+  echo "gh: $1 (HTTP 422)" >&2
+  exit 1
+}
+
+# Validate a ruleset create/update body against the LIVE write contract (probes A–E).
+validate_ruleset_payload() {
+  if [[ -z "$body" ]] || ! jq -e . >/dev/null 2>&1 <<<"$body"; then
+    reject422 "Invalid request body"
+  fi
+  # Target patterns must be fully qualified (refs/...). Bare "v*" is a live 422.
+  local bad_pat
+  bad_pat="$(jq -r '[.conditions.ref_name.include[]? | select(startswith("refs/") | not)] | .[]' <<<"$body" 2>/dev/null)" || bad_pat=""
+  if [[ -n "$bad_pat" ]]; then
+    reject422 "Invalid target patterns: '$bad_pat'"
+  fi
+  # update: parameters key may be absent (live probe D accepts), but when present
+  # it MUST carry boolean update_allows_fetch_and_merge (probe A: {} is a 422).
+  # TRAP: do not write (.parameters.update_allows_fetch_and_merge // null) — jq's //
+  # treats false as falsy, so the very boolean we send would erase itself to null
+  # and the validator would reject the CORRECT payload (measured: I.12f/g red).
+  if ! jq -e '
+    (.rules // []) | all(
+      if .type == "update" then
+        if (has("parameters") | not) then true
+        elif (.parameters | type) == "object" then
+          (.parameters | has("update_allows_fetch_and_merge"))
+          and ((.parameters.update_allows_fetch_and_merge | type) == "boolean")
+        else false end
+      else true end
+    )' <<<"$body" >/dev/null 2>&1; then
+    reject422 "Invalid property /rules/0: data matches no possible input."
+  fi
+}
+
+persist_ruleset() {
+  # persist_ruleset <id> <body> — write $state/ruleset-<id> and keep the list
+  # endpoint (id+name index that get_our_ruleset reads) in sync.
+  local id="$1" payload="$2"
+  local named
+  named="$(jq -c --argjson id "$id" '. + {id: $id}' <<<"$payload")" || return 1
+  printf '%s\n' "$named" >"$state/ruleset-$id"
+  local list
+  if [[ -f "$state/rulesets-list" ]]; then
+    list="$(cat "$state/rulesets-list")"
+  else
+    list='[]'
+  fi
+  jq -c --argjson id "$id" --arg name "$(jq -r '.name // "release-tags-immutable"' <<<"$payload")" \
+    '. + [{id: $id, name: $name}] | unique_by(.id)' <<<"$list" >"$state/rulesets-list" 2>/dev/null \
+    || printf '[{"id":%s,"name":"release-tags-immutable"}]\n' "$id" >"$state/rulesets-list"
+}
 
 case "$endpoint" in
   repos/*/git/ref/tags/*)
@@ -95,6 +174,17 @@ case "$endpoint" in
     exit 0
     ;;
   repos/*/rulesets)
+    case "$method" in
+      POST)
+        validate_ruleset_payload
+        # New id: 9000+ keeps clear of the fixture's hand-written 123.
+        new_id=9001
+        while [[ -f "$state/ruleset-$new_id" ]]; do new_id=$((new_id + 1)); done
+        persist_ruleset "$new_id" "$body"
+        printf '%s\n' "$(jq -c --argjson id "$new_id" '. + {id: $id}' <<<"$body")"
+        exit 0
+        ;;
+    esac
     # Three distinct server answers, and collapsing the first two is what made
     # I.12a indistinguishable from I.12c:
     #   rulesets-list present -> its body (the configured set)
@@ -114,6 +204,19 @@ case "$endpoint" in
     ;;
   repos/*/rulesets/*)
     id="${endpoint##*/rulesets/}"
+    case "$method" in
+      PUT|PATCH)
+        validate_ruleset_payload
+        [[ -f "$state/ruleset-$id" ]] || exit 1
+        persist_ruleset "$id" "$body"
+        printf '%s\n' "$(jq -c --argjson id "$id" '. + {id: $id}' <<<"$body")"
+        exit 0
+        ;;
+      DELETE)
+        rm -f "$state/ruleset-$id"
+        exit 0
+        ;;
+    esac
     if [[ -f "$state/ruleset-$id" ]]; then
       cat "$state/ruleset-$id"; exit 0
     fi
@@ -275,7 +378,31 @@ write_rulesets_list() {
   printf '%s' "$json" >"$STATE/rulesets-list"
 }
 
-echo "test_release_provenance: behavioral acceptance matrix I.1–I.16"
+# Capture exit+output for apply-tag-ruleset.sh (create/update path under test).
+run_apply_capture() {
+  local subcmd="$1"
+  local out rc
+  out="$( cd "$FIXTURE" && \
+    env \
+    PATH="$BIN:$PATH" \
+    FAKE_STATE="$STATE" \
+    FAKE_REPO="$FIXTURE" \
+    GITHUB_REPOSITORY="owner/repo" \
+    bash "scripts/apply-tag-ruleset.sh" "$subcmd" 2>&1 )" || rc=$?
+  rc="${rc:-0}"
+  printf '%s\n%d\n' "$out" "$rc"
+}
+
+# Invoke the fake gh directly (payload-contract rows): caller passes the full
+# `api ...` argv; stdin is forwarded as the request body when --input - is used.
+fake_gh_capture() {
+  local out rc
+  out="$( printf '%s' "${FAKE_BODY:-}" | env PATH="$BIN:$PATH" FAKE_STATE="$STATE" FAKE_REPO="$FIXTURE" "$BIN/gh" "$@" 2>&1 )" || rc=$?
+  rc="${rc:-0}"
+  printf '%s\n%d\n' "$out" "$rc"
+}
+
+echo "test_release_provenance: behavioral acceptance matrix I.1–I.16 (I.12 live-contract rows)"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # I.1: trusted annotated tag at commit ancestor of origin/main, Cargo matches,
@@ -537,10 +664,12 @@ clause="$(extract_clause "$out")"
 check "I.12a no ruleset -> L1.5 Ruleset clause" "L1.5 Ruleset" "$clause"
 if grep -q "not found" <<<"$out"; then check "I.12a mentions not found" "yes" "yes"; else check "I.12a mentions not found" "yes" "no"; fi
 
-# I.12b: ruleset present but missing deletion rule -> exit 1
+# I.12b: ruleset present but missing deletion rule -> exit 1.
+# Fixture uses the LIVE shape (refs/tags/v*, update without a parameters key —
+# probe D/GTGET) so the ONLY defect under test is the missing deletion rule.
 reset_state
 write_rulesets_list '[{"id": 123, "name": "release-tags-immutable"}]'
-write_ruleset_state 123 '{"target":"tag","enforcement":"active","conditions":{"ref_name":{"include":["v*"]}},"rules":[{"type":"update","parameters":{}}]}'
+write_ruleset_state 123 '{"target":"tag","enforcement":"active","conditions":{"ref_name":{"include":["refs/tags/v*"],"exclude":[]}},"rules":[{"type":"update"}]}'
 out_rc="$(run_gate_capture ruleset)"
 out="$(head -n -1 <<<"$out_rc")"
 rc="$(tail -1 <<<"$out_rc")"
@@ -563,6 +692,85 @@ check "I.12c API failure -> exit 2" "2" "$rc"
 clause="$(extract_clause "$out")"
 check "I.12c API failure -> L1.5 Ruleset clause" "L1.5 Ruleset" "$clause"
 if grep -q "could not be determined" <<<"$out"; then check "I.12c mentions cannot tell" "yes" "yes"; else check "I.12c mentions cannot tell" "yes" "no"; fi
+
+# I.12d: ruleset in the exact LIVE shape (as returned by
+# gh api repos/.../rulesets/23831514) -> exit 0. This is the row the old
+# jq_json --arg bug and the old has_vstar=="v*" comparison both broke: the check
+# reported "not found" / "missing v*" against a ruleset that existed and matched.
+reset_state
+write_rulesets_list '[{"id": 123, "name": "release-tags-immutable"}]'
+write_ruleset_state 123 '{"id":123,"name":"release-tags-immutable","target":"tag","enforcement":"active","conditions":{"ref_name":{"exclude":[],"include":["refs/tags/v*"]}},"rules":[{"type":"update"},{"type":"deletion"}]}'
+out_rc="$(run_gate_capture ruleset)"
+out="$(head -n -1 <<<"$out_rc")"
+rc="$(tail -1 <<<"$out_rc")"
+check "I.12d live-shaped ruleset -> exit 0" "0" "$rc"
+clause="$(extract_clause "$out")"
+check "I.12d live-shaped ruleset -> no error clause" "" "$clause"
+if grep -q "active and correct" <<<"$out"; then check "I.12d reports active and correct" "yes" "yes"; else check "I.12d reports active and correct" "yes" "no"; fi
+if [[ "$rc" != "0" ]]; then echo "---- I.12d RAW ----"; echo "$out"; echo "-------------------"; fi
+
+# I.12e: payload-contract rows — the fake gh must REJECT exactly what the LIVE
+# API rejected in the 2026-09-22 probes (probes A and B). The old stub accepted
+# both, which is why 54/54 was green while `apply` 422'd against GitHub.
+reset_state
+FAKE_BODY='{"name":"release-tags-immutable","target":"tag","enforcement":"active","conditions":{"ref_name":{"include":["refs/tags/v*"],"exclude":[]}},"rules":[{"type":"update","parameters":{}},{"type":"deletion"}]}'
+out_rc="$(fake_gh_capture api --method POST repos/owner/repo/rulesets --input -)"
+out="$(head -n -1 <<<"$out_rc")"
+rc="$(tail -1 <<<"$out_rc")"
+check "I.12e1 update parameters:{} -> rejected (non-zero)" "1" "$rc"
+if grep -q "Invalid property /rules/0" <<<"$out"; then check "I.12e1 422 message matches live probe A" "yes" "yes"; else check "I.12e1 422 message matches live probe A" "yes" "no"; fi
+
+FAKE_BODY='{"name":"release-tags-immutable","target":"tag","enforcement":"active","conditions":{"ref_name":{"include":["v*"],"exclude":[]}},"rules":[{"type":"update","parameters":{"update_allows_fetch_and_merge":false}},{"type":"deletion"}]}'
+out_rc="$(fake_gh_capture api --method POST repos/owner/repo/rulesets --input -)"
+out="$(head -n -1 <<<"$out_rc")"
+rc="$(tail -1 <<<"$out_rc")"
+check "I.12e2 bare v* include -> rejected (non-zero)" "1" "$rc"
+if grep -q "Invalid target patterns" <<<"$out"; then check "I.12e2 422 message matches live probe B" "yes" "yes"; else check "I.12e2 422 message matches live probe B" "yes" "no"; fi
+
+# I.12f: the CORRECTED payload (probe C) is ACCEPTED by the stub -> 200.
+FAKE_BODY='{"name":"release-tags-immutable","target":"tag","enforcement":"active","conditions":{"ref_name":{"include":["refs/tags/v*"],"exclude":[]}},"rules":[{"type":"update","parameters":{"update_allows_fetch_and_merge":false}},{"type":"deletion"}]}'
+out_rc="$(fake_gh_capture api --method POST repos/owner/repo/rulesets --input -)"
+out="$(head -n -1 <<<"$out_rc")"
+rc="$(tail -1 <<<"$out_rc")"
+check "I.12f corrected payload -> accepted (exit 0)" "0" "$rc"
+reset_state
+
+# I.12g: apply e2e against the strict stub — empty state, apply creates via POST
+# (payload must pass validation), then check sees it -> exit 0; second apply PUTs.
+reset_state
+out_rc="$(run_apply_capture apply)"
+out="$(head -n -1 <<<"$out_rc")"
+rc="$(tail -1 <<<"$out_rc")"
+check "I.12g1 apply on empty state -> exit 0 (creates)" "0" "$rc"
+if grep -q "Created ruleset" <<<"$out"; then check "I.12g1 reports Created" "yes" "yes"; else check "I.12g1 reports Created" "yes" "no"; fi
+if [[ "$rc" != "0" ]]; then echo "---- I.12g1 RAW ----"; echo "$out"; echo "--------------------"; fi
+out_rc="$(run_gate_capture ruleset)"
+out="$(head -n -1 <<<"$out_rc")"
+rc="$(tail -1 <<<"$out_rc")"
+check "I.12g2 check after apply -> exit 0" "0" "$rc"
+out_rc="$(run_apply_capture apply)"
+out="$(head -n -1 <<<"$out_rc")"
+rc="$(tail -1 <<<"$out_rc")"
+check "I.12g3 re-apply (idempotent PUT) -> exit 0" "0" "$rc"
+if grep -q "Updated existing ruleset" <<<"$out"; then check "I.12g3 reports Updated" "yes" "yes"; else check "I.12g3 reports Updated" "yes" "no"; fi
+reset_state
+
+# I.12h: GITHUB_REPOSITORY unset/empty for the ruleset subcommand -> exit 2
+# (cannot-tell, fail-closed) with a clear message — same contract as the other
+# L1 clauses, not a silent success and not a bare exit 1.
+reset_state
+rc=""
+out="$( cd "$FIXTURE" && \
+  env -u GITHUB_REPOSITORY \
+  PATH="$BIN:$PATH" \
+  FAKE_STATE="$STATE" \
+  FAKE_REPO="$FIXTURE" \
+  PROV_REPO_ROOT="$FIXTURE" \
+  bash "scripts/check_release_provenance.sh" ruleset 2>&1 )" || rc=$?
+rc="${rc:-0}"
+check "I.12h GITHUB_REPOSITORY unset -> exit 2" "2" "$rc"
+if grep -q "GITHUB_REPOSITORY is required" <<<"$out"; then check "I.12h clear GITHUB_REPOSITORY message" "yes" "yes"; else check "I.12h clear GITHUB_REPOSITORY message" "yes" "no"; fi
+if grep -q "L1.5 Ruleset" <<<"$out"; then check "I.12h L1.5 Ruleset clause" "yes" "yes"; else check "I.12h L1.5 Ruleset clause" "yes" "no"; fi
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # I.13: push path must NOT require PROV_EXPECTED_SHA (attested by event)

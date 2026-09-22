@@ -5,25 +5,35 @@
 # Subcommands: apply, check
 # GITHUB_REPOSITORY required (owner/repo).
 #
-# Ruleset shape (verified against GitHub REST docs for POST /repos/{owner}/{repo}/rulesets):
+# Ruleset shape (verified against the LIVE GitHub API 2026-09-22, not just the docs):
 # {
 #   "name": "release-tags-immutable",
 #   "target": "tag",
 #   "enforcement": "active",
-#   "conditions": { "ref_name": { "include": ["v*"], "exclude": [] } },
-#   "rules": [ { "type": "update", "parameters": {} },
-#              { "type": "deletion", "parameters": {} } ]
+#   "conditions": { "ref_name": { "include": ["refs/tags/v*"], "exclude": [] } },
+#   "rules": [ { "type": "update",
+#                "parameters": { "update_allows_fetch_and_merge": false } },
+#              { "type": "deletion" } ]
 # }
 #
-# - target: "tag" with conditions.ref_name fnmatch patterns; v* matches every release tag
-#   (* does not cross /, which is fine for tags).
+# Two live-API constraints the previous shape violated (both 422 on create/PUT):
+#   - update with "parameters": {} -> 422 "Invalid property /rules/0: data matches
+#     no possible input." When parameters is present it MUST carry the boolean
+#     update_allows_fetch_and_merge; omitting the parameters key entirely is also
+#     accepted, but the explicit false is what we send (creation must not imply
+#     fetch-and-merge). deletion carries NO parameters key (matches the GET shape).
+#   - include ["v*"] -> 422 "Invalid target patterns: 'v*'". Tag ruleset patterns
+#     must be fully qualified: ["refs/tags/v*"].
+#
+# - target: "tag" with conditions.ref_name fnmatch patterns; refs/tags/v* matches
+#   every release tag (* does not cross /, which is fine for tags).
 # - update = "Restrict updates": only users with bypass permission may push to matching refs.
 # - deletion blocks retag-by-delete-and-recreate.
 # - Creation is deliberately NOT restricted — release-plz and cut-patch-tag.yml must still
 #   cut new tags. Blocking creation would break the pipeline it protects.
 #
-# check: verifies a ruleset exists with target=tag, enforcement=active, include containing v*,
-# and both update + deletion rules. Exit 0 if found and correct; 1 if absent/incomplete
+# check: verifies a ruleset exists with target=tag, enforcement=active, include containing
+# refs/tags/v*, and both update + deletion rules. Exit 0 if found and correct; 1 if absent/incomplete
 # (message names exactly what is missing and prints remediation command); 2 if API call fails
 # or response cannot be parsed — a caller MUST be able to tell "not protected" from "cannot tell".
 # Reading rulesets needs administration:read on the token, which release.yml's preflight
@@ -43,13 +53,29 @@ GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-}"
 RULESET_NAME="release-tags-immutable"
 API_BASE="repos/$GITHUB_REPOSITORY/rulesets"
 
-# jq_json <expr> <json> — read one value from a server response WITHOUT letting a
-# parse error kill the script. Under `set -e` a bare `x="$(jq ...)"` aborts on garbage,
-# so the caller exits 5 with a raw jq error instead of reporting "cannot tell" (exit 2).
-# Failing closed is correct; failing closed with no diagnosis is not.
+# jq_json [--arg name value ...] <expr> <json> — read one value from a server response
+# WITHOUT letting a parse error kill the script. Under `set -e` a bare `x="$(jq ...)"`
+# aborts on garbage, so the caller exits 5 with a raw jq error instead of reporting
+# "cannot tell" (exit 2). Failing closed is correct; failing closed with no diagnosis is not.
+#
+# Leading jq flags that take arguments (--arg, --argjson, --rawfile, --slurpfile) pass
+# through to jq before the positional <expr> <json>. Without this, a call like
+# `jq_json --arg name "$RULESET_NAME" 'expr' "$json"` bound expr='--arg', json='name',
+# jq failed silently, and every lookup returned empty — which made the ruleset check
+# report "not found" against a ruleset that existed (measured against the live API).
 jq_json() {
-  local expr="$1" json="$2"
-  printf '%s' "$json" | jq -r "$expr" 2>/dev/null || true
+  local opts=()
+  while [[ $# -ge 2 && "$1" == --* ]]; do
+    case "$1" in
+      --arg|--argjson|--rawfile|--slurpfile)
+        [[ $# -ge 3 ]] || break
+        opts+=("$1" "$2" "$3"); shift 3 ;;
+      *)
+        opts+=("$1"); shift ;;
+    esac
+  done
+  local expr="${1:-}" json="${2:-}"
+  printf '%s' "$json" | jq -r ${opts[@]+"${opts[@]}"} "$expr" 2>/dev/null || true
 }
 
 # Fetch all rulesets and find ours by name.
@@ -92,8 +118,9 @@ check_ruleset() {
   "name": "release-tags-immutable",
   "target": "tag",
   "enforcement": "active",
-  "conditions": { "ref_name": { "include": ["v*"], "exclude": [] } },
-  "rules": [ { "type": "update", "parameters": {} }, { "type": "deletion", "parameters": {} } ]
+  "conditions": { "ref_name": { "include": ["refs/tags/v*"], "exclude": [] } },
+  "rules": [ { "type": "update", "parameters": { "update_allows_fetch_and_merge": false } },
+             { "type": "deletion" } ]
 }
 EOF
     return 1
@@ -117,12 +144,13 @@ EOF
   [[ "$target" == "tag" ]] || missing+=("target=tag (got '$target')")
   [[ "$enforcement" == "active" ]] || missing+=("enforcement=active (got '$enforcement')")
 
-  # Check include contains v*.
+  # Check include contains refs/tags/v* (the only form the live API accepts for
+  # tag rulesets — bare "v*" is rejected with 422 Invalid target patterns).
   local has_vstar=false
   while IFS= read -r pattern; do
-    [[ "$pattern" == "v*" ]] && has_vstar=true
+    [[ "$pattern" == "refs/tags/v*" ]] && has_vstar=true
   done <<<"$include_rules"
-  $has_vstar || missing+=("conditions.ref_name.include containing v*")
+  $has_vstar || missing+=("conditions.ref_name.include containing refs/tags/v*")
 
   # Check rules contain both update and deletion.
   local has_update=false has_deletion=false
@@ -155,14 +183,17 @@ apply_ruleset() {
     [[ -n "$existing_id" ]] || existing_id=""
   fi
 
-  # Ruleset payload.
+  # Ruleset payload — LIVE-verified shape (see header): fully-qualified include
+  # pattern, update parameters carry the required boolean, deletion has no
+  # parameters key. Any deviation is a 422 from the real API.
   local payload
   payload='{
     "name": "release-tags-immutable",
     "target": "tag",
     "enforcement": "active",
-    "conditions": { "ref_name": { "include": ["v*"], "exclude": [] } },
-    "rules": [ { "type": "update", "parameters": {} }, { "type": "deletion", "parameters": {} } ]
+    "conditions": { "ref_name": { "include": ["refs/tags/v*"], "exclude": [] } },
+    "rules": [ { "type": "update", "parameters": { "update_allows_fetch_and_merge": false } },
+               { "type": "deletion" } ]
   }'
 
   if [[ -n "$existing_id" ]]; then
