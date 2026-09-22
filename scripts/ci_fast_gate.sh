@@ -402,6 +402,9 @@ lane_fmt_and_guards() {
   # Release reconcile semantics harness (hermetic mktemp fixtures, no network).
   run_guard "release reconcile semantics harness" scripts/test_release_reconcile.sh \
     bash scripts/test_release_reconcile.sh
+  # Release provenance L1 acceptance matrix (hermetic mktemp fixtures, no network).
+  run_guard "release provenance L1 acceptance matrix" scripts/test_release_provenance.sh \
+    bash scripts/test_release_provenance.sh
   # Degraded lint + audit guards (changed-scope / cached-only, never download).
   run_pinned_lint_changed_scope
   run_zizmor_cached_only
@@ -481,6 +484,8 @@ targeted_cargo() {
     skip_step "nextest integration" "no runtime-area flags (crawler/downloader/cli/mcp/tests)"
   fi
   run_rustdoc_gate auto
+  # Release provenance L1 behavioral tests (hermetic, no cargo needed)
+  run_step "release provenance L1 tests" bash scripts/test_release_provenance.sh
 }
 
 # --- lane: full local gate (unknown scope — fail to full, never skip) --------------
@@ -498,6 +503,8 @@ lane_full() {
   run_step "pre-build webfang binary" cargo build -p webfang_cli --bin webfang --all-features
   run_step "nextest (workspace, all features)" cargo nextest run --workspace --all-features --test-threads 4 --retries 2
   run_rustdoc_gate always
+  # Release provenance L1 behavioral tests (hermetic, no cargo needed)
+  run_step "release provenance L1 tests" bash scripts/test_release_provenance.sh
 }
 
 # --- dispatch -----------------------------------------------------------------------

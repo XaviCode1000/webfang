@@ -66,6 +66,7 @@ get_our_ruleset() {
     return 2
   fi
   local ruleset_id
+  # shellcheck disable=SC2016  # jq $name is a jq variable, not shell expansion
   ruleset_id="$(jq_json --arg name "$RULESET_NAME" '.[] | select(.name == $name) | .id // empty' "$list_response")"
   [[ -n "$ruleset_id" ]] || return 1
 

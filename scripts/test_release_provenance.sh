@@ -411,6 +411,7 @@ validated_commit="$(grep -o 'validated_commit=[a-f0-9]*' <<<"$out" | cut -d= -f2
 # one whose object points at COMMIT_A instead of COMMIT_C. The harness builds that
 # object locally (a throwaway tag) so the dereference call resolves consistently.
 git -C "$FIXTURE" tag -a drift-v2.1.0 -m "drift" "$COMMIT_A" >/dev/null 2>&1
+# shellcheck disable=SC1083  # git rev-parse ^{tag} suffix is not brace expansion
 printf '%s' "$(git -C "$FIXTURE" rev-parse drift-v2.1.0^{tag})" >"$STATE/ref-v2.1.0"
 
 # Run publish with the ORIGINAL validated_commit
@@ -511,6 +512,7 @@ validated_commit="$(grep -o 'validated_commit=[a-f0-9]*' <<<"$out" | cut -d= -f2
 
 # Retag the server ref to an object pointing at COMMIT_A (different from validated)
 git -C "$FIXTURE" tag -a drift-v2.1.0-b -m "drift" "$COMMIT_A" >/dev/null 2>&1
+# shellcheck disable=SC1083  # git rev-parse ^{tag} suffix is not brace expansion
 printf '%s' "$(git -C "$FIXTURE" rev-parse drift-v2.1.0-b^{tag})" >"$STATE/ref-v2.1.0"
 
 out_rc="$(run_gate_capture publish \

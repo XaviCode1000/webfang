@@ -1,8 +1,14 @@
 # Release Pipeline — Automated binary builds on version tags
 #
 # Triggers when a tag like v1.2.0 is pushed.
-# Builds for Linux (x86_64, aarch64), macOS (x86_64, aarch64), Windows (x86_64).
+# Builds for Linux (x86_64, aarch64), macOS (aarch64), Windows (x86_64).
 # Creates a GitHub Release with all binaries attached.
+#
+# L1 Provenance Invariant:
+#   TAG^{commit} == EXPECTED_SHA == COMMIT_VALIDATED == COMMIT_BUILT == COMMIT_PUBLISHED
+# Enforced by check_release_provenance.sh at preflight (L1.1–L1.3), build checkout
+# (L1.1 re-asserted via validated_commit output), and publish (L1.4 TOCTOU).
+# Tag protection ruleset (L1.5) verified by ruleset subcommand.
 
 name: Release
 
@@ -16,6 +22,10 @@ on:
         description: "Version tag (e.g. v1.2.0)"
         required: true
         type: string
+      expected_sha:
+        description: "Expected commit SHA the tag must resolve to (required for default-branch dispatch)"
+        required: false
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -24,63 +34,59 @@ env:
 
 jobs:
   # ============================================================================
-  # PREFLIGHT: Resolve release channel + verify Cargo.toml matches the tag.
-  # Runs before any build so a bad tag fails fast instead of burning 4
-  # platform builds. Covers tags from main, release/X.Y and support/X.Y:
-  # release.yml is tag-triggered and branch-agnostic by design.
+  # PREFLIGHT: L1 Provenance Gate + Release Channel + Version Match
+  # ============================================================================
+  # Runs check_release_provenance.sh preflight which enforces:
+  #   L1.1 Identity — tag resolves to EXPECTED_SHA (push: github.sha;
+  #       workflow_dispatch default branch: expected_sha input;
+  #       workflow_dispatch pinned tag: github.sha + assert ref=tag)
+  #   L1.2 Version — tag version == root Cargo.toml version
+  #   L1.3 Lineage — EXPECTED_SHA is ancestor of main (derived, not supplied)
+  #   L1.5 Ruleset — tag protection ruleset is active and correct
+  # Outputs validated_commit, expected_line, tag, prerelease for downstream jobs.
   # ============================================================================
   preflight:
-    name: Validate tag
-
+    name: L1 Provenance Preflight
     permissions:
       contents: read
+      # administration:read needed for ruleset check (L1.5) — if the token lacks it,
+      # the subcommand returns exit 2 and the job fails closed.
     runs-on: ubuntu-latest
     outputs:
-      prerelease: ${{ steps.channel.outputs.prerelease }}
+      validated_commit: ${{ steps.prov.outputs.validated_commit }}
+      expected_line: ${{ steps.prov.outputs.expected_line }}
+      tag: ${{ steps.prov.outputs.tag }}
+      prerelease: ${{ steps.prov.outputs.prerelease }}
     steps:
-      # Pin the checkout to the tag being released. On workflow_dispatch the
-      # default checkout resolves to the ref the run was started from (a branch),
-      # so without this the preflight would validate main instead of the tag.
+      # Full history + tags required so release-plz-tags.sh --tag and
+      # git merge-base can resolve the tag and its lineage server-side agreement.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           ref: ${{ github.event.inputs.tag || github.ref_name }}
+          fetch-depth: 0
+          fetch-tags: true
           persist-credentials: false
-      - name: Resolve release channel
-        id: channel
+      - name: L1 Provenance Preflight
+        id: prov
         env:
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          PROV_EVENT_NAME: ${{ github.event_name }}
+          PROV_EVENT_SHA: ${{ github.sha }}
+          PROV_REF: ${{ github.ref }}
+          PROV_REF_TYPE: ${{ github.ref_type }}
+          PROV_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          PROV_EXPECTED_SHA: ${{ github.event.inputs.expected_sha }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PROV_LINE_REF: origin/main
         run: |
-          if [[ "$TAG" =~ -rc\.[0-9]+$ ]]; then
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-          elif [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "::error::tag $TAG no matchea ni release ni RC" >&2
-            exit 1
-          fi
-      - name: Verify Cargo.toml matches tag
-        # Valid on every trigger now that the checkout is pinned to the tag: TAG
-        # resolves from the dispatch input when present, and from the pushed tag
-        # ref otherwise. It used to be push-only because workflow_dispatch
-        # checked out a branch, which made the comparison meaningless.
-        # `github.event.inputs.tag`, not the bare `inputs` context: this file also
-        # runs on `push`, and every existing tag/input read here already uses the
-        # github.event form (see steps.channel and the release job).
-        env:
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
-        run: |
-          TAG_VERSION="${TAG#v}"; TAG_VERSION="${TAG_VERSION%-rc.*}"
-          CARGO_VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
-          [[ "$TAG_VERSION" == "$CARGO_VERSION" ]] || {
-            echo "::error::${TAG} no coincide con Cargo.toml (${CARGO_VERSION})" >&2; exit 1; }
+          set -euo pipefail
+          bash scripts/check_release_provenance.sh preflight
 
   # ============================================================================
-  # BUILD: Cross-compile for all platforms
+  # BUILD: Cross-compile for all platforms at the VALIDATED commit
   # ============================================================================
   build:
     needs: [preflight]
     name: Build ${{ matrix.target }}
-
     permissions:
       contents: read
     runs-on: ${{ matrix.os }}
@@ -107,10 +113,13 @@ jobs:
             archive: zip
 
     steps:
-      # Same pin as preflight: build the requested tag, never the default branch.
+      # Checkout the VALIDATED commit from preflight, not the tag ref.
+      # This re-asserts L1.1: the build commit must equal the validated commit.
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
-          ref: ${{ github.event.inputs.tag || github.ref_name }}
+          ref: ${{ needs.preflight.outputs.validated_commit }}
+          fetch-depth: 0
+          fetch-tags: true
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@688313b0823df1393bcebb1b4add0438a6d36884
         with:
@@ -211,10 +220,10 @@ jobs:
           path: artifacts/SHA256SUMS.txt
 
   # ============================================================================
-  # RELEASE: Create GitHub Release with all binaries
+  # PUBLISH: L1.4 TOCTOU re-read + Create GitHub Release with attestation
   # ============================================================================
-  release:
-    name: Create GitHub Release
+  publish:
+    name: L1 Publish + Release
     needs: [build, checksums, preflight]
     runs-on: ubuntu-latest
     permissions:
@@ -225,10 +234,26 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
-      - name: Create release
+
+      # L1.4 TOCTOU re-read: re-resolve the tag server-side and compare
+      # against the validated commit from preflight. Any drift blocks.
+      - name: L1.4 TOCTOU re-read
+        id: prov_publish
+        env:
+          PROV_VALIDATED_COMMIT: ${{ needs.preflight.outputs.validated_commit }}
+          PROV_TAG: ${{ needs.preflight.outputs.tag }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          bash scripts/check_release_provenance.sh publish
+
+      - name: Create release with provenance attestation
         env:
           CHANGELOG_URL: https://github.com/XaviCode1000/webfang/blob/main/CHANGELOG.md
-          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+          TAG: ${{ needs.preflight.outputs.tag }}
+          VALIDATED_COMMIT: ${{ needs.preflight.outputs.validated_commit }}
+          EXPECTED_LINE: ${{ needs.preflight.outputs.expected_line }}
+          PRERELEASE: ${{ needs.preflight.outputs.prerelease }}
         run: |
           {
             echo "## What's Changed"
@@ -257,6 +282,17 @@ jobs:
             echo '```bash'
             echo "sha256sum -c SHA256SUMS.txt --ignore-missing"
             echo '```'
+            echo ""
+            echo "## Provenance Attestation (L1)"
+            echo ""
+            echo "| Property | Value |"
+            echo "|----------|-------|"
+            echo "| Tag | \`$TAG\` |"
+            echo "| Validated Commit | \`$VALIDATED_COMMIT\` |"
+            echo "| Lineage | \`$EXPECTED_LINE\` (ancestor) |"
+            echo "| Channel | ${{ needs.preflight.outputs.prerelease == 'true' && 'Release Candidate' || 'Stable' }} |"
+            echo "| L1 Gate | \`check_release_provenance.sh preflight | publish\` |"
+            echo "| Ruleset | \`release-tags-immutable\` (update + deletion blocked) |"
           } > /tmp/release-notes.md
           gh release create "$TAG" \
             --title "WebFang $TAG" \
