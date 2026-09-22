@@ -53,6 +53,22 @@ case "$SUBCOMMAND" in
     [[ -n "$PROV_TAG" ]] || { echo "::error::L1.1 Identity: PROV_TAG is required" >&2; exit 1; }
     [[ -n "$GITHUB_REPOSITORY" ]] || { echo "::error::L1.1 Identity: GITHUB_REPOSITORY is required" >&2; exit 1; }
 
+    # ---- Channel gate FIRST: is this even a release tag name? ----
+    # Deliberately before the server round-trip. A name like "v2.1" is not a release
+    # tag at all, so spending an API call on it - and then reporting it under whichever
+    # unrelated clause tripped first - tells the operator the wrong story. This is the
+    # same acceptance rule release.yml applied inline before it moved here: stable
+    # vX.Y.Z -> prerelease=false, RC vX.Y.Z-rc.N -> prerelease=true, anything else -> block.
+    if [[ ! "$PROV_TAG" =~ $RELEASE_TAG_NAME_RE ]]; then
+      echo "::error::L1.2 Version: tag '$PROV_TAG' is not a release tag name (expected vX.Y.Z or vX.Y.Z-rc.N)" >&2
+      exit 1
+    fi
+    if [[ "$PROV_TAG" =~ -rc\.[0-9]+$ ]]; then
+      PRERELEASE="true"
+    else
+      PRERELEASE="false"
+    fi
+
     EXPECTED_SHA=""
     case "$PROV_EVENT_NAME" in
       push)
@@ -87,8 +103,8 @@ case "$SUBCOMMAND" in
     }
 
     # Extract object SHA and type from the ref response.
-    tag_obj_sha="$(jq -r '.object.sha // empty' <<<"$tag_ref_response")"
-    tag_obj_type="$(jq -r '.object.type // empty' <<<"$tag_ref_response")"
+    tag_obj_sha="$(jq -r '.object.sha // empty' <<<"$tag_ref_response" 2>/dev/null || true)"
+    tag_obj_type="$(jq -r '.object.type // empty' <<<"$tag_ref_response" 2>/dev/null || true)"
     [[ -n "$tag_obj_sha" && -n "$tag_obj_type" ]] || {
       echo "::error::L1.1 Identity: unparseable tag ref response for '$PROV_TAG'" >&2
       exit 1
@@ -109,7 +125,7 @@ case "$SUBCOMMAND" in
           echo "::error::L1.1 Identity: failed to dereference annotated tag '$PROV_TAG' (oid=$tag_obj_sha)" >&2
           exit 1
         }
-        resolved_commit="$(jq -r '.object.sha // empty' <<<"$tag_obj_response")"
+        resolved_commit="$(jq -r '.object.sha // empty' <<<"$tag_obj_response" 2>/dev/null || true)"
         [[ -n "$resolved_commit" ]] || {
           echo "::error::L1.1 Identity: unparseable tag object response for '$PROV_TAG'" >&2
           exit 1
@@ -165,20 +181,10 @@ case "$SUBCOMMAND" in
     # Ancestry is SECONDARY: ancestor-of-main is necessary, not sufficient.
     # The identity check (L1.1) is what governs.
     # ========================================================================
-    # Use the shared tag-name regex for the "is this a release tag" check.
-    # The -rc.N suffix test determines the prerelease flag.
-    if [[ ! "$PROV_TAG" =~ $RELEASE_TAG_NAME_RE ]]; then
-      echo "::error::L1.2 Version: tag '$PROV_TAG' matches neither stable nor RC pattern" >&2
-      exit 1
-    fi
-
-    if [[ "$PROV_TAG" =~ -rc\.[0-9]+$ ]]; then
-      EXPECTED_LINE="main"
-      PRERELEASE="true"
-    else
-      EXPECTED_LINE="main"
-      PRERELEASE="false"
-    fi
+    # Lineage is DERIVED, never supplied: a caller-selectable line is not a control.
+    # Both channels live on main today (stable -> main, rc -> main); a support/* line
+    # is out of scope until one exists. PRERELEASE was decided by the channel gate above.
+    EXPECTED_LINE="main"
 
     # PROV_LINE_REF allows a test harness to drive against a synthetic repo with no 'origin'.
     # Defaults to origin/$EXPECTED_LINE (current behaviour).
@@ -224,8 +230,8 @@ case "$SUBCOMMAND" in
       exit 1
     }
 
-    tag_obj_sha="$(jq -r '.object.sha // empty' <<<"$tag_ref_response")"
-    tag_obj_type="$(jq -r '.object.type // empty' <<<"$tag_ref_response")"
+    tag_obj_sha="$(jq -r '.object.sha // empty' <<<"$tag_ref_response" 2>/dev/null || true)"
+    tag_obj_type="$(jq -r '.object.type // empty' <<<"$tag_ref_response" 2>/dev/null || true)"
     [[ -n "$tag_obj_sha" && -n "$tag_obj_type" ]] || {
       echo "::error::L1.4 TOCTOU: unparseable tag ref response for '$PROV_TAG'" >&2
       exit 1
@@ -242,7 +248,7 @@ case "$SUBCOMMAND" in
           echo "::error::L1.4 TOCTOU: failed to dereference annotated tag '$PROV_TAG'" >&2
           exit 1
         }
-        current_commit="$(jq -r '.object.sha // empty' <<<"$tag_obj_response")"
+        current_commit="$(jq -r '.object.sha // empty' <<<"$tag_obj_response" 2>/dev/null || true)"
         [[ -n "$current_commit" ]] || {
           echo "::error::L1.4 TOCTOU: unparseable tag object response for '$PROV_TAG'" >&2
           exit 1

@@ -43,6 +43,15 @@ GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-}"
 RULESET_NAME="release-tags-immutable"
 API_BASE="repos/$GITHUB_REPOSITORY/rulesets"
 
+# jq_json <expr> <json> — read one value from a server response WITHOUT letting a
+# parse error kill the script. Under `set -e` a bare `x="$(jq ...)"` aborts on garbage,
+# so the caller exits 5 with a raw jq error instead of reporting "cannot tell" (exit 2).
+# Failing closed is correct; failing closed with no diagnosis is not.
+jq_json() {
+  local expr="$1" json="$2"
+  printf '%s' "$json" | jq -r "$expr" 2>/dev/null || true
+}
+
 # Fetch all rulesets and find ours by name.
 # The list endpoint may not inline 'rules', so we fetch the specific ruleset by ID.
 get_our_ruleset() {
@@ -52,8 +61,12 @@ get_our_ruleset() {
     return 2
   }
 
+  if ! jq_json '. | type' "$list_response" | grep -qx 'array'; then
+    echo "::error::the rulesets list response is not a JSON array - cannot tell whether the tags are protected." >&2
+    return 2
+  fi
   local ruleset_id
-  ruleset_id="$(jq -r --arg name "$RULESET_NAME" '.[] | select(.name == $name) | .id // empty' <<<"$list_response")"
+  ruleset_id="$(jq_json --arg name "$RULESET_NAME" '.[] | select(.name == $name) | .id // empty' "$list_response")"
   [[ -n "$ruleset_id" ]] || return 1
 
   gh api "$API_BASE/$ruleset_id" 2>/dev/null || {
@@ -87,10 +100,16 @@ EOF
 
   # Verify the shape.
   local target enforcement include_rules rules_json
-  target="$(jq -r '.target // empty' <<<"$ruleset_json")"
-  enforcement="$(jq -r '.enforcement // empty' <<<"$ruleset_json")"
-  include_rules="$(jq -r '.conditions.ref_name.include[]?' <<<"$ruleset_json")"
-  rules_json="$(jq -c '.rules // []' <<<"$ruleset_json")"
+  target="$(jq_json '.target // empty' "$ruleset_json")"
+  enforcement="$(jq_json '.enforcement // empty' "$ruleset_json")"
+  include_rules="$(jq_json '.conditions.ref_name.include[]?' "$ruleset_json")"
+  rules_json="$(printf '%s' "$ruleset_json" | jq -c '.rules // []' 2>/dev/null || true)"
+  # A ruleset body we cannot read is NOT evidence of a missing rule: report "cannot
+  # tell" (2) rather than "not protected" (1).
+  if [[ -z "$target" && -z "$enforcement" ]]; then
+    echo "::error::the ruleset response could not be parsed - cannot tell whether the tags are protected." >&2
+    return 2
+  fi
 
   local missing=()
 
@@ -108,7 +127,7 @@ EOF
   local has_update=false has_deletion=false
   while IFS= read -r rule; do
     local rtype
-    rtype="$(jq -r '.type // empty' <<<"$rule")"
+    rtype="$(jq_json '.type // empty' "$rule")"
     [[ "$rtype" == "update" ]] && has_update=true
     [[ "$rtype" == "deletion" ]] && has_deletion=true
   done < <(jq -c '.[]' <<<"$rules_json")
@@ -131,7 +150,7 @@ apply_ruleset() {
 
   # First check if it exists and get its ID.
   if ruleset_json="$(get_our_ruleset 2>/dev/null)"; then
-    existing_id="$(jq -r '.id // empty' <<<"$ruleset_json")"
+    existing_id="$(jq_json '.id // empty' "$ruleset_json")"
     [[ -n "$existing_id" ]] || existing_id=""
   fi
 
