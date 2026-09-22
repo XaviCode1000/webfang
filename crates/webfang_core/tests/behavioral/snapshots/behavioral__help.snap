@@ -1,6 +1,5 @@
 ---
 source: crates/webfang_core/tests/behavioral/main.rs
-assertion_line: 58
 expression: value.into()
 ---
 CLI Arguments for the webfang binary.
@@ -477,6 +476,11 @@ LLM Extraction:
           Provider id to use for LLM extraction (default: first provider declaring the `completion` capability)
           
           [env: WEBFANG_LLM_PROVIDER=]
+
+      --embedding-provider <EMBEDDING_PROVIDER>
+          Provider id to use for embeddings (default: first provider declaring the `embedding` capability; local pool when unset or local)
+          
+          [env: WEBFANG_EMBEDDING_PROVIDER=]
 
 EXIT CODES:
   0    Success
