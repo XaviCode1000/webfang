@@ -21,6 +21,12 @@ pub struct LlmArgs {
     /// `None` selects the first provider declaring the `completion`
     /// capability (config order).
     pub llm_provider: Option<String>,
+
+    /// Provider id to use for the embedding slot (vault search, #1462).
+    ///
+    /// `None` selects the first provider declaring the `embedding`
+    /// capability (config order); `local_onnx` serves the local pool.
+    pub embedding_provider: Option<String>,
 }
 
 impl clap::FromArgMatches for LlmArgs {
@@ -29,6 +35,7 @@ impl clap::FromArgMatches for LlmArgs {
         Ok(Self {
             extract_with_llm: m.get_flag("extract_with_llm"),
             llm_provider: extract::opt::<String>(m, "llm_provider"),
+            embedding_provider: extract::opt::<String>(m, "embedding_provider"),
         })
     }
 
@@ -95,12 +102,17 @@ mod spec_parity_tests {
         let defaults = parse_args_hermetic(&[]).expect("bare invocation must parse");
         assert!(!defaults.llm.extract_with_llm);
         assert!(defaults.llm.llm_provider.is_none());
+        assert!(defaults.llm.embedding_provider.is_none());
 
         // Explicit values.
         let parsed = parse_args_hermetic(&["--extract-with-llm", "--llm-provider", "openai"])
             .expect("representative llm flags must parse");
         assert!(parsed.llm.extract_with_llm);
         assert_eq!(parsed.llm.llm_provider.as_deref(), Some("openai"));
+
+        let parsed = parse_args_hermetic(&["--embedding-provider", "ollama"])
+            .expect("embedding provider flag must parse");
+        assert_eq!(parsed.llm.embedding_provider.as_deref(), Some("ollama"));
     }
 
     #[test]

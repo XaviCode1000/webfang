@@ -1,0 +1,17 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "object": "embedding",
+      "index": 0,
+      "embedding": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
+    },
+    {
+      "object": "embedding",
+      "index": 1,
+      "embedding": [0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]
+    }
+  ],
+  "model": "nomic-embed-text",
+  "usage": {"prompt_tokens": 8, "total_tokens": 8}
+}
