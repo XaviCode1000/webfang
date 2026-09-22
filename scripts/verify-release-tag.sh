@@ -31,7 +31,22 @@ TAGS_SCRIPT="$REPO_ROOT/scripts/release-plz-tags.sh"
 # it — which is exactly what we need, since the whole point is to re-evaluate it.
 OUTCOME="${RELEASE_OUTCOME:-unknown}"
 
-mapfile -t trusted < <(bash "$TAGS_SCRIPT")
+# Capture the producer's exit status instead of letting `mapfile` discard it. With a
+# broken trust predicate the list comes back EMPTY, and an empty list under
+# OUTCOME=success is exactly the "nothing to release" branch below - so a dead filter
+# would report green. That is the webfang#1476 shape (failure signal removed, green
+# kept), and it is why this script exists at all.
+rc=0
+trusted_list="$(bash "$TAGS_SCRIPT")" || rc=$?
+if [[ "$rc" -ne 0 ]]; then
+  echo "::error::the trust predicate could not run (exit $rc) - refusing to decide the release outcome from an unreadable filter." >&2
+  exit 1
+fi
+if [[ -n "$trusted_list" ]]; then
+  mapfile -t trusted <<<"$trusted_list"
+else
+  trusted=()
+fi
 
 case "${#trusted[@]}" in
   1)
@@ -51,7 +66,17 @@ case "${#trusted[@]}" in
     # moved and the dispatcher would refuse to hand it over too. Failing here is
     # the difference between a loud breakage and a silent tag-without-binaries
     # — the exact shape that lost v2.1.1.
-    mapfile -t unrecognised < <(bash "$TAGS_SCRIPT" --any)
+    rc=0
+    unrecognised_list="$(bash "$TAGS_SCRIPT" --any)" || rc=$?
+    if [[ "$rc" -ne 0 ]]; then
+      echo "::error::the diagnostic tag listing failed (exit $rc) - cannot tell 'no tag landed' from 'the filter is dead', so this cannot be called a no-op." >&2
+      exit 1
+    fi
+    if [[ -n "$unrecognised_list" ]]; then
+      mapfile -t unrecognised <<<"$unrecognised_list"
+    else
+      unrecognised=()
+    fi
     if [[ "${#unrecognised[@]}" -gt 0 ]]; then
       echo "::error::${unrecognised[*]} points at HEAD but does not match the release-plz fingerprint (annotated + github-actions[bot] + 'chore: Release package ...'). Either release-plz changed its tag format - update scripts/release-plz-tags.sh - or a human tag landed here. This tag would ship with no binaries." >&2
       exit 1

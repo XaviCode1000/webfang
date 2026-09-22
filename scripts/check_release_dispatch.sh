@@ -66,7 +66,7 @@ job_block() {
   ' "$1"
 }
 
-echo "check_release_dispatch: verifying the release hand-off invariant"
+echo "check_release_dispatch: verifying the release hand-off invariant (L1 provenance)"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 1-2. release-plz.yml: the dispatching job exists and can actually dispatch.
@@ -101,9 +101,10 @@ else
   # Scoped to the INVOCATION, never the whole file: the helper also contains the
   # string `-f tag=` inside its recovery error message, so a file-wide grep still
   # passed after the real input was removed (measured — that is why this extracts
-  # the call first). An invocation is `gh workflow run ...` plus its backslash
-  # continuations, terminated by the `;`.
-  DISPATCH_INVOCATION="$(perl -0ne 'print $& if /gh workflow run release\.yml(?:[^\n]*\\\n){0,6}[^\n]*;/' "$ENSURE_SH" 2>/dev/null || true)"
+  # the call first). An invocation is `gh workflow run ...` plus its continuations
+  # (either backslash-continued lines ending with ; OR array form ${DISPATCH_CMD[@]}
+  # with optional expected_sha, executed directly or in subshell).
+  DISPATCH_INVOCATION="$(perl -0ne 'print $& if /gh workflow run release\.yml(?:[^\n]*\\\n){0,6}[^\n]*;|gh workflow run release\.yml.*?\$\{DISPATCH_CMD\[@\]\}/s' "$ENSURE_SH" 2>/dev/null || true)"
   if [[ -z "$DISPATCH_INVOCATION" ]]; then
     echo "::error::check_release_dispatch: could not extract the 'gh workflow run release.yml' invocation from scripts/ensure-release.sh, so the pinning of the build cannot be verified. Fail-closed on purpose: a check that cannot see the invocation must not report success."
     step "  dispatch passes the tag as an input (shared helper)" "UNVERIFIABLE"
@@ -114,6 +115,15 @@ else
   else
     echo "::error::check_release_dispatch: scripts/ensure-release.sh must call 'gh workflow run release.yml ... -f tag=<tag>' and must NOT pass '--ref <tag>'. The input is what pins the build (release.yml points both checkouts at it); '--ref' would instead run that tag's historical release.yml, so a reconciliation sweep for an old tag would not use the hardened pipeline."
     step "  dispatch passes the tag as an input (shared helper)" "MISSING"
+    FAIL=1
+  fi
+
+  # L1 Provenance: ensure-release.sh must pass expected_sha when available
+  if grep -qF -- 'expected_sha' <<<"$DISPATCH_INVOCATION"; then
+    step "  dispatch passes expected_sha (L1 provenance)" "ok"
+  else
+    echo "::error::check_release_dispatch: scripts/ensure-release.sh must accept and pass expected_sha for L1.1 Identity (Shape 2: default-branch dispatch). Update ensure-release.sh to pass -f expected_sha=\$EXPECTED_SHA when provided."
+    step "  dispatch passes expected_sha (L1 provenance)" "MISSING"
     FAIL=1
   fi
 fi
@@ -202,24 +212,24 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6. release.yml: EVERY checkout is pinned to the tag being released.
-# Asserted as a count so ADDING an unpinned checkout fails too, not only
-# reverting one of the existing two. The preflight checkout alone is not
-# enough: pinning only it would validate the tag while the build job compiles
-# main and publishes those binaries under the tag.
+# 6. release.yml: EVERY checkout is pinned — either to the input tag (preflight)
+# or to the validated commit from preflight (build). Both satisfy L1.1 Identity:
+# the preflight resolves the tag, the build compiles the validated commit.
+# An unpinned checkout (ref: main, ref: branch) would compile unrelated code.
 # ─────────────────────────────────────────────────────────────────────────────
 CHECKOUTS="$(grep -cE '^[[:space:]]*(-[[:space:]]+)?uses: actions/checkout@' "$RELEASE_YML" || true)"
-PINNED="$(grep -cE '^[[:space:]]*ref:[[:space:]]*.*github\.event\.inputs\.tag' "$RELEASE_YML" || true)"
+# Valid pins: either the tag input OR the validated_commit output from preflight
+PINNED="$(grep -cE '^[[:space:]]*ref:[[:space:]]*.*(github\.event\.inputs\.tag|needs\.preflight\.outputs\.validated_commit)' "$RELEASE_YML" || true)"
 if [[ "$CHECKOUTS" -eq 0 ]]; then
   echo "::error::check_release_dispatch: release.yml has no 'uses: actions/checkout@' step — the guard can no longer verify the checkout pin. Update this guard if checkout moved to a composite action."
   step "release.yml: checkout pin" "UNVERIFIABLE"
   FAIL=1
 elif [[ "$PINNED" -lt "$CHECKOUTS" ]]; then
-  echo "::error::check_release_dispatch: release.yml has $CHECKOUTS checkout step(s) but only $PINNED tag-pinned 'ref:'. Every checkout must use 'ref: \${{ github.event.inputs.tag || github.ref_name }}'. An unpinned checkout compiles the ref the run started from (a branch) and publishes those binaries under the tag."
+  echo "::error::check_release_dispatch: release.yml has $CHECKOUTS checkout step(s) but only $PINNED pinned 'ref:'. Every checkout must pin to either the tag input or the validated_commit output. An unpinned checkout compiles the ref the run started from (a branch) and publishes those binaries under the tag."
   step "release.yml: checkout pin $PINNED/$CHECKOUTS" "UNPINNED"
   FAIL=1
 else
-  step "release.yml: all $CHECKOUTS checkouts pinned to the tag" "ok"
+  step "release.yml: all $CHECKOUTS checkouts pinned (tag or validated_commit)" "ok"
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -246,17 +256,97 @@ else
 fi
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 8. cut-patch-tag.yml: the second tag-creating path has the same obligation.
+# 8. L1 Provenance: release.yml preflight job calls check_release_provenance.sh preflight
+#    and outputs validated_commit, expected_line, tag, prerelease.
+# ─────────────────────────────────────────────────────────────────────────────
+if grep -qF 'check_release_provenance.sh preflight' "$RELEASE_YML" \
+   && grep -qF 'validated_commit' "$RELEASE_YML" \
+   && grep -qF 'expected_line' "$RELEASE_YML" \
+   && grep -qF 'prerelease' "$RELEASE_YML"; then
+  step "release.yml: L1 preflight calls check_release_provenance.sh" "ok"
+else
+  echo "::error::check_release_dispatch: release.yml preflight must call 'check_release_provenance.sh preflight' and output validated_commit, expected_line, tag, prerelease for L1.1–L1.3 + L1.5."
+  step "release.yml: L1 preflight calls check_release_provenance.sh" "MISSING"
+  FAIL=1
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. L1 Provenance: release.yml build job checks out validated_commit (not tag ref)
+# ─────────────────────────────────────────────────────────────────────────────
+if grep -qF 'needs.preflight.outputs.validated_commit' "$RELEASE_YML"; then
+  step "release.yml: build job checks out validated_commit" "ok"
+else
+  echo "::error::check_release_dispatch: release.yml build job must check out 'needs.preflight.outputs.validated_commit' to re-assert L1.1 Identity at build time."
+  step "release.yml: build job checks out validated_commit" "MISSING"
+  FAIL=1
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 10. L1 Provenance: release.yml publish job runs check_release_provenance.sh publish
+#     for L1.4 TOCTOU re-read and includes provenance attestation in release body.
+# ─────────────────────────────────────────────────────────────────────────────
+if grep -qF 'check_release_provenance.sh publish' "$RELEASE_YML" \
+   && grep -qF 'Provenance Attestation' "$RELEASE_YML"; then
+  step "release.yml: L1 publish runs TOCTOU check + attestation" "ok"
+else
+  echo "::error::check_release_dispatch: release.yml publish job must run 'check_release_provenance.sh publish' for L1.4 TOCTOU and include provenance attestation in release body."
+  step "release.yml: L1 publish runs TOCTOU check + attestation" "MISSING"
+  FAIL=1
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 11. L1 Provenance: release.yml workflow_dispatch accepts expected_sha input
+# ─────────────────────────────────────────────────────────────────────────────
+if grep -qF 'expected_sha' "$RELEASE_YML"; then
+  step "release.yml: workflow_dispatch accepts expected_sha input" "ok"
+else
+  echo "::error::check_release_dispatch: release.yml workflow_dispatch must declare an 'expected_sha' input for L1.1 Identity Shape 2 (default-branch dispatch)."
+  step "release.yml: workflow_dispatch accepts expected_sha input" "MISSING"
+  FAIL=1
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 12. L1 Provenance: release.yml checkouts use fetch-depth: 0 + fetch-tags: true
+# ─────────────────────────────────────────────────────────────────────────────
+FETCH_DEPTH_0_COUNT="$(grep -cE 'fetch-depth:[[:space:]]*0' "$RELEASE_YML" || true)"
+FETCH_TAGS_COUNT="$(grep -cE 'fetch-tags:[[:space:]]*true' "$RELEASE_YML" || true)"
+if [[ "$FETCH_DEPTH_0_COUNT" -ge "$CHECKOUTS" && "$FETCH_TAGS_COUNT" -ge "$CHECKOUTS" ]]; then
+  step "release.yml: all $CHECKOUTS checkouts use fetch-depth: 0 + fetch-tags: true" "ok"
+else
+  echo "::error::check_release_dispatch: release.yml has $CHECKOUTS checkout(s) but only $FETCH_DEPTH_0_COUNT with fetch-depth: 0 and $FETCH_TAGS_COUNT with fetch-tags: true. L1 provenance requires full history + tags for git merge-base and release-plz-tags.sh --tag."
+  step "release.yml: fetch-depth: 0 + fetch-tags: true" "MISSING"
+  FAIL=1
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 13. cut-patch-tag.yml: the second tag-creating path has the same obligation.
 # It pushes vX.Y.Z with GITHUB_TOKEN, so it is affected by the same suppression
 # and must hand the tag over explicitly (webfang#1480).
+# NOW WITH L1: must create ANNOTATED tag (git tag -a), dispatch WITHOUT --ref,
+# and pass expected_sha input.
 # ─────────────────────────────────────────────────────────────────────────────
-if grep -qE '^\s*actions: write' "$CUT_PATCH_YML" &&
-   grep -qE 'gh workflow run release\.yml' "$CUT_PATCH_YML" &&
-   grep -qE '^\s*--ref\b' "$CUT_PATCH_YML"; then
-  step "cut-patch-tag.yml: dispatches release.yml with --ref" "ok"
+if grep -qE 'git[[:space:]]+-c[[:space:]]+user\.name' "$CUT_PATCH_YML" \
+   && grep -qE 'tag[[:space:]]+-a' "$CUT_PATCH_YML" \
+   && grep -qE 'gh workflow run release\.yml' "$CUT_PATCH_YML" \
+   && ! grep -qE '^\s*--ref\b' "$CUT_PATCH_YML" \
+   && grep -qF 'expected_sha' "$CUT_PATCH_YML" \
+   && grep -qF 'git rev-parse' "$CUT_PATCH_YML"; then
+  step "cut-patch-tag.yml: annotated tag, dispatches release.yml without --ref, passes expected_sha" "ok"
 else
-  echo "::error::check_release_dispatch: cut-patch-tag.yml creates a tag with GITHUB_TOKEN but does not declare 'actions: write' and dispatch release.yml with '--ref'. Its tag push is suppressed exactly like release-plz's, so a PATCH release on a support branch would ship without binaries."
-  step "cut-patch-tag.yml: dispatches release.yml with --ref" "MISSING"
+  echo "::error::check_release_dispatch: cut-patch-tag.yml must (1) create annotated tag (git tag -a), (2) dispatch release.yml WITHOUT --ref, (3) pass expected_sha input, (4) compute tag commit via git rev-parse. Its tag push is suppressed exactly like release-plz's, so a PATCH release on a support branch would ship without binaries or L1 provenance."
+  step "cut-patch-tag.yml: annotated tag + dispatch without --ref + expected_sha" "MISSING"
+  FAIL=1
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 14. ensure-release.sh: accepts expected_sha and passes it in workflow_dispatch
+# ─────────────────────────────────────────────────────────────────────────────
+if grep -qF 'EXPECTED_SHA' "$ENSURE_SH" \
+   && grep -qF 'expected_sha' "$ENSURE_SH"; then
+  step "ensure-release.sh: accepts and passes expected_sha" "ok"
+else
+  echo "::error::check_release_dispatch: scripts/ensure-release.sh must accept expected_sha as second argument and pass it via -f expected_sha= in the dispatch."
+  step "ensure-release.sh: accepts and passes expected_sha" "MISSING"
   FAIL=1
 fi
 
