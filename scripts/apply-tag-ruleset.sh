@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+#
+# Tag ref protection ruleset — ensures v* tags are immutable (update + deletion blocked).
+#
+# Subcommands: apply, check
+# GITHUB_REPOSITORY required (owner/repo).
+#
+# Ruleset shape (verified against GitHub REST docs for POST /repos/{owner}/{repo}/rulesets):
+# {
+#   "name": "release-tags-immutable",
+#   "target": "tag",
+#   "enforcement": "active",
+#   "conditions": { "ref_name": { "include": ["v*"], "exclude": [] } },
+#   "rules": [ { "type": "update", "parameters": {} },
+#              { "type": "deletion", "parameters": {} } ]
+# }
+#
+# - target: "tag" with conditions.ref_name fnmatch patterns; v* matches every release tag
+#   (* does not cross /, which is fine for tags).
+# - update = "Restrict updates": only users with bypass permission may push to matching refs.
+# - deletion blocks retag-by-delete-and-recreate.
+# - Creation is deliberately NOT restricted — release-plz and cut-patch-tag.yml must still
+#   cut new tags. Blocking creation would break the pipeline it protects.
+#
+# check: verifies a ruleset exists with target=tag, enforcement=active, include containing v*,
+# and both update + deletion rules. Exit 0 if found and correct; 1 if absent/incomplete
+# (message names exactly what is missing and prints remediation command); 2 if API call fails
+# or response cannot be parsed — a caller MUST be able to tell "not protected" from "cannot tell".
+# Reading rulesets needs administration:read on the token, which release.yml's preflight
+# does not have today — call this from a context that has it.
+#
+# apply: idempotent — runs check's detection first; if a ruleset with the right name exists,
+# PUT it rather than creating a duplicate; otherwise POST. Prints what it did. Never deletes
+# a ruleset it did not create.
+set -euo pipefail
+
+SUBCOMMAND="${1:-}"
+[[ -n "$SUBCOMMAND" ]] || { echo "usage: $(basename "$0") {apply|check}" >&2; exit 2; }
+
+GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-}"
+[[ -n "$GITHUB_REPOSITORY" ]] || { echo "::error::GITHUB_REPOSITORY is required" >&2; exit 2; }
+
+RULESET_NAME="release-tags-immutable"
+API_BASE="repos/$GITHUB_REPOSITORY/rulesets"
+
+# Fetch all rulesets and find ours by name.
+# The list endpoint may not inline 'rules', so we fetch the specific ruleset by ID.
+get_our_ruleset() {
+  local list_response
+  list_response="$(gh api "$API_BASE" 2>/dev/null)" || {
+    echo "::error::failed to list rulesets for $GITHUB_REPOSITORY" >&2
+    return 2
+  }
+
+  local ruleset_id
+  ruleset_id="$(jq -r --arg name "$RULESET_NAME" '.[] | select(.name == $name) | .id // empty' <<<"$list_response")"
+  [[ -n "$ruleset_id" ]] || return 1
+
+  gh api "$API_BASE/$ruleset_id" 2>/dev/null || {
+    echo "::error::failed to fetch ruleset $ruleset_id details" >&2
+    return 2
+  }
+}
+
+check_ruleset() {
+  local ruleset_json
+  local rc=0
+  ruleset_json="$(get_our_ruleset)" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    if [[ $rc -eq 2 ]]; then
+      # API failure / unparseable — exit 2 so caller can distinguish "not protected" from "cannot tell".
+      return 2
+    fi
+    # Ruleset not found — exit 1 (not protected).
+    echo "::error::ruleset '$RULESET_NAME' not found — run: gh api --method POST '$API_BASE' --input - <<'EOF'" >&2
+    cat <<'EOF' >&2
+{
+  "name": "release-tags-immutable",
+  "target": "tag",
+  "enforcement": "active",
+  "conditions": { "ref_name": { "include": ["v*"], "exclude": [] } },
+  "rules": [ { "type": "update", "parameters": {} }, { "type": "deletion", "parameters": {} } ]
+}
+EOF
+    return 1
+  fi
+
+  # Verify the shape.
+  local target enforcement include_rules rules_json
+  target="$(jq -r '.target // empty' <<<"$ruleset_json")"
+  enforcement="$(jq -r '.enforcement // empty' <<<"$ruleset_json")"
+  include_rules="$(jq -r '.conditions.ref_name.include[]?' <<<"$ruleset_json")"
+  rules_json="$(jq -c '.rules // []' <<<"$ruleset_json")"
+
+  local missing=()
+
+  [[ "$target" == "tag" ]] || missing+=("target=tag (got '$target')")
+  [[ "$enforcement" == "active" ]] || missing+=("enforcement=active (got '$enforcement')")
+
+  # Check include contains v*.
+  local has_vstar=false
+  while IFS= read -r pattern; do
+    [[ "$pattern" == "v*" ]] && has_vstar=true
+  done <<<"$include_rules"
+  $has_vstar || missing+=("conditions.ref_name.include containing v*")
+
+  # Check rules contain both update and deletion.
+  local has_update=false has_deletion=false
+  while IFS= read -r rule; do
+    local rtype
+    rtype="$(jq -r '.type // empty' <<<"$rule")"
+    [[ "$rtype" == "update" ]] && has_update=true
+    [[ "$rtype" == "deletion" ]] && has_deletion=true
+  done < <(jq -c '.[]' <<<"$rules_json")
+
+  $has_update || missing+=("rules: update (restrict updates)")
+  $has_deletion || missing+=("rules: deletion (block delete-and-recreate)")
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    printf '::error::ruleset '"'$RULESET_NAME'"' exists but is incomplete — missing: %s\n' "$(IFS=', '; echo "${missing[*]}")" >&2
+    echo "Remediation: run 'bash scripts/apply-tag-ruleset.sh apply' (requires admin token with administration:write)" >&2
+    return 1
+  fi
+
+  return 0
+}
+
+apply_ruleset() {
+  local ruleset_json
+  local existing_id=""
+
+  # First check if it exists and get its ID.
+  if ruleset_json="$(get_our_ruleset 2>/dev/null)"; then
+    existing_id="$(jq -r '.id // empty' <<<"$ruleset_json")"
+    [[ -n "$existing_id" ]] || existing_id=""
+  fi
+
+  # Ruleset payload.
+  local payload
+  payload='{
+    "name": "release-tags-immutable",
+    "target": "tag",
+    "enforcement": "active",
+    "conditions": { "ref_name": { "include": ["v*"], "exclude": [] } },
+    "rules": [ { "type": "update", "parameters": {} }, { "type": "deletion", "parameters": {} } ]
+  }'
+
+  if [[ -n "$existing_id" ]]; then
+    # Update existing ruleset.
+    if gh api --method PUT "$API_BASE/$existing_id" --input - <<<"$payload" >/dev/null 2>&1; then
+      echo "Updated existing ruleset '$RULESET_NAME' (id=$existing_id)"
+      return 0
+    else
+      echo "::error::failed to update ruleset $existing_id" >&2
+      return 1
+    fi
+  else
+    # Create new ruleset.
+    if gh api --method POST "$API_BASE" --input - <<<"$payload" >/dev/null 2>&1; then
+      echo "Created ruleset '$RULESET_NAME'"
+      return 0
+    else
+      echo "::error::failed to create ruleset '$RULESET_NAME'" >&2
+      return 1
+    fi
+  fi
+}
+
+case "$SUBCOMMAND" in
+  check)
+    check_ruleset
+    exit $?
+    ;;
+  apply)
+    apply_ruleset
+    exit $?
+    ;;
+  *)
+    echo "::error::unknown subcommand '$SUBCOMMAND'" >&2
+    exit 2
+    ;;
+esac
