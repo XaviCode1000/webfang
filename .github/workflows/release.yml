@@ -49,8 +49,9 @@ jobs:
     name: L1 Provenance Preflight
     permissions:
       contents: read
-      # administration:read needed for ruleset check (L1.5) — if the token lacks it,
-      # the subcommand returns exit 2 and the job fails closed.
+      # administration:read is REQUIRED for the L1.5 ruleset check — with
+      # contents:read alone the subcommand returns exit 2 and the job fails closed.
+      administration: read
     runs-on: ubuntu-latest
     outputs:
       validated_commit: ${{ steps.prov.outputs.validated_commit }}
@@ -80,6 +81,18 @@ jobs:
         run: |
           set -euo pipefail
           bash scripts/check_release_provenance.sh preflight
+      # L1.5 Ruleset AFTER the prov step: verifies the tag protection ruleset
+      # (release-tags-immutable: update + deletion blocked) is active and correct.
+      # Exit 0 = protected, 1 = not protected, 2 = cannot tell (API failure or a
+      # token without administration:read). Both non-zero exits block the release
+      # (fail-closed) — exit 2 MUST stay blocking, otherwise a token that could
+      # never read the ruleset would certify protection it never verified.
+      - name: L1.5 Tag Ruleset Check
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          bash scripts/check_release_provenance.sh ruleset
 
   # ============================================================================
   # BUILD: Cross-compile for all platforms at the VALIDATED commit
@@ -291,7 +304,7 @@ jobs:
             echo "| Validated Commit | \`$VALIDATED_COMMIT\` |"
             echo "| Lineage | \`$EXPECTED_LINE\` (ancestor) |"
             echo "| Channel | ${{ needs.preflight.outputs.prerelease == 'true' && 'Release Candidate' || 'Stable' }} |"
-            echo "| L1 Gate | \`check_release_provenance.sh preflight | publish\` |"
+            echo "| L1 Gate | \`check_release_provenance.sh preflight | ruleset | publish\` |"
             echo "| Ruleset | \`release-tags-immutable\` (update + deletion blocked) |"
           } > /tmp/release-notes.md
           gh release create "$TAG" \
