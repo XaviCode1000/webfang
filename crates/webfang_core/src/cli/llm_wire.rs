@@ -342,17 +342,30 @@ mod tests {
         }
     }
 
+    /// Embedding-slot twin of `provider`: same shape, but the provider
+    /// provider declares `Embedding` and names the embedding test model —
+    /// struct-update keeps the two constructors from drifting (#1462).
     fn emb_provider(id: &str, kind: ProviderKind, auth: AuthSource) -> ProviderConfig {
         ProviderConfig {
-            id: id.to_string(),
-            display_name: id.to_string(),
-            kind,
-            base_url: url::Url::parse("https://api.example.com/v1").expect("url"),
-            auth,
             capabilities: vec![Capability::Embedding],
             model: Some("nomic-embed-text".to_string()),
-            embedding_dim: None,
-            allow_loopback: false,
+            ..provider(id, kind, auth)
+        }
+    }
+
+    /// Single remote-ollama registry for the explicit-slot tests (#1462):
+    /// the resolve-remote, unknown-id and missing-capability cases only
+    /// need one remote embedding provider present — never three copies of
+    /// its construction.
+    fn single_ollama_embedding_registry() -> ProvidersConfig {
+        ProvidersConfig {
+            providers: vec![emb_provider(
+                "ollama",
+                ProviderKind::OpenAiCompatible,
+                AuthSource::Env {
+                    var: "WEBFANG_TEST_EMB_UNUSED".to_string(),
+                },
+            )],
         }
     }
 
@@ -393,15 +406,7 @@ mod tests {
     #[test]
     fn embedding_absent_with_remote_default_resolves_remote_config() {
         let opts = opts_with_embedding(None);
-        let providers = ProvidersConfig {
-            providers: vec![emb_provider(
-                "ollama",
-                ProviderKind::OpenAiCompatible,
-                AuthSource::Env {
-                    var: "WEBFANG_TEST_EMB_UNUSED".to_string(),
-                },
-            )],
-        };
+        let providers = single_ollama_embedding_registry();
         let out = resolve_embedding_config(&opts, &providers).expect("resolves");
         assert_eq!(out.expect("remote config").id, "ollama");
     }
@@ -409,15 +414,7 @@ mod tests {
     #[test]
     fn embedding_explicit_unknown_id_is_config_error() {
         let opts = opts_with_embedding(Some("missing"));
-        let providers = ProvidersConfig {
-            providers: vec![emb_provider(
-                "ollama",
-                ProviderKind::OpenAiCompatible,
-                AuthSource::Env {
-                    var: "WEBFANG_TEST_EMB_UNUSED".to_string(),
-                },
-            )],
-        };
+        let providers = single_ollama_embedding_registry();
         let err = match resolve_embedding_config(&opts, &providers) {
             Err(e) => e,
             Ok(_) => panic!("unknown id must fail"),
