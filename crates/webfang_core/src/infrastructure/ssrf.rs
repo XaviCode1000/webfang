@@ -301,6 +301,32 @@ mod tests {
                 .collect()
         }
 
+        /// Shared loopback-resolution proof (#1462): resolving the
+        /// `127.0.0.1` literal must yield exactly that address — used by
+        /// both the env-hatch bypass test and the per-client permit test so
+        /// the two mirrors cannot drift.
+        async fn assert_resolves_loopback_literal(resolver: &ValidatingResolver) {
+            let addrs = resolved_addrs(resolver, "127.0.0.1").await;
+            assert_eq!(addrs[0].ip().to_string(), "127.0.0.1");
+        }
+
+        /// Shared port-9 CONNECT proof (#1462): nothing listens there, so
+        /// resolution must succeed and the failure must be a CONNECT error,
+        /// never an SSRF rejection.
+        async fn assert_fails_at_connect_without_ssrf_rejection(client: &wreq::Client) {
+            // Port 9 (discard): nothing listens; resolution succeeds and the
+            // failure must be a CONNECT error, never an SSRF rejection.
+            let err = client
+                .get("http://localhost:9/")
+                .send()
+                .await
+                .expect_err("nothing listens on port 9");
+            assert!(
+                !format!("{err:?}").contains("forbidden address"),
+                "permitted dial must fail at CONNECT, not at the guard: {err:?}"
+            );
+        }
+
         #[tokio::test]
         async fn forbidden_ipv4_literal_hostname_is_rejected() {
             let (_guard, resolver) = validation_on();
@@ -329,8 +355,7 @@ mod tests {
             let _guard = webfang_test_utils::EnvGuard::clean(&[DISABLE_VALIDATING_RESOLVER_ENV]);
             let resolver = ValidatingResolver::with_allow_loopback(true);
 
-            let addrs = resolved_addrs(&resolver, "127.0.0.1").await;
-            assert_eq!(addrs[0].ip().to_string(), "127.0.0.1");
+            assert_resolves_loopback_literal(&resolver).await;
         }
 
         #[tokio::test]
@@ -392,8 +417,7 @@ mod tests {
                 webfang_test_utils::EnvGuard::with(&[(DISABLE_VALIDATING_RESOLVER_ENV, "1")]);
             let resolver = ValidatingResolver::new();
 
-            let addrs = resolved_addrs(&resolver, "127.0.0.1").await;
-            assert_eq!(addrs[0].ip().to_string(), "127.0.0.1");
+            assert_resolves_loopback_literal(&resolver).await;
         }
 
         #[tokio::test]
@@ -471,17 +495,7 @@ mod tests {
                 .build()
                 .expect("test client must build");
 
-            // Port 9 (discard): nothing listens; resolution succeeds and the
-            // failure must be a CONNECT error, never an SSRF rejection.
-            let err = client
-                .get("http://localhost:9/")
-                .send()
-                .await
-                .expect_err("nothing listens on port 9");
-            assert!(
-                !format!("{err:?}").contains("forbidden address"),
-                "bypassed resolver must not reject: {err:?}"
-            );
+            assert_fails_at_connect_without_ssrf_rejection(&client).await;
         }
 
         // Unit proof for the guard port: through the `dyn SsrfGuard` trait
@@ -525,17 +539,7 @@ mod tests {
                 .build()
                 .expect("test client must build");
 
-            // Port 9 (discard): nothing listens; resolution succeeds and the
-            // failure must be a CONNECT error, never an SSRF rejection.
-            let err = client
-                .get("http://localhost:9/")
-                .send()
-                .await
-                .expect_err("nothing listens on port 9");
-            assert!(
-                !format!("{err:?}").contains("forbidden address"),
-                "parameterized permit must not reject loopback: {err:?}"
-            );
+            assert_fails_at_connect_without_ssrf_rejection(&client).await;
         }
 
         // #1462 (U2): redirect-chain proof for the parameterized policy.

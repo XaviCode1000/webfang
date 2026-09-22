@@ -104,6 +104,20 @@ impl ProviderConfig {
     }
 }
 
+/// Rejection message for an explicit `null` dimension: `null` in the config
+/// file is a typo and must fail loudly — shared by both null-rejecting
+/// visitor methods so the two arms cannot drift (#1462).
+const NULL_EMBEDDING_DIM_MSG: &str =
+    "embedding_dim: null explícito no permitido; omití el campo para adoptar la dimensión remota";
+
+/// Build the explicit-`null` rejection error for [`deserialize_dim_no_null`].
+fn null_dim_error<E>() -> E
+where
+    E: serde::de::Error,
+{
+    E::custom(NULL_EMBEDDING_DIM_MSG)
+}
+
 /// Reject an explicit `null` for `embedding_dim` while keeping the
 /// absent-means-`None` default.
 ///
@@ -128,18 +142,14 @@ where
         where
             E: serde::de::Error,
         {
-            Err(E::custom(
-                "embedding_dim: null explícito no permitido; omití el campo para adoptar la dimensión remota",
-            ))
+            Err(null_dim_error())
         }
 
         fn visit_unit<E>(self) -> Result<Self::Value, E>
         where
             E: serde::de::Error,
         {
-            Err(E::custom(
-                "embedding_dim: null explícito no permitido; omití el campo para adoptar la dimensión remota",
-            ))
+            Err(null_dim_error())
         }
 
         fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
@@ -231,6 +241,30 @@ impl ProviderRegistry {
         Ok(provider)
     }
 
+    /// Resolve the default provider for `capability`: the first provider in
+    /// config order that declares it.
+    ///
+    /// Single choke point behind [`Self::resolve_default_completion`] and
+    /// [`Self::resolve_default_embedding`] so the two default slots cannot
+    /// drift (#1462).
+    ///
+    /// # Errors
+    ///
+    /// [`RegistryError::ProviderNotFound`] (`<default>`) when no provider
+    /// declares `capability`.
+    fn resolve_default_by_capability(
+        &self,
+        capability: Capability,
+    ) -> Result<&ProviderConfig, RegistryError> {
+        self.config
+            .providers
+            .iter()
+            .find(|p| p.has_capability(capability))
+            .ok_or_else(|| RegistryError::ProviderNotFound {
+                provider_id: "<default>".to_string(),
+            })
+    }
+
     /// Resolve the default completion provider: the first provider in config
     /// order that declares [`Capability::Completion`].
     ///
@@ -242,13 +276,7 @@ impl ProviderRegistry {
     /// [`RegistryError::ProviderNotFound`] when no provider declares
     /// `Completion`.
     pub fn resolve_default_completion(&self) -> Result<&ProviderConfig, RegistryError> {
-        self.config
-            .providers
-            .iter()
-            .find(|p| p.has_capability(Capability::Completion))
-            .ok_or_else(|| RegistryError::ProviderNotFound {
-                provider_id: "<default>".to_string(),
-            })
+        self.resolve_default_by_capability(Capability::Completion)
     }
 
     /// Resolve the default embedding provider: the first provider in config
@@ -265,13 +293,7 @@ impl ProviderRegistry {
     /// declares `Embedding` — the caller falls back to local-only, never to
     /// a silent `None` that resurfaces as a late failure.
     pub fn resolve_default_embedding(&self) -> Result<&ProviderConfig, RegistryError> {
-        self.config
-            .providers
-            .iter()
-            .find(|p| p.has_capability(Capability::Embedding))
-            .ok_or_else(|| RegistryError::ProviderNotFound {
-                provider_id: "<default>".to_string(),
-            })
+        self.resolve_default_by_capability(Capability::Embedding)
     }
 }
 
@@ -359,15 +381,27 @@ mod tests {
         assert_eq!(config.len(), 0);
     }
 
-    #[test]
-    fn default_embedding_picks_first_embedding_provider() {
-        let registry = ProviderRegistry::new(ProvidersConfig {
+    /// Shared default-slot fixture (#1462): the first provider declaring
+    /// `Embedding` is `local-embeddings` and the first declaring
+    /// `Completion` is `openai` — one registry for both default-slot tests
+    /// instead of two mirrored setups. The trailing dual-capability
+    /// provider pins first-wins ordering on both slots at once.
+    fn default_slot_registry() -> ProviderRegistry {
+        ProviderRegistry::new(ProvidersConfig {
             providers: vec![
                 provider("local-embeddings", vec![Capability::Embedding]),
                 provider("openai", vec![Capability::Completion]),
-                provider("ollama", vec![Capability::Embedding]),
+                provider(
+                    "ollama",
+                    vec![Capability::Embedding, Capability::Completion],
+                ),
             ],
-        });
+        })
+    }
+
+    #[test]
+    fn default_embedding_picks_first_embedding_provider() {
+        let registry = default_slot_registry();
         let resolved = registry
             .resolve_default_embedding()
             .expect("one embedding provider exists");
