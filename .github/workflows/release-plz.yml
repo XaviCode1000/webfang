@@ -153,7 +153,12 @@ jobs:
           # scripts/ensure-release.sh, shared with the scheduled sweep
           # (release-reconcile.yml) so the two cannot disagree about what
           # "complete" means, or about how a failed dispatch is retried.
-          bash scripts/ensure-release.sh "$TAG"
+          # ensure-release.sh takes expected_sha as positional arg 2 — without
+          # it the default-branch dispatch hits L1.1 Identity fail-closed
+          # ("default-branch dispatch requires PROV_EXPECTED_SHA input"), the
+          # exact block observed on the v2.2.0 dispatch (run 35765291580).
+          EXPECTED_SHA="$(git rev-parse "refs/tags/$TAG^{commit}")"
+          bash scripts/ensure-release.sh "$TAG" "$EXPECTED_SHA"
 
   # Release PR generator. Re-enabled after upstream release-plz 0.3.168 shipped
   # #3058 ("reconstruct git-only releases without creating crate archives"),
