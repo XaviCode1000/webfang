@@ -1,6 +1,5 @@
 ---
 source: crates/webfang_core/tests/cli_binary_test.rs
-assertion_line: 71
 expression: "redact_nondeterministic(Path::new(\"__no_temp__\"), &stdout)"
 ---
 CLI Arguments for the webfang binary.
@@ -477,6 +476,11 @@ LLM Extraction:
           Provider id to use for LLM extraction (default: first provider declaring the `completion` capability)
           
           [env: WEBFANG_LLM_PROVIDER=]
+
+      --embedding-provider <EMBEDDING_PROVIDER>
+          Provider id to use for embeddings (default: first provider declaring the `embedding` capability; local pool when unset or local)
+          
+          [env: WEBFANG_EMBEDDING_PROVIDER=]
 
 EXIT CODES:
   0    Success
