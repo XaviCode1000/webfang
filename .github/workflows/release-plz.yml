@@ -166,8 +166,14 @@ jobs:
   #
   # Verified 2026-09-18 with CLI 0.3.168 against a clone of main: next-version
   # determination completed for all 6 packages (2.1.0 → 2.1.1) with zero
-  # `cargo package` invocation. `release-plz/action@v0.5` is intentionally
-  # unpinned and resolves the latest CLI, so no pin is needed here.
+  # `cargo package` invocation.
+  #
+  # Both jobs pin the action by SHA (`release-plz/action@26c577bbc3f9ecc178fc9e9afc34ee43e6f4a080`).
+  # The CLI version is NOT "latest": it comes from that pin's `version` input
+  # default — 0.3.169 as of 2026-09 (includes upstream release-plz #3058, the
+  # git_only fix noted above). Bumping the CLI therefore requires either
+  # updating the SHA pin or passing an explicit `version:` input; it does not
+  # float to latest on its own.
   #
   # `continue-on-error` is deliberately GONE (webfang#1476): while it was set,
   # the job reported `completed/success` over a logged
