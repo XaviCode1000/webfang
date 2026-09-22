@@ -73,6 +73,9 @@ jobs:
       - name: L1 Provenance Preflight
         id: prov
         env:
+          # gh (used by L1.1 tag resolution) requires an explicit token — runners
+          # have no ambient gh auth. Same pattern as cut-patch-tag.yml / pr-validation.
+          GH_TOKEN: ${{ github.token }}
           PROV_EVENT_NAME: ${{ github.event_name }}
           PROV_EVENT_SHA: ${{ github.sha }}
           PROV_REF: ${{ github.ref }}
@@ -92,6 +95,10 @@ jobs:
       # never read the ruleset would certify protection it never verified.
       - name: L1.5 Tag Ruleset Check
         env:
+          # apply-tag-ruleset.sh check runs gh api — needs the same explicit
+          # token as the prov step above; without it the API call fails and the
+          # gate blocks with exit 2 (cannot tell), never a silent pass.
+          GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
