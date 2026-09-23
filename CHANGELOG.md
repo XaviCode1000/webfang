@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.2] - 2026-09-23
+
+
+### 📦 Dependencies
+
+- Update Cargo.lock dependencies
+
+### 🔧 Other
+
+- Hygiene trio — preflight comment, worktree docs, chore issue form ([#1542](https://github.com/XaviCode1000/webfang/pull/1542))
+- Release v2.3.1 ([#1543](https://github.com/XaviCode1000/webfang/pull/1543))
 ## [2.3.1] - 2026-09-23
 
 
