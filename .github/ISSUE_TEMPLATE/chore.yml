@@ -1,0 +1,27 @@
+name: Housekeeping chore
+description: Operational or housekeeping work (tooling, cleanup, renames).
+title: "chore: "
+labels: ["type:chore"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Small operational task, not a product change — no use case to argue,
+        so keep it brief. (Podés escribir el cuerpo en español.)
+  - type: textarea
+    id: task
+    attributes:
+      label: Task
+      description: What has to be done, in one or two sentences.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Why now / context
+      description: The evidence that makes it worth doing.
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria / done when
+      description: "Optional — how would we know this is done?"
