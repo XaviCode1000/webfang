@@ -203,6 +203,23 @@ else
   FAIL=1
 fi
 
+# L1.1 Shape 2: the sweep must resolve expected_sha and hand it to
+# ensure-release.sh — a dispatch without it dies at release.yml preflight
+# ("default-branch dispatch requires PROV_EXPECTED_SHA input"), the exact
+# fail-closed that would leave every incomplete historical release
+# permanently binary-less (webfang#1540).
+# shellcheck disable=SC2016  # intentional: match the literal $expected_sha
+# token as written in reconcile-releases.sh, not an expanded value.
+if [[ -f "$RECONCILE_SH" ]] \
+   && grep -qF -- 'git rev-parse "refs/tags/' "$RECONCILE_SH" \
+   && grep -qE -- 'ensure-release\.sh".*\$expected_sha|ensure-release\.sh".*\$EXPECTED_SHA' "$RECONCILE_SH"; then
+  step "sweep resolves and passes expected_sha (L1.1 Shape 2)" "ok"
+else
+  echo "::error::check_release_dispatch: scripts/reconcile-releases.sh must resolve the tag commit via git rev-parse \"refs/tags/<tag>^{commit}\" and pass it as the second argument to ensure-release.sh. Without expected_sha the default-branch dispatch fails closed at L1.1 Identity (webfang#1540)."
+  step "sweep resolves and passes expected_sha (L1.1 Shape 2)" "MISSING"
+  FAIL=1
+fi
+
 if [[ -f "$ENSURE_SH" ]] && grep -qF -- 'bash scripts/ensure-release.sh' "$RELEASE_PLZ_YML"; then
   step "dispatcher delegates to the shared dispatch helper" "ok"
 else

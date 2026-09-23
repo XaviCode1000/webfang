@@ -55,7 +55,17 @@ echo "Sweeping ${#tags[@]} release-plz tag(s): ${tags[*]}"
 failed=0
 for tag in "${tags[@]}"; do
   echo "--- $tag"
-  if ! bash "$REPO_ROOT/scripts/ensure-release.sh" "$tag"; then
+  # L1.1 Identity (Shape 2): a default-branch dispatch MUST carry expected_sha —
+  # release.yml fails closed without PROV_EXPECTED_SHA (webfang#1540). Resolve it
+  # the same way release-plz.yml already does: the commit the trusted tag points
+  # at. A tag we cannot resolve is not dispatchable — fail this entry closed
+  # rather than send a dispatch that is doomed to die at preflight.
+  if ! expected_sha="$(git rev-parse "refs/tags/${tag}^{commit}" 2>/dev/null)"; then
+    echo "::error::could not resolve commit for trusted tag $tag - refusing to dispatch without expected_sha (webfang#1540)." >&2
+    failed=$((failed + 1))
+    continue
+  fi
+  if ! bash "$REPO_ROOT/scripts/ensure-release.sh" "$tag" "$expected_sha"; then
     failed=$((failed + 1))
   fi
 done
