@@ -23,12 +23,36 @@
 # default branch always runs the current definition, hardened, with the input
 # pinning the build. This is the same choice the v2.1.1 backfill made by hand.
 #
-# Usage: ensure-release.sh <tag>
+# L1 Provenance: the dispatch now also passes `expected_sha` (the commit the tag
+# resolves to) so release.yml's preflight can verify L1.1 Identity (Shape 2:
+# default-branch dispatch requires PROV_EXPECTED_SHA).
+#
+# WHY THE COMPLETENESS CHECK READS ASSETS BY RELEASE ID (webfang#1535):
+# it used to read them from the by-tag/by-name view (`gh release view --json
+# assets`, the same data as GET .../releases/tags/<tag>'s embedded .assets).
+# For release id 394502300 / tag v2.3.0 that view returned an EMPTY .assets
+# array while the release actually had all 5 assets: GET .../releases,
+# GET .../releases/{id} and GET .../releases/{id}/assets each returned 5
+# (control v2.2.0: 5 everywhere). A COMPLETE release was therefore reported
+# as incomplete and dispatched spuriously (run 35844323775), which then failed
+# closed at L1 preflight for a missing expected_sha — that fail-closed was
+# correct, but the dispatch should never have happened.
+# So: by-tag is used ONLY to resolve the release id (it returned a valid id
+# even when its embedded assets were empty), and assets are read EXCLUSIVELY
+# from GET /repos/$GITHUB_REPOSITORY/releases/<id>/assets — the one endpoint
+# measured to return the full list. Three states stay distinct: no release ->
+# "does not exist yet"; resolvable id with missing assets -> "incomplete";
+# resolvable id with every expected asset -> "already complete", exit 0 with
+# NO dispatch. A present-but-empty assets array on a resolvable id is
+# "incomplete", never "release missing".
+#
+# Usage: ensure-release.sh <tag> [expected_sha]
 set -euo pipefail
 
 TAG="${1:-}"
+EXPECTED_SHA="${2:-}"
 if [[ -z "$TAG" ]]; then
-  echo "usage: $(basename "$0") <tag>" >&2
+  echo "usage: $(basename "$0") <tag> [expected_sha]" >&2
   exit 2
 fi
 
@@ -43,8 +67,27 @@ EXPECTED_ASSETS=(
   SHA256SUMS.txt
 )
 
-if present=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
-              --json assets --jq '.assets[].name' 2>/dev/null); then
+# Capture the existence probe's stderr, so a 404 can be told apart from any
+# other API failure: 404 means "no release" (dispatch path), anything else is
+# unknown state and must fail closed rather than dispatch on an error (guessing
+# "missing" here is the spurious-dispatch class fixed above).
+API_ERR="$(mktemp)"
+trap 'rm -f "$API_ERR"' EXIT
+
+release_id=""
+if release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
+      --jq '.id' 2>"$API_ERR")"; then
+  if [[ -z "$release_id" || "$release_id" == "null" ]]; then
+    echo "::error::release $TAG resolved without an id - refusing to guess whether the release exists (webfang#1535)." >&2
+    exit 1
+  fi
+  # The release exists. Read its assets BY ID — never from the by-tag object,
+  # whose embedded .assets were measured empty while this endpoint returned 5.
+  if ! present="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" \
+        --jq '.[].name' 2>"$API_ERR")"; then
+    echo "::error::release $TAG exists (id $release_id) but its assets could not be read ($(tr '\n' ' ' <"$API_ERR")) - failing closed instead of guessing: calling it 'incomplete' is the spurious dispatch of run 35844323775, calling it 'complete' would hide missing binaries." >&2
+    exit 1
+  fi
   missing=()
   for asset in "${EXPECTED_ASSETS[@]}"; do
     grep -qxF "$asset" <<<"$present" || missing+=("$asset")
@@ -54,8 +97,11 @@ if present=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
     exit 0
   fi
   echo "Release $TAG exists but is incomplete; missing: ${missing[*]}"
-else
+elif grep -q 'HTTP 404' "$API_ERR"; then
   echo "Release $TAG does not exist yet."
+else
+  echo "::error::could not determine whether release $TAG exists: $(tr '\n' ' ' <"$API_ERR") - failing closed instead of dispatching on an unreadable API response (webfang#1535)." >&2
+  exit 1
 fi
 
 # Bounded retry with backoff. Three attempts covers a transient API failure
@@ -63,10 +109,20 @@ fi
 ATTEMPTS=3
 RELEASE_DISPATCH_BACKOFF_SECONDS="${RELEASE_DISPATCH_BACKOFF_SECONDS:-10}"
 for (( attempt = 1; attempt <= ATTEMPTS; attempt++ )); do
-  if gh workflow run release.yml \
-       --repo "$GITHUB_REPOSITORY" \
-       -f tag="$TAG"; then
-    echo "Dispatched release.yml for $TAG (attempt $attempt)."
+  # Build the dispatch command with optional expected_sha
+  # Format matches the extraction regex in check_release_dispatch.sh:
+  # backslash-continued lines ending with ; OR ${DISPATCH_CMD[@]} form
+  DISPATCH_CMD=(
+    gh workflow run release.yml
+    --repo "$GITHUB_REPOSITORY"
+    -f tag="$TAG"
+  )
+  if [[ -n "$EXPECTED_SHA" ]]; then
+    DISPATCH_CMD+=(-f expected_sha="$EXPECTED_SHA")
+  fi
+
+  if "${DISPATCH_CMD[@]}"; then
+    echo "Dispatched release.yml for $TAG (attempt $attempt)${EXPECTED_SHA:+ with expected_sha=$EXPECTED_SHA}."
     exit 0
   fi
   echo "::warning::dispatch attempt $attempt/$ATTEMPTS for $TAG failed." >&2
@@ -77,5 +133,5 @@ for (( attempt = 1; attempt <= ATTEMPTS; attempt++ )); do
   fi
 done
 
-echo "::error::could not dispatch release.yml for $TAG after $ATTEMPTS attempts - that tag now has no binaries. Recover with: gh workflow run release.yml --repo $GITHUB_REPOSITORY -f tag=$TAG" >&2
+echo "::error::could not dispatch release.yml for $TAG after $ATTEMPTS attempts - that tag now has no binaries. Recover with: gh workflow run release.yml --repo $GITHUB_REPOSITORY -f tag=$TAG${EXPECTED_SHA:+ -f expected_sha=$EXPECTED_SHA}" >&2
 exit 1

@@ -258,6 +258,11 @@ jobs:
       # retry is worse than no retry — it buys false confidence.
       - name: Release reconcile semantics harness
         run: bash scripts/test_release_reconcile.sh
+      # Release provenance L1 acceptance matrix (I.1–I.16): proves the gate
+      # enforces identity (annotated bot tag), version match, lineage (main ancestor),
+      # publish TOCTOU, and ruleset — with fail-closed on every drift/mismatch.
+      - name: Release provenance L1 acceptance matrix
+        run: bash scripts/test_release_provenance.sh
       # Semantics harness for the CI Health close path (slice4-branch-guard):
       # proves on a fake gh that the shared close_mine closes exactly the
       # labeled tracking issues, skips unlabeled lookalikes visibly, treats an
@@ -462,6 +467,29 @@ jobs:
       - name: Pre-build test binary
         run: cargo build -p webfang_cli --bin webfang --all-features
       - run: cargo nextest run --all-features --test-threads 4 --retries 2
+
+  # ============================================================================
+  # TEST RELEASE PROVENANCE (L1) — Behavioral acceptance matrix for
+  # check_release_provenance.sh (webfang#1484).
+  # Runs the hermetic test suite against a synthetic git repo with a fake `gh`.
+  # Path-gated: runs only when run_code_jobs=true (code changes).
+  # Required in gate — validates the L1 provenance gate logic.
+  # ============================================================================
+  test-release-provenance:
+    name: Tests (release provenance L1)
+    needs: [change-scope]
+    if: ${{ needs.change-scope.outputs.run_code_jobs == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      - name: Run release provenance behavioral tests
+        run: bash scripts/test_release_provenance.sh
 
   # ============================================================================
   # TOKIO CONSOLE SMOKE (Sprint 7-8 P1-conc - change stabilization-concurrency-budget)
@@ -674,7 +702,7 @@ jobs:
   # ============================================================================
   gate:
     name: CI Gate
-    needs: [change-scope, toolchain, repo-guards, fmt, clippy, test-core, test-full, security, doc-quality]
+    needs: [change-scope, toolchain, repo-guards, fmt, clippy, test-core, test-full, test-release-provenance, security, doc-quality]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -712,14 +740,14 @@ jobs:
                 exit 1
               fi
             done
-            for job in fmt clippy test-core test-full; do
+            for job in fmt clippy test-core test-full test-release-provenance; do
               r="$(echo "$RESULTS" | jq -r --arg j "$job" '.[$j].result')"
               if [ "$r" != "skipped" ]; then
                 echo "::error::Non-applicable code producer '$job' must be skipped in narrow scope (result=$r)."
                 exit 1
               fi
-            done
-            echo "Narrow scope: applicable producers succeeded, code jobs skipped by change-scope."
+              done
+              echo "Narrow scope: applicable producers succeeded, code jobs skipped by change-scope."
           fi
 
   # ============================================================================

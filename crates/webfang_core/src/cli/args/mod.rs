@@ -480,6 +480,7 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
             ai_config,
             extract_with_llm: args.llm.extract_with_llm,
             llm_provider: args.llm.llm_provider.clone(),
+            embedding_provider: args.llm.embedding_provider.clone(),
             budget_overrides: crate::domain::budget::BudgetOverrides {
                 // #897 item 2 ("Zero Silent Loss"): an explicit `0` is
                 // rejected by `parse_rate_limit_burst`, and that rejection

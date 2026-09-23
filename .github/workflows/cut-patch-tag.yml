@@ -50,24 +50,32 @@ jobs:
           CARGO_VERSION="$(grep -m1 '^version' Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
           [[ "$CARGO_VERSION" == "$INPUT_VERSION" ]] || {
             echo "::error::bump el commit primero: Cargo.toml=${CARGO_VERSION}, pedido=$INPUT_VERSION" >&2; exit 1; }
-      - name: Tag and push
+      - name: Create annotated tag and push (bot identity for L1.1)
+        id: tag
         env:
           INPUT_VERSION: ${{ inputs.version }}
+          INPUT_BRANCH: ${{ inputs.branch }}
         run: |
-          git tag "v$INPUT_VERSION"
+          set -euo pipefail
+          # Annotated tag with bot identity for L1.1 trust predicate.
+          # The message format matches release-plz subject for the fingerprint.
+          git -c user.name='github-actions[bot]' -c user.email='bot@github.com' \
+            tag -a "v$INPUT_VERSION" -m "chore: Release package webfang_core version $INPUT_VERSION"
           git push origin "v$INPUT_VERSION"
+          # Capture the commit SHA for L1 expected_sha (dereference annotated tag)
+          EXPECTED_SHA=$(git rev-parse "v$INPUT_VERSION^{commit}")
+          echo "EXPECTED_SHA=$EXPECTED_SHA" >> "$GITHUB_OUTPUT"
       - name: Dispatch release.yml for the new tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: "v${{ inputs.version }}"
+          EXPECTED_SHA: ${{ steps.tag.outputs.EXPECTED_SHA }}
         run: |
           set -euo pipefail
-          # --ref pins the run to the tag, so release.yml resolves its version and
-          # its Cargo.toml check against the tag rather than against main. The
-          # checkout pin in release.yml (ref: github.event.inputs.tag) is the
-          # second half of that guarantee — see #1478.
+          # Dispatch via workflow_dispatch WITHOUT --ref. release.yml's preflight
+          # will re-verify L1.1..L1.3 against the expected_sha input.
           gh workflow run release.yml \
             --repo "$GITHUB_REPOSITORY" \
-            --ref "$TAG" \
-            -f tag="$TAG"
-          echo "Dispatched release.yml for $TAG"
+            -f tag="$TAG" \
+            -f expected_sha="$EXPECTED_SHA"
+          echo "Dispatched release.yml for $TAG with expected_sha=$EXPECTED_SHA"

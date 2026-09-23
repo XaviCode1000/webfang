@@ -48,6 +48,10 @@ pub async fn wire_ai_ports(
     pool: Arc<webfang_ai::InferencePool>,
     tokenizer: Arc<webfang_ai::MiniLmTokenizer>,
 ) {
+    // 0. Remote embedding first (#1462) — extracted so this orchestrator
+    //    stays under the cognitive-complexity ratchet.
+    inject_remote_embedding_first(container).await;
+
     // 1. Embedding port (ONNX adapter) — shares the cleaner's pool + tokenizer,
     //    so this is infallible (no model resolution happens here).
     let adapter = webfang_ai::EmbeddingAdapter::new(pool, tokenizer);
@@ -97,6 +101,56 @@ pub async fn wire_ai_ports(
             dim,
             "vault-search AI ports wired (embedding + chunker); enable `persistence` for note storage"
         );
+    }
+}
+
+/// Inject the remote embedding adapter BEFORE the local one (#1462).
+///
+/// When the config-file default embedding slot resolves to
+/// `open_ai_compatible`, the probed remote adapter is injected first —
+/// `inject_vault_ports` is at-most-once per slot, so the remote wins and
+/// the local assembly in [`wire_ai_ports`] degrades to chunker/notes only.
+/// No argv reaches the daemon, so only the default slot applies (never
+/// `--embedding-provider`). Any failure (no remote configured, credential,
+/// probe) degrades to local with a warning — the MCP convention is to keep
+/// serving, the opposite of the CLI's fail-closed startup.
+async fn inject_remote_embedding_first(container: &Container) {
+    if let Some(adapter) = try_remote_embedding_port().await {
+        container.inject_vault_ports(VaultAiPorts {
+            embedding_port: Some(adapter),
+            ..Default::default()
+        });
+        tracing::info!("vault-search embedding served by remote provider (lazy MCP wiring)");
+    }
+}
+
+/// Attempt the remote embedding branch of the lazy MCP wiring (#1462).
+///
+/// Loads the config-file providers and runs the shared embedding preflight
+/// against the DEFAULT slot with `offline = false` (the daemon owns no
+/// offline mode). Returns the probed adapter, or `None` when local serves
+/// (no remote configured, `LocalOnnx` default, or any construction/probe
+/// failure — each logged, never fatal).
+async fn try_remote_embedding_port(
+) -> Option<Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort>> {
+    let loaded = webfang_core::cli::config::ConfigDefaults::load(
+        &webfang_core::cli::config::resolve_config_path(),
+    );
+    let providers = webfang_core::domain::providers::ProvidersConfig {
+        providers: loaded.providers,
+    };
+    // No argv reaches the daemon: default slot only.
+    let opts = webfang_core::application::crawl_options::CrawlOptions::default();
+    match webfang_core::cli::llm_wire::build_embedding_provider(&opts, &providers, false).await {
+        Ok(Some(adapter)) => Some(adapter),
+        Ok(None) => None,
+        Err(e) => {
+            tracing::warn!(
+                error = ?e,
+                "remote embedding unavailable, vault search keeps the local adapter"
+            );
+            None
+        },
     }
 }
 

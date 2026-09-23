@@ -530,6 +530,11 @@ LLM Extraction:
           
           [env: WEBFANG_LLM_PROVIDER=]
 
+      --embedding-provider <EMBEDDING_PROVIDER>
+          Provider id to use for embeddings (default: first provider declaring the `embedding` capability; local pool when unset or local)
+          
+          [env: WEBFANG_EMBEDDING_PROVIDER=]
+
 EXIT CODES:
   0    Success
   2    No URLs discovered

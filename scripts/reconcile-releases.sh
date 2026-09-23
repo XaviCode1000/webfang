@@ -28,7 +28,22 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-mapfile -t tags < <(bash "$REPO_ROOT/scripts/release-plz-tags.sh" --all)
+# Capture the exit status EXPLICITLY. `mapfile -t tags < <(...)` discards it: with a
+# broken trust predicate the producer exits non-zero, the list is empty, and this
+# script would print "nothing to reconcile" and exit 0 — a green sweep over a dead
+# filter (webfang#1476). An empty list is only trustworthy when the producer said so.
+rc=0
+tag_list="$(bash "$REPO_ROOT/scripts/release-plz-tags.sh" --all)" || rc=$?
+if [[ "$rc" -ne 0 ]]; then
+  echo "::error::the trust predicate could not run (exit $rc) - refusing to sweep, because an unreadable filter is indistinguishable from 'no tags'." >&2
+  exit 1
+fi
+
+if [[ -n "$tag_list" ]]; then
+  mapfile -t tags <<<"$tag_list"
+else
+  tags=()
+fi
 
 if [[ "${#tags[@]}" -eq 0 ]]; then
   echo "No release-plz tags in history; nothing to reconcile."

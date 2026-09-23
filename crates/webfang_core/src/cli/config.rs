@@ -65,6 +65,19 @@ impl ConfigDefaults {
     }
 }
 
+/// Resolve the webfang config file path (graceful: missing file = defaults).
+///
+/// Shared by the CLI and MCP composition roots so both read the same
+/// `[[providers]]` declarations (#1462): the daemon owns no argv, and only
+/// this file can carry its embedding-slot selection.
+#[must_use]
+pub fn resolve_config_path() -> std::path::PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("webfang")
+        .join("config.toml")
+}
+
 /// Check if NO_COLOR env var is set (any non-empty value).
 pub fn is_no_color() -> bool {
     std::env::var("NO_COLOR")

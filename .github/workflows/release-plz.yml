@@ -153,7 +153,12 @@ jobs:
           # scripts/ensure-release.sh, shared with the scheduled sweep
           # (release-reconcile.yml) so the two cannot disagree about what
           # "complete" means, or about how a failed dispatch is retried.
-          bash scripts/ensure-release.sh "$TAG"
+          # ensure-release.sh takes expected_sha as positional arg 2 — without
+          # it the default-branch dispatch hits L1.1 Identity fail-closed
+          # ("default-branch dispatch requires PROV_EXPECTED_SHA input"), the
+          # exact block observed on the v2.2.0 dispatch (run 35765291580).
+          EXPECTED_SHA="$(git rev-parse "refs/tags/$TAG^{commit}")"
+          bash scripts/ensure-release.sh "$TAG" "$EXPECTED_SHA"
 
   # Release PR generator. Re-enabled after upstream release-plz 0.3.168 shipped
   # #3058 ("reconstruct git-only releases without creating crate archives"),
@@ -166,8 +171,14 @@ jobs:
   #
   # Verified 2026-09-18 with CLI 0.3.168 against a clone of main: next-version
   # determination completed for all 6 packages (2.1.0 → 2.1.1) with zero
-  # `cargo package` invocation. `release-plz/action@v0.5` is intentionally
-  # unpinned and resolves the latest CLI, so no pin is needed here.
+  # `cargo package` invocation.
+  #
+  # Both jobs pin the action by SHA (`release-plz/action@26c577bbc3f9ecc178fc9e9afc34ee43e6f4a080`).
+  # The CLI version is NOT "latest": it comes from that pin's `version` input
+  # default — 0.3.169 as of 2026-09 (includes upstream release-plz #3058, the
+  # git_only fix noted above). Bumping the CLI therefore requires either
+  # updating the SHA pin or passing an explicit `version:` input; it does not
+  # float to latest on its own.
   #
   # `continue-on-error` is deliberately GONE (webfang#1476): while it was set,
   # the job reported `completed/success` over a logged
