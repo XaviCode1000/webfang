@@ -387,6 +387,10 @@ mod tests {
     /// This is the tripwire from #1024 → #1027. A regression that re-introduced
     /// fabrication (e.g. reverting the fallback to `status: 200` / `Vec::new()`)
     /// would surface here as a status or cookie mismatch.
+    #[cfg_attr(
+        miri,
+        ignore = "fallback fetch builds a wreq client (boring-sys2 TLS_method FFI) against a real TCP MockServer; both unsupported by Miri (run 35896922208)"
+    )]
     #[tokio::test]
     async fn fallback_branch_propagates_status_and_cookies() {
         let (_server, url) = mock_203_with_cookie().await;
@@ -431,6 +435,10 @@ mod tests {
     /// which is expected — what matters is that both branches report the
     /// server-observed status faithfully. A regression that re-introduced
     /// fabrication would surface here as `with_router.status != without_router.status`.
+    #[cfg_attr(
+        miri,
+        ignore = "fallback fetch builds a wreq client (boring-sys2 TLS_method FFI) against a real TCP MockServer; both unsupported by Miri (run 35896922208)"
+    )]
     #[tokio::test]
     async fn branches_agree_on_status_after_fix() {
         let (_server, url) = mock_203_with_cookie().await;
@@ -485,6 +493,10 @@ mod tests {
     /// literal IPs. The guard exists for production traffic; this test bypasses
     /// it explicitly. Same pattern as
     /// `WreqDownloader::test_fetch_returns_final_url`.
+    #[cfg_attr(
+        miri,
+        ignore = "fallback fetch builds a wreq client (boring-sys2 TLS_method FFI) against a real TCP MockServer; both unsupported by Miri (run 35896922208)"
+    )]
     #[tokio::test]
     async fn fallback_branch_propagates_final_url_after_redirect() {
         let _guard = webfang_test_utils::EnvGuard::with(&[(
