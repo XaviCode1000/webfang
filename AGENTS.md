@@ -337,7 +337,26 @@ Worktrees live as **siblings** of the repo (never inside it — in-repo worktree
 │   └── fix-crawler-timeout/     # branch: fix/crawler-timeout
 ```
 
-Branch `feat/auth` → directory `feat-auth` (`/` → `-`). Worktree/branch matching is a CONVENTION the agent must verify; run `[ "$(basename "$PWD")" = "$(git branch --show-current | tr '/' '-')" ] || echo "MISMATCH"` before each commit in a worktree.
+Branch `feat/auth` → directory `feat-auth` (`/` → `-`). The binding invariant is: **every commit must land on the intended branch for the task or PR**. The directory-name proxy is the default verification; run `[ "$(basename "$PWD")" = "$(git branch --show-current | tr '/' '-')" ] || echo "MISMATCH"` before each commit in a worktree. If the proxy reports MISMATCH, do not commit unless the identity-exception protocol below is fully satisfied.
+
+### Identity-exception protocol (proxy failed, invariant still provable)
+
+A failed name proxy is not proof of a wrong worktree — but the local branch name alone is not proof of the right one either. Committing under a directory-name mismatch is allowed only when all three hold:
+
+1. **Externally-anchored expectation.** The intended branch is known from a source fixed outside this worktree before committing: PR metadata (`gh pr view --json headRefOid,headRefName`), task metadata, upstream ref, or explicit human instruction. A branch name that exists only inside the worktree proves nothing.
+2. **Verifiable binding.** The worktree is observably attached to that branch: `git symbolic-ref --short HEAD` plus `git worktree list` agree on worktree path → branch. Optional extra signal when the branch has an upstream: `git rev-parse @{u}`.
+3. **Ancestry, not equality.** Pre-commit HEAD must be at or descended from the expected tip/base — a strict `HEAD == expected tip` check breaks after the first commit in a sequence, so ancestry is the correct test.
+
+Every exception commit records the evidence in its body (compact trailer):
+
+```
+Worktree-Identity-Exception: directory-name mismatch
+Intended-Branch: <branch>
+Expected-Head: <sha>
+Evidence: <external source> + git symbolic-ref + git worktree list
+```
+
+If any condition fails, MISMATCH remains a hard stop.
 
 ### Worktree lifecycle
 
@@ -698,7 +717,7 @@ The repository currently does not use GitHub Merge Queue; `merge-when-green.sh` 
 - `git checkout` / `git switch` to change branches (use `git worktree add`).
 - `git stash` in any form (shared storage causes cross-worktree contamination).
 - Access sibling worktrees via relative paths (`../feat-auth/...`).
-- Commit in a worktree whose branch doesn't match the directory name.
+- Commit in a branch/directory-mismatched worktree without satisfying the identity-exception protocol.
 - Use `repo:"webfang"` (bare name) for intelligence tools in worktrees — always absolute path (#360).
 
 ---
