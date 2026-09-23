@@ -184,10 +184,27 @@ jobs:
   # the job reported `completed/success` over a logged
   # `##[error]Process completed with exit code 1` (run 35063811850) — it removed
   # the failure signal AND kept the green, which is worse than a red job.
+  #
+  # Ordered after release-plz-release (webfang#1546): the two jobs used to run
+  # in parallel, so on a Release PR merge this job checked out BEFORE the sibling
+  # job created the new v* tag, computed the next bump against stale state, and
+  # opened a phantom Release PR (webfang#1545: tag v2.3.1 at 14:31:04, phantom
+  # #1545 at 14:31:12 with an empty v2.3.1..main range). Same shape as closed
+  # #1531. On ordinary merges the release job is a verified no-op
+  # (verify-release-tag.sh exits 0), so this only serializes the checkout.
+  # always() + not-cancelled mirrors dispatch-release: a failed release job may
+  # still leave a correct tag (duplicate-tag 422, #1341) that the PR generator
+  # should see; a human cancel must not become a green PR update.
   release-plz-pr:
     name: Release-plz PR
+    needs: [release-plz-release]
     runs-on: ubuntu-latest
-    if: ${{ github.repository_owner == 'XaviCode1000' }}
+    if: >-
+      ${{
+        always() &&
+        needs.release-plz-release.result != 'cancelled' &&
+        github.repository_owner == 'XaviCode1000'
+      }}
     permissions:
       contents: write
       pull-requests: write
