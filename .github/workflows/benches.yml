@@ -64,11 +64,11 @@ jobs:
       # compile (~10-15 min incl. BoringSSL) fits comfortably in the
       # timeout-minutes budget below.
 
-      # Compile gate first: a broken bench fails here with a clear signal
-      # instead of mid-measurement.
-      - name: Compile gate (cargo bench --no-run)
-        run: cargo bench --no-run --locked
-
+      # Diagnostics BEFORE the compile gate (issue #1524): the fleet
+      # preempts runners with SIGTERM during the cold compile (exit 143),
+      # so recording the environment first means the next preemption
+      # leaves data instead of a blind log. Rerun a red night with:
+      #   gh run rerun <run-id> --failed
       - name: Record runner environment
         run: |
           {
@@ -78,8 +78,14 @@ jobs:
             grep -m1 "model name" /proc/cpuinfo || true
             nproc
             free -h | head -2 || true
+            df -h / | tail -1 || true
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # Compile gate first: a broken bench fails here with a clear signal
+      # instead of mid-measurement.
+      - name: Compile gate (cargo bench --no-run)
+        run: cargo bench --no-run --locked
 
       - name: Run full criterion suite
         run: cargo bench --locked
