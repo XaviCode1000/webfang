@@ -686,7 +686,7 @@ fn stage_budget_overrides(
                         n += 1;
                     }
                 },
-                // Non-numeric: the parser already emitted the warning.
+                // Non-numeric: the parser recorded the notice (replayed after logging init); the value is parsed again here for the provenance book.
                 Ok(None) => {},
                 Err(msg) => return Err(CliExit::ConfigError(msg)),
             }
