@@ -348,7 +348,18 @@ git worktree add ~/Projects/Rust/webfang-worktrees/feat-auth -b feat/auth
 cd ~/Projects/Rust/webfang-worktrees/feat-auth
 
 # Per-worktree bootstrap (NONE of these are shared), run INSIDE the worktree:
-cp ~/Projects/Rust/webfang/.envrc . && direnv allow     # gitignored; carries the per-tree cache policy
+# worktree .envrc = main's file with the two per-tree values overridden
+# (a byte-identical cp would inherit main's shared CARGO_TARGET_DIR +
+# CARGO_INCREMENTAL=1, violating the #1267 isolated-cache policy below)
+sed -e "s#cargo-target/webfang#cargo-target/$(basename "$PWD")#" \
+    -e 's#^export CARGO_INCREMENTAL=1#export CARGO_INCREMENTAL=0#' \
+    ~/Projects/Rust/webfang/.envrc > .envrc
+direnv allow     # gitignored; carries the per-tree cache policy
+
+# fail loudly instead of silently sharing a target dir
+export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:?}"
+[ "$CARGO_TARGET_DIR" != "$HOME/.cache/cargo-target/webfang" ] \
+  || { echo "REFUSING: shared target dir in a worktree (#1267)"; exit 1; }
 #   .envrc is the ONLY place this policy can live: mise.toml is byte-identical in
 #   every tree, so it cannot tell main from a worktree. A fresh worktree needs
 #   CARGO_TARGET_DIR=~/.cache/cargo-target/$(basename "$PWD") (isolated, #1267),
