@@ -117,10 +117,12 @@ case "${1:-}" in
   workflow)
     [[ "${2:-}" == "run" ]] || { echo "fake gh: unhandled invocation: $*" >&2; exit 99; }
     tag=""
+    expected_sha=""
     seen_ref=0
     for arg in "$@"; do
       [[ "$arg" == "--ref" ]] && seen_ref=1
       [[ "$arg" == tag=* ]] && tag="${arg#tag=}"
+      [[ "$arg" == expected_sha=* ]] && expected_sha="${arg#expected_sha=}"
     done
     # Mark the record if the dispatch pinned --ref. The sweep must run the CURRENT
     # release.yml from the default branch; pinning --ref would run the historical
@@ -128,6 +130,14 @@ case "${1:-}" in
     # by reading this marker instead of trusting the comment.
     (( seen_ref )) && tag="REF:$tag"
     printf '%s\n' "$tag" >>"$state/dispatched"
+    # Record expected_sha separately so existing tag-only pins stay exact.
+    # L1.1 Shape 2 (default-branch dispatch) requires this input; empty means
+    # the real release.yml would die at preflight (webfang#1540).
+    if [[ -n "$expected_sha" ]]; then
+      printf '%s\n' "$expected_sha" >>"$state/dispatched_sha"
+    else
+      printf 'MISSING\n' >>"$state/dispatched_sha"
+    fi
     remaining=0
     [[ -f "$state/fail_remaining" ]] && remaining="$(cat "$state/fail_remaining")"
     if (( remaining > 0 )); then
@@ -202,10 +212,11 @@ run_fixture() {
 }
 
 reset_state() {
-  rm -f "$STATE/dispatched"
+  rm -f "$STATE/dispatched" "$STATE/dispatched_sha"
   printf '0' >"$STATE/fail_remaining"
 }
 dispatched() { [[ -f "$STATE/dispatched" ]] && cat "$STATE/dispatched" || true; }
+dispatched_sha() { [[ -f "$STATE/dispatched_sha" ]] && cat "$STATE/dispatched_sha" || true; }
 
 echo "test_release_reconcile: behavioral checks for the reconciliation path"
 
@@ -242,6 +253,8 @@ esac
 
 # 5. The sweep must dispatch the trusted tag ONLY. If this ever passes with
 #    v1.0.0 dispatched, the sweep can publish binaries built from unrelated code.
+#    And every sweep dispatch must carry expected_sha (L1.1 Shape 2, webfang#1540):
+#    without it release.yml dies at preflight and the tag stays binary-less forever.
 reset_state
 rm -f "$COMPLETE_ASSETS" # neither tag has a Release now
 if run_fixture reconcile-releases.sh >/dev/null 2>&1; then rc=0; else rc=$?; fi
@@ -257,6 +270,12 @@ if dispatched | grep -q '^REF:'; then
 else
   check "sweep -> dispatch does not pin --ref" "current release.yml" "current release.yml"
 fi
+# L1.1 pin: the sweep must resolve and pass expected_sha for the trusted tag.
+# Vacuity guard first: the fixture tag must resolve, or the pin below is empty.
+expected_v999="$(git -C "$FIXTURE" rev-parse 'refs/tags/v9.9.9^{commit}')"
+check "fixture: trusted tag resolves to a commit" "40" "${#expected_v999}"
+check "sweep -> dispatch carries expected_sha (L1.1 Shape 2)" \
+  "$expected_v999" "$(dispatched_sha | tr '\n' ' ' | sed 's/ $//')"
 
 # 6. The sweep must be idempotent: a second pass over a now-complete Release
 #    dispatches nothing.
