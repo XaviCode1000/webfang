@@ -22,24 +22,100 @@ STATE="$WORK/state"
 mkdir -p "$BIN" "$STATE"
 
 # ─── Fake `gh` ───────────────────────────────────────────────────────────────
-# `gh release view <tag>` succeeds iff $STATE/assets-<tag> exists, and prints its
-# content as the asset list. `gh workflow run` records the dispatched tag and
-# fails while $STATE/fail_remaining is above zero, which is what lets the harness
-# distinguish "retried" from "gave up".
+# Four commands are modelled, each anchored to a measured fact (webfang#1535):
+#
+#   gh release view <tag>
+#       The by-name asset view. Measured EMPTY for a COMPLETE release (id
+#       394502300 / v2.3.0) while .../releases/<id>/assets returned all 5
+#       (control v2.2.0: 5 everywhere). The fixture therefore answers success
+#       with an EMPTY list whenever the release exists: a completeness check
+#       that still reads assets from this path reports a complete release as
+#       incomplete — exactly the spurious dispatch of run 35844323775.
+#
+#   gh api repos/<repo>/releases/tags/<tag>
+#       `--jq '.id'` returns a valid id EVEN WHEN the by-tag object's embedded
+#       .assets are empty (measured on 394502300: id fine, assets empty). Any
+#       other projection of the by-tag object (notably .assets) returns EMPTY
+#       for the same reason. Existence may be answered from here; assets may not.
+#       A missing release 404s the way real gh does (body on stdout,
+#       "gh: Not Found (HTTP 404)" on stderr, exit 1).
+#
+#   gh api repos/<repo>/releases/<id>/assets
+#       The one endpoint measured to return the FULL asset list (5 for
+#       394502300). Serves the $STATE/assets-<tag> fixture file. The fixture
+#       id embeds the tag (`fixture-<tag>`) so this handler can reverse it
+#       without a global table — the id is opaque to the caller.
+#
+#   gh workflow run
+#       Records the dispatched tag and fails while $STATE/fail_remaining is
+#       above zero, which is what lets the harness distinguish "retried" from
+#       "gave up".
 cat > "$BIN/gh" <<'FAKE'
 #!/usr/bin/env bash
 set -uo pipefail
 state="$FAKE_STATE"
-case "${1:-} ${2:-}" in
-  "release view")
+case "${1:-}" in
+  release)
+    [[ "${2:-}" == "view" ]] || { echo "fake gh: unhandled invocation: $*" >&2; exit 99; }
     tag="${3:-}"
     if [[ -f "$state/assets-$tag" ]]; then
-      cat "$state/assets-$tag"
+      # Release exists — but its embedded .assets are EMPTY (measured on
+      # release 394502300 / v2.3.0; see the fixture header). Exit 0 with no
+      # asset lines: that is the incident-time shape of this view.
       exit 0
     fi
     exit 1
     ;;
-  "workflow run")
+  api)
+    path="${2:-}"
+    jq_expr=""
+    [[ "${3:-}" == "--jq" ]] && jq_expr="${4:-}"
+    not_found() {
+      # Faithful to real gh (measured): body on stdout, error on stderr, rc=1.
+      printf '{"message":"Not Found","status":"404"}\n'
+      echo "gh: Not Found (HTTP 404)" >&2
+      exit 1
+    }
+    case "$path" in
+      repos/*/releases/tags/*)
+        tag="${path##*/}"
+        [[ -f "$state/assets-$tag" ]] || not_found
+        case "$jq_expr" in
+          .id)
+            # The id resolves even when embedded assets are empty — that is
+            # precisely why existence may be answered from the by-tag view.
+            printf 'fixture-%s\n' "$tag"
+            ;;
+          *)
+            # Any other projection — notably .assets — is EMPTY at incident
+            # time (release 394502300): a completeness check that reads
+            # assets from here sees zero and dispatches spuriously.
+            ;;
+        esac
+        exit 0
+        ;;
+      repos/*/releases/*/assets)
+        idpart="${path#*/releases/}" # <id>/assets
+        id="${idpart%/assets}"
+        case "$id" in
+          fixture-*)
+            tag="${id#fixture-}"
+            if [[ -f "$state/assets-$tag" ]]; then
+              cat "$state/assets-$tag"
+              exit 0
+            fi
+            ;;
+        esac
+        not_found
+        ;;
+      *)
+        echo "fake gh: unhandled api endpoint: $path" >&2
+        exit 99
+        ;;
+    esac
+    ;;
+  workflow)
+    [[ "${2:-}" == "run" ]] || { echo "fake gh: unhandled invocation: $*" >&2; exit 99; }
     tag=""
     seen_ref=0
     for arg in "$@"; do
@@ -227,6 +303,85 @@ case "$err" in
 esac
 # Restore the fixture for any later check; the trap cleans the whole tree anyway.
 cp "$REPO_ROOT/scripts/release-tag-trust.sh" "$FIXTURE/scripts/"
+
+# 8. Bug B (webfang#1535): a COMPLETE release whose by-tag view shows EMPTY
+#    assets must NOT be dispatched. Measured on release 394502300 / tag
+#    v2.3.0: the by-tag/by-name .assets array came back empty while
+#    .../releases/<id>/assets returned all 5, so the completeness check called
+#    a complete release incomplete and dispatched spuriously (run 35844323775).
+#    Two vacuity guards first: the pin below only means something while the
+#    fake really models the incident-time asymmetry. Then the behavioural pin:
+#    by-tag empty + by-id complete -> exit 0 and NO dispatch.
+reset_state
+cat >"$COMPLETE_ASSETS" <<'ASSETS'
+webfang-x86_64-unknown-linux-gnu.tar.gz
+webfang-aarch64-unknown-linux-gnu.tar.gz
+webfang-aarch64-apple-darwin.tar.gz
+webfang-x86_64-pc-windows-msvc.zip
+SHA256SUMS.txt
+ASSETS
+bytag_view="$(PATH="$BIN:$PATH" FAKE_STATE="$STATE" \
+  gh api repos/owner/repo/releases/tags/v9.9.9 --jq '.assets[].name')"
+check "fixture: by-tag embedded assets empty (incident 394502300)" "" "$bytag_view"
+byid_view="$(PATH="$BIN:$PATH" FAKE_STATE="$STATE" \
+  gh api repos/owner/repo/releases/fixture-v9.9.9/assets --jq '.[].name')"
+check "fixture: by-id assets complete (5)" "5" "$(grep -c . <<<"$byid_view" || true)"
+if run_fixture ensure-release.sh v9.9.9 >/dev/null 2>&1; then rc=0; else rc=$?; fi
+check "by-tag empty + by-id complete -> exit 0" "0" "$rc"
+check "by-tag empty + by-id complete -> no dispatch" "" "$(dispatched | tr '\n' ' ' | sed 's/ $//')"
+
+# 9. Bug A (webfang#1535): release-plz creates the annotated tag via the
+#    GitHub API (POST /git/refs) AFTER actions/checkout ran with
+#    fetch-tags: true, and release-plz.yml has no fetch between `Run
+#    release-plz` and `Verify the release tag`. Measured on run 35842521329:
+#    `git tag --points-at HEAD` on that stale clone saw no tag and
+#    outcome=failure hard-failed, while the dispatch job (fresh checkout)
+#    worked. verify-release-tag.sh must fetch tags itself before trusting the
+#    predicate — covered offline here with a local bare remote whose trusted
+#    tag lands only AFTER the clone is taken.
+BUG_A_BARE="$WORK/bug-a-remote.git"
+BUG_A_SRC="$WORK/bug-a-src"
+BUG_A_STALE="$WORK/bug-a-clone"
+git init -q --bare -b main "$BUG_A_BARE"
+git init -q -b main "$BUG_A_SRC"
+git -C "$BUG_A_SRC" config user.email tester@example.com
+git -C "$BUG_A_SRC" config user.name tester
+git -C "$BUG_A_SRC" commit -q --allow-empty -m "chore: init"
+git -C "$BUG_A_SRC" remote add origin "$BUG_A_BARE"
+git -C "$BUG_A_SRC" push -q -u origin main
+# The clone stands in for actions/checkout: taken BEFORE the tag exists.
+git clone -q "$BUG_A_BARE" "$BUG_A_STALE"
+mkdir -p "$BUG_A_STALE/scripts"
+cp "$REPO_ROOT/scripts/verify-release-tag.sh" \
+   "$REPO_ROOT/scripts/release-plz-tags.sh" \
+   "$REPO_ROOT/scripts/release-tag-trust.sh" "$BUG_A_STALE/scripts/"
+# The trusted tag lands AFTER the clone (release-plz's API-created ref).
+git -C "$BUG_A_SRC" -c user.name='github-actions[bot]' -c user.email='bot@github.com' \
+  tag -a v9.9.9 -m "chore: Release package webfang_core version 9.9.9"
+git -C "$BUG_A_SRC" push -q origin v9.9.9
+
+# The fixed verifier fetches and sees it: outcome=failure (the measured run's
+# state) plus the API-created tag must end green on the "Verified:" path. The
+# pre-fix script hard-failed here — that failure IS the pin.
+if out="$(cd "$BUG_A_STALE" && RELEASE_OUTCOME=failure bash scripts/verify-release-tag.sh 2>&1)"; then rc=0; else rc=$?; fi
+check "verify: tag created after clone -> exit 0 (fetch before predicate)" "0" "$rc"
+case "$out" in
+  *"Verified: v9.9.9"*) check "verify: tag created after clone -> Verified path" "yes" "yes" ;;
+  *) check "verify: tag created after clone -> Verified path" "yes" "no" ;;
+esac
+
+# The fetch is load-bearing, not decoration: remove the remote (fetch fails)
+# and the now-local tag. outcome=success must NOT turn the unverifiable empty
+# list into a green "Nothing to release" — failed fetch + no visible tag fails
+# closed, which is the second half of the Bug A contract.
+git -C "$BUG_A_STALE" tag -d v9.9.9 >/dev/null
+git -C "$BUG_A_STALE" remote remove origin
+if out="$(cd "$BUG_A_STALE" && RELEASE_OUTCOME=success bash scripts/verify-release-tag.sh 2>&1)"; then rc=0; else rc=$?; fi
+check "verify: failed fetch + no local tag + outcome=success -> exit 1" "1" "$rc"
+case "$out" in
+  *"Nothing to release"*) check "verify: failed fetch never green-lights 'nothing to release'" "absent" "present" ;;
+  *) check "verify: failed fetch never green-lights 'nothing to release'" "absent" "absent" ;;
+esac
 
 echo "test_release_reconcile: PASS=$PASS FAIL=$FAIL"
 if (( FAIL > 0 )); then

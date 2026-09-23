@@ -31,6 +31,30 @@ TAGS_SCRIPT="$REPO_ROOT/scripts/release-plz-tags.sh"
 # it — which is exactly what we need, since the whole point is to re-evaluate it.
 OUTCOME="${RELEASE_OUTCOME:-unknown}"
 
+# Refresh tags BEFORE trusting `git tag --points-at HEAD`.
+#
+# WHY (webfang#1535): release-plz creates the annotated tag via the GitHub API
+# (POST /git/refs) AFTER actions/checkout already ran with `fetch-tags: true`,
+# and release-plz.yml has no `git fetch` between `Run release-plz` and
+# `Verify the release tag`. The local clone is therefore STALE at verification
+# time: `git tag --points-at HEAD` sees an empty list, and under
+# RELEASE_OUTCOME=failure this script hard-failed ("no trusted releasable tag
+# exists at HEAD") even when the remote tag it had to verify was correct.
+# Measured on run 35842521329: verify failed on that stale clone while the
+# dispatch job still worked — it does a FRESH checkout, so it fetched the tag.
+#
+# The fetch lives HERE, not in the workflow, so every caller gets a clone that
+# can see tags created after checkout. A failed fetch must NOT become a green
+# verdict: below, "no trusted tag + failed fetch" fails closed (an empty list
+# from an unrefreshable clone is indistinguishable from staleness), while a
+# trusted tag that IS visible — fetched now or already local — takes the
+# existing success path unchanged.
+fetch_rc=0
+git fetch origin --tags --force || fetch_rc=$?
+if [[ "$fetch_rc" -ne 0 ]]; then
+  echo "::warning::git fetch origin --tags failed (exit $fetch_rc) - tags created after checkout may be invisible; the outcome below will fail closed unless a trusted tag is already visible." >&2
+fi
+
 # Capture the producer's exit status instead of letting `mapfile` discard it. With a
 # broken trust predicate the list comes back EMPTY, and an empty list under
 # OUTCOME=success is exactly the "nothing to release" branch below - so a dead filter
@@ -59,6 +83,17 @@ case "${#trusted[@]}" in
   0)
     if [[ "$OUTCOME" != "success" ]]; then
       echo "::error::release-plz failed (outcome=$OUTCOME) AND no trusted releasable tag exists at HEAD - a real failure, not the duplicate-tag 422. See the release-plz log above." >&2
+      exit 1
+    fi
+    # release-plz succeeded with no trusted tag at HEAD. Before calling this a
+    # no-op, the empty list must be TRUSTWORTHY — and it only is if the tag
+    # refresh above succeeded. A failed fetch leaves the clone exactly as stale
+    # as the defect this guard now covers (API-created tag never fetched, run
+    # 35842521329), so "no tag + broken fetch" cannot be told apart from "the
+    # tag exists remotely but we cannot see it". Fail closed; a green
+    # "nothing to release" must never be built on an unverifiable empty list.
+    if [[ "$fetch_rc" -ne 0 ]]; then
+      echo "::error::git fetch origin --tags failed (exit $fetch_rc) and no trusted releasable tag exists at HEAD - refusing to report 'nothing to release' from a clone whose tag list could not be refreshed (webfang#1535, run 35842521329)." >&2
       exit 1
     fi
     # release-plz succeeded. Before calling this a no-op, check whether a v* tag
