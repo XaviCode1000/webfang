@@ -600,6 +600,10 @@ mod memory_probe_tests {
     use super::*;
     use crate::infrastructure::observability::memory_probe;
 
+    #[cfg_attr(
+        miri,
+        ignore = "200k-iteration measurement probe hangs Miri past the lane cap (run 35876002219); no assertions, report-file side effect"
+    )]
     #[test]
     fn probe_visited_mirror_growth_200k_urls() {
         const N: usize = 200_000;
