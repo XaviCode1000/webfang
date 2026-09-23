@@ -762,6 +762,10 @@ mod tests {
     /// Soak: a long-lived server sees unique domains forever. Before the fix
     /// the map grew linearly (one `Vec` per domain, never removed); now the
     /// shared `MAX_TRACKED_DOMAINS` cap holds the size flat at the bound.
+    #[cfg_attr(
+        miri,
+        ignore = "1000 interpreted inserts with ~500 scan+sort eviction passes hang Miri past the lane cap (run 35896922208); size-plateau shape, meaningless under an interpreter"
+    )]
     #[test]
     fn soak_unique_domains_stays_bounded() {
         let clock = MockClock::new(Instant::now());
