@@ -5,20 +5,20 @@
 # on a disposable branch — not an inference).
 #
 # Runs INSIDE the hotfix PR worktree (base support/X.Y) and commits: root
-# Cargo.toml version, regenerated Cargo.lock, CHANGELOG.md entry, and the
-# version snapshot update. Idempotent: re-running after reviewing/accepting
-# the snapshot proceeds to the commit instead of failing.
+# Cargo.toml version, regenerated Cargo.lock, and CHANGELOG.md entry. The
+# version test no longer needs a snapshot rewrite (webfang#1543): it derives
+# expected output from CARGO_PKG_VERSION, so a re-run after a failed bump
+# just re-checks and proceeds to the commit instead of failing on a .snap.
 #
 # HOTFIX CODE vs RELEASE PREPARATION are different concepts sharing one PR:
 # the fix commit(s) come first (authored by the agent); this script enforces
 # the release contract (tag uniqueness, line accepts, lock in sync, CHANGELOG
-# entry, snapshot green) and produces the single `chore: bump` commit.
+# entry, `test_version` green) and produces the single `chore: bump` commit.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 NEW_VERSION="${1:?usage: bump-support-patch.sh X.Y.Z [hotfix-pr-number]}"
 PR_REF="${2:-}"
-SNAP="crates/webfang_core/tests/snapshots/cli_binary_test__test_version.snap"
 [[ "$NEW_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "versión $NEW_VERSION no es X.Y.Z" >&2; exit 1; }
 
 # --- Release contract (mechanical, no judgment) ---
@@ -64,17 +64,17 @@ ${ENTRY}"
   mv CHANGELOG.md.tmp CHANGELOG.md
 fi
 
-# --- Version snapshot test (a bump without its .snap = red CI) ---
-cargo nextest run -p webfang_core test_version >/dev/null 2>&1 || true
-if compgen -G "crates/webfang_core/tests/snapshots/*.snap.new" > /dev/null; then
-  echo "STOP: hay .snap.new pendiente de revisión." >&2
-  echo "Revisá el diff (cargo insta review), aceptá (cargo insta accept) y re-ejecutá este script." >&2
+# --- Version assertion (no snapshot: test derives expected from CARGO_PKG_VERSION) ---
+# A bump without rewriting a golden .snap used to leave red CI; the test no
+# longer freezes the version string (webfang#1543), so a green run here only
+# proves the binary still answers --version with the bumped package version.
+if ! cargo nextest run -p webfang_core test_version >/dev/null 2>&1; then
+  echo "STOP: test_version falló tras el bump." >&2
   exit 1
 fi
 
 # --- Commit (explicit stage; never -A inside an agent worktree) ---
 git add Cargo.toml Cargo.lock CHANGELOG.md
-[[ -f "$SNAP" ]] && git add "$SNAP"
 if git diff --cached --quiet; then
   echo "OK: nada nuevo que commitear (re-ejecución tras accept)."
 else

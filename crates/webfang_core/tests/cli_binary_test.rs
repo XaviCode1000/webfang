@@ -75,15 +75,22 @@ fn test_help_contains_scraper() {
     });
 }
 
-/// Test that --version outputs version and exits with code 0.
+/// Test that --version outputs the workspace version and exits with code 0.
+///
+/// Deliberately NOT an insta snapshot: the version string changes by design on
+/// every release-plz bump, so a golden file here fails every Release PR that
+/// does not also remember to rewrite it (webfang#1543). The expected value is
+/// derived from the same `CARGO_PKG_VERSION` the binary embeds — assert the
+/// contract, not a frozen copy of it.
 #[test]
 fn test_version() {
     let output = cmd().arg("--version").output().expect("run binary");
     assert!(output.status.success(), "expected success");
     let stdout = String::from_utf8_lossy(&output.stdout);
-    insta::assert_snapshot!(
-        "test_version",
-        redact_nondeterministic(Path::new("__no_temp__"), &stdout)
+    assert_eq!(
+        stdout.trim(),
+        format!("webfang {}", env!("CARGO_PKG_VERSION")),
+        "`webfang --version` must print the current package version"
     );
 }
 
