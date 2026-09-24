@@ -83,8 +83,17 @@
   Mutex centralizado) + `EngineConfig::{Single,Pool}` + `build_engine` +
   `?Sized` en `SemanticCleanerImpl` (cero cambios de firmas, workspace verde).
   Rollback = `EngineConfig::Single`. 11 tests mock-backed verdes.
-- [ ] Barrido MEASURE + decisión N documentada + rollout (en marcha)
-- [ ] Barrido MEASURE + decisión N documentada + rollout
+- [x] Barrido MEASURE + decisión N documentada + rollout → VEREDICTO
+  (2026-09-24, rama `feat/1456-p0-001-measure`, release + modelos reales):
+  **N=4, default flippeado a Pool.** Tablas y criterio (knee + RSS,
+  tie-break hacia menos maquinaria) en `docs/p0-001-n-decision.md`.
+  El criterio literal 6.0× era inalcanzable (techo medido 5.71×: una página
+  ya satura la CPU con cualquier config; la ganancia es por-página
+  15.28→2.81 s/pág). `batch` eliminado: pierde en wall (2.3× vs pool4) Y en
+  RSS pico (2,535 vs 1,822 MiB). Paridad bit-idéntica pool2/4/8 vs single.
+  Alcance del flip: CLI sí; MCP sigue `Single` hasta generalizar el seam de
+  puertos (vault/Tier-2 degradan honestamente en CLI-Pool, hatch
+  `WEBFANG_AI_ENGINE=single`).
 
 ## Seguimiento 2026-09-17 (rama `feat/1456-p0-001-mock`, sin PR, default sigue `Single`)
 
