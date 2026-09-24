@@ -976,7 +976,13 @@ jobs:
     # #1512: 120 min — a job timeout CANCELS THE WHOLE RUN even under
     # continue-on-error (the flag absorbs a `failure` conclusion, not the
     # cancellation signal), so this budget must fit the slowest advisory job.
-    timeout-minutes: 120
+    # #1565: 240 min — with every FFI trap gated, core interprets its full
+    # universe with zero UB/FAIL and outgrew 120:00 the same way it outgrew
+    # 30:00 in #766 (run 36023882015 on f4d07edf: steady progress 16:03→17:57,
+    # killed by the wall, `flag_on_with_env_credential_builds_provider` listed
+    # as ignored proving the gates live). 240 keeps 2x headroom inside the 6h
+    # hosted ceiling; revisit only with a new timeout-only kill past 240.
+    timeout-minutes: 240
     # #1510: advisory. Miri cannot execute BoringSSL FFI (TLS_method), inline
     # assembly (raw-cpuid via quanta/governor) nor recent syscalls, so the
     # weekly scheduled run has been structurally red every Monday since July
