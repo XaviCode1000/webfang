@@ -249,6 +249,10 @@ mod tests {
 
     /// Startup resolution: an Env credential whose variable is unset fails at
     /// construction — proving resolve happens once at boot, not on first call.
+    #[cfg_attr(
+        miri,
+        ignore = "reaches OpenAiCompatibleProvider::new which builds a real wreq client (boring-sys2 TLS_method FFI) before auth resolves; unsupported by Miri (run 36012367720)"
+    )]
     #[test]
     fn flag_on_with_unresolvable_env_credential_fails_at_startup() {
         webfang_test_utils::env_remove("WEBFANG_TEST_LLM_WIRE_MISSING");
@@ -272,6 +276,10 @@ mod tests {
     /// Happy path: configured provider + env credential resolves at startup
     /// and the provider reports its id/base_url. Set the var via the
     /// `EnvGuard` helper (clippy bans raw `std::env` mutation).
+    #[cfg_attr(
+        miri,
+        ignore = "reaches OpenAiCompatibleProvider::new which builds a real wreq client (boring-sys2 TLS_method FFI) before auth resolves; unsupported by Miri (run 36012367720)"
+    )]
     #[test]
     fn flag_on_with_env_credential_builds_provider() {
         // EnvGuard (not env_set) so the key is restored post-test.
@@ -300,6 +308,10 @@ mod tests {
     }
 
     /// `--llm-provider` absent picks the first completion-capable provider.
+    #[cfg_attr(
+        miri,
+        ignore = "reaches OpenAiCompatibleProvider::new which builds a real wreq client (boring-sys2 TLS_method FFI) before auth resolves; unsupported by Miri (run 36012367720)"
+    )]
     #[test]
     fn flag_on_without_provider_id_uses_default_completion_resolution() {
         let _guard =
