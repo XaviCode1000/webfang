@@ -812,6 +812,10 @@ mod tests {
         wreq::Client::new()
     }
 
+    #[cfg_attr(
+        miri,
+        ignore = "test_client() builds a real wreq::Client (boring-sys2 TLS_method FFI at build time); unsupported by Miri (exhaustive survey for #1563)"
+    )]
     #[tokio::test]
     async fn discovers_via_robots_absolute_directive() {
         let mock = MockServer::start().await;
@@ -828,6 +832,10 @@ mod tests {
         assert_eq!(result.unwrap(), "https://example.com/sitemap.xml");
     }
 
+    #[cfg_attr(
+        miri,
+        ignore = "test_client() builds a real wreq::Client (boring-sys2 TLS_method FFI at build time); unsupported by Miri (exhaustive survey for #1563)"
+    )]
     #[tokio::test]
     async fn discovers_via_robots_relative_directive() {
         let mock = MockServer::start().await;
@@ -844,6 +852,10 @@ mod tests {
         assert_eq!(result.unwrap(), format!("{}/sitemap.xml", mock.uri()));
     }
 
+    #[cfg_attr(
+        miri,
+        ignore = "test_client() builds a real wreq::Client (boring-sys2 TLS_method FFI at build time); unsupported by Miri (exhaustive survey for #1563)"
+    )]
     #[tokio::test]
     async fn discovers_via_fallback_location() {
         let mock = MockServer::start().await;
@@ -862,6 +874,10 @@ mod tests {
         assert_eq!(result.unwrap(), format!("{}/sitemap.xml", mock.uri()));
     }
 
+    #[cfg_attr(
+        miri,
+        ignore = "test_client() builds a real wreq::Client (boring-sys2 TLS_method FFI at build time); unsupported by Miri (exhaustive survey for #1563)"
+    )]
     #[tokio::test]
     async fn discovers_via_subpath_sitemap() {
         let mock = MockServer::start().await;
@@ -924,6 +940,10 @@ mod tests {
     /// with the typed `CrawlError::WafChallenge` (carrying host context and
     /// evidence chain) and emit a structured trace event — not silently fall
     /// through to `SitemapNotFound` (issue #879).
+    #[cfg_attr(
+        miri,
+        ignore = "test_client() builds a real wreq::Client (boring-sys2 TLS_method FFI at build time); unsupported by Miri (exhaustive survey for #1563)"
+    )]
     #[test]
     fn robots_txt_waf_challenge_yields_typed_error_and_trace_event() {
         ensure_waf_inspector();
@@ -977,6 +997,10 @@ mod tests {
     /// A benign robots.txt that merely mentions a WAF vendor at status 200 is
     /// Fingerprint-tier evidence, which never blocks without a correlated WAF
     /// status (REQ-WAF-09): discovery must proceed to fallbacks as before.
+    #[cfg_attr(
+        miri,
+        ignore = "test_client() builds a real wreq::Client (boring-sys2 TLS_method FFI at build time); unsupported by Miri (exhaustive survey for #1563)"
+    )]
     #[tokio::test]
     async fn benign_robots_txt_mentioning_vendor_does_not_trigger_waf_error() {
         let mock = MockServer::start().await;
@@ -996,6 +1020,10 @@ mod tests {
         );
     }
 
+    #[cfg_attr(
+        miri,
+        ignore = "test_client() builds a real wreq::Client (boring-sys2 TLS_method FFI at build time); unsupported by Miri (exhaustive survey for #1563)"
+    )]
     #[tokio::test]
     async fn errors_when_no_sitemap_found() {
         let mock = MockServer::start().await;
