@@ -584,12 +584,18 @@ async fn build_ai_cleaner(
     };
 
     // Engine selection (P0-001 MEASURE, issue #1456): env-first via
-    // `WEBFANG_AI_ENGINE` (`single` | `pool:<N>`), unset meaning `Single`
-    // (today's default — the user made no choice). Set-but-invalid is a loud
+    // `WEBFANG_AI_ENGINE` (`single` | `pool:<N>`), unset meaning the
+    // MEASURE-calibrated `Pool` default (rollout shipped per
+    // `docs/p0-001-n-decision.md`: N=4 knee, 5.44× wall, bit-identical
+    // correctness). `WEBFANG_AI_ENGINE=single` is the rollback hatch — it also
+    // restores the vault-search embedding and Tier 2 inspector sharing, which
+    // stay typed to the concrete single-session pool. Set-but-invalid is a loud
     // startup error, never a silent fallback (#874 discipline shared with
     // `AI_MODEL_ID` above). No `--ai-engine` flag by design: a flag could
-    // never reach the MCP daemon (no per-run argv), while the env var reaches
-    // both entry points from the shared `webfang_ai` layer.
+    // never reach the MCP daemon (no per-run argv); the env var reaches the
+    // CLI from the shared `webfang_ai` layer, while the MCP daemon still
+    // builds `Single` until its wiring resolves `EngineConfig` (seam
+    // follow-up, see the decision doc's rollout section).
     let engine_config = match webfang_ai::infrastructure_ai::EngineConfig::from_env() {
         Ok(config) => config,
         Err(e) => return Err(CliExit::ConfigError(e)),
@@ -625,13 +631,14 @@ async fn build_ai_cleaner(
                 }
             },
             webfang_ai::infrastructure_ai::EngineConfig::Pool { .. } => {
-                // Pool mode (MEASURE plumbing): the N-session engine behind the
-                // same `clean()` seam. The vault-search embedding adapter and
-                // the Tier 2 inspector stay typed to the concrete single
-                // `InferencePool`, so those ports degrade honestly (same as the
-                // `--ai` off path) with a loud warning instead of a second
-                // model load. Default stays `Single`; rollout needs explicit
-                // approval (see `docs/p0-001-n-decision.md`).
+                // Pool mode (MEASURE plumbing, now the default): the N-session
+                // engine behind the same `clean()` seam. The vault-search
+                // embedding adapter and the Tier 2 inspector stay typed to the
+                // concrete single `InferencePool`, so those ports degrade
+                // honestly (same as the `--ai` off path) with a loud warning
+                // instead of a second model load — `WEBFANG_AI_ENGINE=single`
+                // restores them. Generalizing that seam (erased-engine ports)
+                // is the scoped follow-up that removes this degradation.
                 match SemanticCleanerImpl::new_with_engine_config(config, engine_config).await {
                     Ok(cleaner) => {
                         tracing::warn!(

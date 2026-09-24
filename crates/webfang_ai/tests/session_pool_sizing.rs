@@ -77,11 +77,17 @@ fn default_pool_size_is_derived_and_overridable() {
     );
 }
 
-/// Rollback identity: the default config IS `Single` (today's behavior), so
-/// rollback is a one-variant change.
+/// Default identity: the default config IS the calibrated `Pool`
+/// (`default_pool_size()`), while `EngineConfig::single()` still names the
+/// rollback variant explicitly (`WEBFANG_AI_ENGINE=single`).
 #[test]
-fn engine_config_defaults_to_single_for_trivial_rollback() {
-    assert_eq!(EngineConfig::default(), EngineConfig::Single);
+fn engine_config_defaults_to_calibrated_pool() {
+    assert_eq!(
+        EngineConfig::default(),
+        EngineConfig::Pool {
+            size: EngineConfig::default_pool_size()
+        }
+    );
     assert_eq!(EngineConfig::single(), EngineConfig::Single);
 }
 

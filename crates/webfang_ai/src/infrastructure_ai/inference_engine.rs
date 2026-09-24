@@ -540,16 +540,29 @@ impl InferenceEngine for MockInferenceEngine {
 /// exclusively through [`EngineConfig::from_env`] (`WEBFANG_AI_ENGINE`): no CLI
 /// args by design — a flag could never reach the MCP daemon, which has no
 /// per-run argv and already resolves `AI_MODEL_ID` from the environment (#874).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineConfig {
-    /// Today's behavior: one shared session behind [`InferencePool`].
-    #[default]
+    /// One shared session behind [`InferencePool`] — the pre-#1456 behavior,
+    /// kept as the explicit rollback hatch (`WEBFANG_AI_ENGINE=single`).
     Single,
     /// N independent sessions; `size` is the MEASURE-calibrated dial.
     Pool {
         /// Session count (the MEASURE-calibrated dial; explicit override).
         size: NonZeroUsize,
     },
+}
+
+impl Default for EngineConfig {
+    /// The MEASURE-calibrated default (issue #1456 rollout): `Pool` at
+    /// [`Self::default_pool_size`]. `Single` is the explicit rollback, never
+    /// assumed: the release sweep (docs/p0-001-n-decision.md, 2026-09-24)
+    /// measured 5.44× wall on the fixed 8-page corpus at N=4 with
+    /// bit-identical embeddings on every pool size.
+    fn default() -> Self {
+        Self::Pool {
+            size: Self::default_pool_size(),
+        }
+    }
 }
 
 impl EngineConfig {
@@ -572,12 +585,15 @@ impl EngineConfig {
     }
 
     /// Default pool size derived from system parallelism (canonical detector
-    /// seam): half the cores clamped to [2, 8]. A starting dial only — the
-    /// MEASURE task calibrates N with numbers, never intuition.
+    /// seam): half the cores clamped to [2, 4]. Calibrated by the P0-001
+    /// release sweep (docs/p0-001-n-decision.md, 2026-09-24, 16-core/97m): N=4
+    /// is the RSS knee — pool2→4 bought 20.5% wall for +764 MiB, while 4→8
+    /// bought 4.7% (inside run-to-run variance) for +1,535 MiB. Smaller
+    /// machines scale down structurally instead of inheriting that constant.
     #[must_use]
     pub fn default_pool_size() -> NonZeroUsize {
         let cores = webfang_core::domain::budget::detector::system_parallelism().get();
-        NonZeroUsize::new((cores / 2).clamp(2, 8)).unwrap_or(NonZeroUsize::MIN)
+        NonZeroUsize::new((cores / 2).clamp(2, 4)).unwrap_or(NonZeroUsize::MIN)
     }
 
     /// Split `total_cores` intra-op threads across `pool_size` sessions.
@@ -597,8 +613,9 @@ impl EngineConfig {
 
     /// Read the engine selection from [`Self::ENV_VAR`].
     ///
-    /// Unset, empty, or whitespace-only means [`EngineConfig::Single`] (today's
-    /// default — the user made no choice). A set-but-invalid value is a loud
+    /// Unset, empty, or whitespace-only means [`EngineConfig::default`] (the
+    /// MEASURE-calibrated `Pool` rollout — the user made no choice). A
+    /// set-but-invalid value is a loud
     /// `Err` in Spanish: it must never silently fall back to `Single` (#874
     /// discipline: a poisoned env var fails startup instead of mismeasuring).
     /// Pure core in `Self::resolve_spec()` so tests stay race-free.
@@ -610,7 +627,7 @@ impl EngineConfig {
     /// race-free under parallel execution (no real env mutation).
     fn resolve_spec(raw: Option<&str>) -> Result<Self, String> {
         match raw.map(str::trim).filter(|s| !s.is_empty()) {
-            None => Ok(Self::Single),
+            None => Ok(Self::default()),
             Some(spec) => spec.parse(),
         }
     }
@@ -1339,19 +1356,31 @@ mod tests {
 
     // --- EngineConfig::from_env tests (P0-001 MEASURE, issue #1456) ---
 
-    /// Unset / empty / whitespace-only env means `Single`: the user made no
-    /// choice, so the production default applies silently (only set-but-invalid
-    /// is loud). Pure `resolve_spec`, so no env mutation under parallel tests.
+    /// Unset / empty / whitespace-only env means the calibrated default: the
+    /// user made no choice, so the production default applies silently (only
+    /// set-but-invalid is loud). Pure `resolve_spec`, so no env mutation under
+    /// parallel tests; the default is compared against `EngineConfig::default`
+    /// rather than a hardcoded size because `default_pool_size` derives from
+    /// the ambient machine's parallelism.
     #[test]
-    fn test_engine_config_unset_or_blank_means_single() {
-        assert_eq!(EngineConfig::resolve_spec(None), Ok(EngineConfig::Single));
+    fn test_engine_config_unset_or_blank_means_calibrated_default() {
+        assert_eq!(
+            EngineConfig::resolve_spec(None),
+            Ok(EngineConfig::default())
+        );
         assert_eq!(
             EngineConfig::resolve_spec(Some("")),
-            Ok(EngineConfig::Single)
+            Ok(EngineConfig::default())
         );
         assert_eq!(
             EngineConfig::resolve_spec(Some("   \t")),
-            Ok(EngineConfig::Single)
+            Ok(EngineConfig::default())
+        );
+        assert_eq!(
+            EngineConfig::default(),
+            EngineConfig::Pool {
+                size: EngineConfig::default_pool_size()
+            }
         );
     }
 
