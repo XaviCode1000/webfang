@@ -519,6 +519,10 @@ mod tests {
         );
     }
 
+    #[cfg_attr(
+        miri,
+        ignore = "builds a real wreq client (boring-sys2 TLS_method FFI) against a TCP MockServer; both unsupported by Miri (run 35914433586)"
+    )]
     #[tokio::test]
     async fn embedding_remote_unresolvable_credential_is_config_error() {
         use wiremock::MockServer;
@@ -545,6 +549,10 @@ mod tests {
         );
     }
 
+    #[cfg_attr(
+        miri,
+        ignore = "builds a real wreq client (boring-sys2 TLS_method FFI) against a TCP MockServer; both unsupported by Miri (run 35914433586)"
+    )]
     #[tokio::test]
     async fn embedding_remote_probes_and_serves_adopted_dim() {
         use wiremock::MockServer;
@@ -565,6 +573,10 @@ mod tests {
         assert_eq!(adapter.embedding_dim(), 8);
     }
 
+    #[cfg_attr(
+        miri,
+        ignore = "builds a real wreq client (boring-sys2 TLS_method FFI) against a TCP MockServer; both unsupported by Miri (run 35914433586)"
+    )]
     #[tokio::test]
     async fn embedding_remote_pin_mismatch_is_config_error() {
         use wiremock::MockServer;
@@ -586,6 +598,10 @@ mod tests {
         );
     }
 
+    #[cfg_attr(
+        miri,
+        ignore = "builds a real wreq client (boring-sys2 TLS_method FFI) against a TCP MockServer; both unsupported by Miri (run 35914433586)"
+    )]
     #[tokio::test]
     async fn embedding_remote_missing_model_is_config_error() {
         use wiremock::MockServer;
