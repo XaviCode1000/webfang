@@ -158,13 +158,14 @@ pub fn derive_max_instances(
     thresholds: RamThresholds,
 ) -> MaxChromeDecision {
     // Integer usage percentage, identical to the governor's
-    // `used * 100 / total`; over-total usage clamps to 100%.
+    // `used * 100 / total`; over-total usage clamps to 100%. `checked_div`
+    // yields `None` exactly when `total_ram_bytes == 0`, which maps to 0 —
+    // same result as the previous explicit zero-guard.
     let used = used_ram_bytes.min(total_ram_bytes);
-    let usage_percent = if total_ram_bytes == 0 {
-        0
-    } else {
-        used.saturating_mul(100) / total_ram_bytes
-    } as u8;
+    let usage_percent = used
+        .saturating_mul(100)
+        .checked_div(total_ram_bytes)
+        .unwrap_or(0) as u8;
 
     if usage_percent >= thresholds.critical_percent {
         return MaxChromeDecision::Deny;
