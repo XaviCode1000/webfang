@@ -84,8 +84,7 @@ pub fn sanitize_filename_component(name: &str) -> Option<String> {
 
     let candidate = cleaned
         .split(['/', '\\'])
-        .filter(|segment| !segment.is_empty() && *segment != "." && *segment != "..")
-        .next_back()
+        .rfind(|segment| !segment.is_empty() && *segment != "." && *segment != "..")
         .map(str::to_string)?;
 
     if candidate.len() <= MAX_FILENAME_LEN {

@@ -23,7 +23,7 @@
 //!    redirect target could reach an address that was never validated at
 //!    entry (DNS rebinding / TOCTOU included).
 //! 3. **Belt-and-suspenders literal guard** —
-//!    [`$1`] still
+//!    [`redirect_policy`] still
 //!    stops redirects whose target is a *literal* forbidden IP synchronously,
 //!    before any resolution happens.
 //!
@@ -42,7 +42,7 @@
 //! gap left open by layers 1 and 3, with no overlap and no hole.
 //!
 //! All layers share
-//! [`$1`] as the
+//! [`is_forbidden_ip`](crate::domain::ssrf_guard::is_forbidden_ip) as the
 //! single deny list.
 
 // Re-exports of the pure policy this module's own bodies consume. The canonical
@@ -82,9 +82,9 @@ pub struct ForbiddenResolutionError {
 /// default when hickory-dns is disabled — the GAI path: blocking
 /// `getaddrinfo` through [`tokio::net::lookup_host`]. Every address in the
 /// answer set is validated with
-/// [`$1`]; if ANY address is
-/// forbidden, the entire resolution fails (fail-closed, no safe-subset
-/// filtering).
+/// [`is_forbidden_ip`](crate::domain::ssrf_guard::is_forbidden_ip); if ANY
+/// address is forbidden, the entire resolution fails (fail-closed, no
+/// safe-subset filtering).
 ///
 /// Because wreq follows redirects inside the same client stack
 /// (`FollowRedirectLayer`), every redirect hop's connection resolves through
@@ -106,7 +106,7 @@ pub struct ForbiddenResolutionError {
 /// Note: wreq short-circuits IP-literal hosts before calling any custom
 /// resolver, so this type only ever sees hostname connections; literal-IP
 /// targets are covered by entry validation and
-/// [`$1`].
+/// [`redirect_policy`].
 ///
 /// The per-client loopback permit (#1462) travels as a plain `bool` captured
 /// at construction alongside the escape hatch: a resolver built with

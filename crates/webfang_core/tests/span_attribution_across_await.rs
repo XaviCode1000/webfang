@@ -227,7 +227,7 @@ async fn drain_flood(flood: Vec<tokio::task::JoinHandle<()>>) {
 }
 
 fn maybe_emit_page_error(page: u32) {
-    if page % 2 == 0 {
+    if page.is_multiple_of(2) {
         tracing::error!(page = page, error = "boom", "page failed");
     }
 }

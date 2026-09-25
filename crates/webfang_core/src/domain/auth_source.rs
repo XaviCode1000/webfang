@@ -331,12 +331,11 @@ mod tests {
         let plaintext = "sk-age-roundtrip-secret";
         use std::io::Write as _;
         let ciphertext = {
-            let mut out = age::Encryptor::with_recipients(std::iter::once(
-                &recipient as &(dyn age::Recipient),
-            ))
-            .expect("encryptor")
-            .wrap_output(Vec::new())
-            .expect("wrap_output");
+            let mut out =
+                age::Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient))
+                    .expect("encryptor")
+                    .wrap_output(Vec::new())
+                    .expect("wrap_output");
             out.write_all(plaintext.as_bytes()).expect("write");
             out.finish().expect("finish")
         };
