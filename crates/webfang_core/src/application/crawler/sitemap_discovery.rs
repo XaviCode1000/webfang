@@ -133,7 +133,28 @@ pub async fn crawl_with_sitemap_resolved(
     config: &CrawlerConfig,
     correlation: &CorrelationId,
 ) -> Result<Vec<DiscoveredUrl>, CrawlError> {
-    crawl_with_sitemap_internal(base_url, sitemap, config, correlation).await
+    crawl_with_sitemap_resolved_boxed(base_url, sitemap, config, correlation).await
+}
+
+// This manual boxing cuts the `dyn Future + Send` coercion across both the
+// `crawl_with_sitemap` and `discover_sitemap` `#[tool]` boundaries. Without
+// this boundary, the compiler can hit the recursion limit while evaluating
+// `CoerceUnsized` through the deeply nested sitemap future (rust-lang/rust#159228).
+// If downstream depth reintroduces this warning, add the same boxed boundary at
+// the new convergence point rather than suppressing the recursion diagnostic.
+fn crawl_with_sitemap_resolved_boxed<'a>(
+    base_url: &'a str,
+    sitemap: Option<&'a ValidUrl>,
+    config: &'a CrawlerConfig,
+    correlation: &'a CorrelationId,
+) -> std::pin::Pin<
+    std::boxed::Box<
+        dyn std::future::Future<Output = Result<Vec<DiscoveredUrl>, CrawlError>> + Send + 'a,
+    >,
+> {
+    std::boxed::Box::pin(async move {
+        crawl_with_sitemap_internal(base_url, sitemap, config, correlation).await
+    })
 }
 
 /// Crawl with sitemap (internal version with progress tracking)
