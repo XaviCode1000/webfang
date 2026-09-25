@@ -41,4 +41,5 @@ Make `WEBFANG_MCP_DISABLE_SSRF` disable only the MCP entry guard for the exact v
 - `git diff --check` — passed.
 - `llm_extraction.rs` has no diff; C-01b remains out of scope.
 - Native review collection was attempted on the frozen candidate but produced no reviewer result. Host relay returned HTTP 403 `FreeTierError: OpenCode's free tier can only be used from within OpenCode`; 0 reviewers were prepared or submitted. The candidate remains unmutated, and no review capture or delivery was performed.
-- No commit or push performed.
+- Delivery completed after the review blocker was documented: commit `a9eff4cd` was pushed to `origin/fix/c01a-mcp-ssrf`.
+- Native review remains unavailable (`review-risk` host relay returned HTTP 403 `FreeTierError`); delivery therefore followed ordinary repository policy.
