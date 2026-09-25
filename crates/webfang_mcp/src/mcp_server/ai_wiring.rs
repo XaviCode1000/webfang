@@ -30,10 +30,14 @@ use webfang_core::domain::embedding_port::EmbeddingPort;
 /// Injects, in order, through [`inject_vault_ports`](Container::inject_vault_ports)
 /// (interior mutability through `&self`, #759): the ONNX
 /// [`EmbeddingAdapter`](webfang_ai::EmbeddingAdapter) — assembled from the
-/// semantic cleaner's shared inference pool + tokenizer, so the ONNX model is
-/// loaded exactly once — a [`MarkdownChunker`](webfang_ai::MarkdownChunker),
-/// and a SQLite-backed
+/// semantic cleaner's shared erased engine + tokenizer (#1569), so the ONNX
+/// model is loaded exactly once — a
+/// [`MarkdownChunker`](webfang_ai::MarkdownChunker), and a SQLite-backed
 /// [`NoteRepository`](webfang_core::domain::note_repository::NoteRepository).
+///
+/// The engine argument is type-erased (`Arc<dyn InferenceEngine + Send +
+/// Sync>`) so the daemon serves vault-search embeddings from the SAME engine
+/// the cleaner built — `Single` or `Pool { N }` alike, per `WEBFANG_AI_ENGINE`.
 ///
 /// The `&self` injection is what makes the lazy MCP AI wiring possible (#759):
 /// the container is shared as `Arc<Container>` between the already-serving MCP
@@ -45,16 +49,16 @@ use webfang_core::domain::embedding_port::EmbeddingPort;
 /// time.
 pub async fn wire_ai_ports(
     container: &Container,
-    pool: Arc<webfang_ai::InferencePool>,
+    engine: Arc<dyn webfang_ai::infrastructure_ai::InferenceEngine + Send + Sync>,
     tokenizer: Arc<webfang_ai::MiniLmTokenizer>,
 ) {
     // 0. Remote embedding first (#1462) — extracted so this orchestrator
     //    stays under the cognitive-complexity ratchet.
     inject_remote_embedding_first(container).await;
 
-    // 1. Embedding port (ONNX adapter) — shares the cleaner's pool + tokenizer,
-    //    so this is infallible (no model resolution happens here).
-    let adapter = webfang_ai::EmbeddingAdapter::new(pool, tokenizer);
+    // 1. Embedding port (ONNX adapter) — shares the cleaner's erased engine +
+    //    tokenizer, so this is infallible (no model resolution happens here).
+    let adapter = webfang_ai::EmbeddingAdapter::new(engine, tokenizer);
     let dim = adapter.embedding_dim();
 
     // 2. Note repository (SQLite persistence) — only when the consumer
