@@ -91,8 +91,23 @@ several concurrent agent sessions on this repo, `mem_save` / `mem_judge` fail wi
 - **Never guess or invent a `session_id`.** Register one first with `mem_session_start`
   (explicit unique ID, e.g. `opencode-<task>-<YYYYMMDD>`), then pass that same
   `session_id` to every `mem_save` / `mem_judge` call for the rest of the session.
+- **Close it when the task ends: `mem_session_end(id, summary)`.** Good hygiene, **not** a
+  hard requirement: since engram v2.1.0 every session registration (MCP `mem_session_start`
+  and HTTP `POST /sessions` alike) writes a **30-minute `runtime_lease_expires_at`**, and an
+  **expired lease is excluded** from candidate resolution. A session whose runtime never
+  renews it therefore stops being a candidate **by itself, 30 minutes** after its last
+  renewal — no cleanup needed. Closing early only matters while your runtime is still alive.
+  The 27 stale sessions (`opencode-*`, `codebuff-*`, `pipeline-*`, `webfang-audit-*`…)
+  piled up here **before leases existed** (created 2026-09-19..23, pre-v2.1.0) and were
+  closed on 2026-09-26.
 - If `mem_save` returns `judgment_required: true`, judge every candidate with its own
   `judgment_id` from `candidates[]` — never the top-level one.
+- **Diagnose this specific failure** with
+  `engram doctor --check ambiguous_active_runtime_sessions --project webfang`. It is
+  diagnostic-only (`doctor repair` does not cover this check): it lists the session IDs
+  involved. If the collision is between two sessions that are **both genuinely alive**, that
+  is by design — end the finished one, or pass `session_id` (bullet above). Full mechanism in
+  the engram session-guard section of the `fedora-maintenance` vault, doc 12.
 - **On ANY engram error, run `engram --help` first** (then `engram <cmd> --help` for
   the failing command) before retrying or inventing flags. The CLI is also the
   fallback when MCP fails: `engram save "<title>" "<content>" --project webfang`,
