@@ -1,8 +1,12 @@
 //! Granite-97M based semantic inspector for Tier 2 selector repair.
 //!
-//! Implements [`SemanticInspectorPort`] using the existing [`InferencePool`]
-//! for ONNX inference and [`MiniLmTokenizer`] for tokenization. Embeddings
-//! are compared via cosine similarity to find the best matching CSS selector.
+//! Implements [`SemanticInspectorPort`] using an erased [`InferenceEngine`]
+//! (single-session
+//! [`InferencePool`](crate::infrastructure_ai::inference_engine::InferencePool) or N-session
+//! [`PooledInferenceEngine`](crate::infrastructure_ai::inference_engine::PooledInferenceEngine),
+//! #1569) for ONNX inference and [`MiniLmTokenizer`] for tokenization.
+//! Embeddings are compared via cosine similarity to find the best matching CSS
+//! selector.
 
 use std::sync::Arc;
 
@@ -14,20 +18,32 @@ use webfang_core::domain::semantic_inspector::{
 };
 
 use super::embedding_ops::cosine_similarity;
-use super::inference_engine::InferencePool;
 use super::tokenizer::MiniLmTokenizer;
+use crate::infrastructure_ai::inference_engine::InferenceEngine;
 
 /// Semantic inspector powered by Granite-97M embeddings via ONNX inference.
+///
+/// The engine dependency is type-erased (`Arc<dyn InferenceEngine + Send +
+/// Sync>`, #1569) so the SAME engine instance that backs the semantic cleaner
+/// also serves Tier 2 repair in both `Single` and `Pool` modes — a concrete
+/// `Arc<InferencePool>` coerces implicitly at the [`GraniteDomInspector::new`]
+/// call site (either engine flavor: the single-session
+/// [`InferencePool`](crate::infrastructure_ai::inference_engine::InferencePool) or the N-session
+/// [`PooledInferenceEngine`](crate::infrastructure_ai::inference_engine::PooledInferenceEngine)).
 pub struct GraniteDomInspector {
-    pool: Arc<InferencePool>,
+    pool: Arc<dyn InferenceEngine + Send + Sync>,
     tokenizer: Arc<MiniLmTokenizer>,
     threshold: f32,
 }
 
 impl GraniteDomInspector {
-    /// Create a new inspector with the given inference pool and tokenizer.
+    /// Create a new inspector with the given (erased) inference engine and tokenizer.
     #[must_use]
-    pub fn new(pool: Arc<InferencePool>, tokenizer: Arc<MiniLmTokenizer>, threshold: f32) -> Self {
+    pub fn new(
+        pool: Arc<dyn InferenceEngine + Send + Sync>,
+        tokenizer: Arc<MiniLmTokenizer>,
+        threshold: f32,
+    ) -> Self {
         Self {
             pool,
             tokenizer,

@@ -501,13 +501,15 @@ fn build_adaptive_engine(
 /// Build the Tier 2 semantic inspector from the cleaner's shared ONNX assets
 /// (#702).
 ///
-/// Returns `None` when no shared pool is available (`--ai` off or dry-run),
-/// degrading the adaptive engine to Tier 1 lexical repair. The threshold comes
+/// Returns `None` when no shared engine is available (`--ai` off or dry-run),
+/// degrading the adaptive engine to Tier 1 (lexical) repair. The threshold comes
 /// from the single shared [`AdaptiveSelectorOptions`] — no duplicate constant.
+/// The engine is erased (#1569), so Tier 2 works in `Single` AND `Pool` modes —
+/// both share the cleaner's engine through `shared_inference`.
 #[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
 fn semantic_inspector(
     shared: &Option<(
-        Arc<webfang_ai::InferencePool>,
+        Arc<dyn webfang_ai::infrastructure_ai::InferenceEngine + Send + Sync>,
         Arc<webfang_ai::MiniLmTokenizer>,
     )>,
     options: &AdaptiveSelectorOptions,
@@ -534,8 +536,9 @@ fn ai_init_error(e: SemanticError) -> CliExit {
 }
 
 /// Build the AI semantic cleaner and its vault-search ports, surfacing the
-/// cleaner's shared ONNX assets (pool + tokenizer) so the adaptive engine can
-/// reuse them for Tier 2 semantic repair (#702) without a second model load.
+/// cleaner's shared ONNX assets (erased engine + tokenizer) so the adaptive
+/// engine can reuse them for Tier 2 semantic repair (#702) without a second
+/// model load.
 #[cfg(feature = "ai")]
 async fn build_ai_cleaner(
     opts: &CrawlOptions,
@@ -544,7 +547,7 @@ async fn build_ai_cleaner(
         Option<Arc<dyn SemanticCleaner>>,
         webfang_core::application::container::VaultAiPorts,
         Option<(
-            Arc<webfang_ai::InferencePool>,
+            Arc<dyn webfang_ai::infrastructure_ai::InferenceEngine + Send + Sync>,
             Arc<webfang_ai::MiniLmTokenizer>,
         )>,
     ),
@@ -587,15 +590,12 @@ async fn build_ai_cleaner(
     // `WEBFANG_AI_ENGINE` (`single` | `pool:<N>`), unset meaning the
     // MEASURE-calibrated `Pool` default (rollout shipped per
     // `docs/p0-001-n-decision.md`: N=4 knee, 5.44× wall, bit-identical
-    // correctness). `WEBFANG_AI_ENGINE=single` is the rollback hatch — it also
-    // restores the vault-search embedding and Tier 2 inspector sharing, which
-    // stay typed to the concrete single-session pool. Set-but-invalid is a loud
-    // startup error, never a silent fallback (#874 discipline shared with
-    // `AI_MODEL_ID` above). No `--ai-engine` flag by design: a flag could
-    // never reach the MCP daemon (no per-run argv); the env var reaches the
-    // CLI from the shared `webfang_ai` layer, while the MCP daemon still
-    // builds `Single` until its wiring resolves `EngineConfig` (seam
-    // follow-up, see the decision doc's rollout section).
+    // correctness). `WEBFANG_AI_ENGINE=single` is the rollback hatch. Set-but-
+    // invalid is a loud startup error, never a silent fallback (#874
+    // discipline shared with `AI_MODEL_ID` above). No `--ai-engine` flag by
+    // design: a flag could never reach the MCP daemon (no per-run argv); the
+    // env var reaches both the CLI and the MCP daemon from the shared
+    // `webfang_ai` layer (#1569).
     let engine_config = match webfang_ai::infrastructure_ai::EngineConfig::from_env() {
         Ok(config) => config,
         Err(e) => return Err(CliExit::ConfigError(e)),
@@ -610,53 +610,29 @@ async fn build_ai_cleaner(
         });
 
     match model_config {
-        Ok(config) => match engine_config {
-            webfang_ai::infrastructure_ai::EngineConfig::Single => {
-                match SemanticCleanerImpl::new(config).await {
-                    Ok(cleaner) => {
-                        // Share the cleaner's ONNX pool + tokenizer (#433) so the
-                        // vault-search embedding adapter reuses the SAME model — one
-                        // `resolve_model_assets` call, one `InferencePool` on `--ai`.
-                        // Extracted before type-erasing the cleaner behind the trait.
-                        let (pool, tokenizer) = cleaner.shared_inference();
-                        // Surface a second Arc pair for Tier 2 wiring (#702); the vault
-                        // ports consume the originals below.
-                        let shared = Some((Arc::clone(&pool), Arc::clone(&tokenizer)));
-                        let cleaner: Option<Arc<dyn SemanticCleaner>> = Some(Arc::new(cleaner));
-                        let mut ports = build_vault_ports(pool, tokenizer).await;
-                        ports.cleaner = cleaner.clone();
-                        Ok((cleaner, ports, shared))
-                    },
-                    Err(e) => Err(ai_init_error(e)),
-                }
-            },
-            webfang_ai::infrastructure_ai::EngineConfig::Pool { .. } => {
-                // Pool mode (MEASURE plumbing, now the default): the N-session
-                // engine behind the same `clean()` seam. The vault-search
-                // embedding adapter and the Tier 2 inspector stay typed to the
-                // concrete single `InferencePool`, so those ports degrade
-                // honestly (same as the `--ai` off path) with a loud warning
-                // instead of a second model load — `WEBFANG_AI_ENGINE=single`
-                // restores them. Generalizing that seam (erased-engine ports)
-                // is the scoped follow-up that removes this degradation.
-                match SemanticCleanerImpl::new_with_engine_config(config, engine_config).await {
-                    Ok(cleaner) => {
-                        tracing::warn!(
-                            engine = ?engine_config,
-                            "motor AI en modo pool: puertos vault/embedding e inspector \
-                             Tier 2 degradados (seam concreto de sesión única fuera de \
-                             alcance); limpieza AI activa"
-                        );
-                        let cleaner: Option<Arc<dyn SemanticCleaner>> = Some(Arc::new(cleaner));
-                        let ports = webfang_core::application::container::VaultAiPorts {
-                            cleaner: cleaner.clone(),
-                            ..Default::default()
-                        };
-                        Ok((cleaner, ports, None))
-                    },
-                    Err(e) => Err(ai_init_error(e)),
-                }
-            },
+        Ok(config) => {
+            // ONE erased-engine constructor for both modes (#1569):
+            // `new_with_engine_config` routes `Single` through `build_engine`
+            // (byte-for-byte today's pool construction, drainer contract
+            // included) and `Pool { N }` through the N-session engine, and the
+            // cleaner erases to `SemanticCleanerImpl<dyn InferenceEngine +
+            // Send + Sync>` either way — so the vault-search embedding adapter
+            // and the Tier 2 inspector share the SAME engine + tokenizer in
+            // both modes: one `resolve_model_assets` call, one model in
+            // memory, no degradation warning.
+            match SemanticCleanerImpl::new_with_engine_config(config, engine_config).await {
+                Ok(cleaner) => {
+                    // Erased shared inference (#1569): hand the SAME engine +
+                    // tokenizer to the vault ports and Tier 2 wiring.
+                    let (engine, tokenizer) = cleaner.shared_inference();
+                    let shared = Some((Arc::clone(&engine), Arc::clone(&tokenizer)));
+                    let cleaner: Option<Arc<dyn SemanticCleaner>> = Some(Arc::new(cleaner));
+                    let mut ports = build_vault_ports(engine, tokenizer).await;
+                    ports.cleaner = cleaner.clone();
+                    Ok((cleaner, ports, shared))
+                },
+                Err(e) => Err(ai_init_error(e)),
+            }
         },
         Err(e) => Err(CliExit::ConfigError(format!(
             "Configuración de umbral AI inválida: {e}"
@@ -822,24 +798,24 @@ async fn build_and_run(opts: CrawlOptions) -> CliExit {
 /// Assemble the vault-search AI ports (#433) from the cleaner's shared model.
 ///
 /// Builds the ONNX embedding adapter + Markdown chunker (always under `ai`) from
-/// the semantic cleaner's shared inference pool + tokenizer — so the `--ai` path
-/// loads the ONNX model exactly once — plus the SQLite note repository (under
-/// `persistence`). Embedding + chunker assembly is infallible (the components are
-/// already valid); only the note repository can fail, and it degrades gracefully
-/// — the port stays `None` and the capability answers with an honest error rather
-/// than aborting the run.
+/// the semantic cleaner's shared erased engine + tokenizer — so the `--ai` path
+/// loads the ONNX model exactly once, in `Single` and `Pool` modes alike (#1569)
+/// — plus the SQLite note repository (under `persistence`). Embedding + chunker
+/// assembly is infallible (the components are already valid); only the note
+/// repository can fail, and it degrades gracefully — the port stays `None` and
+/// the capability answers with an honest error rather than aborting the run.
 #[cfg(feature = "ai")]
 async fn build_vault_ports(
-    pool: Arc<webfang_ai::InferencePool>,
+    pool: Arc<dyn webfang_ai::infrastructure_ai::InferenceEngine + Send + Sync>,
     tokenizer: Arc<webfang_ai::MiniLmTokenizer>,
 ) -> webfang_core::application::container::VaultAiPorts {
     use webfang_core::application::container::VaultAiPorts;
 
     let mut ports = VaultAiPorts::default();
 
-    // Assemble the embedding adapter from the cleaner's shared pool + tokenizer.
+    // Assemble the embedding adapter from the cleaner's shared engine + tokenizer.
     // Infallible — no model resolution happens here (that already happened once
-    // inside `SemanticCleanerImpl::new`), so there is nothing to degrade around.
+    // inside the cleaner constructor), so there is nothing to degrade around.
     let adapter = webfang_ai::EmbeddingAdapter::new(pool, tokenizer);
     ports.embedding_port = Some(Arc::new(adapter));
     ports.text_chunker = Some(Arc::new(webfang_ai::MarkdownChunker::new()));

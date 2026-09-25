@@ -125,14 +125,41 @@ pub fn spawn_ai_wiring(container: Arc<webfang_core::application::container::Cont
             return;
         },
     };
-    let span = tracing::info_span!("ai_lazy_wiring", model = variant.display_name());
+    // Engine selection, resolved exactly like the CLI (#1569): `WEBFANG_AI_ENGINE`
+    // (`single` | `pool:<N>`), unset meaning the MEASURE-calibrated `Pool`
+    // default. Same #874 discipline: a set-but-invalid value skips AI wiring
+    // with an error log instead of silently building a different engine.
+    let engine_config = match webfang_ai::infrastructure_ai::EngineConfig::from_env() {
+        Ok(config) => config,
+        Err(e) => {
+            tracing::error!(
+                "AI wiring skipped: WEBFANG_AI_ENGINE is set to an invalid engine \
+                 spec and cannot be silently defaulted ({e})"
+            );
+            return;
+        },
+    };
+    let span = tracing::info_span!(
+        "ai_lazy_wiring",
+        model = variant.display_name(),
+        engine = ?engine_config
+    );
 
     tokio::spawn(
         async move {
             let model_config = webfang_ai::ModelConfig::default().with_model_variant(variant);
-            match webfang_ai::SemanticCleanerImpl::new(model_config).await {
+            match webfang_ai::SemanticCleanerImpl::new_with_engine_config(
+                model_config,
+                engine_config,
+            )
+            .await
+            {
                 Ok(cleaner) => {
-                    let (pool, tokenizer) = cleaner.shared_inference();
+                    // Erased shared inference (#1569): the SAME engine +
+                    // tokenizer back the cleaner, the vault-search embedding
+                    // adapter and Tier 2 — one model load, Single and Pool
+                    // modes alike.
+                    let (engine, tokenizer) = cleaner.shared_inference();
                     let cleaner: Arc<dyn webfang_core::domain::semantic_cleaner::SemanticCleaner> =
                         Arc::new(cleaner);
                     container.inject_vault_ports(
@@ -141,7 +168,7 @@ pub fn spawn_ai_wiring(container: Arc<webfang_core::application::container::Cont
                             ..Default::default()
                         },
                     );
-                    ai_wiring::wire_ai_ports(&container, pool, tokenizer).await;
+                    ai_wiring::wire_ai_ports(&container, engine, tokenizer).await;
                     tracing::info!("AI ports wired (lazy, post-handshake)");
                 },
                 Err(e) => tracing::warn!(error = %e, "AI warmup failed; continuing without AI"),
