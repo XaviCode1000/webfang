@@ -25,7 +25,12 @@
 //! | `WEBFANG_DISABLE_SSRF_REDIRECT_GUARD` | `webfang_core::domain::ssrf_guard::DISABLE_REDIRECT_GUARD_ENV` | Client redirect policy's literal-IP stop |
 //! | `WEBFANG_DISABLE_SSRF_RESOLVER` | `webfang_core::domain::ssrf_guard::DISABLE_VALIDATING_RESOLVER_ENV` | Connect-time validating DNS resolver |
 //! | `WEBFANG_DISABLE_SSRF` (presence) | — (literal in `llm_extraction::ssrf_gate`, #703) | LLM base-URL SSRF gate |
-//! | `WEBFANG_MCP_DISABLE_SSRF` | `webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV` (#1348) | MCP entry validator |
+//! | `WEBFANG_MCP_DISABLE_SSRF` (exact `"1"`) | `webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV` (#1348) | MCP entry validator |
+//!
+//! `WEBFANG_MCP_DISABLE_SSRF` disables the MCP layer only for the exact value
+//! `"1"`; every other value leaves it enabled. This does not change the
+//! separate `WEBFANG_DISABLE_SSRF` contract: that variable remains
+//! presence-based for the LLM extraction base-URL SSRF gate.
 //!
 //! # Which hatch may a test arm? (#1308, scoped by #1396)
 //!

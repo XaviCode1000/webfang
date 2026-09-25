@@ -10,7 +10,7 @@ use tokio::net::lookup_host;
 // synchronous `wreq` redirect policy can reuse it; MCP depends on core, never
 // the other way around (#703).
 use webfang_core::domain::ssrf_guard::{
-    is_forbidden_ip, parse_ip_literal, WEBFANG_MCP_DISABLE_SSRF_ENV,
+    disables_ssrf, is_forbidden_ip, parse_ip_literal, WEBFANG_MCP_DISABLE_SSRF_ENV,
 };
 
 /// Check if SSRF protection is enabled (based on environment variable).
@@ -25,7 +25,27 @@ use webfang_core::domain::ssrf_guard::{
 /// harness needs one. The full matrix, and the reason the two stacks look different
 /// while sharing one deny list, is in `docs/ssrf-layers.md`.
 fn is_ssrf_enabled() -> bool {
-    std::env::var(WEBFANG_MCP_DISABLE_SSRF_ENV).is_err()
+    let raw = std::env::var(WEBFANG_MCP_DISABLE_SSRF_ENV).ok();
+    if raw
+        .as_deref()
+        .is_some_and(|value| !disables_ssrf(Some(value)))
+    {
+        warn_invalid_disable_value(raw.as_deref());
+    }
+
+    !disables_ssrf(raw.as_deref())
+}
+
+fn warn_invalid_disable_value(value: Option<&str>) {
+    static WARNED: std::sync::Once = std::sync::Once::new();
+    WARNED.call_once(|| {
+        tracing::warn!(
+            variable = WEBFANG_MCP_DISABLE_SSRF_ENV,
+            value = ?value,
+            "WEBFANG_MCP_DISABLE_SSRF has a present invalid value; only the exact value \
+             \"1\" disables the MCP SSRF entry pre-check"
+        );
+    });
 }
 
 /// Validate that a URL doesn't point to internal/private/forbidden IPs.
