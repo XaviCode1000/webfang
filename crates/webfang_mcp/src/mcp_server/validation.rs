@@ -12,6 +12,7 @@
 use rmcp::ErrorData as McpError;
 use serde_json::Value;
 use std::path::{Component, Path, PathBuf};
+use webfang_core::domain::crawler_port::filename::is_windows_reserved;
 
 /// Max URL length. 8 KiB matches the upper bound recommended by RFC 9110 §5.4
 /// for URI references and protects the server from memory DoS via oversize
@@ -21,6 +22,13 @@ pub const MAX_URL_LEN: usize = 8192;
 /// Max filesystem path length. 1 KiB is generous for relative paths and
 /// protects against accidentally-joined traversal strings.
 pub const MAX_PATH_LEN: usize = 1024;
+
+/// Max bytes per single filename component (issue #1608, XP-P-07 partial).
+/// ext4 caps at 255; we target the lowest common denominator so a name
+/// accepted here is creatable on every supported filesystem. Long-name
+/// mitigation (`\\?\` extended-length prefixes, manifests) is explicitly out
+/// of scope.
+const MAX_COMPONENT_BYTES: usize = 255;
 
 /// Max HTML / markdown / content blob length. 1 MiB protects the server from
 /// memory exhaustion via oversize inputs (legitimate pages fit comfortably).
@@ -111,7 +119,23 @@ pub fn require_safe_path(field: &str, value: &str) -> Result<PathBuf, McpError> 
             "must not contain '..' traversal components",
         ));
     }
+    // Per-component filename hardening (issue #1608): the relative-only
+    // contract means no drive prefix is legitimate anywhere in the value.
+    if let Some(reason) = normal_components(path).find_map(|c| filename_component_error(&c, false))
+    {
+        return Err(invalid_params(field, reason));
+    }
     Ok(path.to_path_buf())
+}
+
+/// The `Normal` components of `path` as lossy strings — the only components
+/// the filename-level checks apply to (structural kinds are handled by the
+/// callers' own rules).
+fn normal_components(path: &Path) -> impl Iterator<Item = std::borrow::Cow<'_, str>> {
+    path.components().filter_map(|c| match c {
+        Component::Normal(os) => Some(os.to_string_lossy()),
+        _ => None,
+    })
 }
 
 /// Detect a Windows-style drive-letter prefix (letter + `:`) regardless of
@@ -124,6 +148,64 @@ pub fn require_safe_path(field: &str, value: &str) -> Result<PathBuf, McpError> 
 fn has_windows_drive_prefix(value: &str) -> bool {
     let bytes = value.as_bytes();
     bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
+}
+
+/// Filename-level hardening shared by [`require_safe_filename`] and the
+/// per-component extension of [`require_safe_path`] /
+/// [`require_safe_path_allow_absolute`] (issue #1608).
+///
+/// Checks one path component (no separators can occur inside a
+/// `Component::Normal`) and returns the Spanish rejection reason for the
+/// first violated rule, or `None` when the component is safe:
+///
+/// * control characters (Unicode `Cc`: NUL, C0, DEL, C1) — rejected;
+/// * `:` anywhere (NTFS alternate-data-stream hazard) — rejected on every
+///   platform for cross-platform consistency (XP-P-05);
+/// * the remaining Windows-invalid set `< > " | ? *` (`/` and `\` are
+///   handled structurally by the callers);
+/// * Windows reserved device names via the shared stem-aware
+///   `is_windows_reserved` (`CON`, `con.txt`, ... — XP-P-04);
+/// * trailing `.` or trailing space (Windows strips both silently — XP-P-06;
+///   rejected, never trimmed, so callers see exactly what was asked);
+/// * component length over [`MAX_COMPONENT_BYTES`] (XP-P-07 partial).
+///
+/// `allow_drive_prefix` tolerates a leading `X:` (drive letter) in the
+/// component: `require_safe_path_allow_absolute` accepts absolute Windows
+/// paths like `C:\vault` (issue #590), whose drive colon is a separator, not
+/// an ADS hazard. Flat filenames and relative-only paths pass `false` — a
+/// filename can never be a drive, and a relative path must never contain one.
+fn filename_component_error(component: &str, allow_drive_prefix: bool) -> Option<String> {
+    if component.chars().any(char::is_control) {
+        return Some("contiene caracteres de control no válidos".to_string());
+    }
+    let probe = if allow_drive_prefix && has_windows_drive_prefix(component) {
+        &component[2..]
+    } else {
+        component
+    };
+    if probe.contains(':') {
+        return Some("no debe contener ':' (riesgo de flujos alternativos NTFS)".to_string());
+    }
+    if component
+        .chars()
+        .any(|c| matches!(c, '<' | '>' | '"' | '|' | '?' | '*'))
+    {
+        return Some("contiene caracteres no permitidos en Windows: < > \" | ? *".to_string());
+    }
+    if is_windows_reserved(component) {
+        return Some(
+            "usa un nombre reservado de Windows (CON, PRN, AUX, NUL, COM1-9, LPT1-9)".to_string(),
+        );
+    }
+    if component.ends_with('.') || component.ends_with(' ') {
+        return Some("no debe terminar en '.' ni en espacio".to_string());
+    }
+    if component.len() > MAX_COMPONENT_BYTES {
+        return Some(format!(
+            "supera el límite de {MAX_COMPONENT_BYTES} bytes por componente"
+        ));
+    }
+    None
 }
 
 /// Validate that `value` is a safe filesystem path: non-empty, ≤
@@ -155,6 +237,12 @@ pub fn require_safe_path_allow_absolute(field: &str, value: &str) -> Result<Path
             field,
             "must not contain '..' traversal components",
         ));
+    }
+    // Per-component filename hardening (issue #1608). The drive-prefix
+    // exception keeps absolute Windows paths (`C:\vault`, #590) valid: the
+    // drive colon is a separator there, not an ADS hazard.
+    if let Some(reason) = normal_components(path).find_map(|c| filename_component_error(&c, true)) {
+        return Err(invalid_params(field, reason));
     }
     Ok(path.to_path_buf())
 }
@@ -333,9 +421,18 @@ pub fn require_range_u64(field: &str, value: u64, min: u64, max: u64) -> Result<
 ///    byte-for-byte, so platform-specific separator filtering (`/` and `\`)
 ///    cannot slip through.
 ///
+/// Cross-platform filename hardening (issue #1608), via
+/// [`filename_component_error`] with NO drive-prefix exception (a flat
+/// filename can never be a drive): control characters (NUL included), `:`
+/// anywhere (NTFS ADS hazard), the Windows-invalid set `< > " | ? *`,
+/// Windows reserved device names (`CON`, `con.txt`, ... — stem-aware), and
+/// trailing `.` / trailing space are all rejected — never trimmed, so
+/// callers see exactly what was asked. Per-component cap: 255 bytes
+/// (XP-P-07 partial; `\\?\` mitigation is out of scope).
+///
 /// # Errors
-/// Returns `McpError::invalid_params` if `value` is empty, oversize, or not a
-/// single flat `Normal` component.
+/// Returns `McpError::invalid_params` if `value` is empty, oversize, not a
+/// single flat `Normal` component, or violates any filename-hardening rule.
 pub fn require_safe_filename(field: &str, value: &str) -> Result<(), McpError> {
     if value.is_empty() {
         return Err(invalid_params(field, "must not be empty"));
@@ -377,6 +474,11 @@ pub fn require_safe_filename(field: &str, value: &str) -> Result<(), McpError> {
             field,
             "must be a single flat filename (no embedded separators)",
         ));
+    }
+    // Cross-platform hardening (issue #1608). `false`: a flat filename can
+    // never carry a drive prefix, so every `:` is rejected.
+    if let Some(reason) = filename_component_error(value, false) {
+        return Err(invalid_params(field, reason));
     }
     Ok(())
 }
@@ -549,5 +651,113 @@ mod tests {
         assert!("..".parse::<SanitizedFilename>().is_err());
         let ok = "doc".parse::<SanitizedFilename>().expect("flat name valid");
         assert_eq!(ok.as_str(), "doc");
+    }
+
+    // --- cross-platform filename hardening (issue #1608) --------------------
+
+    #[test]
+    fn require_safe_filename_accepts_plain_cross_platform_names() {
+        // Sanity: the hardening must not reject ordinary names.
+        assert!(require_safe_filename("filename", "documento final").is_ok());
+        assert!(require_safe_filename("filename", "report.2026-09-26.json").is_ok());
+        assert!(require_safe_filename("filename", "naïve-file_λ").is_ok());
+    }
+
+    #[test]
+    fn require_safe_filename_rejects_control_characters() {
+        // NUL, C0 escapes, DEL and C1 are all Unicode Cc — XP-P-01-adjacent.
+        assert!(require_safe_filename("filename", "doc\u{0}ument").is_err());
+        assert!(require_safe_filename("filename", "doc\u{1b}[31m").is_err());
+        assert!(require_safe_filename("filename", "doc\u{7f}").is_err());
+        assert!(require_safe_filename("filename", "doc\u{85}").is_err());
+    }
+
+    #[test]
+    fn require_safe_filename_rejects_windows_reserved_names() {
+        // XP-P-04: stem-aware, case-insensitive — `CON.txt` is as unusable on
+        // Windows as `CON`.
+        for value in [
+            "CON",
+            "con",
+            "Con",
+            "CON.txt",
+            "nul.tar.gz",
+            "PRN",
+            "AUX",
+            "COM1",
+            "lpt9",
+        ] {
+            assert!(
+                require_safe_filename("filename", value).is_err(),
+                "'{value}' must be rejected as a Windows reserved name"
+            );
+        }
+        // Lookalikes that are NOT reserved stay accepted.
+        assert!(require_safe_filename("filename", "console").is_ok());
+        assert!(require_safe_filename("filename", "com10").is_ok());
+    }
+
+    #[test]
+    fn require_safe_filename_rejects_colon_ads_hazard() {
+        // XP-P-05: any `:` in a flat filename is an NTFS alternate-data-stream
+        // hazard; rejected on every host for cross-platform consistency.
+        assert!(require_safe_filename("filename", "a:b").is_err());
+        assert!(require_safe_filename("filename", "stream.txt:ads").is_err());
+        // A drive prefix is NOT a filename exception either.
+        assert!(require_safe_filename("filename", "C:").is_err());
+    }
+
+    #[test]
+    fn require_safe_filename_rejects_trailing_dot_or_space() {
+        // XP-P-06: rejected as-is — never silently trimmed.
+        assert!(require_safe_filename("filename", "documento final.").is_err());
+        assert!(require_safe_filename("filename", "documento final ").is_err());
+        // Mid-name dots/spaces stay fine.
+        assert!(require_safe_filename("filename", "a.b c").is_ok());
+    }
+
+    #[test]
+    fn require_safe_filename_rejects_windows_invalid_charset() {
+        for value in ["a<b", "a>b", "a\"b", "a|b", "a?b", "a*b"] {
+            assert!(
+                require_safe_filename("filename", value).is_err(),
+                "'{value}' must be rejected as Windows-invalid"
+            );
+        }
+    }
+
+    #[test]
+    fn require_safe_filename_rejects_oversize_component() {
+        // XP-P-07 partial: a single component over 255 bytes is rejected even
+        // though the whole value is still under MAX_PATH_LEN.
+        let long = "a".repeat(256);
+        assert!(
+            long.len() < MAX_PATH_LEN,
+            "fixture must be under the 1 KiB cap"
+        );
+        assert!(require_safe_filename("filename", &long).is_err());
+        let ok = "a".repeat(255);
+        assert!(require_safe_filename("filename", &ok).is_ok());
+    }
+
+    #[test]
+    fn require_safe_path_applies_component_checks() {
+        // Issue #1608: the same filename-level rules per path component.
+        assert!(require_safe_path("file_path", "notes/CON.md").is_err());
+        assert!(require_safe_path("file_path", "notes/a:b.md").is_err());
+        assert!(require_safe_path("file_path", "notes/doc.. ").is_err());
+        assert!(require_safe_path("file_path", "notes/trailing.").is_err());
+        assert!(require_safe_path("file_path", "notes/a<b.md").is_err());
+        // Benign nested paths stay accepted.
+        assert!(require_safe_path("file_path", "notes/2026/09/doc.md").is_ok());
+    }
+
+    #[test]
+    fn require_safe_path_allow_absolute_applies_component_checks() {
+        assert!(require_safe_path_allow_absolute("vault_path", "/vault/CON.md").is_err());
+        assert!(require_safe_path_allow_absolute("vault_path", "/vault/a|b.md").is_err());
+        // The #590 contract survives: absolute Windows paths with a drive
+        // prefix stay valid — the drive colon is a separator, not an ADS.
+        assert!(require_safe_path_allow_absolute("vault_path", "C:\\vault").is_ok());
     }
 }
