@@ -594,7 +594,11 @@ async fn build_scraped_content(
             })
         },
         Err(e) => {
-            warn!("⚠️  Readability failed for {}: {}", url, e);
+            warn!(
+                url = %url,
+                error = %e,
+                "readability extraction failed; using text-extraction fallback"
+            );
             // H2 FIX: Apply clean_html to fallback content to prevent JS/CSS leakage
             let raw_fallback = fallback::extract_text(extraction_html);
             let fallback_content = clean_html(&raw_fallback);
@@ -802,7 +806,7 @@ async fn scrape_multiple_inner(
         .collect()
         .await;
 
-    let outcome = collect_batch_outcome(results);
+    let outcome = collect_batch_outcome(results, &root_correlation);
 
     info!(
         "✅ Scraped {} pages from {} URLs ({} failed)",
@@ -814,7 +818,14 @@ async fn scrape_multiple_inner(
 }
 
 /// Split collected per-URL outcomes into successes and #591 failure records.
-fn collect_batch_outcome(results: Vec<(url::Url, Result<ScrapeOutcome>)>) -> ScrapeBatchOutcome {
+///
+/// `root_correlation` is the batch run-root identity (#501): each failed URL
+/// emits its operational error event through `log_scrape_error` carrying that
+/// correlation, matching the page/crawl failure contract (issue #1604).
+fn collect_batch_outcome(
+    results: Vec<(url::Url, Result<ScrapeOutcome>)>,
+    root_correlation: &CorrelationId,
+) -> ScrapeBatchOutcome {
     let mut all_content = Vec::new();
     let mut failed = Vec::new();
     for (url, result) in results {
@@ -822,7 +833,13 @@ fn collect_batch_outcome(results: Vec<(url::Url, Result<ScrapeOutcome>)>) -> Scr
             Ok(outcome) => all_content.extend(outcome.results),
             Err(e) => {
                 let url_str = url.to_string();
-                warn!("⚠️  Failed to scrape {url_str}: {e}");
+                log_scrape_error(
+                    &e,
+                    &url_str,
+                    "scrape",
+                    Some(root_correlation),
+                    "batch URL scrape failed",
+                );
                 failed.push(ScrapeFailed {
                     url: url_str,
                     error: e.to_string(),
@@ -834,5 +851,72 @@ fn collect_batch_outcome(results: Vec<(url::Url, Result<ScrapeOutcome>)>) -> Scr
     ScrapeBatchOutcome {
         results: all_content,
         failed,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Capture-subscriber harness (same pattern as
+    /// `observability::error_logging` tests): a fmt subscriber writing into a
+    /// shared buffer, ANSI off, so emitted events can be asserted verbatim.
+    #[derive(Clone)]
+    struct SharedWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedWriter {
+        type Writer = Guard;
+        fn make_writer(&'a self) -> Self::Writer {
+            Guard(self.0.clone())
+        }
+    }
+
+    struct Guard(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for Guard {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// #1604: a failed batch URL emits the shared operational error contract
+    /// through `log_scrape_error` — `error`, `url`, `stage`, and the batch
+    /// run-root `trace_id` — not a bare interpolated warn.
+    #[test]
+    fn batch_failure_emits_log_scrape_error_contract() {
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(SharedWriter(buf.clone()))
+            .with_ansi(false)
+            .finish();
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let root = CorrelationId::new();
+        let url: url::Url = "https://example.com/batch-fail".parse().unwrap();
+        let results = vec![(
+            url.clone(),
+            Err::<ScrapeOutcome, ScraperError>(ScraperError::GlobalTimeout),
+        )];
+
+        let outcome = collect_batch_outcome(results, &root);
+
+        assert_eq!(outcome.failed.len(), 1, "failure must be recorded");
+        assert_eq!(outcome.failed[0].url, url.to_string());
+        let out = String::from_utf8_lossy(&buf.lock().unwrap()).to_string();
+        assert!(out.contains("ERROR"), "must be ERROR level: {out}");
+        assert!(
+            out.contains("batch URL scrape failed"),
+            "context message: {out}"
+        );
+        assert!(out.contains(&url.to_string()), "url field: {out}");
+        assert!(out.contains("stage=scrape"), "stage field: {out}");
+        assert!(
+            out.contains(&root.trace_id().to_string()),
+            "trace_id field: {out}"
+        );
     }
 }

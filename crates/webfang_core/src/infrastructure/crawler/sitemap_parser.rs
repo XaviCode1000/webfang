@@ -500,8 +500,9 @@ impl SitemapParser {
 
         if decompressed.len() >= self.config.max_decompressed_size {
             tracing::warn!(
-                "Gzip decompression hit size limit ({} bytes) — possible decompression bomb",
-                decompressed.len()
+                bytes = decompressed.len(),
+                limit = self.config.max_decompressed_size,
+                "gzip decompression hit size limit — possible decompression bomb"
             );
             return Err(SitemapError::DecompressedTooLarge(
                 self.config.max_decompressed_size,

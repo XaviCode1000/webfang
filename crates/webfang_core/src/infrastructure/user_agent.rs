@@ -89,7 +89,10 @@ impl UserAgentCache {
         match Self::fetch_and_cache(profile).await {
             Ok(agents) => agents,
             Err(e) => {
-                tracing::warn!("Failed to fetch user agents: {}", e);
+                tracing::warn!(
+                    error = %e,
+                    "failed to fetch user agents; using built-in fallback list"
+                );
                 Self::fallback_agents()
             },
         }
@@ -111,8 +114,8 @@ impl UserAgentCache {
             Some(cache.agents)
         } else {
             tracing::warn!(
-                "Cached user agents outdated (Chrome {}), fetching fresh...",
-                cache.chrome_version
+                chrome_version = cache.chrome_version,
+                "cached user agents outdated; fetching fresh list"
             );
             None
         }

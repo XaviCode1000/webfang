@@ -1,8 +1,9 @@
 ---
 source: crates/webfang_core/tests/behavioral/main.rs
+assertion_line: 43
 expression: redacted
 ---
-  <TIMESTAMP>  WARN <MODULE>: Readability failed for http://127.0.0.1:<PORT>/: Error de extracción: Readability failed: Failed to extract article content from the document
+  <TIMESTAMP>  WARN <MODULE>: readability extraction failed; using text-extraction fallback, url: http://127.0.0.1:<PORT>/, error: Error de extracción: Readability failed: Failed to extract article content from the document
     at <FILE>.rs:<LINE>
 
   <TIMESTAMP> ERROR <MODULE>: content extraction failed, error: contenido pobre del fallback: 3 bytes (mín 100 bytes). Readability: Error de extracción: Readability failed: Failed to extract article content from the document, url: http://127.0.0.1:<PORT>/, stage: extract, trace_id: "<TRACE_ID>"

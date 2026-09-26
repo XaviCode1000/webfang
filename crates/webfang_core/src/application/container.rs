@@ -613,7 +613,7 @@ impl Container {
         let rate_limiter = match SharedRateLimiter::new(&RateLimiterConfig::default()) {
             Ok(rl) => Some(Arc::new(rl)),
             Err(e) => {
-                tracing::warn!("rate limiter init failed: {e}");
+                tracing::warn!(error = %e, "rate limiter init failed; continuing without it");
                 None
             },
         };
@@ -638,11 +638,11 @@ impl Container {
         let crawl_result_repo = match repo_build {
             Ok(Ok(repo)) => Some(Arc::new(repo) as Arc<dyn CrawlResultRepository>),
             Ok(Err(e)) => {
-                tracing::warn!("failed to initialize repository: {e}");
+                tracing::warn!(error = %e, "failed to initialize crawl-result repository");
                 None
             },
             Err(e) => {
-                tracing::warn!("failed to initialize repository (join): {e}");
+                tracing::warn!(error = %e, "failed to initialize crawl-result repository (join)");
                 None
             },
         };

@@ -223,7 +223,7 @@ impl HttpClient {
             match status.as_u16() {
                 200..=299 => return self.handle_success(url, response, status.as_u16()).await,
                 403 => {
-                    warn!("403 Forbidden from {}", url);
+                    warn!(url = %url, status = 403, "403 Forbidden — rotating User-Agent");
                     if ua_index == 0 {
                         ua_index += 1;
                         continue;

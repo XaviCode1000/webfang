@@ -128,7 +128,7 @@ impl<L1: Downloader, L2: Downloader, L3: Downloader> HybridRouter<L1, L2, L3> {
 
         // Check resources before spawning a subprocess
         if let Err(e) = self.governor.check_resources() {
-            warn!("ResourceGovernor denied Layer 2: {e}");
+            warn!(url = %url, layer = 2, error = %e, "ResourceGovernor denied escalation layer");
             return Err(DownloadError::from(e));
         }
 
@@ -152,7 +152,7 @@ impl<L1: Downloader, L2: Downloader, L3: Downloader> HybridRouter<L1, L2, L3> {
         debug!("Layer 3 (Chromiumoxide): attempting fetch for {url}");
 
         if let Err(e) = self.governor.check_resources() {
-            warn!("ResourceGovernor denied Layer 3: {e}");
+            warn!(url = %url, layer = 3, error = %e, "ResourceGovernor denied escalation layer");
             return Err(DownloadError::from(e));
         }
 
@@ -165,7 +165,7 @@ impl<L1: Downloader, L2: Downloader, L3: Downloader> HybridRouter<L1, L2, L3> {
                 return Err(DownloadError::WafChallenge(msg));
             },
             Err(e) => {
-                warn!("All layers exhausted for {url}: {e}");
+                warn!(url = %url, error = %e, "all fetch layers exhausted");
                 return Err(e);
             },
         }

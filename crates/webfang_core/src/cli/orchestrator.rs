@@ -1092,7 +1092,7 @@ async fn run_batch_crawl(
         prepare_batch_manager(opts, tls_emulation, sink.clone(), root_correlation).await?;
 
     let summary = manager.process_all_summary_cancellable(cancel).await;
-    log_batch_summary(&summary);
+    log_batch_summary(&summary, root_correlation);
 
     if cancel.is_cancelled() {
         warn!("shutdown requested — exporting the pages captured so far");
@@ -1342,14 +1342,24 @@ async fn extract_batch_content(
 }
 
 /// Print the batch completion summary and log each failed URL.
-fn log_batch_summary(summary: &BatchManagerSummary) {
+///
+/// `root_correlation` is the batch run-root identity: each failed URL emits
+/// the shared operational error contract (`log_scrape_error`) carrying it,
+/// so trace-file queries join failures with the run (#1604).
+fn log_batch_summary(summary: &BatchManagerSummary, root_correlation: &domain::CorrelationId) {
     println!(
         "Batch complete: {}/{} succeeded, {} failed",
         summary.succeeded, summary.total_urls, summary.failed
     );
 
     for (url, err) in &summary.errors {
-        error!(%url, error = %err, "Batch URL failed");
+        crate::infrastructure::observability::log_scrape_error(
+            err,
+            url,
+            "batch",
+            Some(root_correlation),
+            "batch URL failed",
+        );
     }
 }
 
@@ -1559,8 +1569,9 @@ fn plan_urls(
 fn parse_asset_h2_profile(s: &str) -> wreq_util::Profile {
     crate::domain::profile::profile_from_name(s).unwrap_or_else(|| {
         tracing::warn!(
-            "Unknown asset H2 profile '{s}', falling back to Chrome145. \
-             Run `cargo doc -p wreq-util` to see all available profiles."
+            profile = %s,
+            fallback = "Chrome145",
+            "unknown asset H2 profile; falling back to Chrome145 (see `cargo doc -p wreq-util` for all profiles)"
         );
         wreq_util::Profile::Chrome145
     })

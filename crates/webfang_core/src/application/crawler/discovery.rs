@@ -352,9 +352,9 @@ async fn scrape_single_url_inner(
                     bytes.len()
                 ),
                 Err(e) => warn!(
-                    "Failed to save binary file {}: {}",
-                    output_path.display(),
-                    e
+                    path = %output_path.display(),
+                    error = %e,
+                    "failed to save binary file"
                 ),
             }
             Some(output_path)

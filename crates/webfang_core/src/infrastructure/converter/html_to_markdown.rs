@@ -35,7 +35,10 @@ pub fn convert_to_markdown(html: &str) -> String {
     };
 
     convert(&cleaned, Some(options)).unwrap_or_else(|e| {
-        warn!("HTML to Markdown conversion failed: {}, falling back", e);
+        warn!(
+            error = %e,
+            "HTML to Markdown conversion failed; falling back to text extraction"
+        );
         crate::infrastructure::scraper::fallback::extract_text(html)
     })
 }

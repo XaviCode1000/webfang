@@ -374,6 +374,16 @@ impl McpHandler {
                 ))
             },
             Err(e) => {
+                // A batch has no single URL; the first URL's host is the
+                // run identity recorded by `record_scrape_identity`, so the
+                // tracing event carries the same work-unit identity.
+                webfang_core::infrastructure::observability::log_scrape_error(
+                    &e,
+                    &domain,
+                    "mcp_scrape_batch",
+                    Some(&root_correlation),
+                    "batch scrape failed",
+                );
                 self.state.record_scrape_identity(
                     "scrape_batch",
                     domain,
@@ -382,7 +392,6 @@ impl McpHandler {
                     start,
                     &root_correlation,
                 );
-                tracing::error!("batch scrape failed: {}", e);
                 Ok(provenance::neutralized_error(&e.to_string()))
             },
         }
@@ -702,7 +711,13 @@ impl McpHandler {
                     start,
                     &root_correlation,
                 );
-                tracing::error!("sitemap crawl failed: {}", e);
+                webfang_core::infrastructure::observability::log_scrape_error(
+                    &e,
+                    params.url.as_str(),
+                    "mcp_crawl_with_sitemap",
+                    Some(&root_correlation),
+                    "sitemap crawl failed",
+                );
                 Ok(provenance::neutralized_error(&e.to_string()))
             },
         }

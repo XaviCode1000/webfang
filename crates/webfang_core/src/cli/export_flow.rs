@@ -14,7 +14,7 @@ use crate::{
 };
 
 #[cfg(feature = "ai")]
-use tracing::{error, info};
+use tracing::info;
 
 #[cfg(feature = "ai")]
 use crate::domain::semantic_cleaner::SemanticCleaner;
@@ -114,7 +114,7 @@ fn run_standard_export(config: &ExportConfig<'_>) -> Result<Vec<String>, CliExit
     ) {
         Ok(urls) => Ok(urls),
         Err(e) => {
-            warn!("Failed to export results: {}", e);
+            warn!(error = %e, format = ?config.export_format, "export of scrape results failed");
             Err(CliExit::IoError(e.to_string()))
         },
     }
@@ -158,7 +158,7 @@ async fn run_ai_export(
     ) {
         Ok(urls) => Ok(urls),
         Err(e) => {
-            warn!("Failed to export cleaned results: {}", e);
+            warn!(error = %e, format = ?config.export_format, "export of AI-cleaned results failed");
             Err(CliExit::IoError(e.to_string()))
         },
     }
@@ -201,7 +201,7 @@ async fn clean_all_pages(
         match chunks_result {
             Ok(chunks) => {
                 if chunks.is_empty() {
-                    warn!("AI cleaner produced 0 chunks for: {}", url);
+                    warn!(url = %url, "AI cleaner produced 0 chunks; using raw content fallback");
                     cleaned_chunks.push(DocumentChunk::from_scraped_content(&result));
                 } else {
                     // The cleaner produces chunks with empty url/title (it only
@@ -231,7 +231,11 @@ async fn clean_all_pages(
                         // the user's --max-tokens limit. Fall back to raw for
                         // this page and count it as a fallback (so an all-
                         // fallback job still surfaces an error, #543).
-                        warn!("Chunk exceeds limit for {}, using raw content: {}", url, e);
+                        warn!(
+                            url = %url,
+                            error = %e,
+                            "chunk exceeds token limit; using raw content fallback"
+                        );
                         cleaned_chunks.push(DocumentChunk::from_scraped_content(&result));
                         fallback += 1;
                         if first_error.is_none() {
@@ -246,7 +250,13 @@ async fn clean_all_pages(
                     | ErrorClass::TransientBackoff
                     | ErrorClass::PermanentFatal => {
                         failed += 1;
-                        error!("content cleanup failed for {}: {}", url, e);
+                        crate::infrastructure::observability::log_scrape_error(
+                            &e,
+                            url.as_str(),
+                            "ai_clean",
+                            result.correlation_id.as_ref(),
+                            "AI content cleanup failed; keeping raw content fallback",
+                        );
                         if first_error.is_none() {
                             first_error = Some(e);
                         }
@@ -287,7 +297,7 @@ pub fn save_files(
     obsidian_options: &ObsidianOptions,
 ) {
     if let Err(e) = save_results(results, output_dir, format, obsidian_options) {
-        warn!("Failed to save individual files: {}", e);
+        warn!(error = %e, "failed to save individual output files");
         // Continue — file save is non-fatal, RAG export succeeded
     }
 }

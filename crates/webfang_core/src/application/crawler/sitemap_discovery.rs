@@ -226,9 +226,9 @@ async fn crawl_with_sitemap_internal(
     // If no relevant URLs found, try sub-path sitemaps as fallback
     if relevant_urls.is_empty() {
         tracing::warn!(
-            "sitemap {} no tiene URLs que coincidan con la ruta objetivo {}, intentando sitemaps de subruta",
-            sitemap_url,
-            target_path
+            sitemap = %sitemap_url,
+            target_path = %target_path,
+            "sitemap has no URLs matching the target path; trying sub-path sitemaps"
         );
         return crawl_with_subpath_sitemaps(
             base_url,
@@ -491,9 +491,9 @@ async fn crawl_with_subpath_sitemaps(
 ) -> Result<Vec<DiscoveredUrl>, CrawlError> {
     if sitemap_current_depth >= sitemap_max_depth {
         tracing::warn!(
-            "sitemap recursion depth {} reached max {}, stopping",
-            sitemap_current_depth,
-            sitemap_max_depth
+            depth = sitemap_current_depth,
+            max_depth = sitemap_max_depth,
+            "sitemap recursion depth reached max; stopping"
         );
         return Ok(Vec::new());
     }
@@ -511,7 +511,7 @@ async fn crawl_with_subpath_sitemaps(
     let all_urls = probe_subpath_sitemaps_for_crawl(base, client, parser, correlation).await;
 
     if all_urls.is_empty() {
-        tracing::warn!("no se encontraron sitemaps de subruta para {}", base_url);
+        tracing::warn!(base_url = %base_url, "no sub-path sitemaps found");
         Ok(Vec::new())
     } else {
         // Sub-path sitemap URLs are at depth 1 (one hop from seed)
@@ -630,7 +630,7 @@ async fn discover_sitemap_url(base_url: &str, client: &wreq::Client) -> Result<S
         return Ok(url);
     }
 
-    tracing::warn!("no sitemap found for {}", base_url);
+    tracing::warn!(base_url = %base_url, "no sitemap found");
     Err(CrawlError::SitemapNotFound(base_url.to_string()))
 }
 
@@ -646,7 +646,7 @@ async fn fetch_robots_sitemap(
     client: &wreq::Client,
 ) -> Result<Option<String>, CrawlError> {
     let Ok(robots_url) = base.join("/robots.txt") else {
-        tracing::warn!("invalid base URL for robots.txt: {}", base);
+        tracing::warn!(base_url = %base, "invalid base URL for robots.txt");
         return Ok(None);
     };
     tracing::info!("Checking robots.txt: {}", robots_url);
@@ -732,7 +732,7 @@ fn extract_robots_sitemap_directive(content: &str, base: &Url) -> Option<String>
                 tracing::debug!("Found sitemap in robots.txt: {}", url);
                 return Some(url.to_string());
             },
-            None => tracing::warn!("Invalid sitemap URL in robots.txt: {}", sitemap),
+            None => tracing::warn!(directive = %sitemap, "invalid sitemap URL in robots.txt"),
         }
     }
     None
@@ -752,7 +752,7 @@ async fn probe_sitemap_paths(base: &Url, client: &wreq::Client, paths: &[&str]) 
 /// 2xx, otherwise `None`.
 async fn probe_single_path(base: &Url, client: &wreq::Client, path: &str) -> Option<String> {
     let Ok(sitemap_url) = base.join(path) else {
-        tracing::warn!("Invalid sitemap candidate path: {path}");
+        tracing::warn!(path = %path, "invalid sitemap candidate path");
         return None;
     };
     probe_head_success(client, sitemap_url.as_str()).await

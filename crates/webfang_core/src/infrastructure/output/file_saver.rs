@@ -123,7 +123,11 @@ fn save_as_markdown(
         let output_path: OutputPath = match OutputPath::from_url_with_query(item.url.as_str()) {
             Ok(p) => p,
             Err(e) => {
-                warn!("Failed to parse URL {}: {}, using fallback", item.url, e);
+                warn!(
+                    url = %item.url,
+                    error = %e,
+                    "URL parse failed for output filename; using index.md fallback"
+                );
                 let fallback_path = output_dir.join("index.md");
                 fs::create_dir_all(output_dir)?;
                 let content = format!("# {}\n\n{}", item.title, item.content);
@@ -253,7 +257,11 @@ fn save_as_text(
         let output_path: OutputPath = match OutputPath::from_url(item.url.as_str()) {
             Ok(p) => p,
             Err(e) => {
-                warn!("Failed to parse URL {}: {}, using fallback", item.url, e);
+                warn!(
+                    url = %item.url,
+                    error = %e,
+                    "URL parse failed for output filename; using index.txt fallback"
+                );
                 let fallback_path = output_dir.join("index.txt");
                 // Structured text format with delimiters
                 let author = item.author.as_deref().unwrap_or("Unknown");
