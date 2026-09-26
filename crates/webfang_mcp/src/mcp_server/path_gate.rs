@@ -75,10 +75,7 @@ fn resolve_fully(path: &Path) -> PathBuf {
     }
     let mut tail: Vec<OsString> = Vec::new();
     let mut cursor = lexical.as_path();
-    loop {
-        let Some(name) = cursor.file_name() else {
-            break;
-        };
+    while let Some(name) = cursor.file_name() {
         tail.push(name.to_os_string());
         let Some(parent) = cursor.parent() else {
             break;
