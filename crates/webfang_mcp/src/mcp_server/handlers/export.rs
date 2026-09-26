@@ -212,6 +212,20 @@ impl McpHandler {
         // Build a validated document chunk from the caller content. The chunk
         // id/timestamp are generated internally; the synthetic URL satisfies
         // validation (any parseable scheme) and scopes the doc to this tool.
+        //
+        // PI-6 (#1601): caller-supplied `content` is remote-derived data. Run
+        // it through the SAME neutralization the provenance envelope applies
+        // on the MCP channel (ANSI + C0/DEL stripped, fence sentinel escaped)
+        // BEFORE it reaches the exporter — no duplicated logic — and prepend
+        // a provenance header so the written artifact self-identifies its
+        // caller-supplied origin to every later consumer (agents included).
+        let neutralized = provenance::neutralize_text(&params.content);
+        let content = format!("provenance: caller-supplied\n{neutralized}");
+        tracing::debug!(
+            bytes_in = params.content.len(),
+            bytes_out = content.len(),
+            "export_file: caller content neutralized, provenance header prepended"
+        );
         let url = url::Url::parse(&format!("https://webfang.local/{filename}")).map_err(|e| {
             McpError::invalid_params(
                 format!("nombre de archivo inválido: {e}"),
@@ -229,7 +243,7 @@ impl McpHandler {
         })?;
         let scraped = ScrapedContent {
             title: filename.clone(),
-            content: params.content.clone(),
+            content,
             url: valid_url,
             excerpt: None,
             author: None,
@@ -713,6 +727,58 @@ mod handler_tests {
         assert!(
             Path::new(out_dir).join("doc.jsonl").exists(),
             "export file must be written"
+        );
+        let _ = std::fs::remove_dir_all(out_dir);
+    }
+
+    /// PI-6 (#1601): caller-supplied `content` must be neutralized through
+    /// the provenance path BEFORE it reaches disk, and the written artifact
+    /// must carry the `provenance: caller-supplied` header at the top of the
+    /// caller payload. Asserted against the PARSED record: JSON escaping
+    /// would otherwise hide control characters from a byte-level check.
+    #[tokio::test]
+    async fn export_file_neutralizes_content_and_prefixes_provenance_header() {
+        let (handler, _tmp) = test_handler().await;
+        // Relative out_dir: the #756 root-of-trust gate rejects absolute
+        // paths without configured export roots.
+        let out_dir = "test-output/export-pi6";
+        let _ = std::fs::remove_dir_all(out_dir);
+        let res = handler
+            .export_file(Parameters(ExportFileParams {
+                output_dir: out_dir.to_string(),
+                filename: "doc".to_string(),
+                content_format: "jsonl".to_string(),
+                content: "hello \u{1b}[31mred\u{1b}[0m world\u{7f}\nline2".to_string(),
+            }))
+            .await
+            .expect("export_file returns Ok");
+        let text = result_text(&res);
+        assert!(
+            text.contains("Exportación completada"),
+            "neutralized export must still succeed: {text}"
+        );
+
+        let written =
+            std::fs::read_to_string(Path::new(out_dir).join("doc.jsonl"))
+                .expect("jsonl must be written");
+        let record: serde_json::Value =
+            serde_json::from_str(&written).expect("jsonl must stay parseable");
+        let content = record
+            .get("content")
+            .and_then(|c| c.as_str())
+            .expect("record must carry the content field");
+
+        // The provenance header opens the caller payload, on its own line.
+        assert!(
+            content.starts_with("provenance: caller-supplied\n"),
+            "provenance header must open the caller payload: {content:?}"
+        );
+        // ANSI escapes and DEL are gone; the readable text survives intact.
+        assert!(!content.contains('\u{1b}'), "ANSI escape leaked: {content:?}");
+        assert!(!content.contains('\u{7f}'), "DEL leaked: {content:?}");
+        assert!(
+            content.contains("hello red world\nline2"),
+            "visible text must survive neutralization: {content:?}"
         );
         let _ = std::fs::remove_dir_all(out_dir);
     }
