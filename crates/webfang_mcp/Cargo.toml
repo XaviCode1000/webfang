@@ -24,6 +24,12 @@ chromium = ["webfang_core/chromium"]
 webfang_core = { workspace = true }
 webfang_ai = { workspace = true, optional = true }
 
+# `FutureExt::catch_unwind` — the load-bearing half of the MCP panic
+# containment (#1611, F2). `tokio` has no equivalent for a plain future, so
+# `futures` is the only new *declaration* required (already a workspace
+# dependency; no new external crate enters the graph).
+futures = { workspace = true }
+
 # MCP
 rmcp = { workspace = true }
 axum = { workspace = true }
