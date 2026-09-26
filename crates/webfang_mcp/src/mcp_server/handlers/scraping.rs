@@ -779,7 +779,25 @@ impl McpHandler {
                             start,
                             &root_correlation,
                         );
-                        let content = serde_json::to_string_pretty(&links)
+                        // PI-13 (#1601): discovery filter symmetry (REQ-01).
+                        // `extract_links` returns internal AND external links
+                        // verbatim, so until now this response was the one
+                        // discovery surface without the `filter_ssrf_safe`
+                        // gate `crawl_site` / `crawl_with_sitemap` apply.
+                        // Wrap it: only seed-host-internal URLs are served.
+                        let discovered: Vec<webfang_core::domain::DiscoveredUrl> = links
+                            .iter()
+                            .filter_map(|link| url::Url::parse(link).ok())
+                            .map(|u| webfang_core::domain::DiscoveredUrl::html(u, 1, url.clone()))
+                            .collect();
+                        let mut urls = Vec::with_capacity(discovered.len());
+                        let excluded = filter_ssrf_safe(&discovered, url, &mut urls);
+                        tracing::debug!(
+                            links = links.len(),
+                            excluded,
+                            "discover_urls filtered to seed-host-internal links"
+                        );
+                        let content = serde_json::to_string_pretty(&urls)
                             .unwrap_or_else(|_| "failed to serialize".into());
                         Ok(provenance::untrusted_text(
                             &provenance::Origin::RemoteFetch {
@@ -855,7 +873,19 @@ impl McpHandler {
                     start,
                     &root_correlation,
                 );
-                let urls: Vec<String> = discovered.into_iter().map(|d| d.url.to_string()).collect();
+                // PI-13 (#1601): discovery filter symmetry (REQ-01). Sitemap
+                // `<loc>` entries are host-agnostic, so the response gets the
+                // same `filter_ssrf_safe` gate as `crawl_site` and
+                // `crawl_with_sitemap`: only seed-host-internal URLs are
+                // served, exclusions warn with the URL. The identity count
+                // keeps engine semantics (discovered, not served).
+                let mut urls = Vec::with_capacity(discovered.len());
+                let excluded = filter_ssrf_safe(&discovered, seed, &mut urls);
+                tracing::debug!(
+                    discovered = count,
+                    excluded,
+                    "discover_sitemap filtered to seed-host-internal URLs"
+                );
                 let content = serde_json::to_string_pretty(&urls)
                     .unwrap_or_else(|_| "failed to serialize".into());
                 Ok(provenance::untrusted_text(
@@ -1661,6 +1691,120 @@ mod tests {
             result_text(&res).contains("Public Page"),
             "allowed scrape must return the extracted article title, got: {}",
             result_text(&res)
+        );
+    }
+
+    /// PI-13 (#1601): `discover_urls` must apply the same SSRF/discovery
+    /// filter as `crawl_site` — external-domain and forbidden-literal-IP
+    /// links extracted from the page never reach the MCP response.
+    #[cfg_attr(miri, ignore)] // real network stack via wreq — unsupported by Miri
+    #[tokio::test]
+    #[serial]
+    async fn discover_urls_drops_external_and_literal_links() {
+        // Lift both guards for this test only (wiremock binds 127.0.0.1):
+        // the MCP entry validator and the shared core literal-IP entry
+        // guard (F-06 + F-32, #1217).
+        let _guard = webfang_test_utils::EnvGuard::with(&[
+            (
+                webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+                "1",
+            ),
+            (
+                webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+                "1",
+            ),
+        ]);
+        let (handler, _tmp) = test_handler().await;
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"<html><body>
+                    <a href="/internal-page">Internal</a>
+                    <a href="https://other.com/x">External</a>
+                    <a href="http://10.0.0.5/x">Literal</a>
+                </body></html>"#,
+            ))
+            .mount(&server)
+            .await;
+
+        let res = handler
+            .discover_urls(Parameters(DiscoverUrlsParams {
+                url: vu(&format!("{}/", server.uri())),
+            }))
+            .await
+            .expect("discover_urls returns Ok");
+
+        let raw = result_text(&res);
+        let payload = crate::mcp_server::provenance::payload_of(&raw)
+            .expect("discover_urls response must carry the UNTRUSTED envelope");
+        assert!(
+            payload.contains("/internal-page"),
+            "seed-host link must survive the filter: {payload}"
+        );
+        assert!(
+            !payload.contains("other.com") && !payload.contains("10.0.0.5"),
+            "external-domain and forbidden-literal links must be dropped: {payload}"
+        );
+    }
+
+    /// PI-13 (#1601): `discover_sitemap` must apply the same SSRF/discovery
+    /// filter as `crawl_site` — external `<loc>` entries never reach the
+    /// MCP response. The engine's sitemap discovery is host-agnostic
+    /// (`CrawlerConfig::new` ships empty include patterns), so this handler
+    /// gate is the one that enforces the contract.
+    #[cfg_attr(miri, ignore)] // real network stack via wreq — unsupported by Miri
+    #[tokio::test]
+    #[serial]
+    async fn discover_sitemap_drops_external_and_literal_loc_entries() {
+        let _guard = webfang_test_utils::EnvGuard::with(&[
+            (
+                webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
+                "1",
+            ),
+            (
+                webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+                "1",
+            ),
+        ]);
+        let (handler, _tmp) = test_handler().await;
+        let server = MockServer::start().await;
+        let base = server.uri();
+        let xml = format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url><loc>{base}/internal-page</loc></url>
+    <url><loc>https://other.com/x</loc></url>
+    <url><loc>http://10.0.0.5/x</loc></url>
+</urlset>"#
+        );
+        Mock::given(method("GET"))
+            .and(path("/sitemap.xml"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(xml)
+                    .insert_header("content-type", "application/xml"),
+            )
+            .mount(&server)
+            .await;
+
+        let res = handler
+            .discover_sitemap(Parameters(DiscoverUrlsParams {
+                url: vu(&format!("{base}/")),
+            }))
+            .await
+            .expect("discover_sitemap returns Ok");
+
+        let raw = result_text(&res);
+        let payload = crate::mcp_server::provenance::payload_of(&raw)
+            .expect("discover_sitemap response must carry the UNTRUSTED envelope");
+        assert!(
+            payload.contains("/internal-page"),
+            "seed-host <loc> must survive the filter: {payload}"
+        );
+        assert!(
+            !payload.contains("other.com") && !payload.contains("10.0.0.5"),
+            "external-domain and forbidden-literal <loc> entries must be dropped: {payload}"
         );
     }
 

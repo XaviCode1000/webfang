@@ -509,4 +509,57 @@ mod handler_tests {
             "file path must include domain: {text}"
         );
     }
+
+    /// PI-12 (#1601): the user-visible path/claim of `url_to_file_path` must
+    /// derive from the sanitized artifact filename — never embed the raw,
+    /// attacker-controlled URL. A hostile URL with percent-encoded traversal
+    /// and control characters must surface only its neutralized form: no raw
+    /// URL text, no encoded traversal bytes, no control characters in the
+    /// reported path.
+    #[tokio::test]
+    async fn url_to_file_path_hostile_url_reports_only_the_sanitized_path() {
+        let (handler, _tmp) = test_handler().await;
+        let raw = "https://example.com/..%2F..%2Fetc%2Fpasswd%0Ahidden";
+        let res = handler
+            .url_to_file_path(Parameters(ValidateUrlParams {
+                url: raw.to_string(),
+            }))
+            .await
+            .expect("url_to_file_path returns Ok");
+        let text = result_text(&res);
+
+        assert!(
+            !text.contains(raw),
+            "the raw attacker-controlled URL must never appear in the response: {text}"
+        );
+        for encoded in ["%2F", "%2f", "%0A", "%0a"] {
+            assert!(
+                !text.contains(encoded),
+                "encoded hostile byte {encoded} must be neutralized away: {text}"
+            );
+        }
+        // The claim is the reported path itself: parse the JSON payload (the
+        // pretty-printed envelope would otherwise trip a whole-text control
+        // check with its own newlines) and assert on `full_path`.
+        let payload: serde_json::Value =
+            serde_json::from_str(&text).expect("payload must be the JSON path object");
+        let full_path = payload
+            .get("full_path")
+            .and_then(|v| v.as_str())
+            .expect("payload must carry full_path");
+        assert!(
+            !full_path.chars().any(char::is_control),
+            "no control character may survive into the reported path: {full_path:?}"
+        );
+        // The claim still derives from the sanitized artifact filename under
+        // the domain directory — the path stays inside ./output/<domain>/.
+        assert!(
+            full_path.starts_with("./output/example.com/"),
+            "path must stay confined under the domain directory: {full_path}"
+        );
+        assert!(
+            full_path.contains("etc-passwd"),
+            "the sanitized filename (traversal flattened, controls replaced) is the claim: {full_path}"
+        );
+    }
 }

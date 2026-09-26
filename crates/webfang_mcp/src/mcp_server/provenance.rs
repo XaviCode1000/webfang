@@ -257,6 +257,20 @@ pub fn local_text(body: &str) -> CallToolResult {
     CallToolResult::success(vec![Content::text(text)])
 }
 
+/// Neutralize a body that leaves the MCP channel for persistent storage
+/// (PI-6: caller-supplied content written to disk by `export_file`).
+///
+/// Applies the same neutralization contract steps 1-3 as [`untrusted_text`]
+/// and [`local_text`] — ANSI escapes, C0 controls and DEL removed (`\n`/`\t`
+/// kept), every fence-sentinel occurrence escaped — WITHOUT duplicating the
+/// logic. The byte cap is deliberately NOT applied: it is a channel-size
+/// defense for tool responses, and silently truncating an exported artifact
+/// would corrupt the caller's data.
+#[must_use]
+pub(crate) fn neutralize_text(body: &str) -> String {
+    neutralize_body(body)
+}
+
 /// Honest `isError:true` result whose text has been stripped of controls/ANSI
 /// and capped at [`MAX_UNTRUSTED_BYTES`].
 ///

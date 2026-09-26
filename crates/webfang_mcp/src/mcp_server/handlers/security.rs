@@ -72,11 +72,36 @@ impl McpHandler {
         // so degraded verdicts deliberately differ from the pre-#346 verify_integrity.
         let verdict = verify_waf_verdict(html, params.status, params.content_type, header_map);
         if verdict.is_blocked {
+            // M4 (#1601): the exact matched-pattern names are operational
+            // evidence, not agent-facing content. They stay in structured
+            // tracing (one field per evidence, never interpolated into the
+            // message); the MCP response keeps provider + tier only — the
+            // pattern names are infrastructure internals a hostile page
+            // must not be able to read back or enumerate through this tool.
+            for evidence in &verdict.evidences {
+                tracing::info!(
+                    provider = %evidence.provider,
+                    tier = %evidence.tier.label_es(),
+                    pattern = %evidence.matched_pattern,
+                    source = ?evidence.source,
+                    "waf evidence matched pattern (kept off the MCP channel)"
+                );
+            }
+            let summary = if verdict.evidences.is_empty() {
+                String::from("WAF desconocido")
+            } else {
+                verdict
+                    .evidences
+                    .iter()
+                    .map(|e| format!("{} (tier: {})", e.provider, e.tier.label_es()))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            };
             Ok(provenance::untrusted_text(
                 &provenance::Origin::RemoteDerived {
                     via: "verify_waf_integrity",
                 },
-                &format!("WAF blocked: {}", verdict.evidence_chain()),
+                &format!("WAF blocked: {summary}"),
             ))
         } else {
             Ok(provenance::untrusted_text(
@@ -606,6 +631,90 @@ mod tests {
             .expect("verify_waf_integrity returns Ok");
         let text = result_text(&res);
         assert!(text.contains("WAF blocked"), "T2 + 403 must block: {text}");
+    }
+
+    /// In-memory `MakeWriter` so the M4 test can assert on the structured
+    /// tracing events the handler emits (the default test harness drops
+    /// them).
+    #[derive(Clone)]
+    struct SharedBufWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for SharedBufWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("capture buffer lock is never poisoned")
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// M4 (#1601): on a blocked verdict the MCP response keeps provider +
+    /// tier; the exact matched-pattern name moves to a structured tracing
+    /// event (`pattern` field) and never reaches the agent-facing channel.
+    #[tokio::test]
+    async fn verify_waf_integrity_blocked_keeps_pattern_in_tracing_not_in_response() {
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let subscriber = {
+            let sink = std::sync::Arc::clone(&captured);
+            tracing_subscriber::fmt()
+                .with_writer(move || SharedBufWriter(std::sync::Arc::clone(&sink)))
+                .with_ansi(false)
+                .with_max_level(tracing::Level::INFO)
+                .finish()
+        };
+        let _guard = tracing::subscriber::set_default(subscriber);
+
+        let (_tmp, container) = super_test_container().await;
+        let handler = McpHandler::new(McpState::new(container));
+        let res = handler
+            .verify_waf_integrity(Parameters(VerifyWafIntegrityParams {
+                html: Some("<html>blocked by akamai</html>".to_string()),
+                headers: None,
+                status: Some(403),
+                content_type: Some("text/html".to_string()),
+            }))
+            .await
+            .expect("verify_waf_integrity returns Ok");
+
+        let raw = result_text(&res);
+        let payload = crate::mcp_server::provenance::payload_of(&raw)
+            .expect("blocked response must carry the UNTRUSTED envelope");
+        assert!(
+            payload.contains("WAF blocked"),
+            "blocked verdict must stay an honest block: {payload}"
+        );
+        assert!(
+            payload.contains("Akamai"),
+            "provider stays on the MCP channel: {payload}"
+        );
+        assert!(
+            payload.contains("tier:"),
+            "tier stays on the MCP channel: {payload}"
+        );
+        assert!(
+            !payload.contains("patrón") && !payload.contains("akamai"),
+            "the exact matched_pattern name must NOT reach the MCP channel: {payload}"
+        );
+
+        let log = String::from_utf8(
+            captured
+                .lock()
+                .expect("capture buffer lock is never poisoned")
+                .clone(),
+        )
+        .expect("tracing output is utf-8");
+        assert!(
+            log.contains("pattern=akamai"),
+            "the matched pattern must be recorded as a structured tracing field: {log}"
+        );
+        assert!(
+            log.contains("provider=Akamai"),
+            "the tracing event carries the provider field too: {log}"
+        );
     }
 
     #[tokio::test]
