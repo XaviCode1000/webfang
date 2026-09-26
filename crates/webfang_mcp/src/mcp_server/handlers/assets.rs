@@ -216,15 +216,15 @@ mod tests {
     #[serial]
     async fn download_assets_downloads_image_from_html() {
         // REQ-03 (#707) validates `base_url` at entry. This test serves an
-        // asset from wiremock on 127.0.0.1, so lift the guard for this
-        // process (nextest isolates each test in its own process). The SSRF-
-        // rejection path is covered separately by
+        // asset from wiremock on 127.0.0.1, so lift BOTH SSRF hatches for
+        // this process (nextest isolates each test in its own process): the
+        // MCP entry pre-check (layer 1) AND the literal-IP filter the asset
+        // download chain now enforces at `download_asset_urls` (layer 2,
+        // PI-1/SEC F1) — the extracted asset URL is a 127.0.0.1 literal.
+        // The SSRF-rejection path is covered separately by
         // `download_assets_rejects_loopback_base_url` above. EnvGuard
         // restores the original on drop (#1126).
-        let _guard = webfang_test_utils::EnvGuard::with(&[(
-            webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
-            "1",
-        )]);
+        let _guard = webfang_test_utils::EnvGuard::ssrf_hatches_off();
 
         let (handler, _tmp) = test_handler().await;
         // `output_dir` must be a safe relative path (params validation, #512).
