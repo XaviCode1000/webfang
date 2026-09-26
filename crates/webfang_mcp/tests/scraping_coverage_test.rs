@@ -114,7 +114,14 @@ async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
     let container = Container::new(config.crawler, config.scraper)
         .await
         .expect("container creation failed");
-    let state = McpState::new(container);
+    let state = McpState::new(container)
+        // Test-only policy: declare the SYSTEM temp dir as this harness's
+        // export root so absolute `checkpoint_dir` (and `TempDir`) paths
+        // under it stay reachable now that `checkpoint_dir` shares the
+        // #696/#1588 root gate. NOT the production default — production
+        // ships with no export roots (fail-closed) until the operator sets
+        // `--export-roots`.
+        .with_export_roots(vec![std::env::temp_dir()]);
     let app = build_mcp_router(state, &ServerOptions::default());
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -12,8 +12,8 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 
 use crate::mcp_server::metrics::{MetricsSnapshot, ScrapeEvent, ScrapeMetrics};
+use crate::mcp_server::path_gate;
 use rmcp::ErrorData as McpError;
-use serde_json::Value;
 use webfang_core::adapters::downloader::Downloader;
 use webfang_core::di::Container;
 use webfang_core::domain::crawler_port::RobotsPort;
@@ -118,11 +118,13 @@ pub struct McpState {
     /// an `.await` (REQ-07). The cheaper Arc-swap snapshot is deferred to
     /// slice 4.
     pub session_results: Arc<Mutex<Vec<webfang_core::domain::ScrapedContent>>>,
-    /// Allowed root directories for absolute `output_dir` paths (#696).
+    /// Allowed root directories for absolute `output_dir` and `checkpoint_dir`
+    /// paths (#696, #1588).
     ///
-    /// Empty (default) = absolute `output_dir` values are REJECTED
-    /// (fail-closed). When non-empty, an absolute `output_dir` must be
-    /// lexically under one of these roots after normalization.
+    /// Empty (default) = absolute values are REJECTED (fail-closed). When
+    /// non-empty, an absolute path must be under one of these roots AFTER
+    /// symlink/junction resolution of both sides (canonical containment, not
+    /// the old purely lexical prefix match).
     pub allowed_export_roots: Arc<Vec<PathBuf>>,
     /// Hermetic Obsidian detection overrides for tests (#726): `(scan_root,
     /// registry_path)`. When `Some`, vault detection is injected with these
@@ -266,11 +268,13 @@ impl McpState {
         self
     }
 
-    /// Set the allowed root directories for absolute `output_dir` paths (#696).
+    /// Set the allowed root directories for absolute `output_dir` and
+    /// `checkpoint_dir` paths (#696, #1588).
     ///
-    /// When empty (default), absolute `output_dir` values are rejected.
-    /// When non-empty, an absolute `output_dir` must be under one of these
-    /// roots. Relative paths are always allowed (they resolve against CWD).
+    /// When empty (default), absolute `output_dir`/`checkpoint_dir` values are
+    /// rejected. When non-empty, an absolute path must resolve (symlinks
+    /// included) under one of these roots. Relative paths are always allowed
+    /// (they resolve against CWD).
     ///
     /// #769: when roots are configured, also checks the container's own
     /// `output_dir` — the write target of `process_export_pipeline`, which is
@@ -308,46 +312,47 @@ impl McpState {
         self
     }
 
-    /// Validate that `dir` is an allowed export destination (#696).
+    /// Validate that `dir` is an allowed export destination (#696, #1588).
     ///
-    /// Relative paths are always allowed (existing behavior — they resolve
-    /// against the server's CWD). Absolute paths must be under one of
-    /// [`allowed_export_roots`](Self::allowed_export_roots); when no roots
-    /// are configured, absolute paths are rejected (fail-closed).
+    /// Delegates to the shared `path_gate::confine` gate: relative paths are
+    /// always allowed (existing behavior — they resolve against the server's
+    /// CWD). Absolute paths are resolved through the
+    /// gate (symlinks/junctions canonicalized on both sides) and must be
+    /// under one of [`allowed_export_roots`](Self::allowed_export_roots);
+    /// when no roots are configured, absolute paths are rejected
+    /// (fail-closed).
     ///
     /// # Errors
-    /// Returns `McpError::invalid_params` when an absolute path is outside
-    /// every configured root, or when no roots are configured at all.
+    /// Returns `McpError::invalid_params` when the path is empty/oversize,
+    /// rooted non-absolute (`C:foo`, `\foo`), contains `..`, or — when
+    /// absolute — no roots are configured or the resolved path lies outside
+    /// every configured root.
     pub fn validate_export_dir(&self, dir: &Path) -> Result<(), McpError> {
-        if !dir.is_absolute() {
-            return Ok(());
-        }
-        let roots = self.allowed_export_roots.as_ref();
-        if roots.is_empty() {
-            tracing::warn!(dir = %dir.display(), "absolute output_dir rejected: no export roots configured");
-            return Err(McpError::invalid_params(
-                "absolute output_dir requires server-configured export roots (none configured); \
-                 set --export-roots or use a relative path"
-                    .to_string(),
-                Some(Value::String("output_dir".to_string())),
-            ));
-        }
-        // Normalize the candidate lexically: resolve `.` and `..` components
-        // without touching the filesystem (the dir may not exist yet).
-        // #769: shared pure helper [`absolute_path_within_roots`] owns the
-        // lexical prefix check for every write path against the export roots.
-        if absolute_path_within_roots(dir, roots) {
-            Ok(())
-        } else {
-            tracing::warn!(dir = %dir.display(), "absolute output_dir outside allowed export roots");
-            Err(McpError::invalid_params(
-                format!(
-                    "output_dir '{}' is outside allowed export roots",
-                    dir.display()
-                ),
-                Some(Value::String("output_dir".to_string())),
-            ))
-        }
+        path_gate::confine(
+            "output_dir",
+            &dir.to_string_lossy(),
+            self.allowed_export_roots.as_ref(),
+        )
+    }
+
+    /// Validate that `dir` is an allowed checkpoint destination (#1588).
+    ///
+    /// `crawl_site`'s `checkpoint_dir` is a filesystem write target exactly
+    /// like `output_dir`, so it runs through the SAME shared gate with the
+    /// same configured roots: relative paths pass (server-CWD contract),
+    /// absolute paths must resolve under
+    /// [`allowed_export_roots`](Self::allowed_export_roots) (fail-closed with
+    /// no roots).
+    ///
+    /// # Errors
+    /// Same rejection set as [`validate_export_dir`](Self::validate_export_dir),
+    /// reported for the `checkpoint_dir` field.
+    pub fn validate_checkpoint_dir(&self, dir: &Path) -> Result<(), McpError> {
+        path_gate::confine(
+            "checkpoint_dir",
+            &dir.to_string_lossy(),
+            self.allowed_export_roots.as_ref(),
+        )
     }
 
     /// Record a scrape event into the shared accumulator.
@@ -418,57 +423,26 @@ impl McpState {
     }
 }
 
-/// Normalize a path lexically: resolve `.` and `..` components without
-/// filesystem access. Used by [`absolute_path_within_roots`] so the prefix
-/// check cannot be defeated by redundant components (#696).
-fn normalize_lexical(path: &Path) -> PathBuf {
-    use std::path::Component;
-    let mut out = PathBuf::new();
-    for comp in path.components() {
-        match comp {
-            Component::CurDir => {},
-            Component::ParentDir => {
-                out.pop();
-            },
-            other => out.push(other),
-        }
-    }
-    out
-}
-
-/// True when `path` is lexically under one of `roots` (#696).
-///
-/// Both sides are normalized via [`normalize_lexical`] before the check, so
-/// redundant `.`/`..` components cannot defeat it. The match is
-/// component-based ([`Path::starts_with`]), never a string prefix, so
-/// sibling directories (`/srv/exports_evil` vs `/srv/exports`) do not match.
-///
-/// Empty `roots` always yields `false` — the CALLER owns the empty-roots
-/// policy: [`McpState::validate_export_dir`] rejects absolute paths
-/// (fail-closed) and [`McpState::with_export_roots`] skips its #769 startup
-/// consistency check.
-fn absolute_path_within_roots(path: &Path, roots: &[PathBuf]) -> bool {
-    let normalized = normalize_lexical(path);
-    roots
-        .iter()
-        .any(|root| normalized.starts_with(normalize_lexical(root)))
-}
-
 /// Warn at startup when the container's configured `output_dir` lies outside
 /// the declared export roots (#769).
 ///
 /// `process_export_pipeline` exports to `container.scraper_config.output_dir`
-/// and never goes through [`McpState::validate_export_dir`] (the #696 gate),
-/// so this is the sole check for the operator's own `--output`-style config.
-/// A relative `output_dir` (the `ScraperConfig::default()` `"output"`) is
-/// skipped: like [`validate_export_dir`], it resolves against the server's
+/// and never goes through [`McpState::validate_export_dir`] (the #696/#1588
+/// gate), so this is the sole check for the operator's own `--output`-style
+/// config. A relative `output_dir` (the `ScraperConfig::default()` `"output"`)
+/// is skipped: like [`validate_export_dir`], it resolves against the server's
 /// CWD and the server's own boundary does not apply. Warn-only by design —
 /// no new rejection mode for a non-exploitable consistency gap.
+///
+/// Containment uses the shared #1588 helper
+/// [`resolved_within_roots`](crate::mcp_server::path_gate::resolved_within_roots)
+/// (symlinks resolved on both sides), so the startup check and the request
+/// gate never disagree about the same path.
 fn warn_if_configured_output_dir_outside_roots(output_dir: &Path, roots: &[PathBuf]) {
     if !output_dir.is_absolute() {
         return;
     }
-    if absolute_path_within_roots(output_dir, roots) {
+    if path_gate::resolved_within_roots(output_dir, roots) {
         return;
     }
     tracing::warn!(
@@ -790,76 +764,57 @@ mod tests {
         );
     }
 
-    // --- absolute_path_within_roots (#769 pure helper) ---
+    // --- validate_checkpoint_dir (#1588) — same gate, same roots ---
 
-    /// Empty `roots` is handled BY THE CALLER (fail-closed rejection in
-    /// `validate_export_dir`; the #769 startup check skips it) — the helper
-    /// itself must never match.
-    #[test]
-    fn within_roots_empty_roots_never_matches() {
+    #[tokio::test]
+    async fn checkpoint_dir_relative_always_allowed() {
+        let (_tmp, container) = test_container().await;
+        let state = McpState::new(container); // no roots configured
         assert!(
-            !absolute_path_within_roots(Path::new("/srv/exports/file.txt"), &[]),
-            "empty roots must yield false — the caller owns the empty-roots policy"
+            state
+                .validate_checkpoint_dir(Path::new("./checkpoints"))
+                .is_ok(),
+            "relative checkpoint dirs must pass through with no roots configured"
         );
     }
 
-    #[test]
-    fn within_roots_absolute_outside_returns_false() {
-        let roots = vec![PathBuf::from("/srv/exports")];
+    #[tokio::test]
+    async fn checkpoint_dir_absolute_rejected_without_roots() {
+        let (_tmp, container) = test_container().await;
+        let state = McpState::new(container); // fail-closed default
+        let err = state
+            .validate_checkpoint_dir(Path::new("/etc"))
+            .expect_err("absolute checkpoint_dir must be rejected with no roots");
+        let msg = err.to_string();
         assert!(
-            !absolute_path_within_roots(Path::new("/etc/passwd"), &roots),
-            "a path outside every root must yield false"
+            msg.contains("checkpoint_dir")
+                && msg.contains("requires server-configured export roots"),
+            "error must name the field and the missing export roots, got: {msg}"
         );
     }
 
-    #[test]
-    fn within_roots_absolute_inside_root_returns_true() {
-        let roots = vec![PathBuf::from("/srv/exports")];
+    #[tokio::test]
+    async fn checkpoint_dir_absolute_allowed_under_root() {
+        let (tmp, container) = test_container().await;
+        let state = McpState::new(container).with_export_roots(vec![tmp.path().to_path_buf()]);
+        let target = tmp.path().join("checkpoints");
         assert!(
-            absolute_path_within_roots(Path::new("/srv/exports/sub/file.txt"), &roots),
-            "a path under a root must yield true"
-        );
-        // The root itself is a valid destination.
-        assert!(
-            absolute_path_within_roots(Path::new("/srv/exports"), &roots),
-            "the root path itself must yield true"
+            state.validate_checkpoint_dir(&target).is_ok(),
+            "checkpoint dir under a configured root must be allowed"
         );
     }
 
-    #[test]
-    fn within_roots_dotdot_cannot_defeat_the_prefix_check() {
-        let roots = vec![PathBuf::from("/srv/exports")];
-        // The raw string starts with the root, but lexical normalization
-        // resolves `..` first, landing at `/srv/other`.
+    #[tokio::test]
+    async fn checkpoint_dir_absolute_rejected_outside_root() {
+        let (tmp, container) = test_container().await;
+        let state = McpState::new(container).with_export_roots(vec![tmp.path().to_path_buf()]);
+        let err = state
+            .validate_checkpoint_dir(Path::new("/etc"))
+            .expect_err("checkpoint_dir outside roots must be rejected");
+        let msg = err.to_string();
         assert!(
-            !absolute_path_within_roots(Path::new("/srv/exports/../other"), &roots),
-            "`..` traversal out of the root must yield false"
-        );
-        // A candidate that traverses `..` and lands back INSIDE the root
-        // stays allowed.
-        assert!(
-            absolute_path_within_roots(Path::new("/srv/exports/sub/../../exports/file"), &roots),
-            "`..` segments that resolve back inside the root must yield true"
-        );
-    }
-
-    #[test]
-    fn within_roots_dot_components_are_ignored() {
-        let roots = vec![PathBuf::from("/srv/exports")];
-        assert!(
-            absolute_path_within_roots(Path::new("/srv/./exports/./file.txt"), &roots),
-            "redundant `.` components must not defeat a valid match"
-        );
-    }
-
-    #[test]
-    fn within_roots_sibling_prefix_is_not_a_root_match() {
-        // `/srv/exports_evil` must NOT satisfy root `/srv/exports` — the
-        // prefix check is component-based (`starts_with`), not string-based.
-        let roots = vec![PathBuf::from("/srv/exports")];
-        assert!(
-            !absolute_path_within_roots(Path::new("/srv/exports_evil/file"), &roots),
-            "a string-prefix sibling dir must yield false"
+            msg.contains("outside allowed export roots"),
+            "error must name the root violation, got: {msg}"
         );
     }
 
