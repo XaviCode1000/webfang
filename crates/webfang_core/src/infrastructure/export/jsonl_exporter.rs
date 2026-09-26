@@ -18,7 +18,7 @@
 //! - `language`: Detected language (optional)
 //! - `content_type`: Content type classification (optional)
 //! - `scrape_date`: Date of scrape (optional)
-//! - `extra_metadata`: Additional metadata HashMap (optional)
+//! - `extra_metadata`: Additional metadata BTreeMap (optional, keys in lexicographic order)
 
 use std::fs;
 
@@ -66,7 +66,7 @@ pub struct WebfangMetadata<'a> {
     pub scrape_date: Option<String>,
     /// Additional metadata (excerpt, author, etc.)
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extra_metadata: Option<std::collections::HashMap<String, String>>,
+    pub extra_metadata: Option<std::collections::BTreeMap<String, String>>,
 }
 
 impl<'a> WebfangMetadata<'a> {
@@ -122,7 +122,13 @@ impl<'a> WebfangMetadata<'a> {
             if meta.is_empty() {
                 None
             } else {
-                Some(meta)
+                // #1595 — collect into BTreeMap so serde_json emits keys in
+                // lexicographic order, byte-stable across processes and runs.
+                // Membership preserved exactly; only the container changes.
+                Some(
+                    meta.into_iter()
+                        .collect::<std::collections::BTreeMap<_, _>>(),
+                )
             }
         };
 
