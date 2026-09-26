@@ -937,6 +937,7 @@ impl Engine {
             // Check if we've reached max pages (sin lock - atomic)
             if self.collector.is_full(self.config.max_pages) {
                 info!("Reached max pages limit: {}", self.config.max_pages);
+                self.cancel_run();
                 break;
             }
 
@@ -962,8 +963,16 @@ impl Engine {
             // Periodic checkpoint save
             self.maybe_save_periodic_checkpoint(start).await;
 
-            // Spawn new tasks up to the (autoscale-aware) concurrency limit.
-            Self::spawn_available_tasks(&mut self.scheduler, tasks, task_ctx);
+            // Spawn new tasks capped by the remaining budget (issue #1599):
+            // at most `remaining` spawns, so collected + in-flight never
+            // exceeds max_pages at any dispatch decision. The tier bound
+            // still applies inside `next_url` per iteration, so the
+            // effective dispatch is min(tier_slots, remaining) — a no-op
+            // while budget is ample. Single-threaded spawn keeps the cap
+            // race-free.
+            let remaining =
+                Self::remaining_budget(self.config.max_pages, self.collector.len(), tasks.len());
+            Self::spawn_available_tasks(&mut self.scheduler, tasks, task_ctx, remaining);
 
             // If no tasks can be spawned and work remains, wait for one task.
             self.wait_for_task(tasks, worker_wait_bound).await;
@@ -1005,21 +1014,41 @@ impl Engine {
         );
     }
 
-    /// Spawn new tasks up to the (autoscale-aware) concurrency limit.
+    /// Remaining dispatch budget for one `crawl_loop` iteration (issue #1599).
     ///
-    /// The scheduler checks the limit before popping and skips URLs that
-    /// were already visited, marking each handed-out URL as visited.
+    /// Caps new spawns so `collected + in_flight` never exceeds `max_pages`
+    /// at any dispatch decision. Saturating arithmetic by construction:
+    /// over-budget states clamp to zero instead of underflowing.
+    fn remaining_budget(max_pages: usize, collected: usize, in_flight: usize) -> usize {
+        max_pages.saturating_sub(collected.saturating_add(in_flight))
+    }
+
+    /// Spawn new tasks capped by the remaining budget and the
+    /// (autoscale-aware) concurrency limit.
+    ///
+    /// The scheduler checks the tier limit before popping and skips URLs
+    /// that were already visited, marking each handed-out URL as visited.
+    /// `remaining` decrements per actual spawn and `None` (tier-full or
+    /// frontier-empty) stops early, so both bounds hold simultaneously.
     fn spawn_available_tasks(
         scheduler: &mut CrawlScheduler,
         tasks: &mut tokio::task::JoinSet<Result<(), CrawlError>>,
         task_ctx: &Arc<CrawlTaskCtx>,
+        mut remaining: usize,
     ) {
-        while let Some(discovered_url) = scheduler.next_url(tasks.len()) {
-            // Spawn task — single Arc clone instead of 18 individual clones
-            let task_ctx = Arc::clone(task_ctx);
-            tasks.spawn(
-                async move { run_crawl_task(task_ctx, discovered_url).await }.in_current_span(),
-            );
+        while remaining > 0 {
+            match scheduler.next_url(tasks.len()) {
+                Some(discovered_url) => {
+                    // Spawn task — single Arc clone instead of 18 individual clones
+                    let task_ctx = Arc::clone(task_ctx);
+                    tasks.spawn(
+                        async move { run_crawl_task(task_ctx, discovered_url).await }
+                            .in_current_span(),
+                    );
+                    remaining -= 1;
+                },
+                None => break,
+            }
         }
     }
 
@@ -2427,6 +2456,110 @@ mod tests {
             level.get(),
             crate::application::crawler::concurrency_level::ConcurrencyLevel::Critical,
             "autoscale loop must reach Critical at 95% (>= 90% threshold)",
+        );
+    }
+
+    /// Remaining-budget edges (issue #1599, strict-TDD RED): the dispatch
+    /// cap must block spawns exactly when the budget is exhausted while
+    /// leaving tier-bound dispatch untouched when budget is ample.
+    #[test]
+    fn remaining_budget_zero_when_collector_full() {
+        assert_eq!(
+            Engine::remaining_budget(3, 3, 0),
+            0,
+            "remaining == 0 spawns nothing"
+        );
+    }
+
+    #[test]
+    fn remaining_budget_zero_when_collected_plus_in_flight_reaches_max() {
+        assert_eq!(
+            Engine::remaining_budget(3, 2, 1),
+            0,
+            "collected + in_flight == max_pages blocks dispatch"
+        );
+    }
+
+    #[test]
+    fn remaining_budget_leaves_ample_budget_untouched() {
+        assert_eq!(
+            Engine::remaining_budget(10, 2, 2),
+            6,
+            "ample budget must not throttle tier-bound dispatch"
+        );
+    }
+
+    #[test]
+    fn remaining_budget_saturates_without_underflow() {
+        assert_eq!(
+            Engine::remaining_budget(3, 4, 2),
+            0,
+            "collected + in_flight > max_pages saturates to zero"
+        );
+    }
+
+    /// Break-path parity (issue #1599, strict-TDD RED): with the collector
+    /// already full before completions are processed, the first
+    /// (pre-processing) budget-exit path in `crawl_loop` must invoke run
+    /// cancellation exactly as the second (post-processing) path does — no
+    /// spawned worker may outlive the budget decision beyond the bounded
+    /// drain. Pre-fix the first path breaks without `cancel_run`, so this
+    /// fails; post-fix both paths cancel.
+    #[tokio::test]
+    async fn first_budget_exit_break_path_cancels_in_flight_work() {
+        use crate::application::crawler::collector::CrawlMessage;
+        use crate::domain::DiscoveredUrl;
+
+        let seed = Url::parse("http://127.0.0.1:9/").expect("valid seed URL");
+        let config = CrawlerConfig::builder(seed.clone())
+            .max_pages(1)
+            .concurrency(nz(2))
+            .build();
+        let mut engine = session_engine(config);
+        // Pending work so the loop body runs; the collector is already full
+        // so the FIRST budget-exit path is taken before any spawn.
+        engine.scheduler.seed(&engine.config.seed_url).await;
+        engine
+            .collector
+            .send(CrawlMessage::success(DiscoveredUrl::html(
+                seed.clone(),
+                0,
+                seed.clone(),
+            )))
+            .await
+            .expect("collector send must succeed");
+        // Task context assembled exactly like `Engine::run`.
+        let session = engine.session.take().expect("session present");
+        let task_ctx = session.task_ctx(CrawlExec {
+            queue: engine.scheduler.queue(),
+            rate_limiter: engine.rate_limiter.clone(),
+            pages_crawled: Arc::clone(&engine.pages_crawled),
+            error_count: Arc::clone(&engine.error_count),
+            error_breakdown: Arc::clone(&engine.error_breakdown),
+            collector: engine.collector.clone(),
+            cookie_bridge: Arc::clone(&engine.cookie_bridge),
+            banned_domains: Arc::clone(&engine.banned_domains),
+            robots_fetcher: Arc::clone(&engine.robots_fetcher),
+            fetch_router: engine.fetch_router.clone(),
+        });
+
+        let mut tasks = tokio::task::JoinSet::new();
+        engine
+            .crawl_loop(
+                &mut tasks,
+                &task_ctx,
+                std::time::Instant::now(),
+                Duration::from_secs(1),
+            )
+            .await;
+
+        assert!(
+            engine.cancel_token.is_cancelled(),
+            "first budget-exit break path must cancel in-flight work like the second path"
+        );
+        assert!(
+            tasks.is_empty(),
+            "no worker may be spawned after the budget decision"
         );
     }
 }

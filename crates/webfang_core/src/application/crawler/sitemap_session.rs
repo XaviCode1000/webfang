@@ -275,20 +275,64 @@ mod tests {
         );
     }
 
-    /// sitemap-crawl-run-parity 4.2 (GREEN pin): `max_pages = 3` with 8
-    /// sitemap seeds truncates the run within the documented in-flight-drain
-    /// bound (engine.rs:908-927, collector.rs:135-137) — the collector trips
-    /// `is_full(3)` and only already-sent in-flight completions still land.
-    /// `total_pages` keeps engine semantics (fetched+crawled pages); the
-    /// naive unbounded reading (all 9) is recorded by the ignored RED above.
+    /// sitemap-crawl-run-parity 4.2 (GREEN pin, tightened by issue #1599):
+    /// `max_pages = 3` with 8 sitemap seeds collects at most `max_pages`
+    /// pages. The remaining-budget dispatch cap keeps
+    /// `collected + in_flight <= max_pages` at every dispatch decision, so
+    /// no in-flight drain overshoot remains. The naive unbounded reading
+    /// (all 9) is recorded by the ignored RED above.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn sitemap_entry_max_pages_bound_pins_inflight_drain() {
         let result = many_url_sitemap_run(3, 2).await;
         let urls = collected_urls(&result);
         assert!(
-            (3..9).contains(&result.total_pages),
-            "max_pages=3 must truncate the 9-seed run within in-flight drain, got {}: {urls:?}",
+            result.total_pages <= 3,
+            "max_pages=3 must bound the 9-seed run to at most 3 pages, got {}: {urls:?}",
             result.total_pages
+        );
+    }
+
+    /// Strict-TDD RED detector (issue #1599): `max_pages = 1` with
+    /// `concurrency = 2` pinned via `budget_overrides` must collect at most
+    /// one page. Pre-fix the first spawn wave already dispatches two tasks,
+    /// so this fails deterministically with `total_pages >= 2`; post-fix the
+    /// remaining-budget cap spawns only the seed and it passes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn sitemap_entry_max_pages_one_is_exact() {
+        let result = many_url_sitemap_run(1, 2).await;
+        let urls = collected_urls(&result);
+        assert!(
+            result.total_pages <= 1,
+            "max_pages=1 must collect at most one page, got {}: {urls:?}",
+            result.total_pages
+        );
+    }
+
+    /// Budget-consumption (issue #1599, strict-TDD RED): a failed fetch
+    /// (unmounted leaf → wiremock 404) must appear only in the error
+    /// counters, never in the budget counter — collection must still reach
+    /// `max_pages`. Pre-fix the uncapped dispatch overshoots (`total > 3`);
+    /// post-fix `total == 3` with the failure counted.
+    ///
+    /// NOTE: the spec's pipeline-rejection scenario has no session-level
+    /// poison on this path — `crawl_with_sitemap_session_inner` hardcodes
+    /// `pipeline: None`, and `run_pipeline` returns `true` without a
+    /// pipeline, so every fetched 200 is collected. Rejection accounting
+    /// (rejected → no send, no error count) is pinned at task level by
+    /// `test_pipeline_rejection_consumes_neither_budget_nor_errors` in
+    /// `crawl_task.rs` instead of forcing an unrepresentable fixture here.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn sitemap_failed_fetch_does_not_consume_budget() {
+        let result = many_url_sitemap_run_with(3, 2, 0).await;
+        let urls = collected_urls(&result);
+        assert_eq!(
+            result.total_pages, 3,
+            "failed fetches must not consume budget: collection must still reach max_pages, got {}: {urls:?}",
+            result.total_pages
+        );
+        assert!(
+            result.errors >= 1,
+            "the failed fetch must appear in the error counters: {urls:?}"
         );
     }
 
@@ -297,6 +341,17 @@ mod tests {
     /// the extraction pipeline), driven through the new session entry
     /// with an explicit `max_pages` / `concurrency` pair.
     async fn many_url_sitemap_run(max_pages: usize, concurrency: usize) -> CrawlResult {
+        many_url_sitemap_run_with(max_pages, concurrency, usize::MAX).await
+    }
+
+    /// [`many_url_sitemap_run`] with leaf `unmounted_idx` left unmounted so
+    /// its fetch fails (wiremock 404) for budget-consumption scenarios
+    /// (`usize::MAX` disables the override and mounts every leaf).
+    async fn many_url_sitemap_run_with(
+        max_pages: usize,
+        concurrency: usize,
+        unmounted_idx: usize,
+    ) -> CrawlResult {
         use std::num::NonZeroUsize;
 
         const LEAVES: usize = 8;
@@ -313,12 +368,14 @@ mod tests {
         let mut extra_seeds = Vec::with_capacity(LEAVES);
         for i in 0..LEAVES {
             let leaf = Url::parse(&format!("http://127.0.0.1:{port}/p{i}")).expect("leaf");
-            Mock::given(path(format!("/p{i}")))
+            if i != unmounted_idx {
+                Mock::given(path(format!("/p{i}")))
                     .respond_with(ResponseTemplate::new(200).set_body_string(format!(
                         "<html><head><title>Leaf {i}</title></head><body><h1>Overshoot leaf {i}</h1><p>Leaf page number {i} carrying enough ordinary text for the readability pipeline to accept it as main content without tripping the minimum content guard.</p></body></html>"
                     )))
                     .mount(&server)
                     .await;
+            }
             extra_seeds.push(DiscoveredUrl::html(leaf, 1, seed.clone()));
         }
 
@@ -326,6 +383,10 @@ mod tests {
             .max_depth(5)
             .max_pages(max_pages)
             .concurrency(NonZeroUsize::new(concurrency).expect("non-zero"))
+            .budget_overrides(crate::domain::budget::BudgetOverrides {
+                crawl: crate::domain::budget::tiers::CrawlConcurrency::new(concurrency).ok(),
+                ..crate::domain::budget::BudgetOverrides::default()
+            })
             .ignore_robots(true)
             .build();
         let options = EngineOptions {

@@ -949,6 +949,39 @@ mod tests {
         assert_eq!(sent.len(), 1);
     }
 
+    /// Budget-consumption accounting (issue #1599): a pipeline-rejected
+    /// page consumes neither budget (no collector send) nor error budget
+    /// (no error-counter increment) — the run simply continues, so further
+    /// dispatch stays permitted. Characterization pin: accounting was
+    /// already correct pre-fix (only dispatch overshot); this guards GREEN
+    /// against a fix that miscounts rejections.
+    #[tokio::test]
+    async fn test_pipeline_rejection_consumes_neither_budget_nor_errors() {
+        let (collector, sent) = mock_collector();
+        let ctx = TestCtxBuilder::new(collector)
+            .pipeline(Arc::new(MockPipeline {
+                behavior: PipelineBehavior::Rejected(
+                    crate::domain::pipeline_item::RejectReason::EmptyContent,
+                ),
+            }))
+            .build();
+
+        let result = run_crawl_task(Arc::clone(&ctx), test_url("https://example.com/", 0)).await;
+        assert!(result.is_ok());
+        assert!(sent.lock().expect("lock not poisoned").is_empty());
+        assert_eq!(
+            ctx.error_count.load(Ordering::SeqCst),
+            0,
+            "rejection must not touch the error counters"
+        );
+        assert!(
+            ctx.error_breakdown
+                .iter()
+                .all(|counter| counter.load(Ordering::Relaxed) == 0),
+            "rejection must not touch the error breakdown"
+        );
+    }
+
     #[tokio::test]
     async fn test_session_pool_report_success_called() {
         let (collector, _) = mock_collector();
