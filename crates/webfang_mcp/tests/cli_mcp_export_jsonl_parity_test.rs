@@ -136,7 +136,7 @@ async fn call_tool(
 fn tool_text(result: &Value) -> String {
     // #1600: strip the provenance envelope when present (see common::payload_text).
     common::payload_text(
-        &result
+        result
             .get("content")
             .and_then(|c| c.as_array())
             .and_then(|arr| arr.first())

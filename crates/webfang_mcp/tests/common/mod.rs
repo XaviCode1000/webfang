@@ -330,13 +330,15 @@ pub async fn call_tool(
 /// and dedent the one-space indentation `RemoteDerived` bodies carry, so
 /// assertions keep comparing against the handler's original payload.
 pub fn tool_text(result: &Value) -> String {
-    payload_text(&result
-        .get("content")
-        .and_then(|c| c.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|first| first.get("text"))
-        .and_then(|t| t.as_str())
-        .unwrap_or_default())
+    payload_text(
+        result
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|first| first.get("text"))
+            .and_then(|t| t.as_str())
+            .unwrap_or_default(),
+    )
 }
 
 /// Provenance-envelope-aware payload extraction: the payload between the

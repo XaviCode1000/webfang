@@ -4,12 +4,12 @@
 
 use super::McpHandler;
 use crate::mcp_server::params::*;
+use crate::mcp_server::provenance;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::tool;
 use rmcp::tool_router;
 use rmcp::{model::CallToolResult, ErrorData as McpError};
-use crate::mcp_server::provenance;
 use tracing::instrument;
 
 #[tool_router(router = tool_router_obsidian, vis = "pub")]
@@ -108,14 +108,12 @@ impl McpHandler {
         );
         use webfang_core::infrastructure::obsidian::uri::DispatchStatus;
         match webfang_core::infrastructure::obsidian::uri::open_in_obsidian(&uri) {
-            Ok(DispatchStatus::Dispatched) => {
-                Ok(provenance::local_text(&format!("Abriendo en Obsidian: {uri}")))
-            },
-            Ok(DispatchStatus::HandlerFailed) => {
-                Ok(provenance::local_text(&format!(
-                    "⚠️ El manejador de URI falló (Obsidian puede no estar instalado). URI: {uri}"
-                )))
-            },
+            Ok(DispatchStatus::Dispatched) => Ok(provenance::local_text(&format!(
+                "Abriendo en Obsidian: {uri}"
+            ))),
+            Ok(DispatchStatus::HandlerFailed) => Ok(provenance::local_text(&format!(
+                "⚠️ El manejador de URI falló (Obsidian puede no estar instalado). URI: {uri}"
+            ))),
             Err(e) => Ok(provenance::neutralized_error(&format!(
                 "error al abrir Obsidian: {e}"
             ))),

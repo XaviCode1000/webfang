@@ -21,12 +21,12 @@
 
 use super::McpHandler;
 use crate::mcp_server::params::*;
+use crate::mcp_server::provenance;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::tool;
 use rmcp::tool_router;
 use rmcp::{model::CallToolResult, ErrorData as McpError};
-use crate::mcp_server::provenance;
 use tracing::instrument;
 use webfang_core::application::vault_search::{SyncSummary, VaultSearchResult, VaultSearchService};
 use webfang_core::domain::DocumentChunk;
@@ -167,11 +167,11 @@ impl McpHandler {
             },
         };
         Ok(provenance::untrusted_text(
-                    &provenance::Origin::RemoteFetch {
-                        url: params.url.as_str().to_string(),
-                    },
-                    &payload,
-                ))
+            &provenance::Origin::RemoteFetch {
+                url: params.url.as_str().to_string(),
+            },
+            &payload,
+        ))
     }
 
     /// Semantic search over Obsidian vault using embeddings

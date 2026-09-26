@@ -6,12 +6,12 @@
 use super::McpHandler;
 use crate::mcp_server::metrics::{domain_of, Outcome};
 use crate::mcp_server::params::*;
+use crate::mcp_server::provenance;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::tool;
 use rmcp::tool_router;
 use rmcp::{model::CallToolResult, ErrorData as McpError};
-use crate::mcp_server::provenance;
 use std::time::Instant;
 use tracing::instrument;
 
@@ -367,7 +367,9 @@ impl McpHandler {
                 // serialization contract lives in `batch_outcome_to_jsonl`.
                 let content = batch_outcome_to_jsonl(&outcome)?;
                 Ok(provenance::untrusted_text(
-                    &provenance::Origin::RemoteDerived { via: "scrape_batch" },
+                    &provenance::Origin::RemoteDerived {
+                        via: "scrape_batch",
+                    },
                     &content,
                 ))
             },
@@ -663,12 +665,12 @@ impl McpHandler {
                         let mut url_strings = Vec::with_capacity(urls.len());
                         filter_ssrf_safe(&urls, seed_url, &mut url_strings);
                         Ok(provenance::untrusted_text(
-                    &provenance::Origin::RemoteFetch {
-                        url: seed_url.to_string(),
-                    },
-                    &serde_json::to_string_pretty(&url_strings)
+                            &provenance::Origin::RemoteFetch {
+                                url: seed_url.to_string(),
+                            },
+                            &serde_json::to_string_pretty(&url_strings)
                                 .expect("serializing JSON to a string cannot fail"),
-                ))
+                        ))
                     },
                     Err(e) => {
                         use webfang_core::infrastructure::observability::log_scrape_error;
@@ -780,11 +782,11 @@ impl McpHandler {
                         let content = serde_json::to_string_pretty(&links)
                             .unwrap_or_else(|_| "failed to serialize".into());
                         Ok(provenance::untrusted_text(
-                    &provenance::Origin::RemoteFetch {
-                        url: url.to_string(),
-                    },
-                    &content,
-                ))
+                            &provenance::Origin::RemoteFetch {
+                                url: url.to_string(),
+                            },
+                            &content,
+                        ))
                     },
                     Err(e) => {
                         self.state.record_scrape_identity(
@@ -808,9 +810,7 @@ impl McpHandler {
                     start,
                     &root_correlation,
                 );
-                Ok(provenance::neutralized_error(&format!(
-                    "HTTP error: {e}"
-                )))
+                Ok(provenance::neutralized_error(&format!("HTTP error: {e}")))
             },
         }
     }
@@ -948,14 +948,16 @@ impl McpHandler {
                             "has_spa_markers": info.has_spa_markers,
                         });
                         Ok(provenance::untrusted_text(
-                    &provenance::Origin::RemoteFetch {
-                        url: url.to_string(),
-                    },
-                    &serde_json::to_string_pretty(&json)
+                            &provenance::Origin::RemoteFetch {
+                                url: url.to_string(),
+                            },
+                            &serde_json::to_string_pretty(&json)
                                 .expect("serializing JSON to a string cannot fail"),
-                ))
+                        ))
                     },
-                    None => Ok(provenance::local_text("not an SPA - sufficient content found")),
+                    None => Ok(provenance::local_text(
+                        "not an SPA - sufficient content found",
+                    )),
                 }
             },
             Err(e) => {
@@ -967,9 +969,7 @@ impl McpHandler {
                     start,
                     &root_correlation,
                 );
-                Ok(provenance::neutralized_error(&format!(
-                    "HTTP error: {e}"
-                )))
+                Ok(provenance::neutralized_error(&format!("HTTP error: {e}")))
             },
         }
     }

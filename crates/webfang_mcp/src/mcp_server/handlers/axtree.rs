@@ -6,12 +6,12 @@
 
 use super::McpHandler;
 use crate::mcp_server::params::*;
+use crate::mcp_server::provenance;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::tool;
 use rmcp::tool_router;
 use rmcp::{model::CallToolResult, ErrorData as McpError};
-use crate::mcp_server::provenance;
 use tracing::instrument;
 use webfang_core::domain::CorrelationId;
 use webfang_core::infrastructure::observability::log_scrape_error;
@@ -114,11 +114,11 @@ async fn fetch_snapshot(
                     );
                     match serde_json::to_string(&snapshot) {
                         Ok(json) => Ok(provenance::untrusted_text(
-                    &provenance::Origin::RemoteFetch {
-                        url: url.to_string(),
-                    },
-                    &json,
-                )),
+                            &provenance::Origin::RemoteFetch {
+                                url: url.to_string(),
+                            },
+                            &json,
+                        )),
                         Err(e) => {
                             log_scrape_error(
                                 &e,
@@ -159,11 +159,11 @@ async fn fetch_snapshot(
                         "axtree playwright snapshot produced"
                     );
                     Ok(provenance::untrusted_text(
-                    &provenance::Origin::RemoteFetch {
-                        url: url.to_string(),
-                    },
-                    &snapshot.content,
-                ))
+                        &provenance::Origin::RemoteFetch {
+                            url: url.to_string(),
+                        },
+                        &snapshot.content,
+                    ))
                 },
                 Err(e) => {
                     log_scrape_error(

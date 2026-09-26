@@ -18,13 +18,13 @@
 
 use super::McpHandler;
 use crate::mcp_server::params::*;
+use crate::mcp_server::provenance;
 use crate::mcp_server::validation::SanitizedFilename;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::tool;
 use rmcp::tool_router;
 use rmcp::{model::CallToolResult, ErrorData as McpError};
-use crate::mcp_server::provenance;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tracing::instrument;
@@ -113,7 +113,9 @@ fn load_session_results(
         Err(poisoned) => poisoned.into_inner().clone(),
     };
     if results.is_empty() {
-        return Err(provenance::neutralized_error("no hay resultados disponibles para exportar"));
+        return Err(provenance::neutralized_error(
+            "no hay resultados disponibles para exportar",
+        ));
     }
     Ok(results)
 }
@@ -133,9 +135,7 @@ impl McpHandler {
             .await
             .map_err(|e| {
                 tracing::warn!(error = %e, "export_load_session_results_join_failed");
-                provenance::neutralized_error(&format!(
-                    "no se pudieron cargar los resultados: {e}"
-                ))
+                provenance::neutralized_error(&format!("no se pudieron cargar los resultados: {e}"))
             })?
     }
 
@@ -183,7 +183,9 @@ impl McpHandler {
 
         // Honest error on empty content (REQ-MCP-EXPORT-05).
         if params.content.trim().is_empty() {
-            return Ok(provenance::neutralized_error("el contenido no puede estar vacío"));
+            return Ok(provenance::neutralized_error(
+                "el contenido no puede estar vacío",
+            ));
         }
 
         // Invalid format is a protocol-level invalid-params error, never a

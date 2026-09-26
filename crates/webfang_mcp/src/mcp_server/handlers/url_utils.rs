@@ -5,12 +5,12 @@
 
 use super::McpHandler;
 use crate::mcp_server::params::*;
+use crate::mcp_server::provenance;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::tool;
 use rmcp::tool_router;
 use rmcp::{model::CallToolResult, ErrorData as McpError};
-use crate::mcp_server::provenance;
 use tracing::instrument;
 use webfang_core::domain::url_validation::{NormalizeConfig, RemoveQueryParameters};
 
@@ -58,13 +58,17 @@ impl McpHandler {
                     "path": u.path(),
                     "query": u.query().unwrap_or(""),
                 });
-                Ok(provenance::local_text(&serde_json::to_string_pretty(&info)
-                    .expect("serializing JSON to a string cannot fail")))
+                Ok(provenance::local_text(
+                    &serde_json::to_string_pretty(&info)
+                        .expect("serializing JSON to a string cannot fail"),
+                ))
             },
             Err(e) => {
                 let info = serde_json::json!({"valid": false, "reason": e.to_string()});
-                Ok(provenance::local_text(&serde_json::to_string_pretty(&info)
-                    .expect("serializing JSON to a string cannot fail")))
+                Ok(provenance::local_text(
+                    &serde_json::to_string_pretty(&info)
+                        .expect("serializing JSON to a string cannot fail"),
+                ))
             },
         }
     }
@@ -182,8 +186,10 @@ impl McpHandler {
                     "relative_path": output_path.to_folder_path(),
                     "domain": output_path.domain().to_string(),
                 });
-                Ok(provenance::local_text(&serde_json::to_string_pretty(&info)
-                    .expect("serializing JSON to a string cannot fail")))
+                Ok(provenance::local_text(
+                    &serde_json::to_string_pretty(&info)
+                        .expect("serializing JSON to a string cannot fail"),
+                ))
             },
             Err(e) => Ok(provenance::neutralized_error(&e.to_string())),
         }

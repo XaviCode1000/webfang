@@ -141,7 +141,7 @@ async fn call_tool(
 fn tool_text(result: &Value) -> String {
     // #1600: strip the provenance envelope when present (see common::payload_text).
     common::payload_text(
-        &result
+        result
             .get("content")
             .and_then(|c| c.as_array())
             .and_then(|arr| arr.first())
@@ -208,7 +208,10 @@ async fn test_detect_waf_challenge_marker_is_detected() {
         "detect_waf should succeed: {}",
         tool_text(&result)
     );
-    assert_eq!(tool_text(&result).trim(), "WAF detected: Cloudflare Turnstile");
+    assert_eq!(
+        tool_text(&result).trim(),
+        "WAF detected: Cloudflare Turnstile"
+    );
 }
 
 /// A bare vendor fingerprint (T2) is evidence only and NEVER blocks in
@@ -302,7 +305,8 @@ async fn test_verify_waf_integrity_header_alone_passes_degraded() {
         "verify_waf_integrity should succeed: {}",
         tool_text(&result)
     );
-    assert_eq!(tool_text(&result).trim(),
+    assert_eq!(
+        tool_text(&result).trim(),
         "WAF integrity check passed",
         "T2 header alone must not block in degraded mode (#346)"
     );
@@ -388,7 +392,8 @@ async fn test_verify_waf_integrity_t2_with_ok_status_passes() {
         "verify_waf_integrity should succeed: {}",
         tool_text(&result)
     );
-    assert_eq!(tool_text(&result).trim(),
+    assert_eq!(
+        tool_text(&result).trim(),
         "WAF integrity check passed",
         "T2 fingerprint at status 200 must pass, got: {}",
         tool_text(&result)

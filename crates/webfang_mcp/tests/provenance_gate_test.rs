@@ -76,7 +76,10 @@ fn handlers_never_construct_tool_content_directly() {
             );
         }
     }
-    assert!(checked >= 9, "expected the 9 handler modules, got {checked}");
+    assert!(
+        checked >= 9,
+        "expected the 9 handler modules, got {checked}"
+    );
 }
 
 /// Gate 2: every `#[tool(` registration carries the standard notice.
@@ -122,11 +125,7 @@ fn every_tool_description_carries_the_injection_notice() {
 /// and a refactor that moved/deleted it would fail loudly here.
 #[test]
 fn provenance_module_still_owns_the_sanctioned_constructors() {
-    let source = read_source(
-        &manifest_dir()
-            .join("src/mcp_server")
-            .join("provenance.rs"),
-    );
+    let source = read_source(&manifest_dir().join("src/mcp_server").join("provenance.rs"));
     for required in [
         "pub fn untrusted_text(",
         "pub fn local_text(",

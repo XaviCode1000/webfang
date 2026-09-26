@@ -6,12 +6,12 @@
 use super::McpHandler;
 use crate::mcp_server::metrics::MetricsSnapshot;
 use crate::mcp_server::params::*;
+use crate::mcp_server::provenance;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::tool;
 use rmcp::tool_router;
 use rmcp::{model::CallToolResult, ErrorData as McpError};
-use crate::mcp_server::provenance;
 use tracing::instrument;
 use webfang_core::domain::waf::{waf_inspector, InspectionContext, WafVerdict};
 
@@ -34,15 +34,13 @@ impl McpHandler {
 
         match detect_waf_provider(&params.html) {
             Some(provider) => Ok(provenance::untrusted_text(
-                    &provenance::Origin::RemoteDerived { via: "detect_waf" },
-                    &format!(
-                "WAF detected: {provider}"
-            ),
-                )),
+                &provenance::Origin::RemoteDerived { via: "detect_waf" },
+                &format!("WAF detected: {provider}"),
+            )),
             None => Ok(provenance::untrusted_text(
-                    &provenance::Origin::RemoteDerived { via: "detect_waf" },
-                    "no WAF detected",
-                )),
+                &provenance::Origin::RemoteDerived { via: "detect_waf" },
+                "no WAF detected",
+            )),
         }
     }
 
@@ -75,17 +73,18 @@ impl McpHandler {
         let verdict = verify_waf_verdict(html, params.status, params.content_type, header_map);
         if verdict.is_blocked {
             Ok(provenance::untrusted_text(
-                    &provenance::Origin::RemoteDerived { via: "verify_waf_integrity" },
-                    &format!(
-                "WAF blocked: {}",
-                verdict.evidence_chain()
-            ),
-                ))
+                &provenance::Origin::RemoteDerived {
+                    via: "verify_waf_integrity",
+                },
+                &format!("WAF blocked: {}", verdict.evidence_chain()),
+            ))
         } else {
             Ok(provenance::untrusted_text(
-                    &provenance::Origin::RemoteDerived { via: "verify_waf_integrity" },
-                    "WAF integrity check passed",
-                ))
+                &provenance::Origin::RemoteDerived {
+                    via: "verify_waf_integrity",
+                },
+                "WAF integrity check passed",
+            ))
         }
     }
 
@@ -178,13 +177,15 @@ fn verify_waf_verdict(
 /// `load_results_from` honest-error pattern in `export.rs`.
 fn render_metrics(snapshot: &MetricsSnapshot) -> CallToolResult {
     if snapshot.total_events == 0 {
-        return provenance::neutralized_error("no hay métricas disponibles: todavía no se registró ninguna operación de scraping");
+        return provenance::neutralized_error(
+            "no hay métricas disponibles: todavía no se registró ninguna operación de scraping",
+        );
     }
     match serde_json::to_string_pretty(snapshot) {
         Ok(json) => provenance::local_text(&json),
-        Err(e) => provenance::neutralized_error(&format!(
-            "no se pudieron serializar las métricas: {e}"
-        )),
+        Err(e) => {
+            provenance::neutralized_error(&format!("no se pudieron serializar las métricas: {e}"))
+        },
     }
 }
 

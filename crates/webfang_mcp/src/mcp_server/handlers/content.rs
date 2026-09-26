@@ -6,12 +6,12 @@
 
 use super::McpHandler;
 use crate::mcp_server::params::*;
+use crate::mcp_server::provenance;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::tool;
 use rmcp::tool_router;
 use rmcp::{model::CallToolResult, ErrorData as McpError};
-use crate::mcp_server::provenance;
 use tracing::instrument;
 
 #[tool_router(router = tool_router_content, vis = "pub")]
@@ -33,7 +33,10 @@ impl McpHandler {
 
         let cleaned =
             webfang_core::infrastructure::converter::html_cleaner::clean_html(&params.html);
-        Ok(provenance::untrusted_text(&provenance::Origin::RemoteDerived { via: "clean_html" }, &cleaned))
+        Ok(provenance::untrusted_text(
+            &provenance::Origin::RemoteDerived { via: "clean_html" },
+            &cleaned,
+        ))
     }
 
     /// Convert HTML to Markdown
@@ -53,7 +56,9 @@ impl McpHandler {
             &params.html,
         );
         Ok(provenance::untrusted_text(
-            &provenance::Origin::RemoteDerived { via: "convert_html_to_markdown" },
+            &provenance::Origin::RemoteDerived {
+                via: "convert_html_to_markdown",
+            },
             &md,
         ))
     }
@@ -79,7 +84,9 @@ impl McpHandler {
                 let content = serde_json::to_string_pretty(&links)
                     .unwrap_or_else(|_| "failed to serialize".into());
                 Ok(provenance::untrusted_text(
-                    &provenance::Origin::RemoteDerived { via: "extract_links" },
+                    &provenance::Origin::RemoteDerived {
+                        via: "extract_links",
+                    },
                     &content,
                 ))
             },
@@ -105,7 +112,9 @@ impl McpHandler {
                 &params.markdown,
             );
         Ok(provenance::untrusted_text(
-            &provenance::Origin::RemoteDerived { via: "highlight_code_blocks" },
+            &provenance::Origin::RemoteDerived {
+                via: "highlight_code_blocks",
+            },
             &highlighted,
         ))
     }
@@ -128,7 +137,9 @@ impl McpHandler {
             &params.base_domain,
         );
         Ok(provenance::untrusted_text(
-            &provenance::Origin::RemoteDerived { via: "convert_wiki_links" },
+            &provenance::Origin::RemoteDerived {
+                via: "convert_wiki_links",
+            },
             &wikilinks,
         ))
     }
@@ -155,7 +166,9 @@ impl McpHandler {
             title, url, None, author, excerpt, tags, None,
         );
         Ok(provenance::untrusted_text(
-            &provenance::Origin::RemoteDerived { via: "generate_frontmatter" },
+            &provenance::Origin::RemoteDerived {
+                via: "generate_frontmatter",
+            },
             &fm,
         ))
     }
@@ -196,8 +209,7 @@ impl McpHandler {
             "content_type": content_type,
         });
         Ok(provenance::local_text(
-            &serde_json::to_string_pretty(&meta)
-                .expect("serializing JSON to a string cannot fail"),
+            &serde_json::to_string_pretty(&meta).expect("serializing JSON to a string cannot fail"),
         ))
     }
 }
