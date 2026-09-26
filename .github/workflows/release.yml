@@ -302,11 +302,6 @@ jobs:
             echo "### Binary download"
             echo "Download the binary for your platform from the assets below."
             echo ""
-            echo "### Cargo"
-            echo '```bash'
-            echo "cargo install webfang --version $TAG"
-            echo '```'
-            echo ""
             echo "### From source"
             echo '```bash'
             echo "git clone https://github.com/XaviCode1000/webfang"
