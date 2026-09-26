@@ -267,20 +267,29 @@ mod tests {
         .collect()
     }
 
+    /// Guard window with the layer-2 hatch guaranteed absent — the
+    /// read-or-assert window is serialized under ENV_LOCK (#1308).
+    fn entry_guard_armed() -> webfang_test_utils::EnvGuard {
+        webfang_test_utils::EnvGuard::clean(&[crate::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV])
+    }
+
+    /// Fresh port with an empty observation log.
+    fn recording_port() -> RecordingPort {
+        RecordingPort {
+            seen: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
     /// SEC F1 (PI-1): with the entry hatch guaranteed absent, every forbidden
     /// literal is filtered BEFORE the port is consulted — `Ok(vec![])`, the
     /// port never sees the URL, no socket (a real adapter would dial the
     /// metadata address; the mock makes that failure observable instead).
     #[tokio::test]
     async fn download_asset_urls_skips_every_forbidden_literal_without_the_port() {
-        let _guard = webfang_test_utils::EnvGuard::clean(&[
-            crate::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
-        ]);
+        let _guard = entry_guard_armed();
         let config = ScraperConfig::default();
         let urls = forbidden_urls();
-        let port = RecordingPort {
-            seen: std::sync::Mutex::new(Vec::new()),
-        };
+        let port = recording_port();
 
         let result = download_asset_urls(&urls, &config, Some(&port))
             .await
@@ -301,18 +310,14 @@ mod tests {
     /// port observes only those.
     #[tokio::test]
     async fn download_asset_urls_keeps_only_allowed_targets_from_a_mixed_batch() {
-        let _guard = webfang_test_utils::EnvGuard::clean(&[
-            crate::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
-        ]);
+        let _guard = entry_guard_armed();
         let config = ScraperConfig::default();
         let mut urls = forbidden_urls();
         urls.push(
             crate::domain::ValidUrl::parse("https://example.com/logo.png")
                 .expect("test url must parse"),
         );
-        let port = RecordingPort {
-            seen: std::sync::Mutex::new(Vec::new()),
-        };
+        let port = recording_port();
 
         let result = download_asset_urls(&urls, &config, Some(&port))
             .await
@@ -335,9 +340,7 @@ mod tests {
         let _guard = webfang_test_utils::EnvGuard::entry_guard_off();
         let config = ScraperConfig::default();
         let urls = forbidden_urls();
-        let port = RecordingPort {
-            seen: std::sync::Mutex::new(Vec::new()),
-        };
+        let port = recording_port();
 
         let result = download_asset_urls(&urls, &config, Some(&port))
             .await
