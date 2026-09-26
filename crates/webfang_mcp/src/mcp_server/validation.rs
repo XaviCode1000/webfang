@@ -421,8 +421,8 @@ pub fn require_range_u64(field: &str, value: u64, min: u64, max: u64) -> Result<
 ///    byte-for-byte, so platform-specific separator filtering (`/` and `\`)
 ///    cannot slip through.
 ///
-/// Cross-platform filename hardening (issue #1608), via
-/// [`filename_component_error`] with NO drive-prefix exception (a flat
+/// Cross-platform filename hardening (issue #1608), via the private
+/// `filename_component_error` helper with NO drive-prefix exception (a flat
 /// filename can never be a drive): control characters (NUL included), `:`
 /// anywhere (NTFS ADS hazard), the Windows-invalid set `< > " | ? *`,
 /// Windows reserved device names (`CON`, `con.txt`, ... — stem-aware), and

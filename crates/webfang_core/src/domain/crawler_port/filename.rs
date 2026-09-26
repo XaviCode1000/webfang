@@ -111,7 +111,7 @@ pub fn parse_content_disposition(value: &str) -> Option<String> {
 /// to their input. Returns `None` when nothing safe remains (`.` / `..`).
 ///
 /// Windows reserved device names (XP-P-04, issue #1608): a candidate whose
-/// stem is reserved (`CON`, `CON.txt`, ...) gets [`RESERVED_SAFE_SUFFIX`]
+/// stem is reserved (`CON`, `CON.txt`, ...) gets the `"_safe"` suffix
 /// appended so the derived name is creatable on Windows hosts. The check
 /// runs BEFORE the length cap, so a suffixed name over the cap still goes
 /// through the hash-truncation path.
