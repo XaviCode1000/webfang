@@ -212,7 +212,7 @@ impl VectorRepository for MultiVectorRepository {
                         }
                     },
                     Err(e) => {
-                        tracing::error!(error = %e, "vector sink save_resource failed");
+                        tracing::error!(url = %url, error = %e, "vector sink save_resource failed");
                         if first_err.is_none() {
                             first_err = Some(e);
                         }
@@ -253,7 +253,13 @@ impl VectorRepository for MultiVectorRepository {
                 {
                     Ok(()) => any_ok = true,
                     Err(e) => {
-                        tracing::error!(error = %e, "vector sink save_chunk failed");
+                        tracing::error!(
+                            url = %resource_url,
+                            chunk_id = %id,
+                            chunk_index,
+                            error = %e,
+                            "vector sink save_chunk failed"
+                        );
                         if first_err.is_none() {
                             first_err = Some(e);
                         }
@@ -283,7 +289,11 @@ impl VectorRepository for MultiVectorRepository {
                     Ok(Some(url)) => return Ok(Some(url)),
                     Ok(None) => {},
                     Err(e) => {
-                        tracing::error!(error = %e, "vector sink resource_exists_by_hash failed");
+                        tracing::error!(
+                            content_hash = %content_hash,
+                            error = %e,
+                            "vector sink resource_exists_by_hash failed"
+                        );
                         if first_err.is_none() {
                             first_err = Some(e);
                         }
@@ -308,7 +318,11 @@ impl VectorRepository for MultiVectorRepository {
                     Ok(Some(v)) => return Ok(Some(v)),
                     Ok(None) => {},
                     Err(e) => {
-                        tracing::error!(error = %e, "vector sink get_vector failed");
+                        tracing::error!(
+                            chunk_id = %chunk_id,
+                            error = %e,
+                            "vector sink get_vector failed"
+                        );
                         if first_err.is_none() {
                             first_err = Some(e);
                         }

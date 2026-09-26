@@ -197,7 +197,7 @@ impl ResourceDownloader {
                     content_length = cl,
                     max = self.config.max_size_bytes,
                     reason = "payload_too_large",
-                    "recurso supera límite de tamaño: rechazado sin adquirir permisos"
+                    "resource exceeds size limit: rejected without acquiring permits"
                 );
                 return Err(ScraperError::PayloadTooLarge);
             }
@@ -222,7 +222,7 @@ impl ResourceDownloader {
                 %url,
                 bytes = total_bytes,
                 reason = "slowloris_timeout",
-                "descarga abortada: timeout de inactividad por chunk"
+                "download aborted: per-chunk inactivity timeout"
             );
             ScraperError::SlowlorisTimeout
         })? {
@@ -231,7 +231,7 @@ impl ResourceDownloader {
                     %url,
                     bytes = total_bytes,
                     error = %e,
-                    "error de red durante la descarga"
+                    "network error during resource download"
                 );
                 ScraperError::from(e)
             })?;
@@ -245,7 +245,7 @@ impl ResourceDownloader {
                     bytes = total_bytes + chunk_len,
                     max = self.config.max_size_bytes,
                     reason = "chunked_limit_exceeded",
-                    "descarga abortada: supera límite de tamaño"
+                    "download aborted: exceeds size limit"
                 );
                 return Err(ScraperError::PayloadTooLarge);
             }
@@ -289,7 +289,7 @@ impl ResourceDownloader {
                 %url,
                 bytes = total_bytes,
                 reason = "semaphore_acquire_timeout",
-                "timeout adquiriendo permisos del semáforo (posible inanición)"
+                "timed out acquiring semaphore permits (possible starvation)"
             );
             ScraperError::SemaphoreInanition
         })?
@@ -298,7 +298,7 @@ impl ResourceDownloader {
                 %url,
                 bytes = total_bytes,
                 reason = "semaphore_inanition",
-                "semáforo agotado: no hay permisos disponibles"
+                "semaphore exhausted: no permits available"
             );
             ScraperError::SemaphoreInanition
         })?;
