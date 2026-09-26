@@ -420,7 +420,13 @@ async fn test_concurrent_embeddings() {
     assert_eq!(results[0].len(), 384, "Embedding dimension should be 384");
 }
 
-/// Test relevance filtering
+/// Test relevance filtering.
+///
+/// The threshold is 0.3 and the reference is the unit vector `e0`:
+/// `emb1` has cosine similarity 0.9/sqrt(0.82) ~= 0.994 (kept), while
+/// `emb2` is orthogonal to the reference (similarity 0.0, dropped). This is
+/// the only integration coverage of `RelevanceScorer::filter`, so it asserts
+/// the outcome of the filter itself - previously it only printed a count.
 #[test]
 fn test_relevance_filtering() {
     use webfang_ai::infrastructure_ai::RelevanceScorer;
@@ -437,7 +443,19 @@ fn test_relevance_filtering() {
     let chunks = vec![(chunk1, emb1), (chunk2, emb2)];
     let filtered = scorer.filter(&chunks, Some(&reference));
 
-    eprintln!("Filtered {} chunks", filtered.len());
+    assert_eq!(
+        filtered.len(),
+        1,
+        "only the ~0.994-similarity chunk clears the 0.3 threshold"
+    );
+    assert_eq!(
+        filtered[0].content, "High similarity",
+        "the surviving chunk must be the high-similarity one"
+    );
+    assert!(
+        !filtered.iter().any(|c| c.content == "Low similarity"),
+        "the orthogonal chunk (similarity 0.0) must be filtered out"
+    );
 }
 
 /// Test error handling: chunk too large

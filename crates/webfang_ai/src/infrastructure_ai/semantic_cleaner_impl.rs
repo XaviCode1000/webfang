@@ -949,7 +949,16 @@ mod tests {
             .with_offline_mode(true);
 
         let result = SemanticCleanerImpl::new(config).await;
-        assert!(result.is_err());
+        // Not a bare `is_err()`: an uncached repo in offline mode must take the
+        // `OfflineMode` path, so a `ModelLoad`/`Download` fallback here would
+        // mean a real cache-miss regression silently passed.
+        // `SemanticCleanerImpl` is not `Debug`, so the Ok arm is matched
+        // instead of relying on `expect_err`.
+        match result {
+            Err(SemanticError::OfflineMode { .. }) => {},
+            Err(other) => panic!("expected OfflineMode, got: {other:?}"),
+            Ok(_) => panic!("expected OfflineMode, but the cleaner was constructed"),
+        }
     }
 
     #[tokio::test]
@@ -962,12 +971,14 @@ mod tests {
             .with_offline_mode(true);
 
         let result = SemanticCleanerImpl::new(config).await;
-        assert!(result.is_err());
-
-        if let Err(SemanticError::OfflineMode { .. }) = result {
-            // Expected
-        } else {
-            panic!("Expected OfflineMode error");
+        // Pin the offending repo alongside the variant: the error is only
+        // actionable if it names the model that was looked for.
+        match result {
+            Err(SemanticError::OfflineMode { repo }) => {
+                assert_eq!(repo, "nonexistent/fake-repo-for-test");
+            },
+            Err(other) => panic!("expected OfflineMode, got: {other:?}"),
+            Ok(_) => panic!("expected OfflineMode, but the cleaner was constructed"),
         }
     }
 
