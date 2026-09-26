@@ -344,7 +344,7 @@ fn test_percentage_tracks_completed_and_failed() {
 
 /// An empty batch reports 0% rather than dividing by zero.
 #[test]
-fn test_percentage_of_empty_batch_is_zero() {
+fn issue_1589_empty_batch_reports_zero_percent() {
     let state = ProgressState::new(Vec::new());
     assert_eq!(state.percentage(), 0.0);
 }
