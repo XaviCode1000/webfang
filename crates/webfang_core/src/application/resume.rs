@@ -80,6 +80,33 @@ pub(crate) fn load_preserving(store: &dyn RecordStorePort) -> DomainRecords {
     store.load_or_init()
 }
 
+/// Preserve a pre-migration state file as a `.bak` sibling (#1587).
+///
+/// Stale-version discards return a fresh state while the old file is still on
+/// disk, so the next save would silently overwrite work the new schema refused
+/// to read. Copying first keeps the original bytes available for inspection.
+/// Shared by the export `StateStore` and the crawl checkpoint stores so the
+/// policy lives in exactly one place (duplication ratchet, #516).
+///
+/// Best-effort: a backup failure is logged, never fatal — losing the backup
+/// must not fail a run that already decided to start fresh. An existing backup
+/// is kept as-is so the FIRST (pre-migration) bytes win over later
+/// fresh-version writes.
+pub(crate) fn preserve_pre_migration_backup(path: &std::path::Path) {
+    let backup = path.with_extension("json.bak");
+    if backup.exists() {
+        return;
+    }
+    if let Err(e) = std::fs::copy(path, &backup) {
+        tracing::warn!(
+            path = %path.display(),
+            backup = %backup.display(),
+            error = %e,
+            "pre-migration state backup failed; continuing with fresh state"
+        );
+    }
+}
+
 /// The single resume gate: drop URLs whose record is proven `COMMITTED`.
 ///
 /// Returns the URLs still to drive plus a fresh [`RunId`] for the run this

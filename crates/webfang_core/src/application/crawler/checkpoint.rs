@@ -390,28 +390,8 @@ fn accept_version(state: CrawlCheckpoint, path: &Path) -> Option<CrawlCheckpoint
         path = %path.display(),
         "checkpoint discarded: superseded schema version, starting fresh; pre-migration file preserved as .bak"
     );
-    preserve_pre_migration_backup(path);
+    crate::application::resume::preserve_pre_migration_backup(path);
     None
-}
-
-/// Preserve the pre-migration checkpoint file as a `.bak` sibling (#1587).
-///
-/// Same best-effort contract as the export `StateStore` counterpart: a backup
-/// failure is logged, never fatal, and an existing backup is kept so the
-/// FIRST (pre-migration) bytes win over later fresh-version writes.
-fn preserve_pre_migration_backup(path: &Path) {
-    let backup = path.with_extension("json.bak");
-    if backup.exists() {
-        return;
-    }
-    if let Err(e) = std::fs::copy(path, &backup) {
-        warn!(
-            path = %path.display(),
-            backup = %backup.display(),
-            error = %e,
-            "pre-migration checkpoint backup failed; continuing with fresh state"
-        );
-    }
 }
 
 /// Deserialize a CRC32-verified payload, logging a warning on failure.

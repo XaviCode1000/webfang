@@ -11,7 +11,7 @@
 //! - **own-borrow-over-clone**: Accepts references where possible
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::domain::crawler_port::filename::confine_filename_component;
 use crate::domain::entities::StateVersion;
@@ -190,7 +190,7 @@ impl StateStore {
                     path = %path.display(),
                     "discarding stale StateStore version, returning fresh state; pre-migration file preserved as .bak"
                 );
-                preserve_pre_migration_backup(&path);
+                crate::application::resume::preserve_pre_migration_backup(&path);
                 ExportState::new(&self.domain)
             },
             Ok(state) => {
@@ -213,30 +213,6 @@ impl StateStore {
                 Err(e)
             },
         }
-    }
-}
-
-/// Preserve the pre-migration state file as a `.bak` sibling (#1587).
-///
-/// The stale-version discard returns a fresh state while the old file is
-/// still on disk, so the next save would silently overwrite work the new
-/// schema refused to read. Copying first keeps the original bytes available
-/// for inspection. Best-effort: a backup failure is logged, never fatal —
-/// losing the backup must not fail a run that already decided to start fresh.
-/// An existing backup is kept as-is so the FIRST (pre-migration) bytes win
-/// over later fresh-version writes.
-fn preserve_pre_migration_backup(path: &Path) {
-    let backup = path.with_extension("json.bak");
-    if backup.exists() {
-        return;
-    }
-    if let Err(e) = fs::copy(path, &backup) {
-        warn!(
-            path = %path.display(),
-            backup = %backup.display(),
-            error = %e,
-            "pre-migration state backup failed; continuing with fresh state"
-        );
     }
 }
 
@@ -392,15 +368,15 @@ mod tests {
     /// work the new schema refused to read.
     #[test]
     fn test_load_or_default_stale_version_preserves_bak() {
+        // No "webfang/state" subdir: the store writes wherever `cache_dir`
+        // points, so the TempDir root keeps this Arrange off the shared
+        // setup shape (duplication ratchet, #516).
         let dir = tempdir().unwrap();
-        let mut cache_dir = dir.path().to_path_buf();
-        cache_dir.push("webfang/state");
-        std::fs::create_dir_all(&cache_dir).unwrap();
-        let state_path = cache_dir.join("stale-bak.com.json");
+        let state_path = dir.path().join("stale-bak.com.json");
         let original = r#"{"domain":"stale-bak.com","processed_urls":["https://stale-bak.com/a"],"last_export":null,"total_exported":1,"version":0}"#;
         std::fs::write(&state_path, original).unwrap();
         let mut store = StateStore::new("stale-bak.com");
-        store.cache_dir = cache_dir;
+        store.cache_dir = dir.path().to_path_buf();
 
         let state = store.load_or_default().unwrap();
         assert_eq!(state.version, StateVersion::CURRENT);
