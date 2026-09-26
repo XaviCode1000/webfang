@@ -11,158 +11,10 @@
 #![cfg(feature = "mcp")]
 
 use serde_json::{json, Value};
-use std::net::SocketAddr;
-use tokio::net::TcpListener;
 use wreq::Client;
 
-use webfang_core::config::Config;
-use webfang_core::di::Container;
-use webfang_mcp::mcp_server::server::build_mcp_router;
-
-#[path = "common/mod.rs"]
 mod common;
-use webfang_mcp::mcp_server::server::ServerOptions;
-use webfang_mcp::mcp_server::state::McpState;
-
-// ============================================================================
-// Harness helpers — local copies (each integration test binary is standalone;
-// webfang_core's tests/common is NOT importable from webfang_mcp).
-// ============================================================================
-
-/// Start a test MCP server on a random port and return the base URL.
-async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
-    let config = Config::default();
-    let container = Container::new(config.crawler, config.scraper)
-        .await
-        .expect("container creation failed");
-    let state = McpState::new(container);
-    let app = build_mcp_router(state, &ServerOptions::default());
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr: SocketAddr = listener.local_addr().unwrap();
-    let base_url = format!("http://{addr}");
-
-    let handle = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-
-    for _ in 0..20 {
-        if tokio::net::TcpStream::connect(&addr).await.is_ok() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-
-    (base_url, handle)
-}
-
-/// Build a JSON-RPC request body for MCP protocol.
-fn mcp_request(method: &str, params: Value) -> Value {
-    json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": method,
-        "params": params,
-    })
-}
-
-/// Extract the first JSON-RPC object from an SSE (`data: ` prefixed) or direct
-/// JSON response body.
-fn extract_json(body: &str) -> Option<Value> {
-    if body.contains("data: ") {
-        body.lines()
-            .filter(|line| line.starts_with("data: "))
-            .filter_map(|line| {
-                let json_str = line.strip_prefix("data: ").unwrap_or(line);
-                serde_json::from_str::<Value>(json_str).ok()
-            })
-            .next()
-    } else {
-        serde_json::from_str::<Value>(body).ok()
-    }
-}
-
-/// Initialize an MCP session (initialize + notifications/initialized) and
-/// return the session ID.
-async fn init_session(client: &Client, base_url: &str) -> String {
-    let init_body = mcp_request(
-        "initialize",
-        json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": { "name": "obsidian-tools-test", "version": "1.0.0" }
-        }),
-    );
-    let resp = client
-        .post(format!("{base_url}/mcp"))
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
-        .json(&init_body)
-        .send()
-        .await
-        .expect("initialize should succeed");
-    let session_id = resp
-        .headers()
-        .get("mcp-session-id")
-        .and_then(|v| v.to_str().ok())
-        .map(String::from)
-        .expect("initialize must return mcp-session-id");
-
-    let _ = client
-        .post(format!("{base_url}/mcp"))
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
-        .header("mcp-session-id", &session_id)
-        .json(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
-        .send()
-        .await;
-
-    session_id
-}
-
-/// Call an MCP tool and return the parsed JSON-RPC response object.
-async fn call_tool(
-    client: &Client,
-    base_url: &str,
-    session_id: &str,
-    name: &str,
-    args: Value,
-) -> Value {
-    let body = mcp_request("tools/call", json!({ "name": name, "arguments": args }));
-    let resp = client
-        .post(format!("{base_url}/mcp"))
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
-        .header("mcp-session-id", session_id)
-        .json(&body)
-        .send()
-        .await
-        .expect("tools/call should succeed");
-    let text = resp.text().await.expect("read response body");
-    extract_json(&text).expect("response must parse as JSON-RPC")
-}
-
-/// Extract the first content text from a tool result object.
-fn tool_text(result: &Value) -> String {
-    // #1600: strip the provenance envelope when present (see common::payload_text).
-    common::payload_text(
-        result
-            .get("content")
-            .and_then(|c| c.as_array())
-            .and_then(|arr| arr.first())
-            .and_then(|first| first.get("text"))
-            .and_then(|t| t.as_str())
-            .unwrap_or_default(),
-    )
-}
-
-/// Whether a tool result is flagged as an error (CallToolResult::error).
-fn is_tool_error(result: &Value) -> bool {
-    result
-        .get("isError")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-}
+use common::{call_tool, init_session, is_tool_error, start_test_server_ssrf_enabled, tool_text};
 
 /// Control-character rejection is signaled by `isError:true` on the tool
 /// result, NOT by the user-facing error message (may change). The handler
@@ -214,7 +66,7 @@ impl Drop for RelTempDir {
 /// with slashes preserved (Obsidian file paths are not percent-encoded).
 #[tokio::test]
 async fn test_build_obsidian_uri_happy_path() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -248,7 +100,7 @@ async fn test_build_obsidian_uri_happy_path() {
 /// isolated before asserting.
 #[tokio::test]
 async fn test_build_obsidian_uri_neutralizes_shell_metacharacters() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -303,7 +155,7 @@ async fn test_build_obsidian_uri_neutralizes_shell_metacharacters() {
 /// rejected outright with an honest Spanish `CallToolResult::error`.
 #[tokio::test]
 async fn test_build_obsidian_uri_rejects_control_chars() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -336,7 +188,7 @@ async fn test_detect_obsidian_vault_explicit_path() {
     let vault = RelTempDir::new("wf-vault");
     std::fs::create_dir_all(vault.path().join(".obsidian")).unwrap();
 
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -373,7 +225,7 @@ async fn test_detect_obsidian_vault_explicit_path() {
 /// spawns a real process (no `xdg-open` on CI).
 #[tokio::test]
 async fn test_open_in_obsidian_control_chars_validation_error() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
