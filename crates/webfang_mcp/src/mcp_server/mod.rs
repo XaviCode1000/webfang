@@ -262,10 +262,19 @@ const PANIC_CONTAINED_TOOL_ERROR: &str =
 
 /// Render a panic payload as a SHORT, non-sensitive string for the trace.
 ///
-/// The full message — and the panic location — are the panic hook's job
-/// (`super::panic_hook::setup_panic_hook`); this only bounds what the
-/// containment log line repeats, and never lets an unprintable payload
-/// (`panic_any` with a non-string type) panic the logger itself.
+/// This is the ONLY structured record of a contained panic on every transport,
+/// so it must stand on its own: bounded (a handler can panic with a megabyte of
+/// buffered HTML in the message), total (a `panic_any` with a non-string type
+/// is legal, and the logger must not panic while reporting a panic), and free of
+/// anything the client should not read back into a conversation.
+///
+/// It is NOT the full record. The panic hook (`super::panic_hook`) adds the
+/// panic LOCATION, and it is installed by [`start_mcp_server`] only — the stdio
+/// transport does not install it, so on stdio the location is whatever the
+/// default stderr hook prints and nothing more. Do not make a location-bearing
+/// diagnosis depend on this function, and do not "upgrade" it to carry one.
+///
+/// [`start_mcp_server`]: super::server::start_mcp_server
 pub(crate) fn render_panic_payload(payload: &(dyn Any + Send)) -> String {
     const MAX_CHARS: usize = 200;
     let raw = payload
@@ -307,6 +316,15 @@ impl ServerHandler for McpHandler {
     /// `&self` across awaits, which the compiler cannot prove unwind-safe,
     /// and the invariant we rely on is exactly the one this function
     /// establishes — a caught panic is logged and reported, never resumed.
+    ///
+    /// Known limit, accepted on purpose: containment restores the TRANSPORT, not
+    /// the side effects. A tool that panicked after having already written an
+    /// export, spawned a crawl, or charged a rate-limit token is reported as a
+    /// clean failure, so a client that retries duplicates that work. Rolling the
+    /// effect back is a per-tool idempotency concern (the CLI export path owns
+    /// it), not something a boundary `catch_unwind` can provide — and a tool
+    /// that panics is the one case where the caller is told exactly what
+    /// happened, because the panic hook logged it.
     async fn call_tool(
         &self,
         request: rmcp::model::CallToolRequestParams,

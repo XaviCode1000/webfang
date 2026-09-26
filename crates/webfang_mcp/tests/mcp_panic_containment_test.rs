@@ -66,6 +66,15 @@ const CONTROL_TOOL: &str = "validate_url";
 /// anything that does not contain BOTH media types).
 const MCP_ACCEPT: &str = "application/json, text/event-stream";
 
+/// Deadline for a single `tools/call` round trip.
+///
+/// The failure this suite guards against — a dead session worker — does NOT
+/// answer: the request hangs. Without a bound here, a regression surfaces as a
+/// nextest slow-timeout kill of the whole test binary instead of as a named
+/// assertion, which is exactly how the pre-fix behavior first showed up.
+/// Generous (10s) because it only has to outlast a loopback round trip.
+const RESPONSE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
 // ---------------------------------------------------------------------------
 // The test-only panicking tool
 // ---------------------------------------------------------------------------
@@ -105,9 +114,11 @@ fn tool_router_with_panic_probe() -> rmcp::handler::server::tool::ToolRouter<Mcp
 /// Start a server whose handler carries the panicking tool, on the real stack
 /// via `build_mcp_router_with_service` (#1611, F2 composition seam).
 async fn start_panic_probe_server() -> (String, tokio::task::JoinHandle<()>) {
-    // No HTTP is performed by this suite, but the shared state build path is
-    // the production one; keep the SSRF hatches identical to every other
-    // starter (process-wide, idempotent — see `arm_wiremock_hatches`).
+    // This suite DOES speak HTTP — over a loopback listener, never outbound:
+    // the containment is a transport-level property, so the test drives the real
+    // one. What it never does is fetch anything external, so the SSRF hatches
+    // stay identical to every other starter (process-wide, idempotent — see
+    // `arm_wiremock_hatches`).
     arm_wiremock_hatches();
 
     let config = Config::default();
@@ -137,7 +148,27 @@ async fn start_panic_probe_server() -> (String, tokio::task::JoinHandle<()>) {
 /// The status is part of the contract under test (a contained panic must be
 /// HTTP 200 with a JSON-RPC result), so the shared `call_tool` helper — which
 /// drops the status — is not enough here.
+///
+/// Bounded by [`RESPONSE_DEADLINE`]: a request that is never answered is a
+/// dead transport, and a dead transport must FAIL this test, not hang it.
 async fn post_tool_call(
+    client: &Client,
+    base_url: &str,
+    session_id: &str,
+    name: &str,
+    arguments: Value,
+) -> (u16, String) {
+    tokio::time::timeout(
+        RESPONSE_DEADLINE,
+        post_tool_call_unbounded(client, base_url, session_id, name, arguments),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        panic!("tools/call {name} was never answered within {RESPONSE_DEADLINE:?} — dead transport")
+    })
+}
+
+async fn post_tool_call_unbounded(
     client: &Client,
     base_url: &str,
     session_id: &str,
@@ -246,6 +277,11 @@ async fn panic_probe_tool_is_advertised_on_the_real_stack() {
 /// A panicking `tools/call` answers HTTP 200 with a JSON-RPC result carrying
 /// `isError: true` — a normal tool error, not a dropped stream, not a
 /// JSON-RPC error envelope, and with the panic payload withheld.
+///
+/// Bounded on purpose: a session that did NOT survive would leave the request
+/// hanging rather than failing, so without this deadline the regression reports
+/// itself as a nextest slow-timeout kill (which is how the pre-fix behavior was
+/// observed) instead of as a named assertion failure.
 #[tokio::test]
 async fn panicking_tool_call_answers_200_with_is_error_and_no_payload() {
     let (base_url, _handle) = start_panic_probe_server().await;

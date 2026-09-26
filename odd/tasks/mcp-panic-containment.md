@@ -31,18 +31,18 @@ an error instead of killing the worker, the caps become the load-bearing defense
 
 ## Tasks
 
-- [ ] T1 — Composition seam: `build_mcp_router_with_service` +
+- [x] T1 — Composition seam: `build_mcp_router_with_service` +
       `McpHandler::with_tool_router` so a test can mount a panicking tool on the
       real middleware stack. `build_mcp_router(state, options)` keeps its
       signature.
-- [ ] T2 — `tower-http` `catch-panic` feature + `CatchPanicLayer` outermost with
+- [x] T2 — `tower-http` `catch-panic` feature + `CatchPanicLayer` outermost with
       a Spanish-mapped JSON-RPC `-32603` response.
-- [ ] T3 — `catch_unwind` guard in `McpHandler::call_tool` → tool error, with a
+- [x] T3 — `catch_unwind` guard in `McpHandler::call_tool` → tool error, with a
       structured `tracing::error!` (tool name + panic payload).
-- [ ] T4 — Transport-level test: handshake → panicking `tools/call` returns
+- [x] T4 — Transport-level test: handshake → panicking `tools/call` returns
       `isError` over HTTP 200 → a following `tools/call` on the **same session
       id** still succeeds.
-- [ ] T5 — Verification chain + work-unit commits.
+- [x] T5 — Verification chain + work-unit commits.
 
 ## Out of scope
 
@@ -50,4 +50,10 @@ F6/F7 (session/memory caps), F5 (rate limiter inside auth), G-18/G-21.
 
 ## Evidence log
 
-(work-unit commits appended as they land)
+- `9b3d5c0e` — fix(mcp): contain a panicking tool handler instead of killing the
+  session
+- `d84c4b22` — docs(odd): task record
+- native review lineage `review-c10cc26094843cc9` (4 lenses): **approved**,
+  acknowledged. Five advisory findings, none blocking; the hygiene ones are
+  folded into the follow-up commit, and the retry/duplicate-side-effect limit is
+  recorded in the `call_tool` doc.
