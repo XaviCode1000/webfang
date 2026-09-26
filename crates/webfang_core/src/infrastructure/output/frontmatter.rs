@@ -306,9 +306,8 @@ mod tests {
             None,
             &[],
         );
-        let parsed =
-            serde_yaml::from_str::<serde_yaml::Value>(&fm)
-                .expect("generated frontmatter must parse as YAML");
+        let parsed = serde_yaml::from_str::<serde_yaml::Value>(&fm)
+            .expect("generated frontmatter must parse as YAML");
         assert!(
             parsed.get("injected_key").is_none(),
             "newline in title must not produce a new top-level YAML key: {fm:?}"
@@ -382,7 +381,11 @@ mod tests {
     #[test]
     fn test_empty_title_round_trips() {
         let fm = generate("", "https://example.com", None, None, None, &[]);
-        assert_eq!(title_of(&fm), "", "empty title must stay an empty scalar: {fm:?}");
+        assert_eq!(
+            title_of(&fm),
+            "",
+            "empty title must stay an empty scalar: {fm:?}"
+        );
     }
 
     /// The author field obeys the same scalar contract (same writer, but the
@@ -397,9 +400,8 @@ mod tests {
             None,
             &[],
         );
-        let parsed =
-            serde_yaml::from_str::<serde_yaml::Value>(&fm)
-                .expect("generated frontmatter must parse as YAML");
+        let parsed = serde_yaml::from_str::<serde_yaml::Value>(&fm)
+            .expect("generated frontmatter must parse as YAML");
         assert!(
             parsed.get("role").is_none(),
             "newline in author must not produce a new top-level YAML key: {fm:?}"

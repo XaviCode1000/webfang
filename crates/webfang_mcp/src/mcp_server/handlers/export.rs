@@ -758,9 +758,8 @@ mod handler_tests {
             "neutralized export must still succeed: {text}"
         );
 
-        let written =
-            std::fs::read_to_string(Path::new(out_dir).join("doc.jsonl"))
-                .expect("jsonl must be written");
+        let written = std::fs::read_to_string(Path::new(out_dir).join("doc.jsonl"))
+            .expect("jsonl must be written");
         let record: serde_json::Value =
             serde_json::from_str(&written).expect("jsonl must stay parseable");
         let content = record
@@ -774,7 +773,10 @@ mod handler_tests {
             "provenance header must open the caller payload: {content:?}"
         );
         // ANSI escapes and DEL are gone; the readable text survives intact.
-        assert!(!content.contains('\u{1b}'), "ANSI escape leaked: {content:?}");
+        assert!(
+            !content.contains('\u{1b}'),
+            "ANSI escape leaked: {content:?}"
+        );
         assert!(!content.contains('\u{7f}'), "DEL leaked: {content:?}");
         assert!(
             content.contains("hello red world\nline2"),
