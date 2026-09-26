@@ -937,6 +937,7 @@ impl Engine {
             // Check if we've reached max pages (sin lock - atomic)
             if self.collector.is_full(self.config.max_pages) {
                 info!("Reached max pages limit: {}", self.config.max_pages);
+                self.cancel_run();
                 break;
             }
 
@@ -962,8 +963,16 @@ impl Engine {
             // Periodic checkpoint save
             self.maybe_save_periodic_checkpoint(start).await;
 
-            // Spawn new tasks up to the (autoscale-aware) concurrency limit.
-            Self::spawn_available_tasks(&mut self.scheduler, tasks, task_ctx);
+            // Spawn new tasks capped by the remaining budget (issue #1599):
+            // at most `remaining` spawns, so collected + in-flight never
+            // exceeds max_pages at any dispatch decision. The tier bound
+            // still applies inside `next_url` per iteration, so the
+            // effective dispatch is min(tier_slots, remaining) — a no-op
+            // while budget is ample. Single-threaded spawn keeps the cap
+            // race-free.
+            let remaining =
+                Self::remaining_budget(self.config.max_pages, self.collector.len(), tasks.len());
+            Self::spawn_available_tasks(&mut self.scheduler, tasks, task_ctx, remaining);
 
             // If no tasks can be spawned and work remains, wait for one task.
             self.wait_for_task(tasks, worker_wait_bound).await;
@@ -1011,28 +1020,35 @@ impl Engine {
     /// at any dispatch decision. Saturating arithmetic by construction:
     /// over-budget states clamp to zero instead of underflowing.
     fn remaining_budget(max_pages: usize, collected: usize, in_flight: usize) -> usize {
-        // Strict-TDD RED stub: budget unaccounted (today's tier-only
-        // dispatch returns the full bound). GREEN implements the saturating
-        // `max_pages - (collected + in_flight)` formula.
-        let _ = (collected, in_flight);
-        max_pages
+        max_pages.saturating_sub(collected.saturating_add(in_flight))
     }
 
-    /// Spawn new tasks up to the (autoscale-aware) concurrency limit.
+    /// Spawn new tasks capped by the remaining budget and the
+    /// (autoscale-aware) concurrency limit.
     ///
-    /// The scheduler checks the limit before popping and skips URLs that
-    /// were already visited, marking each handed-out URL as visited.
+    /// The scheduler checks the tier limit before popping and skips URLs
+    /// that were already visited, marking each handed-out URL as visited.
+    /// `remaining` decrements per actual spawn and `None` (tier-full or
+    /// frontier-empty) stops early, so both bounds hold simultaneously.
     fn spawn_available_tasks(
         scheduler: &mut CrawlScheduler,
         tasks: &mut tokio::task::JoinSet<Result<(), CrawlError>>,
         task_ctx: &Arc<CrawlTaskCtx>,
+        mut remaining: usize,
     ) {
-        while let Some(discovered_url) = scheduler.next_url(tasks.len()) {
-            // Spawn task — single Arc clone instead of 18 individual clones
-            let task_ctx = Arc::clone(task_ctx);
-            tasks.spawn(
-                async move { run_crawl_task(task_ctx, discovered_url).await }.in_current_span(),
-            );
+        while remaining > 0 {
+            match scheduler.next_url(tasks.len()) {
+                Some(discovered_url) => {
+                    // Spawn task — single Arc clone instead of 18 individual clones
+                    let task_ctx = Arc::clone(task_ctx);
+                    tasks.spawn(
+                        async move { run_crawl_task(task_ctx, discovered_url).await }
+                            .in_current_span(),
+                    );
+                    remaining -= 1;
+                },
+                None => break,
+            }
         }
     }
 
