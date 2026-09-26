@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-09-26
+
+
+### 🎉 Added
+
+- P0-001 N=4 rollout — default AI engine to Pool ([#1568](https://github.com/XaviCode1000/webfang/pull/1568))
+- Erase AI engine seam — vault/Tier-2 in Pool + MCP engine flip ([#1569](https://github.com/XaviCode1000/webfang/pull/1569)) ([#1571](https://github.com/XaviCode1000/webfang/pull/1571))
+
+### 🏗️ Architecture Improvements
+
+- Unify operational error events through log_scrape_error (OBS P0) ([#1606](https://github.com/XaviCode1000/webfang/pull/1606))
+
+### 🔧 Fixed
+
+- Canonical export-root path gate for output_dir and checkpoint_dir ([#1593](https://github.com/XaviCode1000/webfang/pull/1593))
+- Route every MCP output through provenance wrapper (UntrustedContent) ([#1602](https://github.com/XaviCode1000/webfang/pull/1602))
+- Gate 200k-iteration probe test under cfg(miri) ([#1552](https://github.com/XaviCode1000/webfang/pull/1552)) ([#1553](https://github.com/XaviCode1000/webfang/pull/1553))
+- Gate ports.rs fallback-fetch tests under cfg(miri) ([#1555](https://github.com/XaviCode1000/webfang/pull/1555)) ([#1556](https://github.com/XaviCode1000/webfang/pull/1556))
+- Gate soak_unique_domains_stays_bounded under cfg(miri) ([#1557](https://github.com/XaviCode1000/webfang/pull/1557)) ([#1558](https://github.com/XaviCode1000/webfang/pull/1558))
+- Gate four llm_wire remote-embedding tests under cfg(miri) ([#1560](https://github.com/XaviCode1000/webfang/pull/1560)) ([#1562](https://github.com/XaviCode1000/webfang/pull/1562))
+- Gate Miri-unsupported wreq-client tests (llm_wire + sitemap_discovery) ([#1564](https://github.com/XaviCode1000/webfang/pull/1564))
+- Bound sitemap future recursion depth ([#1570](https://github.com/XaviCode1000/webfang/pull/1570))
+- Resolve newer-clippy and rustdoc gate failures ([#1572](https://github.com/XaviCode1000/webfang/pull/1572)) ([#1574](https://github.com/XaviCode1000/webfang/pull/1574))
+- Require exact "1" for the SSRF entry disable hatch ([#1578](https://github.com/XaviCode1000/webfang/pull/1578))
+- Reject forbidden literal-IP targets in the asset download chain ([#1590](https://github.com/XaviCode1000/webfang/pull/1590))
+- Surface stale-state signals and preserve pre-migration backups ([#1592](https://github.com/XaviCode1000/webfang/pull/1592))
+- Content boundary hardening - export_file sanitization, discovery filter symmetry, WAF pattern off-channel ([#1603](https://github.com/XaviCode1000/webfang/pull/1603))
+- Enforce max-pages budget on sitemap dispatch path ([#1620](https://github.com/XaviCode1000/webfang/pull/1620))
+
+### 🔧 Other
+
+- Replace weak asserts, deflake timing bounds, and fix docs drift ([#1596](https://github.com/XaviCode1000/webfang/pull/1596))
+
+### 🧪 Testing
+
+- Migrate remaining test files to tests/common harness ([#1598](https://github.com/XaviCode1000/webfang/pull/1598))
 ## [2.3.1] - 2026-09-23
 
 
