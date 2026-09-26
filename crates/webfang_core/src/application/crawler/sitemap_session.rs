@@ -308,11 +308,50 @@ mod tests {
         );
     }
 
+    /// Budget-consumption (issue #1599, strict-TDD RED): a failed fetch
+    /// (unmounted leaf → wiremock 404) must appear only in the error
+    /// counters, never in the budget counter — collection must still reach
+    /// `max_pages`. Pre-fix the uncapped dispatch overshoots (`total > 3`);
+    /// post-fix `total == 3` with the failure counted.
+    ///
+    /// NOTE: the spec's pipeline-rejection scenario has no session-level
+    /// poison on this path — `crawl_with_sitemap_session_inner` hardcodes
+    /// `pipeline: None`, and `run_pipeline` returns `true` without a
+    /// pipeline, so every fetched 200 is collected. Rejection accounting
+    /// (rejected → no send, no error count) is pinned at task level by
+    /// `test_pipeline_rejection_consumes_neither_budget_nor_errors` in
+    /// `crawl_task.rs` instead of forcing an unrepresentable fixture here.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn sitemap_failed_fetch_does_not_consume_budget() {
+        let result = many_url_sitemap_run_with(3, 2, 0).await;
+        let urls = collected_urls(&result);
+        assert_eq!(
+            result.total_pages, 3,
+            "failed fetches must not consume budget: collection must still reach max_pages, got {}: {urls:?}",
+            result.total_pages
+        );
+        assert!(
+            result.errors >= 1,
+            "the failed fetch must appear in the error counters: {urls:?}"
+        );
+    }
+
     /// Many-URL sitemap fixture for the 4.2 overshoot pin: a link-free
     /// seed plus 8 sitemap-only leaf pages (rich-enough bodies to clear
     /// the extraction pipeline), driven through the new session entry
     /// with an explicit `max_pages` / `concurrency` pair.
     async fn many_url_sitemap_run(max_pages: usize, concurrency: usize) -> CrawlResult {
+        many_url_sitemap_run_with(max_pages, concurrency, usize::MAX).await
+    }
+
+    /// [`many_url_sitemap_run`] with leaf `unmounted_idx` left unmounted so
+    /// its fetch fails (wiremock 404) for budget-consumption scenarios
+    /// (`usize::MAX` disables the override and mounts every leaf).
+    async fn many_url_sitemap_run_with(
+        max_pages: usize,
+        concurrency: usize,
+        unmounted_idx: usize,
+    ) -> CrawlResult {
         use std::num::NonZeroUsize;
 
         const LEAVES: usize = 8;
@@ -329,12 +368,14 @@ mod tests {
         let mut extra_seeds = Vec::with_capacity(LEAVES);
         for i in 0..LEAVES {
             let leaf = Url::parse(&format!("http://127.0.0.1:{port}/p{i}")).expect("leaf");
-            Mock::given(path(format!("/p{i}")))
+            if i != unmounted_idx {
+                Mock::given(path(format!("/p{i}")))
                     .respond_with(ResponseTemplate::new(200).set_body_string(format!(
                         "<html><head><title>Leaf {i}</title></head><body><h1>Overshoot leaf {i}</h1><p>Leaf page number {i} carrying enough ordinary text for the readability pipeline to accept it as main content without tripping the minimum content guard.</p></body></html>"
                     )))
                     .mount(&server)
                     .await;
+            }
             extra_seeds.push(DiscoveredUrl::html(leaf, 1, seed.clone()));
         }
 
