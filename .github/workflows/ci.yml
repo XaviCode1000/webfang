@@ -469,6 +469,49 @@ jobs:
       - run: cargo nextest run --all-features --test-threads 4 --retries 2
 
   # ============================================================================
+  # TEST CROSSPLATFORM (ADVISORY SIGNAL IN PR) — XP-C-01 (#1608)
+  #
+  # First Windows/macOS execution lanes in the repo: every other workflow runs
+  # on ubuntu-latest only, and Windows/macOS were built exclusively in the
+  # release matrix on release tags — never tested (#1608). This job mirrors
+  # test-core (default features, build + nextest) on windows-latest and
+  # macos-latest so the #1608 POSIX-only findings convert from audit inference
+  # to observed failures. Advisory only — never in `gate` needs: the first
+  # runs are EXPECTED to fail on Windows (fail-closed wizard identity,
+  # signal semantics) and must not block merges. Promotion to required is a
+  # deliberate follow-up once the lane is green.
+  # No extra tooling: release.yml already builds Windows (x86_64-pc-windows-msvc)
+  # and macOS (aarch64-apple-darwin) with BoringSSL/ai without installing
+  # anything — cmake/NASM are preinstalled on GitHub runners.
+  # No rust-cache (#1171): non-gate job, compiles cold — cache pool budget,
+  # tokio-console-smoke/test-ai precedent.
+  # ============================================================================
+  test-crossplatform:
+    name: Tests (${{ matrix.os }})
+    needs: [change-scope]
+    if: ${{ needs.change-scope.outputs.run_code_jobs == 'true' }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      - uses: taiki-e/install-action@e88e69ecdb9658bd172693dcdc2c84e7f0ab6a11
+      - name: Pre-build test binary
+        run: cargo build -p webfang_cli --bin webfang
+      - name: Unit tests (lib)
+        run: cargo nextest run --lib --test-threads 4 --retries 2
+      - name: Integration tests
+        run: cargo nextest run --test '*' --test-threads 4 --retries 2
+
+  # ============================================================================
   # TEST RELEASE PROVENANCE (L1) — Behavioral acceptance matrix for
   # check_release_provenance.sh (webfang#1484).
   # Runs the hermetic test suite against a synthetic git repo with a fake `gh`.
