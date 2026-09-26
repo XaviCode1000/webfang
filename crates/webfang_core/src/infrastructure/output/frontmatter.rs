@@ -272,4 +272,142 @@ mod tests {
             "the empty-byline fragment must not survive: {fm}"
         );
     }
+
+    // ====================================================================
+    // PI-7 (#1601) — YAML scalar-injection pins for caller-supplied
+    // title/author. `generate_with_metadata` delegates scalar emission to
+    // serde_yaml; these tests pin the CONTRACT a hostile scalar must obey
+    // regardless of the writer implementation: it stays one scalar, never
+    // grows a new key, never opens/closes a document block.
+    // ====================================================================
+
+    /// Parse the generated frontmatter back and return its `title` scalar.
+    fn title_of(fm: &str) -> String {
+        serde_yaml::from_str::<serde_yaml::Value>(fm)
+            .expect("generated frontmatter must parse as YAML")
+            .get("title")
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+            .expect("frontmatter must carry a string title")
+    }
+
+    /// A newline in the title must NOT split into a second YAML key — the
+    /// classic frontmatter injection (`title: Line1\ninjected: true`).
+    /// serde_yaml emits a literal block scalar (`|-`) whose indented lines
+    /// are PART of the value, so the pin is parse-based: after parsing, no
+    /// top-level `injected_key` may exist and the title must round-trip.
+    #[test]
+    fn test_title_with_newline_cannot_inject_yaml_keys() {
+        let fm = generate(
+            "Line1\ninjected_key: owned",
+            "https://example.com",
+            None,
+            None,
+            None,
+            &[],
+        );
+        let parsed =
+            serde_yaml::from_str::<serde_yaml::Value>(&fm)
+                .expect("generated frontmatter must parse as YAML");
+        assert!(
+            parsed.get("injected_key").is_none(),
+            "newline in title must not produce a new top-level YAML key: {fm:?}"
+        );
+        assert_eq!(
+            title_of(&fm),
+            "Line1\ninjected_key: owned",
+            "title must round-trip as a single scalar: {fm:?}"
+        );
+    }
+
+    /// An embedded double quote must stay inside the title scalar.
+    #[test]
+    fn test_title_with_double_quote_round_trips() {
+        let fm = generate(
+            r#"He said "hi" to me"#,
+            "https://example.com",
+            None,
+            None,
+            None,
+            &[],
+        );
+        assert_eq!(title_of(&fm), r#"He said "hi" to me"#, "got: {fm:?}");
+    }
+
+    /// An embedded backslash must not turn into an escape sequence of a
+    /// different character.
+    #[test]
+    fn test_title_with_backslash_round_trips() {
+        let fm = generate(
+            r#"back\slash\and\"more"#,
+            "https://example.com",
+            None,
+            None,
+            None,
+            &[],
+        );
+        assert_eq!(title_of(&fm), r#"back\slash\and\"more"#, "got: {fm:?}");
+    }
+
+    /// A value that IS the document marker must remain a quoted scalar: an
+    /// unquoted `title: ---` would open a nested document block and swallow
+    /// the rest of the frontmatter.
+    #[test]
+    fn test_title_that_is_document_marker_stays_a_scalar() {
+        let fm = generate("---", "https://example.com", None, None, None, &[]);
+        assert_eq!(title_of(&fm), "---", "got: {fm:?}");
+        // The emitted scalar must be quoted, not a bare document marker.
+        assert!(
+            fm.contains("'---'") || fm.contains("\"---\""),
+            "the marker value must be quoted, got: {fm:?}"
+        );
+    }
+
+    /// Same contract for a value that STARTS with the marker.
+    #[test]
+    fn test_title_starting_with_document_marker_stays_a_scalar() {
+        let fm = generate(
+            "--- start of doom",
+            "https://example.com",
+            None,
+            None,
+            None,
+            &[],
+        );
+        assert_eq!(title_of(&fm), "--- start of doom", "got: {fm:?}");
+    }
+
+    /// An empty title must be an explicit empty scalar, never an omitted or
+    /// null-valued key.
+    #[test]
+    fn test_empty_title_round_trips() {
+        let fm = generate("", "https://example.com", None, None, None, &[]);
+        assert_eq!(title_of(&fm), "", "empty title must stay an empty scalar: {fm:?}");
+    }
+
+    /// The author field obeys the same scalar contract (same writer, but the
+    /// invariant is per-field: pin it where the hostile value arrives).
+    #[test]
+    fn test_author_with_newline_cannot_inject_yaml_keys() {
+        let fm = generate(
+            "Title",
+            "https://example.com",
+            None,
+            Some("Eve\nrole: admin"),
+            None,
+            &[],
+        );
+        let parsed =
+            serde_yaml::from_str::<serde_yaml::Value>(&fm)
+                .expect("generated frontmatter must parse as YAML");
+        assert!(
+            parsed.get("role").is_none(),
+            "newline in author must not produce a new top-level YAML key: {fm:?}"
+        );
+        assert_eq!(
+            parsed.get("author").and_then(|v| v.as_str()),
+            Some("Eve\nrole: admin"),
+            "author must round-trip as a single scalar: {fm:?}"
+        );
+    }
 }
