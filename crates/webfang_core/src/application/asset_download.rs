@@ -45,8 +45,10 @@ pub async fn download_assets_if_enabled(
 ///
 /// Synchronous by design: [`scraper::Html`] contains interior mutability
 /// (`Cell`) and is neither `Send` nor `Sync`, so the DOM must be consumed
-/// entirely within this synchronous phase; the async download stage
-/// ([`download_asset_urls`]) receives validated `ValidUrl` values only (#1117).
+/// entirely within this synchronous phase. `ValidUrl` output is syntactic
+/// validation only (#1117: scheme allow-list + credential strip) — it is NOT
+/// destination safety; literal-IP SSRF rejection of the extracted targets is
+/// enforced in [`download_asset_urls`], before any socket opens.
 pub fn extract_asset_urls_from_html(
     html: &str,
     _base_url: &url::Url,
@@ -64,8 +66,9 @@ pub fn extract_asset_urls_from_html(
 ///
 /// Synchronous by design: [`scraper::Html`] contains interior mutability
 /// (`Cell`) and is not `Send`, so the DOM must be consumed entirely within
-/// this phase; the async download stage ([`download_asset_urls`]) receives
-/// validated `ValidUrl` values only (#1117).
+/// this phase. `ValidUrl` output is syntactic validation only (#1117) — the
+/// destination-safety check (literal-IP SSRF rejection) runs in
+/// [`download_asset_urls`].
 pub fn extract_asset_urls(
     document: &scraper::Html,
     _base_url: &url::Url,
@@ -95,11 +98,12 @@ pub fn extract_asset_urls(
 ///
 /// Uses the shared downloader when provided; builds a fallback one through
 /// the domain [`AssetDownloaderFactory`](crate::domain::asset_downloader_factory::AssetDownloaderFactory)
-/// otherwise. Operation order: empty short-circuit first, then downloader
-/// construction (only when there is real work), progress log, then the batch
-/// transfer. The construction-first order was the historical shape; #1426
-/// changed it because it built a full TLS client only to discard it on the
-/// empty path, and surfaced network-config errors for jobs that download
+/// otherwise. Operation order: empty short-circuit first, SSRF literal-IP
+/// filter (rejected targets are skipped with a `warn!`, never dialed), then
+/// downloader construction (only when there is real work), progress log, then
+/// the batch transfer. The construction-first order was the historical shape;
+/// #1426 changed it because it built a full TLS client only to discard it on
+/// the empty path, and surfaced network-config errors for jobs that download
 /// nothing.
 pub async fn download_asset_urls(
     urls: &[crate::domain::ValidUrl],
@@ -111,6 +115,35 @@ pub async fn download_asset_urls(
     // will actually happen (#1426). This ordering is also what keeps the
     // empty-path tests runnable under Miri: no construction, no foreign call.
     if urls.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // SSRF literal-IP filter (PI-1 / SEC F1, #1217): these URLs were
+    // extracted from caller-supplied HTML, so `ValidUrl`'s syntactic
+    // validation (#1117) says nothing about where they point — an attacker
+    // page can make this batch dial the cloud-metadata, loopback or RFC1918
+    // address. Rejected targets are skipped before any downloader
+    // construction or socket; the rest of the batch proceeds. The pure
+    // verdict (`seed_guard_refusal`) is the shared entry guard minus its own
+    // log line — identical hatch and deny list by construction — so this
+    // `warn!` can carry the batch's `url` field in a single event, which the
+    // shared `reject_forbidden_literal_url` log does not.
+    let mut allowed: Vec<crate::domain::ValidUrl> = Vec::with_capacity(urls.len());
+    for url in urls {
+        match crate::domain::ssrf_guard::seed_guard_refusal(url.as_url()) {
+            Some(rejection) => {
+                tracing::warn!(
+                    url = %url,
+                    host = %rejection.host,
+                    ip = %rejection.ip,
+                    "SSRF literal-IP asset target rejected (skipped, no socket opened)"
+                );
+            },
+            None => allowed.push(url.clone()),
+        }
+    }
+
+    if allowed.is_empty() {
         return Ok(Vec::new());
     }
 
@@ -128,12 +161,13 @@ pub async fn download_asset_urls(
     };
 
     tracing::info!(
-        assets = urls.len(),
+        assets = allowed.len(),
+        skipped = urls.len() - allowed.len(),
         shared = _shared_downloader.is_some(),
         "📦 Downloading assets via AssetDownloaderPort"
     );
 
-    downloader.download_batch(urls).await
+    downloader.download_batch(&allowed).await
 }
 
 #[cfg(test)]
@@ -175,5 +209,148 @@ mod tests {
             .await
             .expect("empty urls must return Ok");
         assert!(result.is_empty(), "empty urls must yield an empty vec");
+    }
+
+    /// Records every batch the port receives and answers with one synthetic
+    /// asset per requested URL — enough to observe what the port saw without
+    /// any real network.
+    struct RecordingPort {
+        seen: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl RecordingPort {
+        fn seen(&self) -> Vec<String> {
+            self.seen
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone()
+        }
+    }
+
+    impl crate::domain::ports::AssetDownloaderPort for RecordingPort {
+        fn download_batch(
+            &self,
+            urls: &[crate::domain::ValidUrl],
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = Result<Vec<DownloadedAsset>>> + Send + '_>,
+        > {
+            let urls: Vec<String> = urls.iter().map(|u| u.as_str().to_owned()).collect();
+            Box::pin(async move {
+                let assets = urls
+                    .iter()
+                    .map(|url| DownloadedAsset {
+                        url: url.clone(),
+                        local_path: "/tmp/fake-asset".to_owned(),
+                        asset_type: "image".to_owned(),
+                        size: 1,
+                    })
+                    .collect();
+                self.seen
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .extend(urls);
+                Ok(assets)
+            })
+        }
+    }
+
+    /// Forbidden literals that survive `ValidUrl` parsing (http, no creds):
+    /// cloud metadata, loopback, RFC1918.
+    fn forbidden_urls() -> Vec<crate::domain::ValidUrl> {
+        [
+            "http://169.254.169.254/latest/meta-data/logo.png",
+            "http://127.0.0.1:9/x.png",
+            "http://10.0.0.7/img.png",
+        ]
+        .iter()
+        .map(|s| crate::domain::ValidUrl::parse(s).expect("test url must parse"))
+        .collect()
+    }
+
+    /// Guard window with the layer-2 hatch guaranteed absent — the
+    /// read-or-assert window is serialized under ENV_LOCK (#1308).
+    fn entry_guard_armed() -> webfang_test_utils::EnvGuard {
+        webfang_test_utils::EnvGuard::clean(&[crate::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV])
+    }
+
+    /// Fresh port with an empty observation log.
+    fn recording_port() -> RecordingPort {
+        RecordingPort {
+            seen: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    /// SEC F1 (PI-1): with the entry hatch guaranteed absent, every forbidden
+    /// literal is filtered BEFORE the port is consulted — `Ok(vec![])`, the
+    /// port never sees the URL, no socket (a real adapter would dial the
+    /// metadata address; the mock makes that failure observable instead).
+    #[tokio::test]
+    async fn download_asset_urls_skips_every_forbidden_literal_without_the_port() {
+        let _guard = entry_guard_armed();
+        let config = ScraperConfig::default();
+        let urls = forbidden_urls();
+        let port = recording_port();
+
+        let result = download_asset_urls(&urls, &config, Some(&port))
+            .await
+            .expect("rejections must be skips, not errors");
+
+        assert!(
+            result.is_empty(),
+            "no forbidden literal may yield an asset: {result:?}"
+        );
+        assert!(
+            port.seen().is_empty(),
+            "the port must never see a forbidden literal, saw: {:?}",
+            port.seen()
+        );
+    }
+
+    /// A mixed batch keeps exactly the allowed targets, in order, and the
+    /// port observes only those.
+    #[tokio::test]
+    async fn download_asset_urls_keeps_only_allowed_targets_from_a_mixed_batch() {
+        let _guard = entry_guard_armed();
+        let config = ScraperConfig::default();
+        let mut urls = forbidden_urls();
+        urls.push(
+            crate::domain::ValidUrl::parse("https://example.com/logo.png")
+                .expect("test url must parse"),
+        );
+        let port = recording_port();
+
+        let result = download_asset_urls(&urls, &config, Some(&port))
+            .await
+            .expect("mixed batch must succeed");
+
+        assert_eq!(result.len(), 1, "only the allowed target may download");
+        assert_eq!(result[0].url, "https://example.com/logo.png");
+        assert_eq!(
+            port.seen(),
+            vec!["https://example.com/logo.png".to_owned()],
+            "the port must observe only the allowed target"
+        );
+    }
+
+    /// The documented hatch (`DISABLE_ENTRY_GUARD_ENV` exact `"1"`, #1578)
+    /// disarms this layer too: the same forbidden literals then reach the
+    /// port. Mocked here — the test never dials the real address.
+    #[tokio::test]
+    async fn download_asset_urls_entry_hatch_disarms_the_literal_filter() {
+        let _guard = webfang_test_utils::EnvGuard::entry_guard_off();
+        let config = ScraperConfig::default();
+        let urls = forbidden_urls();
+        let port = recording_port();
+
+        let result = download_asset_urls(&urls, &config, Some(&port))
+            .await
+            .expect("hatch disarmed: the batch must proceed");
+
+        assert_eq!(
+            result.len(),
+            urls.len(),
+            "hatch disarmed: every URL must proceed to the port"
+        );
+        assert_eq!(port.seen().len(), urls.len());
     }
 }
