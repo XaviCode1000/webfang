@@ -897,7 +897,10 @@ mod tests {
 
         let root = CorrelationId::new();
         let url: url::Url = "https://example.com/batch-fail".parse().unwrap();
-        let results = vec![(url.clone(), Err::<ScrapeOutcome, ScraperError>(ScraperError::GlobalTimeout))];
+        let results = vec![(
+            url.clone(),
+            Err::<ScrapeOutcome, ScraperError>(ScraperError::GlobalTimeout),
+        )];
 
         let outcome = collect_batch_outcome(results, &root);
 

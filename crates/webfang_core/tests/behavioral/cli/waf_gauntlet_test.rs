@@ -232,7 +232,13 @@ async fn waf_gauntlet_observability_trace() {
         .collect();
 
     let has_403_event = all_messages.iter().any(|m| m.contains("403"));
-    let has_429_event = all_messages.iter().any(|m| m.contains("429"));
+    // #1604: the retry event's status is a structured field, not message
+    // text — assert on `status: 429` of the "retrying after HTTP status"
+    // event rather than string-matching the (now field-free) message.
+    let has_429_event = lines.iter().any(|v| {
+        v.get("message").and_then(|m| m.as_str()) == Some("retrying after HTTP status")
+            && v.pointer("/fields/status").and_then(|s| s.as_u64()) == Some(429)
+    });
 
     assert!(
         has_403_event,

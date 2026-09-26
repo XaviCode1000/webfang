@@ -694,11 +694,7 @@ impl WreqDownloader {
             if last_status == 403 && attempt == 0 && self.pinned_ua.is_none() {
                 let agents = UserAgentCache::fallback_agents();
                 let rotated_ua = agents.get(1).map(String::as_str);
-                warn!(
-                    url = %url,
-                    status = last_status,
-                    "403 Forbidden — retrying with rotated User-Agent"
-                );
+                warn!(url = %url, status = last_status, "403 Forbidden — retrying with rotated User-Agent");
                 match self.send_request(url, rotated_ua).await {
                     Ok(res) if res.status().is_success() => {
                         return self.build_page(res, url).await;
