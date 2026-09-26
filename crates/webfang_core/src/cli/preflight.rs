@@ -2241,6 +2241,38 @@ mod normalization_pipeline_tests {
         assert_eq!(opts.export.output_format, expected.export.output_format);
     }
 
+    /// CLI wiring verification (issue #1599, slice 4 — verify first): an
+    /// explicit `--concurrency 2` must surface as `BudgetOverrides.crawl`
+    /// through `into_crawl_options` (explicit-wins), so the engine derives
+    /// its scheduler spawn bound from the override instead of the machine
+    /// tier. Expected outcome: verification-only, zero CLI diff.
+    #[test]
+    fn into_crawl_options_explicit_concurrency_feeds_budget_override() {
+        let mut book = stage_defaults();
+        book.concurrency = ConfigValue::new(ConcurrencyConfig::new(2), ConfigSource::Cli);
+        let opts = NormalizedConfig::from_book(book).into_crawl_options();
+        assert_eq!(
+            opts.budget_overrides
+                .crawl
+                .map(crate::domain::budget::tiers::CrawlConcurrency::get),
+            Some(2),
+            "explicit --concurrency 2 must reach the engine as a crawl-tier override"
+        );
+    }
+
+    /// CLI wiring verification (issue #1599, slice 4): auto concurrency
+    /// (`None`) stages no crawl-tier override, preserving today's
+    /// detector-derived behavior exactly.
+    #[test]
+    fn into_crawl_options_auto_concurrency_preserves_derived_behavior() {
+        let book = stage_defaults();
+        let opts = NormalizedConfig::from_book(book).into_crawl_options();
+        assert_eq!(
+            opts.budget_overrides.crawl, None,
+            "auto concurrency must not stage a crawl-tier override"
+        );
+    }
+
     #[test]
     fn stage_budget_overrides_writes_cli_burst() {
         let mut book = stage_defaults();
