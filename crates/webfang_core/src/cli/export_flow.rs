@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use tracing::warn;
 
 use crate::cli::error::CliExit;
-use crate::cli::scrape_flow::record_store_bridge;
+use crate::cli::scrape_flow::{record_store_bridge, warn_unreadable_state};
 use crate::domain::persistence::StateStorePort;
 use crate::domain::ScrapedContent;
 use crate::infrastructure::output::file_saver::ObsidianOptions;
@@ -86,11 +86,22 @@ pub async fn run_export(config: ExportConfig<'_>) -> Result<Vec<String>, CliExit
     run_standard_export(&config)
 }
 
+/// Surface the shared Spanish unreadable-state notice on the export resume
+/// path (#1587): the export path previously resumed silently over unreadable
+/// state while the scrape path warned. Single call site helper so both export
+/// flows (standard + AI) stay identical without duplicating the bridge check.
+fn warn_unreadable_resume_state(record_store: &Option<crate::infrastructure::export::RecordStore>) {
+    if let Some(store) = record_store.as_ref() {
+        warn_unreadable_state(store);
+    }
+}
+
 /// Standard export path (backward compatible).
 fn run_standard_export(config: &ExportConfig<'_>) -> Result<Vec<String>, CliExit> {
     // Bridge the state-store port onto the v2 RecordStore seam (shared
     // helper — same directory + domain derivation as the scrape path).
     let record_store = config.state_store.map(record_store_bridge);
+    warn_unreadable_resume_state(&record_store);
     let ctx = record_store
         .as_ref()
         .map(|store| export_factory::ResumeContext::new(store).with_resume(config.resume));
@@ -120,6 +131,12 @@ async fn run_ai_export(
         config.results.len()
     );
 
+    // Surface the Spanish unreadable-state notice BEFORE the long AI run so a
+    // degraded resume is visible up front rather than after minutes of
+    // cleaning (#1587). Read-only: `load()` never mutates the state file.
+    let record_store = config.state_store.map(record_store_bridge);
+    warn_unreadable_resume_state(&record_store);
+
     let cleaned_chunks = clean_all_pages(config.results, &cleaner).await?;
 
     info!(
@@ -128,7 +145,6 @@ async fn run_ai_export(
         config.results.len()
     );
 
-    let record_store = config.state_store.map(record_store_bridge);
     let ctx = record_store
         .as_ref()
         .map(|store| export_factory::ResumeContext::new(store).with_resume(config.resume));

@@ -515,7 +515,7 @@ AI Settings:
           [env: WEBFANG_OFFLINE=]
 
       --ai-model <AI_MODEL>
-          AI model to use: granite-97m (default, fast) or granite-311m (higher quality)
+          AI model to use: granite-97m (default, fast) or granite-311m (higher quality). Env WEBFANG_AI_MODEL_ID wins; legacy AI_MODEL_ID still accepted but deprecated for removal in v3.0
           
           [env: WEBFANG_AI_MODEL_ID=]
 

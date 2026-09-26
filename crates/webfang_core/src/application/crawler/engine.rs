@@ -388,7 +388,10 @@ impl Engine {
                 self.checkpoint_state = Some(cp);
             },
             None => {
-                warn!("No checkpoint found, starting fresh");
+                // Same `None` breadth as the session loader: missing, corrupt
+                // or discarded-version (the discard warns with the path,
+                // #1587) — never claim no file was found.
+                warn!("No usable checkpoint found, starting fresh");
                 self.checkpoint_state = Some(CrawlCheckpoint::new());
             },
         }

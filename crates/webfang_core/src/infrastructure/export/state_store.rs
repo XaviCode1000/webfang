@@ -19,7 +19,7 @@ use crate::domain::exporter::StateStorePort;
 use crate::domain::ExportState;
 use crate::error::ScraperError;
 use dirs::cache_dir;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 /// StateStore manages persistence of export state for a specific domain
 ///
@@ -157,8 +157,10 @@ impl StateStore {
 
     /// Load existing state or create a new one if it doesn't exist    ///
     /// Version-aware: if the persisted file has a different `version` than
-    /// [`StateVersion::CURRENT`], it is discarded, an `info!` is emitted, and a fresh
-    /// `ExportState::new(domain)` (version `CURRENT`) is returned.
+    /// [`StateVersion::CURRENT`], it is discarded, a `warn!` is emitted (visible
+    /// at the default level, #1587), the pre-migration file is preserved as a
+    /// `.bak` sibling, and a fresh `ExportState::new(domain)` (version
+    /// `CURRENT`) is returned.
     /// `NotFound` also yields a fresh state. Corrupted JSON (Serialization)
     /// is propagated so `filter_processed_urls` can degrade to re-scrape.
     /// Unknown (future) versions never reach this comparison: they are rejected
@@ -180,12 +182,15 @@ impl StateStore {
     pub fn load_or_default(&self) -> crate::error::Result<ExportState> {
         match self.load() {
             Ok(state) if state.version != StateVersion::CURRENT => {
-                info!(
+                let path = self.get_state_path();
+                warn!(
                     version = state.version.get(),
                     expected = StateVersion::CURRENT.get(),
                     domain = %self.domain,
-                    "discarding stale StateStore version, returning fresh state"
+                    path = %path.display(),
+                    "discarding stale StateStore version, returning fresh state; pre-migration file preserved as .bak"
                 );
+                crate::application::resume::preserve_pre_migration_backup(&path);
                 ExportState::new(&self.domain)
             },
             Ok(state) => {
@@ -356,6 +361,37 @@ mod tests {
             "stale processed_urls must be discarded"
         );
         assert_eq!(state.total_exported(), 0);
+    }
+
+    /// #1587: discarding a stale version must preserve the pre-migration
+    /// file as a `.bak` sibling so the next save cannot silently overwrite
+    /// work the new schema refused to read.
+    #[test]
+    fn test_load_or_default_stale_version_preserves_bak() {
+        // No "webfang/state" subdir: the store writes wherever `cache_dir`
+        // points, so the TempDir root keeps this Arrange off the shared
+        // setup shape (duplication ratchet, #516).
+        let dir = tempdir().unwrap();
+        let state_path = dir.path().join("stale-bak.com.json");
+        let original = r#"{"domain":"stale-bak.com","processed_urls":["https://stale-bak.com/a"],"last_export":null,"total_exported":1,"version":0}"#;
+        std::fs::write(&state_path, original).unwrap();
+        let mut store = StateStore::new("stale-bak.com");
+        store.cache_dir = dir.path().to_path_buf();
+
+        let state = store.load_or_default().unwrap();
+        assert_eq!(state.version, StateVersion::CURRENT);
+        assert!(state.processed_urls.is_empty());
+
+        let backup = state_path.with_extension("json.bak");
+        assert!(
+            backup.exists(),
+            "pre-migration file must be preserved as .bak"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&backup).unwrap(),
+            original,
+            "backup must carry the exact pre-migration bytes"
+        );
     }
 
     #[test]

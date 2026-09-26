@@ -337,8 +337,9 @@ fn read_checkpoint_bytes(path: &Path) -> Option<Vec<u8>> {
 /// match.
 ///
 /// A payload whose `version` is not [`CURRENT_CHECKPOINT_VERSION`] is DISCARDED
-/// with an `info!` log — the Gate 0 discard+log contract `ExportState` already
-/// follows. Never resumed half-understood, never a crash. Before #1234 the
+/// with a `warn!` log (visible at the default level, #1587) — the Gate 0
+/// discard+log contract `ExportState` already follows. Never resumed
+/// half-understood, never a crash. Before #1234 the
 /// `version` field was written and never read, so that contract was aspirational.
 fn verify_and_parse_checkpoint(data: &[u8], path: &Path) -> Option<CrawlCheckpoint> {
     let stored_checksum = u32::from_ne_bytes([data[0], data[1], data[2], data[3]]);
@@ -356,7 +357,7 @@ fn verify_and_parse_checkpoint(data: &[u8], path: &Path) -> Option<CrawlCheckpoi
         return None;
     }
 
-    deserialize_checkpoint(payload, path).and_then(accept_version)
+    deserialize_checkpoint(payload, path).and_then(|state| accept_version(state, path))
 }
 
 /// Try to read a legacy pure-JSON checkpoint (no CRC32 header), returning
@@ -369,24 +370,27 @@ fn migrate_legacy_checkpoint(data: &[u8], path: &Path) -> Option<CrawlCheckpoint
         old.visited.len(),
         old.pages_crawled
     );
-    accept_version(old.into())
+    accept_version(old.into(), path)
 }
 
 /// Gate 0 discard+log: accept only the current checkpoint schema version.
 ///
 /// A stale version means the on-disk shape predates a schema change, so its
-/// fields cannot be interpreted. The run starts fresh; the file is left in place
-/// for inspection and the next save overwrites it.
-fn accept_version(state: CrawlCheckpoint) -> Option<CrawlCheckpoint> {
+/// fields cannot be interpreted. The run starts fresh; the pre-migration file
+/// is preserved as a `.bak` sibling for inspection before the next save
+/// overwrites it (#1587).
+fn accept_version(state: CrawlCheckpoint, path: &Path) -> Option<CrawlCheckpoint> {
     if state.version == CURRENT_CHECKPOINT_VERSION {
         return Some(state);
     }
-    info!(
+    warn!(
         found = state.version,
         current = CURRENT_CHECKPOINT_VERSION,
         visited = state.visited.len(),
-        "checkpoint discarded: superseded schema version, starting fresh"
+        path = %path.display(),
+        "checkpoint discarded: superseded schema version, starting fresh; pre-migration file preserved as .bak"
     );
+    crate::application::resume::preserve_pre_migration_backup(path);
     None
 }
 
@@ -793,6 +797,37 @@ mod tests {
         assert!(
             loaded.is_none(),
             "a pre-v2 checkpoint must be discarded, not resumed (#1234)",
+        );
+    }
+
+    #[test]
+    fn test_stale_version_preserves_bak() {
+        // #1587: discarding a stale checkpoint version must preserve the
+        // pre-migration file as a `.bak` sibling before the next save
+        // overwrites it.
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("checkpoint.json");
+        let old_json = r#"{
+            "visited": ["https://a.com"],
+            "queued": [],
+            "pages_crawled": 3,
+            "version": 1,
+            "banned_domains": []
+        }"#;
+        fs::write(&path, old_json).unwrap();
+
+        let store = BincodeCheckpoint::new();
+        assert!(store.load(&path).is_none());
+
+        let backup = path.with_extension("json.bak");
+        assert!(
+            backup.exists(),
+            "pre-migration checkpoint must be preserved as .bak"
+        );
+        assert_eq!(
+            fs::read_to_string(&backup).unwrap(),
+            old_json,
+            "backup must carry the exact pre-migration bytes"
         );
     }
 
