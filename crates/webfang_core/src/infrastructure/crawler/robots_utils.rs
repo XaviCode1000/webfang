@@ -329,7 +329,11 @@ impl RobotsFetcher {
         let resp = match self.client.get(robots_url).send().await {
             Ok(resp) => resp,
             Err(e) => {
-                tracing::warn!("Failed to fetch robots.txt for {}: {}", domain, e);
+                tracing::warn!(
+                    domain = %domain,
+                    error = %e,
+                    "robots.txt fetch failed; failing open as all-allowed"
+                );
                 return Err(RobotsFetchFailure {
                     reason: "network_error".to_string(),
                 });
@@ -360,7 +364,11 @@ impl RobotsFetcher {
         match read_body_capped(resp, ROBOTS_MAX_BODY_BYTES).await {
             Ok(text) => Ok(text),
             Err(e) => {
-                tracing::warn!("Failed to read robots.txt body for {}: {}", domain, e);
+                tracing::warn!(
+                    domain = %domain,
+                    error = %e,
+                    "robots.txt body read failed; failing open as all-allowed"
+                );
                 Err(RobotsFetchFailure {
                     reason: "body_read_error".to_string(),
                 })

@@ -185,9 +185,9 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
             );
             if canonical_existing == canonical_current {
                 warn!(
-                    %url,
+                    url = %url,
                     existing_url = %existing_url,
-                    "recurso ya persistido: omitiendo pipeline (dedup)"
+                    "resource already persisted; skipping pipeline (dedup)"
                 );
                 return Ok(true);
             }

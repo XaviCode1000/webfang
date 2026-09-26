@@ -261,12 +261,18 @@ impl BatchProcessor {
                     // ScraperError conversion (#537): severity routing needs
                     // classify(), which a flattened string cannot provide.
                     let scraper_err = ScraperError::from(e);
-                    warn!(error = %scraper_err, "Failed to crawl {url}");
+                    crate::infrastructure::observability::log_scrape_error(
+                        &scraper_err,
+                        &url,
+                        "batch_crawl",
+                        Some(&run_root),
+                        "batch URL crawl failed",
+                    );
                     errors.push((url, scraper_err));
                 },
                 Err(e) => {
                     progress.fail_one();
-                    error!("Task panicked: {e}");
+                    error!(error = %e, "batch crawl task panicked");
                     errors.push((
                         "unknown".to_string(),
                         ScraperError::Internal(format!("task-panic: {e}")),

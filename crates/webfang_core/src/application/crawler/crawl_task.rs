@@ -53,7 +53,7 @@ fn handle_task_error(
         return;
     }
     let category = CrawlErrorCategory::from(&e);
-    warn!("Task error: {}", e);
+    warn!(error = %e, category = ?category, "crawl task failed");
     error_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     error_breakdown[category.index()].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
@@ -70,7 +70,7 @@ fn handle_join_error(
         debug!("Task aborted during shutdown drain");
         return;
     }
-    warn!("Task panicked: {}", e);
+    warn!(error = %e, "crawl task panicked");
     error_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     error_breakdown[CrawlErrorCategory::Panic.index()]
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -244,7 +244,7 @@ fn ban_waf_domain(ctx: &CrawlTaskCtx, parsed_url: &Url, waf_msg: &str) {
     if let Ok(mut domains) = ctx.banned_domains.write() {
         if !domains.iter().any(|d| d.domain == domain) {
             domains.push(banned);
-            warn!("Banned domain {} due to WAF: {}", domain, waf_msg);
+            warn!(domain = %domain, reason = %waf_msg, "domain banned due to WAF challenge");
         }
     }
 }
@@ -402,7 +402,13 @@ async fn extract_and_queue_links(
             }
         },
         Err(e) => {
-            warn!("Failed to extract links from {}: {}", url_str, e);
+            log_scrape_error(
+                &e,
+                url_str,
+                "extract_links",
+                Some(&ctx.correlation_id),
+                "failed to extract links from page",
+            );
             ctx.error_count
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             ctx.error_breakdown[CrawlErrorCategory::Extraction.index()]
