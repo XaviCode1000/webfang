@@ -246,7 +246,8 @@ impl McpHandler {
                 Err(e) => {
                     tracing::warn!(
                         vault_path = %vp,
-                        "vault sync failed, searching existing index: {e}"
+                        error = %e,
+                        "vault sync failed; searching existing index"
                     );
                 },
             }

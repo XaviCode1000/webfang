@@ -124,8 +124,10 @@ pub fn spawn_ai_wiring(container: Arc<webfang_core::application::container::Cont
         Ok(None) => webfang_ai::AiModel::default(),
         Err(e) => {
             tracing::error!(
+                variable = "AI_MODEL_ID",
+                error = %e,
                 "AI wiring skipped: AI_MODEL_ID is set to an unknown model and \
-                 cannot be silently defaulted ({e})"
+                 cannot be silently defaulted"
             );
             return;
         },
@@ -138,8 +140,10 @@ pub fn spawn_ai_wiring(container: Arc<webfang_core::application::container::Cont
         Ok(config) => config,
         Err(e) => {
             tracing::error!(
+                variable = "WEBFANG_AI_ENGINE",
+                error = %e,
                 "AI wiring skipped: WEBFANG_AI_ENGINE is set to an invalid engine \
-                 spec and cannot be silently defaulted ({e})"
+                 spec and cannot be silently defaulted"
             );
             return;
         },
