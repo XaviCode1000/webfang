@@ -22,6 +22,9 @@ use wreq::Client;
 use webfang_core::config::Config;
 use webfang_core::di::Container;
 use webfang_mcp::mcp_server::server::build_mcp_router;
+
+#[path = "common/mod.rs"]
+mod common;
 use webfang_mcp::mcp_server::server::ServerOptions;
 use webfang_mcp::mcp_server::state::McpState;
 
@@ -136,14 +139,16 @@ async fn call_tool(
 }
 
 fn tool_text(result: &Value) -> String {
-    result
-        .get("content")
-        .and_then(|c| c.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|first| first.get("text"))
-        .and_then(|t| t.as_str())
-        .unwrap_or_default()
-        .to_string()
+    // #1600: strip the provenance envelope when present (see common::payload_text).
+    common::payload_text(
+        &result
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|first| first.get("text"))
+            .and_then(|t| t.as_str())
+            .unwrap_or_default(),
+    )
 }
 
 fn is_tool_error(result: &Value) -> bool {
@@ -166,7 +171,9 @@ fn assert_waf_blocked(result: &Value, label: &str) {
         tool_text(result)
     );
     assert!(
-        tool_text(result).starts_with("WAF blocked:"),
+        // #1600: the verdict text derives from caller HTML (RemoteDerived) and
+        // carries the provenance envelope plus its one-space indentation.
+        tool_text(result).trim().starts_with("WAF blocked:"),
         "{label}, got: {}",
         tool_text(result)
     );
@@ -201,7 +208,7 @@ async fn test_detect_waf_challenge_marker_is_detected() {
         "detect_waf should succeed: {}",
         tool_text(&result)
     );
-    assert_eq!(tool_text(&result), "WAF detected: Cloudflare Turnstile");
+    assert_eq!(tool_text(&result).trim(), "WAF detected: Cloudflare Turnstile");
 }
 
 /// A bare vendor fingerprint (T2) is evidence only and NEVER blocks in
@@ -230,7 +237,7 @@ async fn test_detect_waf_bare_fingerprint_never_blocks_degraded() {
         "detect_waf should succeed: {}",
         tool_text(&result)
     );
-    assert_eq!(tool_text(&result), "no WAF detected");
+    assert_eq!(tool_text(&result).trim(), "no WAF detected");
 }
 
 /// A clean body reports no WAF.
@@ -258,7 +265,7 @@ async fn test_detect_waf_clean_body_no_waf() {
         "detect_waf should succeed: {}",
         tool_text(&result)
     );
-    assert_eq!(tool_text(&result), "no WAF detected");
+    assert_eq!(tool_text(&result).trim(), "no WAF detected");
 }
 
 // ============================================================================
@@ -295,8 +302,7 @@ async fn test_verify_waf_integrity_header_alone_passes_degraded() {
         "verify_waf_integrity should succeed: {}",
         tool_text(&result)
     );
-    assert_eq!(
-        tool_text(&result),
+    assert_eq!(tool_text(&result).trim(),
         "WAF integrity check passed",
         "T2 header alone must not block in degraded mode (#346)"
     );
@@ -382,8 +388,7 @@ async fn test_verify_waf_integrity_t2_with_ok_status_passes() {
         "verify_waf_integrity should succeed: {}",
         tool_text(&result)
     );
-    assert_eq!(
-        tool_text(&result),
+    assert_eq!(tool_text(&result).trim(),
         "WAF integrity check passed",
         "T2 fingerprint at status 200 must pass, got: {}",
         tool_text(&result)
