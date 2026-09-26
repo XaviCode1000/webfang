@@ -31,9 +31,10 @@ struct Args {
     #[arg(long, env = "WEBFANG_MCP_AI")]
     enable_ai: bool,
 
-    /// Allowed root directories for absolute `output_dir` paths (#696).
-    /// Repeatable or comma-separated. When omitted, absolute `output_dir`
-    /// values are rejected (fail-closed); relative paths always work.
+    /// Allowed root directories for absolute `output_dir` and `checkpoint_dir`
+    /// paths (#696, #1588). Repeatable or comma-separated. When omitted,
+    /// absolute `output_dir`/`checkpoint_dir` values are rejected
+    /// (fail-closed); relative paths always work.
     #[arg(long, env = "WEBFANG_MCP_EXPORT_ROOTS", value_delimiter = ',')]
     export_roots: Vec<std::path::PathBuf>,
 }

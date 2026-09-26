@@ -345,6 +345,42 @@ async fn crawl_site_rejects_max_depth_beyond_limit() {
     );
 }
 
+/// `crawl_site` rejects an absolute `checkpoint_dir` when no export roots are
+/// configured (#1588) — the checkpoint is a filesystem write target and runs
+/// through the same fail-closed root gate as `output_dir`.
+///
+/// This harness declares NO `--export-roots`, so the absolute path must be a
+/// protocol-level `-32602` before any semaphore, SSRF check, or network work.
+/// The accepted counterpart (absolute `checkpoint_dir` under a configured
+/// root) lives in `scraping_coverage_test.rs::mcp_crawl_checkpoint_resume_roundtrip`,
+/// whose harness declares the system temp dir as its root.
+#[tokio::test]
+async fn crawl_site_rejects_absolute_checkpoint_dir_without_roots() {
+    let (base_url, _handle) = start_test_server().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+
+    let resp = call_tool(
+        &client,
+        &base_url,
+        &session_id,
+        "crawl_site",
+        json!({
+            "url": "https://example.com",
+            "max_depth": 1,
+            "max_pages": 1,
+            "checkpoint_dir": "/tmp/webfang-checkpoints-1588"
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        error_code(&resp),
+        Some(JSONRPC_INVALID_PARAMS),
+        "absolute checkpoint_dir without export roots must be rejected with -32602, got: {resp}"
+    );
+}
+
 /// `scrape_with_options` rejects an unknown field (deny_unknown_fields) at the
 /// deserialization boundary, mapped to -32602.
 #[tokio::test]

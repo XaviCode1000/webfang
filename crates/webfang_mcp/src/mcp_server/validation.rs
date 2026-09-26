@@ -114,15 +114,16 @@ pub fn require_safe_path(field: &str, value: &str) -> Result<PathBuf, McpError> 
     Ok(path.to_path_buf())
 }
 
-/// Detect a Windows-style drive-letter prefix (e.g. `C:\foo` or `C:/foo`)
-/// regardless of host platform. Case-insensitive letter; separator can be
-/// either `\` or `/`.
+/// Detect a Windows-style drive-letter prefix (letter + `:`) regardless of
+/// host platform. Case-insensitive letter; NO separator requirement — the
+/// drive-relative `C:foo` form (relative to the current directory ON drive
+/// C:, an escape on Windows hosts) must be rejected by
+/// [`require_safe_path`]'s relative-only contract just like `C:\foo` (#1588).
+/// `require_safe_path_allow_absolute` deliberately does not call this: it
+/// accepts absolute Windows paths (`C:\vault`).
 fn has_windows_drive_prefix(value: &str) -> bool {
     let bytes = value.as_bytes();
-    bytes.len() >= 3
-        && bytes[0].is_ascii_alphabetic()
-        && bytes[1] == b':'
-        && (bytes[2] == b'\\' || bytes[2] == b'/')
+    bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
 /// Validate that `value` is a safe filesystem path: non-empty, ≤
@@ -481,6 +482,33 @@ mod tests {
         // Relative paths should still work (no regression).
         let result = require_safe_path_allow_absolute("vault_path", "my-vault");
         assert!(result.is_ok(), "relative path must be accepted: {result:?}");
+    }
+
+    // --- require_safe_path drive-relative probe (#1588) --------------------
+
+    #[test]
+    fn require_safe_path_rejects_drive_relative_without_separator() {
+        // #1588: `C:foo` is drive-relative (relative to the current directory
+        // ON the drive) — an escape on Windows hosts, never a safe relative
+        // path. The old separator-requiring probe let it through on every host.
+        for value in ["C:foo", "c:foo", "C:", "D:exports/2026"] {
+            let err = require_safe_path("file_path", value).unwrap_err();
+            assert!(
+                matches!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS),
+                "{value} must be rejected as drive-relative"
+            );
+        }
+    }
+
+    #[test]
+    fn require_safe_path_allow_absolute_keeps_accepting_absolute_windows_paths() {
+        // The drive-prefix change must NOT leak into the allow-absolute
+        // variant: `C:\vault` stays valid for `detect_obsidian_vault` (#590).
+        let result = require_safe_path_allow_absolute("vault_path", "C:\\vault");
+        assert!(
+            result.is_ok(),
+            "absolute Windows path must be accepted: {result:?}"
+        );
     }
 
     // --- require_safe_filename (issue #601) ---------------------------------

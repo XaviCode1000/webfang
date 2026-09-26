@@ -387,6 +387,14 @@ impl McpHandler {
     ) -> Result<CallToolResult, McpError> {
         params.validate()?;
 
+        // #1588: `checkpoint_dir` is a filesystem write target like
+        // `output_dir` — same shared canonical gate (symlink-resolved,
+        // fail-closed with no export roots), before any semaphore/network work.
+        if let Some(d) = &params.checkpoint_dir {
+            self.state
+                .validate_checkpoint_dir(std::path::Path::new(d))?;
+        }
+
         let _permit = acquire_semaphore!(self, scraping);
 
         // #1116: borrow the boundary-parsed seed URL (no second parse).
