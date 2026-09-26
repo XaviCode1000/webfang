@@ -292,6 +292,22 @@ mod tests {
         );
     }
 
+    /// Strict-TDD RED detector (issue #1599): `max_pages = 1` with
+    /// `concurrency = 2` pinned via `budget_overrides` must collect at most
+    /// one page. Pre-fix the first spawn wave already dispatches two tasks,
+    /// so this fails deterministically with `total_pages >= 2`; post-fix the
+    /// remaining-budget cap spawns only the seed and it passes.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn sitemap_entry_max_pages_one_is_exact() {
+        let result = many_url_sitemap_run(1, 2).await;
+        let urls = collected_urls(&result);
+        assert!(
+            result.total_pages <= 1,
+            "max_pages=1 must collect at most one page, got {}: {urls:?}",
+            result.total_pages
+        );
+    }
+
     /// Many-URL sitemap fixture for the 4.2 overshoot pin: a link-free
     /// seed plus 8 sitemap-only leaf pages (rich-enough bodies to clear
     /// the extraction pipeline), driven through the new session entry
@@ -326,6 +342,10 @@ mod tests {
             .max_depth(5)
             .max_pages(max_pages)
             .concurrency(NonZeroUsize::new(concurrency).expect("non-zero"))
+            .budget_overrides(crate::domain::budget::BudgetOverrides {
+                crawl: crate::domain::budget::tiers::CrawlConcurrency::new(concurrency).ok(),
+                ..crate::domain::budget::BudgetOverrides::default()
+            })
             .ignore_robots(true)
             .build();
         let options = EngineOptions {
