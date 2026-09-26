@@ -88,7 +88,8 @@ pub const OFFLINE: OptionSpec = OptionSpec {
 /// Raw string on purpose (#827): validation is deferred to the AI init
 /// path (`build_ai_cleaner`) so a poisoned `AI_MODEL_ID` env var cannot
 /// make unrelated CLI invocations fail at parse time. `AI_MODEL_ID` is
-/// accepted as a hidden CLI alias for backward compatibility.
+/// accepted as a hidden CLI alias for backward compatibility, deprecated
+/// for removal in v3.0 (#1587).
 pub const AI_MODEL: OptionSpec = OptionSpec {
     id: "ai_model",
     value_name: "AI_MODEL",
@@ -99,7 +100,7 @@ pub const AI_MODEL: OptionSpec = OptionSpec {
     default: None,
     nullable: false,
     description_override: None,
-    help: "AI model to use: granite-97m (default, fast) or granite-311m (higher quality)",
+    help: "AI model to use: granite-97m (default, fast) or granite-311m (higher quality). Env WEBFANG_AI_MODEL_ID wins; legacy AI_MODEL_ID still accepted but deprecated for removal in v3.0",
     heading: Some("AI Settings"),
     kind: ValueKind::Text,
     visible_aliases: &[],

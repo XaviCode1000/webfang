@@ -46,7 +46,7 @@ pub struct AiArgs {
     // Raw string on purpose (#827): validation is deferred to the AI init
     // path (`build_ai_cleaner`) so a poisoned AI_MODEL_ID env var cannot
     // make unrelated CLI invocations fail at parse time.
-    /// AI model to use: granite-97m (default, fast) or granite-311m (higher quality)
+    /// AI model to use: granite-97m (default, fast) or granite-311m (higher quality). Env WEBFANG_AI_MODEL_ID wins; legacy AI_MODEL_ID still accepted but deprecated for removal in v3.0
     #[cfg(feature = "ai")]
     pub ai_model: Option<String>,
 }

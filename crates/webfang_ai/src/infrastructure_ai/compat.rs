@@ -1,9 +1,10 @@
 //! Backward-compatibility layer for environment variable naming.
 //!
 //! Provides `read_ai_model_id` (the public function in this module) which checks
-//! `WEBFANG_AI_MODEL_ID` first, then falls back to `AI_MODEL_ID`. The
-//! fallback is traced at `DEBUG` level so operators can audit which var
-//! was used.
+//! `WEBFANG_AI_MODEL_ID` first, then falls back to `AI_MODEL_ID`. The legacy
+//! fallback is traced at `WARN` level (visible at the default filter, #1587)
+//! and carries its removal schedule so operators migrate off it; the canonical
+//! var stays at `DEBUG`.
 //!
 //! # Concurrency
 //!
@@ -33,8 +34,9 @@ pub(crate) fn std_env_var(key: &str) -> Option<String> {
 /// Read the AI model ID using an injected environment accessor.
 ///
 /// Checks `WEBFANG_AI_MODEL_ID` first; if unset, falls back to
-/// `AI_MODEL_ID`. Emits a `tracing::debug!` log naming the variable that
-/// was used (including when the legacy var is the source).
+/// `AI_MODEL_ID`. Emits a `tracing::debug!` log when the canonical var is the
+/// source and a `tracing::warn!` (with removal schedule) when the legacy var
+/// is the source (#1587).
 ///
 /// `env_var` should return `None` when the requested variable is unset OR
 /// set to an empty string (the public callers treat an empty value as
@@ -53,9 +55,10 @@ pub fn read_ai_model_id_with(env_var: &dyn Fn(&str) -> Option<String>) -> Option
     }
 
     if let Some(val) = env_var(LEGACY_ENV_VAR) {
-        tracing::debug!(
+        tracing::warn!(
             env = LEGACY_ENV_VAR,
-            "AI model resolved from legacy env var (fallback)"
+            canonical = NEW_ENV_VAR,
+            "AI model resolved from legacy env var (deprecated: AI_MODEL_ID will be removed in v3.0, migrate to WEBFANG_AI_MODEL_ID)"
         );
         return Some(val);
     }

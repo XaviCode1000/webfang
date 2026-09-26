@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use tracing::warn;
 
 use crate::cli::error::CliExit;
-use crate::cli::scrape_flow::record_store_bridge;
+use crate::cli::scrape_flow::{record_store_bridge, warn_unreadable_state};
 use crate::domain::persistence::StateStorePort;
 use crate::domain::ScrapedContent;
 use crate::infrastructure::output::file_saver::ObsidianOptions;
@@ -91,6 +91,11 @@ fn run_standard_export(config: &ExportConfig<'_>) -> Result<Vec<String>, CliExit
     // Bridge the state-store port onto the v2 RecordStore seam (shared
     // helper — same directory + domain derivation as the scrape path).
     let record_store = config.state_store.map(record_store_bridge);
+    // Same Spanish unreadable-state notice as the scrape resume path (#1587):
+    // the export path previously resumed silently over unreadable state.
+    if let Some(store) = record_store.as_ref() {
+        warn_unreadable_state(store);
+    }
     let ctx = record_store
         .as_ref()
         .map(|store| export_factory::ResumeContext::new(store).with_resume(config.resume));
@@ -129,6 +134,10 @@ async fn run_ai_export(
     );
 
     let record_store = config.state_store.map(record_store_bridge);
+    // Same Spanish unreadable-state notice as the scrape resume path (#1587).
+    if let Some(store) = record_store.as_ref() {
+        warn_unreadable_state(store);
+    }
     let ctx = record_store
         .as_ref()
         .map(|store| export_factory::ResumeContext::new(store).with_resume(config.resume));

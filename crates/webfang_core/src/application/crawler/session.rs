@@ -492,7 +492,10 @@ impl CrawlSession {
                 outcome
             },
             None => {
-                tracing::info!("no checkpoint found, starting fresh");
+                // `None` covers missing, corrupt AND discarded-version files
+                // (the discard itself now warns with the path, #1587), so the
+                // message must not claim no file was found.
+                tracing::info!("no usable checkpoint found, starting fresh");
                 BeginOutcome {
                     resumed: false,
                     degraded: false,

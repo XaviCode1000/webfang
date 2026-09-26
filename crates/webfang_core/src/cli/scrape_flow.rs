@@ -112,39 +112,41 @@ pub async fn apply_resume_mode(
 /// tool silently discard their persisted state and re-do all the work. AGENTS.md
 /// reserves English for internal logs: user-facing text is Spanish.
 ///
+/// Shared with `export_flow` (#1587): both CLI resume paths surface the same
+/// notice. The notice states the consequence (restart from zero, prior work
+/// re-runs) AND the remedy (inspect, fix or delete the named file before
+/// retrying with `--resume`), not just the symptom.
+///
 /// Never fails and never changes the run's outcome; the original bytes stay on
 /// disk (`load_or_init` preserves them) and the message names the path so the
 /// user can inspect them.
-fn warn_unreadable_state(store: &RecordStore) {
-    let problem = match store.load() {
+pub(crate) fn warn_unreadable_state(store: &RecordStore) {
+    let (symptom, path) = match store.load() {
         Ok(_) => return,
-        Err(RecordStoreError::Corrupt { path }) => format!(
-            "el archivo de estado {} está corrupto o no es JSON válido",
-            path.display(),
-        ),
-        Err(RecordStoreError::UnsupportedVersion { path, found }) => format!(
-            "el archivo de estado {} pertenece a una versión no soportada ({found})",
-            path.display(),
+        Err(RecordStoreError::Corrupt { path }) => {
+            ("está corrupto o no es JSON válido".to_string(), path)
+        },
+        Err(RecordStoreError::UnsupportedVersion { path, found }) => (
+            format!("pertenece a una versión no soportada ({found})"),
+            path,
         ),
         Err(err @ (RecordStoreError::Io { .. } | RecordStoreError::Backup { .. })) => {
             // Internal detail stays in the log; the user gets the plain fact.
             warn!(error = %err, "resume state file unreadable");
-            format!(
-                "no se pudo leer el archivo de estado {}",
-                store.state_path().display(),
-            )
+            ("no se pudo leer".to_string(), store.state_path())
         },
         // Writer-side rejection: not reachable from a read, matched so a new
         // error variant can never fall through into silence (fail-closed).
         Err(err @ RecordStoreError::InvalidRecord { .. }) => {
             warn!(error = %err, "resume state file rejected");
-            format!(
-                "el archivo de estado {} fue rechazado por inválido",
-                store.state_path().display(),
-            )
+            ("fue rechazado por inválido".to_string(), store.state_path())
         },
     };
-    eprintln!("Advertencia: {problem}. Se reanuda desde cero; el archivo original se conserva para inspección.");
+    eprintln!(
+        "Advertencia: el archivo de estado {} {}. Se reanuda desde cero y el trabajo previo se repetirá; el original se conserva para inspección — corríjalo o elimínelo antes de reintentar con --resume.",
+        path.display(),
+        symptom,
+    );
 }
 
 /// Bridge a state-store port handle onto the v2 `RecordStore` seam:
