@@ -47,7 +47,7 @@ webfang_cli ──────────────────────�
 | Crate | Purpose | Key Dependencies |
 |-------|---------|-----------------|
 | `webfang_core` | Domain, application, infrastructure | wreq, tokio, scraper, lol_html |
-| `webfang_ai` | ONNX semantic cleaning | tract-onnx |
+| `webfang_ai` | ONNX semantic cleaning | ort |
 | `webfang_mcp` | MCP server for AI agents | rmcp |
 | `webfang_cli` | Binary entry point + CLI parsing | clap |
 
@@ -254,7 +254,7 @@ CLI arguments override config file values.
 | Feature | Activates | Install |
 |---------|-----------|---------|
 | `default` | images + documents | `cargo install --path crates/webfang_cli` |
-| `ai` | Semantic cleaning with ONNX (~90MB model) | `--features ai` |
+| `ai` | Semantic cleaning with ONNX (~390MB model) | `--features ai` |
 | `mcp` | MCP server for AI agents | `--features mcp` |
 | `persistence` | SQLite checkpoint store | `--features persistence` |
 | `console` | Tokio console (debugging) | `--features console` |
@@ -323,7 +323,7 @@ codedb index .
 - **Error types:** DomainError, InfraError → ScraperError (dual wrapping)
 - **User-facing errors:** Spanish. Internal logs: English.
 
-**Stack:** Rust 1.88 · Tokio · wreq (TLS fingerprint) · scraper 0.27 · lol_html · tract-onnx
+**Stack:** Rust 1.88 · Tokio · wreq (TLS fingerprint) · scraper 0.27 · lol_html · ort
 
 ---
 

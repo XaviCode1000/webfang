@@ -151,15 +151,3 @@ In files under `.cargo/mutants.toml` globs, markers MUST be own-line comments
 (never inline) so the diff adds no mutable code lines.
 
 Never lower `codecov.yml` thresholds; use markers per path instead.
-
-## Known Issues
-
-### Sitemap Discovery Regression (Pre-existing)
-Seven behavioral tests are marked `#[ignore]` due to a pre-existing crawler regression
-where auto-discovered sitemaps exit with code 2 on mock-server scenarios.
-This is NOT related to the `insta` snapshot migration and was exposed when the
-root test suite was wired in PR-0 (these tests were previously unwired and never ran).
-
-Affected tests: `crawl_test.rs` (4 tests), `robots_test.rs` (1 test), and 2 tests
-in `cli_behavioral_test.rs` — all tagged with
-`#[ignore = "Pre-existing stale test, out of scope for insta migration"]`.
