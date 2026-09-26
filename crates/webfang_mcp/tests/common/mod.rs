@@ -323,15 +323,35 @@ pub async fn call_tool(
 }
 
 /// Extract the first content text from a tool result object.
+///
+/// #1600 provenance-aware: `untrusted_text` responses arrive wrapped in the
+/// UNTRUSTED envelope, so the raw tool text is NOT the payload. Strip the
+/// envelope when present (errors and `local_text` results are unenveloped)
+/// and dedent the one-space indentation `RemoteDerived` bodies carry, so
+/// assertions keep comparing against the handler's original payload.
 pub fn tool_text(result: &Value) -> String {
-    result
-        .get("content")
-        .and_then(|c| c.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|first| first.get("text"))
-        .and_then(|t| t.as_str())
-        .unwrap_or_default()
-        .to_string()
+    payload_text(
+        result
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|first| first.get("text"))
+            .and_then(|t| t.as_str())
+            .unwrap_or_default(),
+    )
+}
+
+/// Provenance-envelope-aware payload extraction: the payload between the
+/// BEGIN/END UNTRUSTED markers when the text is enveloped, the text itself
+/// otherwise. See [`unwrap_untrusted`] for the strict variant.
+pub fn payload_text(raw: &str) -> String {
+    match webfang_mcp::mcp_server::provenance::payload_of(raw) {
+        // RemoteDerived bodies keep their one-space indentation (part of the
+        // defense, see provenance::indent_lines) — tests that compare exact
+        // text against such a payload trim it explicitly.
+        Some(payload) => payload.to_string(),
+        None => raw.to_string(),
+    }
 }
 
 /// Whether a tool result is flagged as an error (CallToolResult::error).
@@ -392,4 +412,16 @@ pub async fn mount_page_200_expect(
         .expect(expected_requests)
         .mount(mock)
         .await;
+}
+
+/// Provenance-envelope inverse for tests (#1600): most provenance-gated tool
+/// responses now arrive wrapped in the UNTRUSTED envelope, so a test that
+/// asserts on the payload itself extracts the section between the
+/// `---- BEGIN UNTRUSTED <nonce> ----` / `---- END UNTRUSTED <nonce> ----`
+/// marker lines first. Delegates to the canonical inverse
+/// `webfang_mcp::mcp_server::provenance::payload_of`; panics when the text is
+/// NOT enveloped (local_text results and errors need no unwrap).
+pub fn unwrap_untrusted(text: &str) -> &str {
+    webfang_mcp::mcp_server::provenance::payload_of(text)
+        .expect("expected a provenance-enveloped (untrusted_text) result; local results and errors carry no envelope")
 }

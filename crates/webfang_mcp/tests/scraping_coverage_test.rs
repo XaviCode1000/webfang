@@ -223,14 +223,16 @@ async fn call_tool(
 }
 
 fn tool_text(result: &Value) -> String {
-    result
-        .get("content")
-        .and_then(|c| c.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|first| first.get("text"))
-        .and_then(|t| t.as_str())
-        .unwrap_or_default()
-        .to_string()
+    // #1600: strip the provenance envelope when present (see common::payload_text).
+    common::payload_text(
+        result
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|first| first.get("text"))
+            .and_then(|t| t.as_str())
+            .unwrap_or_default(),
+    )
 }
 
 fn is_tool_error(result: &Value) -> bool {

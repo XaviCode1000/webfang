@@ -16,6 +16,7 @@ pub mod handlers;
 pub mod metrics;
 pub mod panic_hook;
 pub mod params;
+pub mod provenance;
 // Crate-internal: the gate's items are `pub(crate)`, so documenting the
 // module as `pub` would make its docs public documentation linking to
 // private items (rustdoc `private_intra_doc_links`, denied by CI).

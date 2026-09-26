@@ -21,6 +21,9 @@ use webfang_core::di::Container;
 use webfang_core::domain::config::ScraperConfig;
 use webfang_core::domain::{CrawlerConfig, ScrapedContent, ValidUrl};
 use webfang_mcp::mcp_server::server::build_mcp_router;
+
+#[path = "common/mod.rs"]
+mod common;
 use webfang_mcp::mcp_server::server::ServerOptions;
 use webfang_mcp::mcp_server::state::McpState;
 
@@ -170,14 +173,16 @@ async fn call_tool(
 }
 
 fn tool_text(result: &Value) -> String {
-    result
-        .get("content")
-        .and_then(|c| c.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|first| first.get("text"))
-        .and_then(|t| t.as_str())
-        .unwrap_or_default()
-        .to_string()
+    // #1600: strip the provenance envelope when present (see common::payload_text).
+    common::payload_text(
+        result
+            .get("content")
+            .and_then(|c| c.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(|first| first.get("text"))
+            .and_then(|t| t.as_str())
+            .unwrap_or_default(),
+    )
 }
 
 fn is_tool_error(result: &Value) -> bool {
