@@ -24,6 +24,12 @@ use webfang_mcp::mcp_server::server::build_mcp_router;
 use webfang_mcp::mcp_server::server::ServerOptions;
 use webfang_mcp::mcp_server::state::McpState;
 
+// Session/tool-call JSON-RPC helpers live in the shared harness (`tests/common`),
+// not here — issue #1371. Imported by name rather than `use common::*` so this
+// file's own `start_test_server` cannot collide with `common::start_test_server`.
+mod common;
+use common::{call_tool, init_session, is_tool_error, tool_text};
+
 /// JSON-RPC standard error code for "Invalid params" (JSON-RPC 2.0 spec).
 const JSONRPC_INVALID_PARAMS: i64 = -32602;
 
@@ -31,11 +37,16 @@ const JSONRPC_INVALID_PARAMS: i64 = -32602;
 const MAX_BLOB_LEN_PLUS_1: usize = 1_048_577;
 
 // ============================================================================
-// Harness (copied from mcp_behavioral_test.rs — each integration test binary
-// is standalone and cannot import another binary's helpers).
+// Harness — only the starter stays local (see its note); the JSON-RPC
+// helpers come from `tests/common/mod.rs`.
 // ============================================================================
 
 /// Start a test MCP server on a random port and return the base URL.
+///
+/// Deliberately NOT `common::start_test_server`: that one disarms the
+/// wiremock-loopback SSRF hatches, while this file runs with the SSRF guard
+/// LEFT ON. Rejection tests must prove params are refused before any fetch,
+/// so swapping the starter would silently change what is being asserted.
 async fn start_test_server() -> (String, JoinHandle<()>) {
     let config = Config::default();
     let container = Container::new(config.crawler, config.scraper)
@@ -61,92 +72,6 @@ async fn start_test_server() -> (String, JoinHandle<()>) {
     }
 
     (base_url, handle)
-}
-
-/// Build a JSON-RPC request body for the MCP protocol.
-fn mcp_request(method: &str, params: Value) -> Value {
-    json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": method,
-        "params": params,
-    })
-}
-
-/// Initialize an MCP session (initialize + notifications/initialized) and
-/// return the session ID.
-async fn init_session(client: &Client, base_url: &str) -> String {
-    let init_body = mcp_request(
-        "initialize",
-        json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": { "name": "rejection-test", "version": "1.0.0" }
-        }),
-    );
-    let resp = client
-        .post(format!("{base_url}/mcp"))
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
-        .json(&init_body)
-        .send()
-        .await
-        .expect("initialize should succeed");
-    let session_id = resp
-        .headers()
-        .get("mcp-session-id")
-        .and_then(|v| v.to_str().ok())
-        .map(String::from)
-        .expect("initialize must return mcp-session-id");
-
-    let _ = client
-        .post(format!("{base_url}/mcp"))
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
-        .header("mcp-session-id", &session_id)
-        .json(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
-        .send()
-        .await;
-
-    session_id
-}
-
-/// Call an MCP tool and return the parsed JSON-RPC response object.
-async fn call_tool(
-    client: &Client,
-    base_url: &str,
-    session_id: &str,
-    name: &str,
-    args: Value,
-) -> Value {
-    let body = mcp_request("tools/call", json!({ "name": name, "arguments": args }));
-    let resp = client
-        .post(format!("{base_url}/mcp"))
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
-        .header("mcp-session-id", session_id)
-        .json(&body)
-        .send()
-        .await
-        .expect("tools/call should succeed");
-    let text = resp.text().await.expect("read response body");
-    extract_json(&text).expect("response must parse as JSON-RPC")
-}
-
-/// Extract the first JSON-RPC object from an SSE (`data: ` prefixed) or direct
-/// JSON response body.
-fn extract_json(body: &str) -> Option<Value> {
-    if body.contains("data: ") {
-        body.lines()
-            .filter(|line| line.starts_with("data: "))
-            .filter_map(|line| {
-                let json_str = line.strip_prefix("data: ").unwrap_or(line);
-                serde_json::from_str::<Value>(json_str).ok()
-            })
-            .next()
-    } else {
-        serde_json::from_str::<Value>(body).ok()
-    }
 }
 
 /// Extract the JSON-RPC error code from a parsed response, if present.
@@ -185,26 +110,6 @@ fn assert_url_argument_rejected(resp: &Value, reason_substring: &str) {
         haystack.contains(&reason_substring.to_lowercase()),
         "rejection must mention '{reason_substring}', got: {resp}"
     );
-}
-
-/// Extract the first content text from a tool result object.
-fn tool_text(result: &Value) -> String {
-    result
-        .get("content")
-        .and_then(|c| c.as_array())
-        .and_then(|arr| arr.first())
-        .and_then(|first| first.get("text"))
-        .and_then(|t| t.as_str())
-        .unwrap_or_default()
-        .to_string()
-}
-
-/// Whether a tool result is flagged as an error (CallToolResult::error).
-fn is_tool_error(result: &Value) -> bool {
-    result
-        .get("isError")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
 }
 
 // ============================================================================
