@@ -190,7 +190,13 @@ pub async fn start_seeded_server(
         }
     }
 
-    let state = McpState::new(container);
+    // The pipeline's write target is the container's configured output_dir;
+    // process_export_pipeline enforces the export-root gate at request time
+    // (XP-P-08/G-9, issue #1608), so the fixture declares the container temp
+    // dir as a root — the shape of a deployment whose --export-roots covers
+    // the configured output directory.
+    let state =
+        McpState::new(container).with_export_roots(vec![container_tmp.path().to_path_buf()]);
 
     // Disable BOTH SSRF hatches for tests (uses 127.0.0.1 for wiremock).
     // Permanent set serialized under ENV_LOCK by `env_set` — see

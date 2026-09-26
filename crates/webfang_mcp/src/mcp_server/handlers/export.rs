@@ -378,6 +378,15 @@ impl McpHandler {
     ) -> Result<CallToolResult, McpError> {
         params.validate()?;
 
+        // XP-P-08/G-9 (issue #1608): the pipeline's write target is the
+        // container's configured output_dir — the one export path that used
+        // to reach `std::fs` without the #696 export-root gate (a startup
+        // #769 warn was the only signal). Fail fast, BEFORE spending an
+        // export permit or fetching anything, with the same gate every other
+        // export tool applies (`export_file`'s `validated_output_dir`).
+        self.state
+            .validate_export_dir(&self.state.container.scraper_config.output_dir)?;
+
         let _permit = acquire_semaphore!(self, export);
 
         let format_str = params.pipeline_format.as_deref().unwrap_or("jsonl");
@@ -527,13 +536,31 @@ mod handler_tests {
         (McpHandler::new(state), tmp)
     }
 
+    /// [`test_handler`] with the container's own `output_dir` declared as an
+    /// export root — the shape of a production deployment whose
+    /// `--export-roots` covers the configured output directory.
+    /// `process_export_pipeline` enforces the export-root gate at request
+    /// time (XP-P-08/G-9, issue #1608), so every test exercising the
+    /// pipeline needs roots covering the fixture's absolute temp `output_dir`.
+    async fn test_handler_with_export_roots() -> (McpHandler, TempDir) {
+        let (mut state, tmp) = test_state().await;
+        state.robots_fetcher = None;
+        let state = state.with_export_roots(vec![tmp.path().to_path_buf()]);
+        (McpHandler::new(state), tmp)
+    }
+
     /// Build a state with a real robots fetcher for #749 enforcement tests.
     /// Offline-friendly: construction never touches the network.
     async fn test_handler_with_robots() -> (McpHandler, TempDir) {
         let (state, tmp) = test_state().await;
-        let state = state.with_robots_fetcher(std::sync::Arc::new(
-            RobotsFetcher::with_default_profile(5).expect("fetcher construction is offline"),
-        ));
+        let state = state
+            .with_robots_fetcher(std::sync::Arc::new(
+                RobotsFetcher::with_default_profile(5).expect("fetcher construction is offline"),
+            ))
+            // The pipeline gate (XP-P-08/G-9, #1608) needs roots covering the
+            // fixture's absolute output_dir so the robots rejection (not the
+            // root gate) is what this test observes.
+            .with_export_roots(vec![tmp.path().to_path_buf()]);
         (McpHandler::new(state), tmp)
     }
 
@@ -962,7 +989,7 @@ mod handler_tests {
 
     #[tokio::test]
     async fn process_export_pipeline_seeded_writes_to_output_dir() {
-        let (handler, _tmp) = test_handler().await;
+        let (handler, _tmp) = test_handler_with_export_roots().await;
         seed_one(&handler);
         let res = handler
             .process_export_pipeline(Parameters(ProcessExportPipelineParams {
@@ -978,6 +1005,37 @@ mod handler_tests {
         );
     }
 
+    /// XP-P-08/G-9 (issue #1608): the pipeline's write target — the
+    /// container's configured `output_dir` — is gated against the export
+    /// roots at request time. An out-of-roots directory must FAIL with the
+    /// gate's invalid-params error, not just warn (the old #769-only
+    /// behavior), and no export file may be written.
+    #[tokio::test]
+    async fn process_export_pipeline_rejects_output_dir_outside_roots() {
+        let (state, tmp) = test_state().await;
+        let other_root = TempDir::new().expect("create unrelated root temp dir");
+        let state = state.with_export_roots(vec![other_root.path().to_path_buf()]);
+        let handler = McpHandler::new(state);
+        seed_one(&handler);
+
+        let res = handler
+            .process_export_pipeline(Parameters(ProcessExportPipelineParams {
+                url: None,
+                pipeline_format: Some("jsonl".to_string()),
+            }))
+            .await;
+        let err = res.expect_err("out-of-roots configured output_dir must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("outside allowed export roots"),
+            "rejection must come from the export-root gate, got: {msg}"
+        );
+        assert!(
+            !tmp.path().join("export.jsonl").exists(),
+            "no export file may be written outside the declared roots"
+        );
+    }
+
     /// Issue #605 regression: when `url` is provided, the pipeline must scrape
     /// it live instead of reading persisted results. With no network/seed this
     /// surfaces as a scrape (network) error — never the persisted-only
@@ -985,7 +1043,7 @@ mod handler_tests {
     /// prove the `url` argument was ignored.
     #[tokio::test]
     async fn process_export_pipeline_with_url_invokes_scrape() {
-        let (handler, _tmp) = test_handler().await;
+        let (handler, _tmp) = test_handler_with_export_roots().await;
         let res = handler
             .process_export_pipeline(Parameters(ProcessExportPipelineParams {
                 url: Some(vu("https://quotes.toscrape.com")),
@@ -1091,7 +1149,7 @@ mod handler_tests {
         let _guard = webfang_test_utils::EnvGuard::clean(&[
             webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
         ]);
-        let (handler, _tmp) = test_handler().await;
+        let (handler, _tmp) = test_handler_with_export_roots().await;
         let res = handler
             .process_export_pipeline(Parameters(ProcessExportPipelineParams {
                 url: Some(vu("http://127.0.0.1/")),
