@@ -84,6 +84,37 @@ async fn mcp_rejects(url_str: &str) -> bool {
     validate_url_no_ssrf(&url).await.is_err()
 }
 
+#[tokio::test]
+async fn mcp_disable_switch_accepts_only_exact_one() {
+    let mut guard = EnvGuard::clean(&[MCP_SSRF_ENV]);
+    let url = url::Url::parse("http://127.0.0.1:9/").expect("test URL must be valid");
+
+    assert!(
+        validate_url_no_ssrf(&url).await.is_err(),
+        "an unset MCP disable value must leave the entry pre-check active"
+    );
+
+    for (value, should_disable) in [
+        ("1", true),
+        ("0", false),
+        ("false", false),
+        ("yes", false),
+        ("TRUE", false),
+        ("", false),
+        (" 1", false),
+        ("1 ", false),
+        ("\t1\n", false),
+    ] {
+        guard.set(MCP_SSRF_ENV, value);
+        let result = validate_url_no_ssrf(&url).await;
+        assert_eq!(
+            result.is_ok(),
+            should_disable,
+            "MCP_SSRF_ENV={value:?} has the wrong exact-value verdict"
+        );
+    }
+}
+
 // ============================================================================
 // Policy parity: the same predicate, not two different ones
 // ============================================================================

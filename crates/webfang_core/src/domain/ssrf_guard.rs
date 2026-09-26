@@ -130,6 +130,18 @@ pub const DISABLE_ENTRY_GUARD_ENV: &str = "WEBFANG_DISABLE_SSRF_ENTRY_GUARD";
 /// children exempt (see `sanitize_env` in `cli_harness.rs`).
 pub const WEBFANG_MCP_DISABLE_SSRF_ENV: &str = "WEBFANG_MCP_DISABLE_SSRF";
 
+/// Returns `true` only when the raw MCP SSRF disable value is exactly `"1"`.
+///
+/// This parser is deliberately pure and exact: an absent value, an empty value,
+/// surrounding whitespace, and alternate truthy spellings such as `"0"`,
+/// `"false"`, `"yes"`, and `"TRUE"` all leave the guard enabled. It governs
+/// only the MCP entry pre-check and does not apply to the separate
+/// `WEBFANG_DISABLE_SSRF` contract used by LLM extraction.
+#[must_use]
+pub fn disables_ssrf(raw: Option<&str>) -> bool {
+    raw == Some("1")
+}
+
 /// Returns `true` if `ip` falls within a forbidden range.
 ///
 /// Covers:
@@ -674,6 +686,25 @@ mod tests {
 
     fn addr(s: &str) -> IpAddr {
         s.parse().expect("test literals always parse")
+    }
+
+    #[test]
+    fn disable_value_tests() {
+        for (raw, expected) in [
+            (None, false),
+            (Some("1"), true),
+            (Some("0"), false),
+            (Some("false"), false),
+            (Some("yes"), false),
+            (Some("TRUE"), false),
+            (Some(""), false),
+            (Some(" 1"), false),
+            (Some("1 "), false),
+            (Some(" 1 "), false),
+            (Some("\t1\n"), false),
+        ] {
+            assert_eq!(disables_ssrf(raw), expected, "raw value: {raw:?}");
+        }
     }
 
     #[test]
