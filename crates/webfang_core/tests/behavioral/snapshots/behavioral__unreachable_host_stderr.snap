@@ -3,7 +3,7 @@ source: crates/webfang_core/tests/behavioral/main.rs
 assertion_line: 43
 expression: redacted
 ---
-  <TIMESTAMP>  WARN <MODULE>: Failed to fetch robots.txt for 127.0.0.1: error sending request for uri (http://127.0.0.1:<PORT>/robots.txt): client error (Connect)
+  <TIMESTAMP>  WARN <MODULE>: robots.txt fetch failed; failing open as all-allowed, domain: 127.0.0.1, error: error sending request for uri (http://127.0.0.1:<PORT>/robots.txt): client error (Connect)
     at <FILE>.rs:<LINE>
 
   <TIMESTAMP> ERROR <MODULE>: page scrape failed, error: error de red: I/O error: Connection refused (os error 111), url: http://127.0.0.1:<PORT>/, stage: scrape, trace_id: "<TRACE_ID>"
