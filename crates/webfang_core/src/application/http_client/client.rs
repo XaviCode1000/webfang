@@ -610,13 +610,23 @@ mod tests {
         let _client = HttpClient::new(config).unwrap();
     }
 
+    /// An unparseable URL is rejected by `get`'s entry `Url::parse`, which
+    /// reports `HttpError::Request("Invalid URL: ...")`. The sibling
+    /// `test_url_validation_invalid_scheme` reaches the *same* variant through
+    /// a different arm (the http/https scheme allow-list), so the message is
+    /// what tells the two failure causes apart — asserting the variant alone
+    /// would let the two tests cover each other.
     #[tokio::test]
     async fn test_http_client_get_invalid_url() {
         let config = HttpClientConfig::default();
         let client = HttpClient::new(config).unwrap();
 
         let result = client.get("not-a-valid-url").await;
-        assert!(result.is_err());
+        let err = result.expect_err("an unparseable URL must not reach the network");
+        assert!(
+            matches!(&err, HttpError::Request(msg) if msg.contains("Invalid URL")),
+            "expected an unparseable-URL Request error, got: {err:?}"
+        );
     }
 
     #[tokio::test]
@@ -624,9 +634,14 @@ mod tests {
         let config = HttpClientConfig::default();
         let client = HttpClient::new(config).unwrap();
 
+        // `ftp://example.com` parses fine, so it is rejected one arm later, by
+        // the http/https allow-list — a different message, same variant.
         let result = client.get("ftp://example.com").await;
-        assert!(result.is_err());
-        assert!(matches!(result.unwrap_err(), HttpError::Request(_)));
+        let err = result.expect_err("a non-http(s) scheme must not reach the network");
+        assert!(
+            matches!(&err, HttpError::Request(msg) if msg.contains("http or https")),
+            "expected a scheme-rejection Request error, got: {err:?}"
+        );
     }
 
     /// Construction smoke test: a non-default `tls_emulation` preset builds a
