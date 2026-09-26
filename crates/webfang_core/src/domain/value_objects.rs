@@ -433,7 +433,14 @@ mod tests {
     #[test]
     fn test_valid_url_parse_invalid() {
         let result = ValidUrl::parse("not-a-url");
-        assert!(result.is_err());
+        // `parse` funnels both failure modes into one variant: the
+        // `url::Url::parse` failure and the http(s) allow-list rejection in
+        // `try_from_url` both surface as `InvalidUrl`. `is_err()` would also
+        // have passed for a `Validation` or `UrlParse` regression.
+        assert!(
+            matches!(result, Err(crate::error::ScraperError::InvalidUrl(_))),
+            "an unparseable URL must surface InvalidUrl, got: {result:?}"
+        );
     }
 
     #[test]
@@ -464,22 +471,40 @@ mod tests {
 
     #[test]
     fn test_valid_url_rejects_invalid() {
-        assert!(ValidUrl::parse("not-a-url").is_err());
+        assert!(matches!(
+            ValidUrl::parse("not-a-url"),
+            Err(crate::error::ScraperError::InvalidUrl(_))
+        ));
     }
 
     #[test]
     fn test_valid_url_rejects_ftp_scheme() {
         let result = ValidUrl::parse("ftp://example.com/file");
-        assert!(result.is_err());
+        assert!(matches!(
+            result,
+            Err(crate::error::ScraperError::InvalidUrl(_))
+        ));
         let err = result.unwrap_err().to_string();
         assert!(err.contains("ftp"), "Error should mention the scheme");
     }
 
     #[test]
     fn test_valid_url_rejects_data_scheme() {
-        assert!(ValidUrl::parse("data:text/html,<h1>hi</h1>").is_err());
-        assert!(ValidUrl::parse("blob:https://example.com/uuid").is_err());
-        assert!(ValidUrl::parse("file:///etc/passwd").is_err());
+        // All three parse as valid URLs under WHATWG rules, so each one is
+        // rejected by the http(s) allow-list — not by the parser.
+        for candidate in [
+            "data:text/html,<h1>hi</h1>",
+            "blob:https://example.com/uuid",
+            "file:///etc/passwd",
+        ] {
+            assert!(
+                matches!(
+                    ValidUrl::parse(candidate),
+                    Err(crate::error::ScraperError::InvalidUrl(_))
+                ),
+                "{candidate} must be rejected with InvalidUrl"
+            );
+        }
     }
 
     #[test]

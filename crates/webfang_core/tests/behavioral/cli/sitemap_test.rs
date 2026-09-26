@@ -1,5 +1,6 @@
 //! Sitemap-based discovery: --use-sitemap with explicit --sitemap-url.
 
+use crate::assert_snapshot_redacted;
 use crate::cmd;
 use tempfile::TempDir;
 use walkdir::WalkDir;
@@ -8,6 +9,12 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// --sitemap-url with --use-sitemap fetches the explicit sitemap URL and
 /// scrapes the URLs listed in it.
+///
+/// The crawl output is snapshotted per file, in sorted path order, rather
+/// than substring-matched: the two `contains("Page A")` / `contains("Page B")`
+/// asserts this replaces would have passed on a single page, could not see
+/// which files were written, and said nothing about the exported Markdown.
+/// A per-file diff names the page a regression landed on.
 #[tokio::test]
 async fn sitemap_url_scrapes_listed_urls() {
     let server = MockServer::start().await;
@@ -85,20 +92,63 @@ async fn sitemap_url_scrapes_listed_urls() {
         .assert()
         .success();
 
-    // Verify both pages from the sitemap were scraped
-    let all_content: String = WalkDir::new(output.path())
+    // Snapshot every exported file, per file and in sorted path order, so a
+    // failure diff reads as "this page changed", not "somewhere in the
+    // concatenation". Sorting is what makes it deterministic: `WalkDir` does
+    // not promise an order.
+    let mut files: Vec<std::path::PathBuf> = WalkDir::new(output.path())
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_file())
-        .filter_map(|e| std::fs::read_to_string(e.path()).ok())
+        .map(|e| e.path().to_path_buf())
         .collect();
+    files.sort();
+    assert!(!files.is_empty(), "the crawl must export at least one file");
 
-    assert!(
-        all_content.contains("Page A"),
-        "output should contain content from sitemap page A"
-    );
-    assert!(
-        all_content.contains("Page B"),
-        "output should contain content from sitemap page B"
-    );
+    let mut exported = String::new();
+    for file in &files {
+        let relative = file
+            .strip_prefix(output.path())
+            .expect("WalkDir yields paths under the output dir");
+        exported.push_str(&format!("## {}\n", relative.display()));
+        exported.push_str(&canonical_export(file));
+        if !exported.ends_with('\n') {
+            exported.push('\n');
+        }
+    }
+
+    assert_snapshot_redacted("sitemap_url_scrapes_listed_urls", output.path(), exported);
+}
+
+/// Render one exported file for snapshotting, canonicalising JSONL.
+///
+/// The JSONL writer emits `extra_metadata` as a `HashMap<String, String>`
+/// flattened into the record, so the key order in the serialized line
+/// follows that map's per-process hash seed and differs between runs.
+/// Round-tripping each line through `serde_json::Value` re-serializes it
+/// with sorted keys (`serde_json` is built without `preserve_order`, so
+/// `Value::Object` is a `BTreeMap`), which makes the snapshot stable without
+/// asserting anything about key order. Every other field - including
+/// `checksum_sha256` - is still compared verbatim.
+///
+/// This normalizes a serialization detail, it does not weaken the
+/// assertion: `sitemap_crawl_run_staleness_test.rs` in webfang_mcp uses the
+/// same idiom for the same field. Non-JSONL files (Markdown) are returned
+/// untouched.
+fn canonical_export(file: &std::path::Path) -> String {
+    let raw =
+        std::fs::read_to_string(file).unwrap_or_else(|e| panic!("read {}: {e}", file.display()));
+    if file.extension().is_none_or(|ext| ext != "jsonl") {
+        return raw;
+    }
+
+    raw.lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            let value: serde_json::Value =
+                serde_json::from_str(line).unwrap_or_else(|e| panic!("{line:?} must be JSON: {e}"));
+            serde_json::to_string(&value).expect("a parsed Value always re-serializes")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }

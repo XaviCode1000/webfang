@@ -637,7 +637,19 @@ mod tests {
         let a = vec![1.0, 2.0];
         let b = vec![1.0, 2.0, 3.0];
         let result = cosine_similarity(&a, &b);
-        assert!(result.is_err());
+        // The variant carries BOTH lengths, so it pins which side is reported
+        // as `expected` (the reference, `b`) and which as `actual` (the
+        // argument, `a`) — a bare `is_err()` pinned neither.
+        assert!(
+            matches!(
+                result,
+                Err(ExporterError::DimensionMismatch {
+                    expected: 3,
+                    actual: 2
+                })
+            ),
+            "mismatched lengths must report DimensionMismatch {{ expected: 3, actual: 2 }}"
+        );
     }
 
     #[test]

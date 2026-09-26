@@ -19,10 +19,11 @@
 # derives its hot-path detector from `examine_globs` instead of keeping
 # a second, hand-maintained copy that had already drifted.
 #
-# CI budget: the extension roughly triples the weekly full baseline
-# (~600 → ~2000 mutants), so the weekly shard count grows 16 → 32 to
-# keep per-shard load inside the 90-minute timeout. The required PR-diff
-# job mutates only in-diff functions, so typical PR cost is unchanged.
+# CI budget: the 2026-09 extension widened the mutation scope, so the weekly
+# baseline is sharded 64 ways (--shard k/64) to keep per-shard load inside the
+# 90-minute timeout. `.github/workflows/mutants.yml` owns the shard count and
+# the per-shard mutant estimate; keep the two in agreement. The required
+# PR-diff job mutates only in-diff functions, so typical PR cost is unchanged.
 
 examine_globs = [
   # 2026-08 scope: the original 6 gated hot paths.
