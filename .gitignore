@@ -138,6 +138,12 @@ desktop.ini
 # ═══════════════════════════════════════════════════════════
 # PROYECTO ESPECÍFICO
 # ═══════════════════════════════════════════════════════════
+# Audit reports live OUTSIDE the repo, in the sibling webfang-audit/.
+# Guard: on 2026-09-25 a parallel audit session created webfang-audit/
+# in-repo by mistake (caught at 04:56 before any commit). Root-anchored
+# so it can never match a legitimate path.
+/webfang-audit/
+
 # RAG Dataset (output del scraper)
 rag_dataset/
 
