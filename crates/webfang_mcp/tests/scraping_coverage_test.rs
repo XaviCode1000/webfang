@@ -393,9 +393,11 @@ async fn test_scrape_url_js_shell_is_error_result() {
 // discover_urls
 // ============================================================================
 
-/// Link extraction resolves relative links against the page URL and keeps
-/// external links; all three links are returned as absolute URLs in document
-/// order.
+/// Link extraction resolves relative links against the page URL; the
+/// discover_urls response keeps only seed-host-internal links (PI-13, the
+/// same filter_ssrf_safe gate crawl_site applies) — the external link is
+/// dropped from the response, the internal ones stay absolute and in
+/// document order.
 #[tokio::test]
 async fn test_discover_urls_extracts_internal_and_external_links() {
     let _guard = ssrf_guards_off().await;
@@ -437,9 +439,12 @@ async fn test_discover_urls_extracts_internal_and_external_links() {
         vec![
             format!("{}/page1", mock.uri()),
             format!("{}/page2", mock.uri()),
-            "https://other.example.com/foo".to_string(),
         ],
-        "links must be absolute, deduped, and in document order"
+        "links must be absolute, deduped, in document order, and seed-host-internal only (PI-13)"
+    );
+    assert!(
+        !links.iter().any(|l| l.contains("other.example.com")),
+        "external-domain links must not reach the MCP response (PI-13): {links:?}"
     );
 }
 
