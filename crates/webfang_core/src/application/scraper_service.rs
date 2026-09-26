@@ -594,7 +594,11 @@ async fn build_scraped_content(
             })
         },
         Err(e) => {
-            warn!("⚠️  Readability failed for {}: {}", url, e);
+            warn!(
+                url = %url,
+                error = %e,
+                "readability extraction failed; using text-extraction fallback"
+            );
             // H2 FIX: Apply clean_html to fallback content to prevent JS/CSS leakage
             let raw_fallback = fallback::extract_text(extraction_html);
             let fallback_content = clean_html(&raw_fallback);
@@ -802,7 +806,7 @@ async fn scrape_multiple_inner(
         .collect()
         .await;
 
-    let outcome = collect_batch_outcome(results);
+    let outcome = collect_batch_outcome(results, &root_correlation);
 
     info!(
         "✅ Scraped {} pages from {} URLs ({} failed)",
@@ -814,7 +818,14 @@ async fn scrape_multiple_inner(
 }
 
 /// Split collected per-URL outcomes into successes and #591 failure records.
-fn collect_batch_outcome(results: Vec<(url::Url, Result<ScrapeOutcome>)>) -> ScrapeBatchOutcome {
+///
+/// `root_correlation` is the batch run-root identity (#501): each failed URL
+/// emits its operational error event through `log_scrape_error` carrying that
+/// correlation, matching the page/crawl failure contract (issue #1604).
+fn collect_batch_outcome(
+    results: Vec<(url::Url, Result<ScrapeOutcome>)>,
+    root_correlation: &CorrelationId,
+) -> ScrapeBatchOutcome {
     let mut all_content = Vec::new();
     let mut failed = Vec::new();
     for (url, result) in results {
@@ -822,7 +833,13 @@ fn collect_batch_outcome(results: Vec<(url::Url, Result<ScrapeOutcome>)>) -> Scr
             Ok(outcome) => all_content.extend(outcome.results),
             Err(e) => {
                 let url_str = url.to_string();
-                warn!("⚠️  Failed to scrape {url_str}: {e}");
+                log_scrape_error(
+                    &e,
+                    &url_str,
+                    "scrape",
+                    Some(root_correlation),
+                    "batch URL scrape failed",
+                );
                 failed.push(ScrapeFailed {
                     url: url_str,
                     error: e.to_string(),

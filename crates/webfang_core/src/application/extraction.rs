@@ -359,7 +359,11 @@ pub async fn extract_content(
             })
         },
         Err(e) => {
-            warn!("Readability failed for {}: {}", url, e);
+            warn!(
+                url = %url,
+                error = %e,
+                "readability extraction failed; using text-extraction fallback"
+            );
             let fallback_content = fallback::extract_text(&extraction_html);
 
             // Check if fallback produced poor content (likely extraction failure)

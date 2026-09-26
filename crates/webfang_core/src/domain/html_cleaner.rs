@@ -111,7 +111,10 @@ pub fn clean_html(html: &str) -> String {
     ) {
         Ok(result) => normalize_whitespace(&result),
         Err(e) => {
-            tracing::warn!("error rewriting HTML with lol_html: {e}");
+            tracing::warn!(
+                error = %e,
+                "lol_html rewrite failed; returning original HTML"
+            );
             html.to_string()
         },
     }
