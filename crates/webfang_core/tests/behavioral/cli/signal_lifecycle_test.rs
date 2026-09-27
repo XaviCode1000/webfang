@@ -16,6 +16,15 @@
 //!
 //! Determinism: the signal moment is pinned by wiremock's request log, not by
 //! sleeps; wiremock delays only slow the crawl so the signal lands mid-run.
+//!
+//! Portability: every test that DELIVERS a signal is unix-only. Windows has no
+//! POSIX signal delivery to another process — the `kill` on the runner is
+//! MSYS's, and it never reaches the child as a console control event, so the
+//! assertions measured the harness instead of the product (#1631). The product
+//! DOES wire the Windows drain path (`tokio::signal::ctrl_c()` under
+//! `cfg(not(unix))`), but reaching it from a test needs a console-control
+//! trigger this crate does not have; that coverage belongs with XP-S-02
+//! (#1608), not with a cfg here.
 
 use crate::BehavioralTest;
 use std::collections::BTreeMap;
@@ -28,7 +37,16 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 /// How long a child may take to exit after the signal before the test fails.
 const EXIT_TIMEOUT: Duration = Duration::from_secs(60);
 
+/// Upper bound on the Drop-time reap. `Child::kill` is SIGKILL on Unix and
+/// TerminateProcess on Windows — both immediate — so a child still unreaped
+/// after this window is not going to be. The bound is the point: a stuck
+/// child must not block the panic unwind that is running the cleanup and
+/// hide the assertion that caused it. Leaking a zombie beats hanging a test.
+#[cfg_attr(not(unix), allow(dead_code))]
+const REAP_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// Poll interval while waiting for request counts and child exit.
+#[cfg_attr(not(unix), allow(dead_code))]
 const POLL: Duration = Duration::from_millis(50);
 
 /// Per-page response delay: slows the crawl enough that the signal always
@@ -77,6 +95,7 @@ async fn count_page_fetches(server: &MockServer) -> usize {
 }
 
 /// Per-path page fetch counts (robots/sitemap excluded).
+#[cfg_attr(not(unix), allow(dead_code))]
 async fn fetches_by_path(server: &MockServer) -> BTreeMap<String, usize> {
     let mut map = BTreeMap::new();
     for r in server.received_requests().await.unwrap() {
@@ -91,6 +110,7 @@ async fn fetches_by_path(server: &MockServer) -> BTreeMap<String, usize> {
 
 /// Poll until the server has seen at least `k` page fetches (deterministic
 /// signal trigger), bounded by `deadline`.
+#[cfg_attr(not(unix), allow(dead_code))]
 async fn wait_for_page_fetches(server: &MockServer, k: usize) {
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -108,6 +128,7 @@ async fn wait_for_page_fetches(server: &MockServer, k: usize) {
 /// Send `signal` to `child` via the system `kill` binary (the crate forbids
 /// `unsafe`, so no direct `libc::kill`; the crash-matrix pattern's OS-level
 /// trigger, expressed safely).
+#[cfg_attr(not(unix), allow(dead_code))]
 fn send_signal(child: &Child, signal: &str, what: &str) {
     let status = Command::new("kill")
         .arg(format!("-{signal}"))
@@ -123,7 +144,12 @@ fn send_signal(child: &Child, signal: &str, what: &str) {
 
 /// Wait for the child to exit on its own; fail (after SIGKILL) if it exceeds
 /// [`EXIT_TIMEOUT`] — a graceful shutdown must not hang.
-fn wait_exit(mut child: Child, what: &str) -> std::process::ExitStatus {
+///
+/// Takes the [`KillOnDrop`] handle by value: `Deref` covers the method calls
+/// below, but a by-value argument needs the guard itself so the kill-on-drop
+/// guarantee survives this call too.
+#[cfg_attr(not(unix), allow(dead_code))]
+fn wait_exit(mut child: KillOnDrop, what: &str) -> std::process::ExitStatus {
     let deadline = Instant::now() + EXIT_TIMEOUT;
     loop {
         match child.try_wait().expect("try_wait") {
@@ -139,11 +165,67 @@ fn wait_exit(mut child: Child, what: &str) -> std::process::ExitStatus {
     }
 }
 
+/// A `Child` that dies with its handle. `std::process::Child` has no
+/// kill-on-drop (that is `tokio::process::Command`'s), and a dropped `Child`
+/// does not reap: a crawl that is still running when an assertion panics
+/// survives the test and nextest reports it LEAKY, burying the real failure
+/// under process noise — the exact `FL+LK` shape recorded in #1631. `Deref`
+/// keeps `send_signal`/`wait_exit` reading the handle they always did.
+///
+/// The `Drop` reaps as well as kills, because a kill request alone leaves a
+/// zombie occupying the process table, and nextest's leak check looks there.
+#[cfg_attr(not(unix), allow(dead_code))]
+struct KillOnDrop(Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        // Disarm BEFORE signalling. A reaped child's PID is free for reuse,
+        // and `Child::kill` targets the stored numeric PID, so an
+        // unconditional kill here could SIGKILL an unrelated process that
+        // inherited it — on a shared CI runner that is someone else's job.
+        // `try_wait` reports `Some` once the child is reaped (std caches the
+        // status), which is the only safe way to learn that.
+        if self.0.try_wait().is_ok_and(|status| status.is_some()) {
+            return;
+        }
+
+        // Known unreaped: request termination, then reap. BOUNDED, because
+        // this runs while a panic unwinds and a child that ignores the kill
+        // must not block the unwind and hide the assertion that caused it.
+        // Both results are deliberately ignored: on the happy path the kill
+        // is a no-op, and on the failure path the cleanup is best effort.
+        let _ = self.0.kill();
+        let deadline = Instant::now() + REAP_TIMEOUT;
+        while Instant::now() < deadline {
+            match self.0.try_wait() {
+                // Reaped, or unanswerable — either way, stop waiting.
+                Ok(Some(_)) | Err(_) => return,
+                Ok(None) => std::thread::sleep(POLL),
+            }
+        }
+    }
+}
+
+impl std::ops::Deref for KillOnDrop {
+    type Target = Child;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for KillOnDrop {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 /// Spawn the real binary as a bare `std::process::Command` with piped
 /// output, replicating the harness's hermetic env (no `WEBFANG_*`/AI model
 /// poisoning, fresh `XDG_CACHE_HOME`) — needed because the test must hold
 /// the child handle to deliver the signal.
-fn spawn_webfang(args: &[String], cache_dir: &std::path::Path, what: &str) -> Child {
+#[cfg_attr(not(unix), allow(dead_code))]
+fn spawn_webfang(args: &[String], cache_dir: &std::path::Path, what: &str) -> KillOnDrop {
     let mut c = Command::new(crate::common::webfang_path());
     c.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
     for (k, _) in std::env::vars() {
@@ -159,8 +241,10 @@ fn spawn_webfang(args: &[String], cache_dir: &std::path::Path, what: &str) -> Ch
         webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
         "1",
     );
-    c.spawn()
-        .unwrap_or_else(|e| panic!("{what}: spawn failed: {e}"))
+    KillOnDrop(
+        c.spawn()
+            .unwrap_or_else(|e| panic!("{what}: spawn failed: {e}")),
+    )
 }
 
 /// Mount a sitemap listing exactly `paths` and return the sitemap URL.
@@ -183,6 +267,7 @@ async fn mount_sitemap(server: &MockServer, paths: &[String]) -> String {
 }
 
 /// Build the sitemap-scrape argument vector over `state_dir`.
+#[cfg_attr(not(unix), allow(dead_code))]
 fn sitemap_args(
     state_dir: &std::path::Path,
     out_dir: &std::path::Path,
@@ -269,6 +354,7 @@ async fn p84_resume_after_completion_is_idempotent() {
 /// cancellation, #509 semantics), (2) fetched pages were committed to the
 /// record store, (3) the resumed run finishes every remaining page without
 /// re-fetching anything already committed.
+#[cfg_attr(not(unix), allow(dead_code))]
 async fn p85_signal_case(signal: &str, label: &'static str) {
     let t = BehavioralTest::new().await;
     let base = t.server.uri();
@@ -346,6 +432,11 @@ async fn p85_signal_case(signal: &str, label: &'static str) {
 
 /// P8-5 — SIGINT mid-scrape shuts down gracefully and the state is resumable
 /// with zero duplicate fetches (ADR-0016 §3 "After signal" row).
+///
+/// Unix-only: see the module header — the signal cannot be delivered to a
+/// child process on Windows, so the run would assert on the harness, not on
+/// the product (#1631).
+#[cfg(unix)]
 #[tokio::test]
 async fn p85_sigint_shutdown_is_resumable() {
     p85_signal_case("INT", "SIGINT run").await;
@@ -353,6 +444,11 @@ async fn p85_sigint_shutdown_is_resumable() {
 
 /// P8-5 — SIGTERM behaves exactly like SIGINT: graceful drain, persisted
 /// state, idempotent resume.
+///
+/// Unix-only (SIGTERM does not exist on Windows): the product registers only
+/// `tokio::signal::ctrl_c()` there (`cli/shutdown.rs`), so a SIGTERM case can
+/// never observe the drain semantics it asserts.
+#[cfg(unix)]
 #[tokio::test]
 async fn p85_sigterm_shutdown_is_resumable() {
     p85_signal_case("TERM", "SIGTERM run").await;
@@ -377,6 +473,10 @@ async fn p85_sighup_shutdown_is_resumable() {
 /// the resumed run does not replay a foreign frontier: every page is fetched
 /// at most twice (once per run) and the resumed crawl stays inside its own
 /// budget (ADR-0016 §3, checkpoint-as-scheduling-state).
+///
+/// Unix-only: the SIGINT delivery is the same non-portable step as P8-5
+/// (#1631), and the checkpoint frontier is only reachable through it.
+#[cfg(unix)]
 #[tokio::test]
 async fn f39_sigint_checkpoint_frontier_is_bounded() {
     const MAX_PAGES: usize = 5;
@@ -486,6 +586,7 @@ async fn f39_sigint_checkpoint_frontier_is_bounded() {
 }
 
 /// 30 delayed deep pages for the F-39 fixture (`/deep-{i}`).
+#[cfg_attr(not(unix), allow(dead_code))]
 async fn mount_delayed_pages_alt(server: &MockServer) {
     for i in 0..30 {
         let p = format!("/deep-{i}");

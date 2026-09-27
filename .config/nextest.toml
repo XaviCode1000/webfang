@@ -32,6 +32,37 @@ slow-timeout = { period = "60s", terminate-after = 3, grace-period = "10s" }
 # Filtros: excluir tests pesados por defecto
 default-filter = "not test(ai_integration)"
 
+# El test trybuild de compile-fail no es lento-por-naturaleza como un scrape:
+# COMPILA el crate y cada caso `page_state/`. Sin este override el techo que lo
+# mata es el `slow-timeout` global de más arriba — 60s x 3 = 180s exactos.
+#
+# Medido, en frío y sin cache de trybuild: macOS 467.0 s AL PRIMER intento —
+# 2.6x el techo viejo de 180 s, que lo mataba dos veces y lo dejaba a un
+# tercero de suerte. Local: 176.3 s en frío (97.9% del techo viejo), 67 s con
+# el cache tibio.
+#
+# Windows SIGUE SIN NÚMERO: TERM 3/3 a 180.0 s sin completar nunca. Y 600 s
+# queda a sólo 1.28x de lo que tarda macOS, así que si Windows va más lento la
+# lane queda roja ahí — este override lo que va a producir ese número.
+#
+# Override por test y NO global: subir el techo común dejaría de cazar cuelgues
+# reales en el resto de la suite. 600s con terminate-after 1, con el mismo
+# criterio que el perfil `discovery` más abajo (tests largos, no flaky → un
+# solo intento; los reintentos sólo multiplican el global-timeout). El 600s
+# está deliberadamente justo por ARRIBA del macOS medido (467s), no holgado
+# como el del `discovery`: un techo más ajustado lo dejaría rojo otra vez, y el
+# dato de Windows todavía no existe para justificar más. Backstop: el
+# `global-timeout` de ESTE perfil (30m), no el del `discovery` (45m).
+#
+# `test(=...)` es el selector de coincidencia EXACTA. A secas, `test(...)` hace
+# substring match: verificado en este repo, `test(illegal_page_transitions)`
+# matchea 1 y `test(=illegal_page_transitions)` matchea 0, o sea que la forma
+# sin `=` habría aplicado este techo a cualquier test futuro cuyo nombre
+# contenga el texto.
+[[profile.default.overrides]]
+filter = 'test(=illegal_page_transitions_fail_to_compile)'
+slow-timeout = { period = "600s", terminate-after = 1, grace-period = "30s" }
+
 [profile.ci]
 # Configuración agresiva para CI (más paralelismo)
 test-threads = 8
