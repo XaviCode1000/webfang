@@ -634,23 +634,45 @@ impl Engine {
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(
             async move {
-                let ctrl_c = tokio::signal::ctrl_c();
                 #[cfg(unix)]
                 {
                     use tokio::signal::unix::{signal, SignalKind};
-                    // SIGTERM registration failure is only possible when the OS
-                    // rejects the handler (e.g. invalid stream or OS). Never panic —
-                    // gracefully degrade to SIGINT-only (warn for observability).
+                    // Registration failures are only possible when the OS
+                    // rejects the handler (e.g. invalid stream or OS). Never
+                    // panic — gracefully degrade to whatever registered (warn
+                    // for observability). SIGHUP joins the set (XP-S-03,
+                    // #1608): closing the terminal drains instead of dying.
                     match signal(SignalKind::terminate()) {
-                        Ok(mut sigterm) => {
-                            tokio::select! {
-                                _ = ctrl_c => {
-                                    info!("Received SIGINT — initiating graceful shutdown");
-                                },
-                                _ = sigterm.recv() => {
-                                    info!("Received SIGTERM — initiating graceful shutdown");
-                                },
-                            }
+                        Ok(mut sigterm) => match signal(SignalKind::hangup()) {
+                            Ok(mut sighup) => {
+                                tokio::select! {
+                                    _ = tokio::signal::ctrl_c() => {
+                                        info!("Received SIGINT — initiating graceful shutdown");
+                                    },
+                                    _ = sigterm.recv() => {
+                                        info!("Received SIGTERM — initiating graceful shutdown");
+                                    },
+                                    _ = sighup.recv() => {
+                                        info!("Received SIGHUP — initiating graceful shutdown");
+                                    },
+                                }
+                            },
+                            // LCOV_EXCL_START defensive: signal-registration — the OS rejects the handler only on an invariant break
+                            Err(e) => {
+                                warn!(
+                                    error = %e,
+                                    "SIGHUP handler registration failed — closing the terminal will terminate the run"
+                                );
+                                tokio::select! {
+                                    _ = tokio::signal::ctrl_c() => {
+                                        info!("Received SIGINT — initiating graceful shutdown");
+                                    },
+                                    _ = sigterm.recv() => {
+                                        info!("Received SIGTERM — initiating graceful shutdown");
+                                    },
+                                }
+                            },
+                            // LCOV_EXCL_STOP
                         },
                         // LCOV_EXCL_START defensive: signal-registration — the OS rejects the SIGTERM handler only on an invariant break
                         Err(e) => {
@@ -658,14 +680,14 @@ impl Engine {
                                 error = %e,
                                 "SIGTERM handler registration failed — graceful shutdown will only respond to SIGINT"
                             );
-                            ctrl_c.await.ok();
+                            tokio::signal::ctrl_c().await.ok();
                         },
                         // LCOV_EXCL_STOP
                     }
                 }
                 #[cfg(not(unix))]
                 {
-                    ctrl_c.await.ok();
+                    tokio::signal::ctrl_c().await.ok();
                     info!("Received interrupt — initiating graceful shutdown");
                 }
                 shutdown.store(true, std::sync::atomic::Ordering::SeqCst);

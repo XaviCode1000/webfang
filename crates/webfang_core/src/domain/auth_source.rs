@@ -190,6 +190,20 @@ fn resolve_identity() -> Result<age::x25519::Identity, AuthError> {
             )));
         }
     }
+    #[cfg(not(unix))]
+    {
+        // XP-F-02 (#1608): sin POSIX no hay mode-bits que auditar; NTFS y
+        // las ACL de macOS no son legibles desde std, así que este chequeo
+        // NO puede afirmar "0600" aquí. La confidencialidad esperada son las
+        // ACL por defecto del perfil de usuario. No es un pase silencioso:
+        // la limitación queda documentada en este bloque y registrada en el
+        // log para que el diagnóstico lo muestre.
+        tracing::debug!(
+            path = %path.display(),
+            "identity permission check unavailable on this platform; \
+             relying on profile-default ACLs (XP-F-02)"
+        );
+    }
     let mut key = String::new();
     std::fs::File::open(&path)
         .and_then(|mut f| f.read_to_string(&mut key))

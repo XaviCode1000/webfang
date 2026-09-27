@@ -73,21 +73,47 @@ async fn wait_for_signal(token: CancellationToken) {
     }
 }
 
-/// Resolve when SIGINT (or, on unix, SIGTERM) arrives.
+/// Resolve when SIGINT (or, on unix, SIGTERM/SIGHUP) arrives.
+///
+/// SIGHUP joins the set (XP-S-03, #1608): closing the terminal or dropping
+/// the connection no longer kills the run abruptly — it drains like
+/// SIGINT/SIGTERM. A rejected registration must never abort the run: degrade
+/// to whatever registered and say so, matching the engine's handler (#509).
 async fn next_termination_signal() {
-    let ctrl_c = tokio::signal::ctrl_c();
-
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};
-        // A rejected SIGTERM registration must never abort the run: degrade to
-        // SIGINT-only and say so, matching the engine's handler (#509).
         match signal(SignalKind::terminate()) {
-            Ok(mut sigterm) => {
-                tokio::select! {
-                    _ = ctrl_c => info!("received SIGINT — draining in-flight work"),
-                    _ = sigterm.recv() => info!("received SIGTERM — draining in-flight work"),
-                }
+            Ok(mut sigterm) => match signal(SignalKind::hangup()) {
+                Ok(mut sighup) => {
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => {
+                            info!("received SIGINT — draining in-flight work")
+                        },
+                        _ = sigterm.recv() => {
+                            info!("received SIGTERM — draining in-flight work")
+                        },
+                        _ = sighup.recv() => {
+                            info!("received SIGHUP — draining in-flight work")
+                        },
+                    }
+                },
+                // LCOV_EXCL_START defensive: signal-registration — the OS rejects the handler only on an invariant break
+                Err(e) => {
+                    warn!(
+                        error = %e,
+                        "SIGHUP handler registration failed — closing the terminal will terminate the run"
+                    );
+                    tokio::select! {
+                        _ = tokio::signal::ctrl_c() => {
+                            info!("received SIGINT — draining in-flight work")
+                        },
+                        _ = sigterm.recv() => {
+                            info!("received SIGTERM — draining in-flight work")
+                        },
+                    }
+                },
+                // LCOV_EXCL_STOP
             },
             // LCOV_EXCL_START defensive: signal-registration — the OS rejects the SIGTERM handler only on an invariant break
             Err(e) => {
@@ -95,7 +121,10 @@ async fn next_termination_signal() {
                     error = %e,
                     "SIGTERM handler registration failed — shutdown will only respond to SIGINT"
                 );
-                ctrl_c.await.ok();
+                tokio::signal::ctrl_c()
+                    .await
+                    .ok();
+                info!("received SIGINT — draining in-flight work");
             },
             // LCOV_EXCL_STOP
         }
@@ -103,7 +132,7 @@ async fn next_termination_signal() {
 
     #[cfg(not(unix))]
     {
-        ctrl_c.await.ok();
+        tokio::signal::ctrl_c().await.ok();
         info!("received interrupt — draining in-flight work");
     }
 }
