@@ -3,6 +3,7 @@
 //! T-050: CliError enum with thiserror
 //! T-051: CliExit enum with Termination trait for sysexits codes
 
+use std::io::IsTerminal as _;
 use std::process::ExitCode;
 use thiserror::Error;
 use url::Url;
@@ -102,9 +103,14 @@ impl CliError {
     }
 }
 
-/// Format a CliError for display, respecting NO_COLOR setting.
+/// Format a CliError for display, respecting the color decision (XP-K-04).
+///
+/// The emoji prefix (ANSI-class decoration) is only used when stderr is an
+/// interactive terminal AND the caller has not requested no-color; redirected
+/// output gets the plain `[ERROR]` prefix.
 pub fn format_cli_error(err: &CliError, no_color: bool) -> String {
-    let prefix = if no_color { "[ERROR]" } else { "❌" };
+    let ansi = crate::domain::console::ansi_enabled(std::io::stderr().is_terminal(), no_color);
+    let prefix = if ansi { "❌" } else { "[ERROR]" };
     let category = err.category();
     let msg = match err {
         CliError::ConfigFile { msg, .. } => msg,
@@ -419,6 +425,24 @@ mod tests {
             suggestion: "Check syntax".into(),
         };
         let formatted = format_cli_error(&err, true);
+        assert!(formatted.contains("[ERROR]"));
+        assert!(!formatted.contains("❌"));
+    }
+
+    // XP-K-04 (#1608): under the test harness stderr is captured (never a
+    // terminal), so even without no_color the plain prefix is used — the
+    // decision is pinned here as a deterministic non-TTY case.
+    #[test]
+    fn test_format_cli_error_non_terminal_gets_plain_prefix() {
+        let err = CliError::ConfigFile {
+            msg: "invalid TOML".into(),
+            suggestion: "Check syntax".into(),
+        };
+        assert!(
+            !std::io::stderr().is_terminal(),
+            "test harness must capture stderr for this pin to be deterministic"
+        );
+        let formatted = format_cli_error(&err, false);
         assert!(formatted.contains("[ERROR]"));
         assert!(!formatted.contains("❌"));
     }

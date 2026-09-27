@@ -21,6 +21,7 @@ pub mod config;
 pub mod config_value;
 pub mod cpu_executor;
 pub mod crawl_job;
+pub mod console;
 pub mod crawler_entities;
 pub mod credentials;
 pub mod dom_inspector;

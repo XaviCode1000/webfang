@@ -2,6 +2,7 @@
 //!
 //! T-010, T-011, T-012: Configuration defaults loading, NO_COLOR support.
 
+use std::io::IsTerminal as _;
 use std::path::Path;
 
 /// Default configuration values that can be overridden by a TOML file.
@@ -89,6 +90,15 @@ pub fn is_no_color() -> bool {
         .unwrap_or(false)
 }
 
+/// Whether ANSI styling should be emitted on the console stream.
+///
+/// Pure decision ([`crate::domain::console::ansi_enabled`]): ANSI only on an
+/// interactive terminal, unless NO_COLOR / `--no-color` opted out (XP-K-04).
+#[must_use]
+pub fn ansi_enabled(is_terminal: bool, no_color: bool) -> bool {
+    crate::domain::console::ansi_enabled(is_terminal, no_color)
+}
+
 /// Whether emoji should be emitted in output.
 pub fn should_emit_emoji() -> bool {
     !is_no_color()
@@ -125,9 +135,13 @@ pub fn init_logging_dual(
     };
     let trace_filter = EnvFilter::new("webfang=trace,tokio=warn,reqwest=warn");
 
+    // XP-K-04 (#1608): ANSI only on an interactive terminal — redirected
+    // stderr (files, pipes, CI logs, legacy conhost) gets clean text.
+    let ansi = crate::domain::console::ansi_enabled(std::io::stderr().is_terminal(), no_color);
+
     let fmt_layer = fmt::layer()
         .with_writer(std::io::stderr)
-        .with_ansi(!no_color)
+        .with_ansi(ansi)
         .with_target(true)
         .pretty()
         .with_filter(console_filter);
