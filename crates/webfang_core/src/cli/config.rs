@@ -2,6 +2,7 @@
 //!
 //! T-010, T-011, T-012: Configuration defaults loading, NO_COLOR support.
 
+use std::io::IsTerminal as _;
 use std::path::Path;
 
 /// Default configuration values that can be overridden by a TOML file.
@@ -69,10 +70,14 @@ impl ConfigDefaults {
 ///
 /// Shared by the CLI and MCP composition roots so both read the same
 /// `[[providers]]` declarations (#1462): the daemon owns no argv, and only
-/// this file can carry its embedding-slot selection.
+/// this file can carry its embedding-slot selection. The base comes from
+/// the single platform-paths helper (XP-F-05, #1608): `dirs::config_dir()`
+/// — XDG on Linux (unchanged behavior), %APPDATA% on Windows,
+/// ~/Library/Application Support on macOS. The `.` fallback keeps this
+/// site's previous fail-soft behavior when no user home exists.
 #[must_use]
 pub fn resolve_config_path() -> std::path::PathBuf {
-    dirs::config_dir()
+    crate::domain::paths::config_base_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("webfang")
         .join("config.toml")
@@ -83,6 +88,15 @@ pub fn is_no_color() -> bool {
     std::env::var("NO_COLOR")
         .map(|v| !v.is_empty())
         .unwrap_or(false)
+}
+
+/// Whether ANSI styling should be emitted on the console stream.
+///
+/// Pure decision ([`crate::domain::console::ansi_enabled`]): ANSI only on an
+/// interactive terminal, unless NO_COLOR / `--no-color` opted out (XP-K-04).
+#[must_use]
+pub fn ansi_enabled(is_terminal: bool, no_color: bool) -> bool {
+    crate::domain::console::ansi_enabled(is_terminal, no_color)
 }
 
 /// Whether emoji should be emitted in output.
@@ -121,9 +135,13 @@ pub fn init_logging_dual(
     };
     let trace_filter = EnvFilter::new("webfang=trace,tokio=warn,reqwest=warn");
 
+    // XP-K-04 (#1608): ANSI only on an interactive terminal — redirected
+    // stderr (files, pipes, CI logs, legacy conhost) gets clean text.
+    let ansi = crate::domain::console::ansi_enabled(std::io::stderr().is_terminal(), no_color);
+
     let fmt_layer = fmt::layer()
         .with_writer(std::io::stderr)
-        .with_ansi(!no_color)
+        .with_ansi(ansi)
         .with_target(true)
         .pretty()
         .with_filter(console_filter);

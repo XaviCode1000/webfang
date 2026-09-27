@@ -796,12 +796,68 @@ pub fn normalize(
 /// the engine under several names, so one missing distro binary must not
 /// mask an installed Chrome. Order matters: the first binary that reports a
 /// version wins.
+///
+/// Windows/macOS use their own candidate sets ([`default_chrome_candidates`],
+/// XP-S-04 #1608), so this list is only compiled on the platforms it serves.
+#[cfg(not(any(windows, target_os = "macos")))]
 const DEFAULT_CHROME_CANDIDATES: [&str; 4] = [
     "google-chrome",
     "google-chrome-stable",
     "chromium-browser",
     "chromium",
 ];
+
+/// Chrome/Chromium candidates for the current platform (XP-S-04, #1608).
+///
+/// Order matters: the first candidate that resolves to an existing file
+/// reporting a `--version` wins.
+///
+/// - Linux: bare names resolved through `PATH` (list unchanged from #685).
+/// - Windows: the standard `chrome.exe` install locations first (Program
+///   Files, Program Files (x86), then the per-user `%LOCALAPPDATA%`
+///   install), then the bare `chrome` name through `PATH`/`PATHEXT`.
+/// - macOS: the `.app` bundle executables, plus bare `chromium` for
+///   Homebrew-style installs.
+///
+/// Injectability is preserved: [`resolve_chrome_binary_with`] and
+/// [`check_js_dependencies_with`] still take the candidate list as a
+/// parameter — only the production default is platform-conditional.
+fn default_chrome_candidates() -> Vec<String> {
+    #[cfg(not(any(windows, target_os = "macos")))]
+    {
+        DEFAULT_CHROME_CANDIDATES
+            .iter()
+            .map(|s| (*s).into())
+            .collect()
+    }
+    #[cfg(windows)]
+    {
+        let mut candidates: Vec<String> = Vec::new();
+        for base in [
+            r"C:\Program Files\Google\Chrome\Application",
+            r"C:\Program Files (x86)\Google\Chrome\Application",
+        ] {
+            candidates.push(format!(r"{base}\chrome.exe"));
+        }
+        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
+            let per_user = std::path::PathBuf::from(local_app_data)
+                .join(r"Google\Chrome\Application\chrome.exe");
+            candidates.push(per_user.to_string_lossy().into_owned());
+        }
+        // Bare name last: Chrome rarely registers on PATH, but the
+        // PATH/PATHEXT search is free to try.
+        candidates.push("chrome".to_string());
+        candidates
+    }
+    #[cfg(target_os = "macos")]
+    {
+        vec![
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome".to_string(),
+            "/Applications/Chromium.app/Contents/MacOS/Chromium".to_string(),
+            "chromium".to_string(),
+        ]
+    }
+}
 
 /// Resolve the Chrome/Chromium binary the gate certified (F-52-c, #1278).
 ///
@@ -828,30 +884,91 @@ pub(crate) fn resolve_chrome_binary_with(candidates: &[&str], path_value: &str) 
 }
 
 /// Process-PATH entry point for `resolve_chrome_binary_with`: the
-/// production resolution over `DEFAULT_CHROME_CANDIDATES`. Called once
-/// after the gate passes (`main.rs` 6c); the result travels in
-/// `CrawlOptions.network.chrome_binary` so the launcher runs exactly the
-/// certified binary.
+/// production resolution over the platform default candidates
+/// the platform default candidates (`default_chrome_candidates`). Called once
+/// after the gate passes
+/// (`main.rs` 6c); the result travels in `CrawlOptions.network.chrome_binary`
+/// so the launcher runs exactly the certified binary.
 pub fn resolve_chrome_binary() -> Option<PathBuf> {
     let path_value =
         std::env::var_os("PATH").map_or_else(String::new, |v| v.to_string_lossy().into_owned());
-    resolve_chrome_binary_with(&DEFAULT_CHROME_CANDIDATES, &path_value)
+    let candidates = default_chrome_candidates();
+    let candidate_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
+    resolve_chrome_binary_with(&candidate_refs, &path_value)
 }
 
-/// Silent `--version` probe against an already-resolved file path.
+/// Upper bound for one `--version` probe (XP-S-06, #1608).
 ///
-/// Unlike spawning a bare name through the process `PATH`, this probes the exact file the launcher will execute,
-/// so gate-certified and launched are the same binary by construction.
+/// The probe runs synchronously, pre-crawl; a wedged or interactive binary
+/// must not hang the CLI forever. On expiry the child is killed and the
+/// probe reports failure (the Full gate then goes red; the Hybrid Obscura
+/// check degrades to "unknown version" with a warning).
+const VERSION_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Poll interval while waiting for a `--version` probe to exit.
+const VERSION_PROBE_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// Run `<path> --version` silently and bounded (XP-S-06, #1608).
+///
+/// Returns the process `Output` (status + captured stdout/stderr) or `None`
+/// when the spawn fails, the wait errors, or the deadline elapses first
+/// (the child is killed and reaped before returning). The probe probes the
+/// exact file the launcher will execute, so gate-certified and launched are
+/// the same binary by construction; output is captured because the Obscura
+/// version check parses it.
+fn run_version_probe_with_timeout(
+    path: &Path,
+    timeout: std::time::Duration,
+) -> Option<std::process::Output> {
+    let mut child = Command::new(path)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .ok()?;
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                use std::io::Read as _;
+                // The child has exited: the pipes are closed on its side, so
+                // read_to_end drains the buffered output without blocking.
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                if let Some(mut pipe) = child.stdout.take() {
+                    let _ = pipe.read_to_end(&mut stdout);
+                }
+                if let Some(mut pipe) = child.stderr.take() {
+                    let _ = pipe.read_to_end(&mut stderr);
+                }
+                return Some(std::process::Output {
+                    status,
+                    stdout,
+                    stderr,
+                });
+            },
+            Ok(None) => {},
+            Err(_) => return None,
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            return None;
+        }
+        std::thread::sleep(VERSION_PROBE_POLL);
+    }
+}
+
+/// Silent `--version` probe against an already-resolved file path, bounded
+/// by [`VERSION_PROBE_TIMEOUT`].
+///
 /// Output is discarded — only the exit status matters.
 fn binary_path_reports_version(path: &Path) -> bool {
     matches!(
-    std::process::Command::new(path)
-    .arg("--version")
-    .stdout(std::process::Stdio::null())
-    .stderr(std::process::Stdio::null())
-    .status(),
-    Ok(status) if status.success()
-        )
+        run_version_probe_with_timeout(path, VERSION_PROBE_TIMEOUT),
+        Some(output) if output.status.success()
+    )
 }
 
 /// Preflight: verify the local environment can satisfy the configured JS
@@ -903,8 +1020,10 @@ pub fn check_js_dependencies(opts: &CrawlOptions) -> Result<(), CliExit> {
     // tests pass a controlled PATH instead of mutating process-global env.
     let path_value =
         std::env::var_os("PATH").map_or_else(String::new, |v| v.to_string_lossy().into_owned());
+    let candidates = default_chrome_candidates();
+    let candidate_refs: Vec<&str> = candidates.iter().map(String::as_str).collect();
     check_js_dependencies_with(
-        &DEFAULT_CHROME_CANDIDATES,
+        &candidate_refs,
         cfg!(feature = "chromium"),
         &path_value,
         opts,
@@ -968,18 +1087,91 @@ fn has_path_separator(binary: &str) -> bool {
     binary.contains('/') || binary.contains('\\')
 }
 
+/// Semicolon-separated extension list tried after the bare name on Windows
+/// (XP-S-04, #1608): the cmd.exe default `PATHEXT` value.
+#[cfg(windows)]
+const DEFAULT_PATHEXT: &str = ".COM;.EXE;.BAT;.CMD";
+
+/// Parse a `PATHEXT`-style semicolon-separated extension list into ordered,
+/// normalized extensions. Pure — unit-tested without process env.
+///
+/// Preserves order, drops empty entries, lowercases, and ensures each entry
+/// starts with a dot (cmd.exe accepts both `EXE` and `.EXE` spellings).
+fn parse_pathext(value: &str) -> Vec<String> {
+    value
+        .split(';')
+        .map(str::trim)
+        .filter(|ext| !ext.is_empty())
+        .map(|ext| {
+            let ext = ext.to_ascii_lowercase();
+            if ext.starts_with('.') {
+                ext
+            } else {
+                format!(".{ext}")
+            }
+        })
+        .collect()
+}
+
+/// The platform's `PATHEXT` value, when the platform uses one.
+///
+/// Windows: the `PATHEXT` env var (or the cmd.exe default when unset).
+/// Everywhere else: `None` — a bare name is tried exactly as given.
+#[cfg(windows)]
+fn platform_pathext() -> Option<String> {
+    Some(std::env::var("PATHEXT").unwrap_or_else(|_| DEFAULT_PATHEXT.to_string()))
+}
+
+#[cfg(not(windows))]
+fn platform_pathext() -> Option<String> {
+    None
+}
+
+/// Candidate file names for a bare executable name, in resolution order.
+///
+/// The exact name first, then — on Windows only — the name with each
+/// `PATHEXT` extension appended, in `PATHEXT` order (XP-S-04, #1608). Pure
+/// and unit-testable on every platform: unix callers pass `None`.
+fn bare_name_candidates(name: &str, pathext: Option<&str>) -> Vec<String> {
+    let mut names = vec![name.to_string()];
+    if let Some(exts) = pathext {
+        names.extend(
+            parse_pathext(exts)
+                .into_iter()
+                .map(|ext| format!("{name}{ext}")),
+        );
+    }
+    names
+}
+
+/// First existing *file* among `dir/name` combinations, dir-major order
+/// (every candidate name is tried within a directory before moving to the
+/// next — the same order the OS uses). Pure given the inputs; the only
+/// effect is the `is_file` probe, unit-tested on Linux.
+fn first_existing_in_dirs(
+    mut dirs: impl Iterator<Item = PathBuf>,
+    names: &[String],
+) -> Option<PathBuf> {
+    dirs.find_map(|dir| {
+        names
+            .iter()
+            .map(|name| dir.join(name))
+            .find(|candidate| candidate.is_file())
+    })
+}
+
 /// Scan `PATH` entries (in order) for a file named `name` — the same lookup
 /// the OS performs for a bare executable name (#787).
 ///
 /// Pure: takes the `PATH` value as input so tests control the search space
-/// without touching the process-global environment.
+/// without touching the process-global environment. On Windows the bare
+/// name is expanded with the platform's `PATHEXT` order (XP-S-04, #1608).
 fn resolve_executable_in_path(name: &str, path_value: &str) -> Option<PathBuf> {
     if name.is_empty() || has_path_separator(name) {
         return None;
     }
-    std::env::split_paths(path_value)
-        .map(|dir| dir.join(name))
-        .find(|candidate| candidate.is_file())
+    let names = bare_name_candidates(name, platform_pathext().as_deref());
+    first_existing_in_dirs(std::env::split_paths(path_value), &names)
 }
 
 /// Resolve the configured Obscura binary to an existing file.
@@ -1063,13 +1255,15 @@ fn assess_obscura_version(parsed: Option<(u64, u64, u64)>) -> VersionVerdict {
     }
 }
 
-/// Run `<resolved> --version` once and parse its output (#793).
+/// Run `<resolved> --version` once and parse its output (#793), bounded by
+/// [`VERSION_PROBE_TIMEOUT`] (XP-S-06, #1608).
 ///
-/// Returns `None` when the probe cannot run, exits non-zero, or prints no
-/// semver-like token on stdout or stderr. Blocking spawn: acceptable once,
-/// pre-crawl (same silent-probe shape the Full gate uses per resolved file).
+/// Returns `None` when the probe cannot run, is killed at the deadline,
+/// exits non-zero, or prints no semver-like token on stdout or stderr.
+/// Blocking spawn: acceptable once, pre-crawl (same silent-probe shape the
+/// Full gate uses per resolved file).
 fn probe_obscura_version(resolved: &std::path::Path) -> Option<(u64, u64, u64)> {
-    let output = Command::new(resolved).arg("--version").output().ok()?;
+    let output = run_version_probe_with_timeout(resolved, VERSION_PROBE_TIMEOUT)?;
     if !output.status.success() {
         return None;
     }
@@ -2074,6 +2268,126 @@ mod tests {
         opts.export.export_format = ExportFormat::Auto;
         assert!(check_export_format_vector_with(false, &opts).is_ok());
         assert!(check_export_format_vector_with(true, &opts).is_ok());
+    }
+
+    // ---- XP-S-04 (#1608) — platform-independent PATH resolution ----------
+
+    /// `PATHEXT` parsing: order preserved, empty entries dropped, casing
+    /// normalized, dotless entries get the leading dot.
+    #[test]
+    fn parse_pathext_preserves_order_and_normalizes() {
+        assert_eq!(
+            parse_pathext(".COM;.EXE;.BAT;.CMD"),
+            [".com", ".exe", ".bat", ".cmd"]
+        );
+        assert_eq!(parse_pathext(".EXE;;  .BAT "), [".exe", ".bat"]);
+        assert_eq!(parse_pathext("EXE;.BAT"), [".exe", ".bat"]);
+        assert!(parse_pathext("").is_empty());
+        assert!(parse_pathext(";;;").is_empty());
+    }
+
+    /// A bare name on a non-PATHEXT platform resolves as exactly one
+    /// candidate (the name itself).
+    #[test]
+    fn bare_name_candidates_without_pathext_is_the_name_alone() {
+        assert_eq!(bare_name_candidates("chrome", None), ["chrome"]);
+    }
+
+    /// A bare name with `PATHEXT` expands to the exact name first, then the
+    /// PATHEXT-ordered extensions — the resolution order cmd.exe uses.
+    #[test]
+    fn bare_name_candidates_expands_pathext_in_order() {
+        let candidates = bare_name_candidates("chrome", Some(".COM;.EXE;.BAT;.CMD"));
+        assert_eq!(
+            candidates,
+            [
+                "chrome",
+                "chrome.com",
+                "chrome.exe",
+                "chrome.bat",
+                "chrome.cmd"
+            ]
+        );
+    }
+
+    /// `first_existing_in_dirs` is dir-major: every candidate name is tried
+    /// inside a directory before moving to the next directory.
+    #[test]
+    fn first_existing_in_dirs_prefers_earlier_directory() {
+        let dir1 = tempfile::TempDir::new().expect("tempdir");
+        let dir2 = tempfile::TempDir::new().expect("tempdir");
+        // dir1 only has the SECOND candidate name; dir2 has the FIRST.
+        std::fs::write(dir1.path().join("chromium"), "#!/bin/sh\n").expect("write");
+        std::fs::write(dir2.path().join("google-chrome"), "#!/bin/sh\n").expect("write");
+
+        let names = vec!["google-chrome".to_string(), "chromium".to_string()];
+        let resolved = first_existing_in_dirs(
+            std::env::split_paths(&format!(
+                "{}:{}",
+                dir1.path().display(),
+                dir2.path().display()
+            )),
+            &names,
+        )
+        .expect("a candidate must resolve");
+        assert_eq!(resolved, dir1.path().join("chromium"));
+    }
+
+    /// Directories named like a candidate are skipped (`is_file`, the
+    /// F-52-c / #1278 guard), and missing names resolve to `None`.
+    #[test]
+    fn first_existing_in_dirs_skips_directories_and_reports_none() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        std::fs::create_dir(dir.path().join("chrome.exe")).expect("mkdir decoy");
+        let names = vec!["chrome.exe".to_string()];
+        assert!(
+            first_existing_in_dirs(std::env::split_paths(dir.path().as_os_str()), &names).is_none()
+        );
+    }
+
+    // ---- XP-S-06 (#1608) — bounded --version probes ----------------------
+
+    /// A probe whose binary exits normally reports status + captured output.
+    #[cfg_attr(miri, ignore)] // Command::spawn unsupported by Miri (#775)
+    #[cfg(unix)]
+    #[test]
+    fn version_probe_reports_normal_exit_and_output() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let bin_path = tmp.path().join("probe");
+        std::fs::write(&bin_path, "#!/bin/sh\necho 'obscura 0.2.0'\n").expect("write probe");
+        std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod +x probe");
+
+        let output = run_version_probe_with_timeout(&bin_path, std::time::Duration::from_secs(5))
+            .expect("probe must complete");
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("0.2.0"));
+    }
+
+    /// A probe that never exits is killed at the deadline and reports `None`
+    /// — a wedged `--version` can no longer hang preflight forever.
+    #[cfg_attr(miri, ignore)] // Command::spawn unsupported by Miri (#775)
+    #[cfg(unix)]
+    #[test]
+    fn version_probe_kills_a_wedged_binary_at_the_deadline() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let bin_path = tmp.path().join("probe");
+        std::fs::write(&bin_path, "#!/bin/sh\nsleep 30\n").expect("write probe");
+        std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod +x probe");
+
+        let started = std::time::Instant::now();
+        let outcome =
+            run_version_probe_with_timeout(&bin_path, std::time::Duration::from_millis(150));
+        assert!(outcome.is_none(), "a wedged probe must report None");
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "the probe must return promptly after killing the child"
+        );
     }
 }
 

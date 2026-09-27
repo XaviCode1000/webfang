@@ -252,8 +252,10 @@ mod tests {
         let store = StateStore::new("test.domain");
         let path = store.get_state_path();
 
-        // Verify path structure
-        let path_str = path.to_string_lossy();
+        // Verify path structure. Normalize the OBSERVED separator so the
+        // expected constant stays forward-slash and cross-platform
+        // (Windows: backslashes).
+        let path_str = path.to_string_lossy().replace('\\', "/");
         assert!(path_str.contains("webfang/state/test.domain.json"));
     }
 

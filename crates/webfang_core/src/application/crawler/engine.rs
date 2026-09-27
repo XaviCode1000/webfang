@@ -155,6 +155,66 @@ fn rate_limiter_config(config: &CrawlerConfig, budget: &BudgetModel) -> RateLimi
     RateLimiterConfig::new(config.delay_ms, budget.burst().get())
 }
 
+/// Unix signal set for the engine's shutdown: SIGINT + SIGTERM + SIGHUP,
+/// degrading per-signal when a registration is rejected (never panic,
+/// always say so — #509; SIGHUP added by XP-S-03, #1608).
+#[cfg(unix)]
+async fn wait_for_unix_termination_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut sigterm = signal(SignalKind::terminate());
+    let mut sighup = signal(SignalKind::hangup());
+    // LCOV_EXCL_START defensive: signal-registration — the OS rejects a handler only on an invariant break
+    if let Err(e) = &sigterm {
+        warn!(
+            error = %e,
+            "SIGTERM handler registration failed — graceful shutdown will only respond to SIGINT"
+        );
+    }
+    if let Err(e) = &sighup {
+        warn!(
+            error = %e,
+            "SIGHUP handler registration failed — closing the terminal will terminate the run"
+        );
+    }
+    // LCOV_EXCL_STOP
+
+    let name = first_termination_signal(sigterm.as_mut().ok(), sighup.as_mut().ok()).await;
+    info!("Received {name} — initiating graceful shutdown");
+}
+
+/// Await the FIRST termination signal among those that registered and
+/// return its name (SIGINT always registers via `ctrl_c`).
+///
+/// A flat `futures::future::select_all` over boxed waits — no nested
+/// `select!` arms — keeps this under the #516 complexity ratchet while
+/// handling every subset of registered signals uniformly.
+#[cfg(unix)]
+async fn first_termination_signal(
+    sigterm: Option<&mut tokio::signal::unix::Signal>,
+    sighup: Option<&mut tokio::signal::unix::Signal>,
+) -> &'static str {
+    let mut names: Vec<&'static str> = vec!["SIGINT"];
+    let mut waits: Vec<std::pin::Pin<Box<dyn futures::Future<Output = ()> + Send>>> =
+        vec![Box::pin(async {
+            tokio::signal::ctrl_c().await.ok();
+        })];
+    if let Some(sigterm) = sigterm {
+        names.push("SIGTERM");
+        waits.push(Box::pin(async move {
+            sigterm.recv().await;
+        }));
+    }
+    if let Some(sighup) = sighup {
+        names.push("SIGHUP");
+        waits.push(Box::pin(async move {
+            sighup.recv().await;
+        }));
+    }
+    let (_, index, _) = futures::future::select_all(waits).await;
+    names[index]
+}
+
 impl Engine {
     /// Build the engine's execution machinery from a config.
     ///
@@ -624,7 +684,8 @@ impl Engine {
         super::checkpoint::log_checkpoint_save(outcome);
     }
 
-    /// Spawn a signal handler that sets the shutdown flag on SIGINT/SIGTERM.
+    /// Spawn a signal handler that sets the shutdown flag on SIGINT/SIGTERM
+    /// (and, on unix, SIGHUP — XP-S-03, #1608).
     ///
     /// Also fires the cancellation token (#509) so workers blocked on
     /// rate-limit or resource-governor waits abort instead of hanging.
@@ -634,38 +695,11 @@ impl Engine {
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(
             async move {
-                let ctrl_c = tokio::signal::ctrl_c();
                 #[cfg(unix)]
-                {
-                    use tokio::signal::unix::{signal, SignalKind};
-                    // SIGTERM registration failure is only possible when the OS
-                    // rejects the handler (e.g. invalid stream or OS). Never panic —
-                    // gracefully degrade to SIGINT-only (warn for observability).
-                    match signal(SignalKind::terminate()) {
-                        Ok(mut sigterm) => {
-                            tokio::select! {
-                                _ = ctrl_c => {
-                                    info!("Received SIGINT — initiating graceful shutdown");
-                                },
-                                _ = sigterm.recv() => {
-                                    info!("Received SIGTERM — initiating graceful shutdown");
-                                },
-                            }
-                        },
-                        // LCOV_EXCL_START defensive: signal-registration — the OS rejects the SIGTERM handler only on an invariant break
-                        Err(e) => {
-                            warn!(
-                                error = %e,
-                                "SIGTERM handler registration failed — graceful shutdown will only respond to SIGINT"
-                            );
-                            ctrl_c.await.ok();
-                        },
-                        // LCOV_EXCL_STOP
-                    }
-                }
+                wait_for_unix_termination_signal().await;
                 #[cfg(not(unix))]
                 {
-                    ctrl_c.await.ok();
+                    tokio::signal::ctrl_c().await.ok();
                     info!("Received interrupt — initiating graceful shutdown");
                 }
                 shutdown.store(true, std::sync::atomic::Ordering::SeqCst);

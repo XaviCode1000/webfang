@@ -5,6 +5,7 @@
 //!
 //! Also provides async logging via AsyncLogWriter for non-blocking writes.
 
+use std::io::IsTerminal as _;
 use std::path::Path;
 
 use tracing_appender::non_blocking::WorkerGuard;
@@ -135,10 +136,14 @@ pub fn init_json_logging_dual(
         )
     };
 
-    // Text layer for stderr (always)
+    // Text layer for stderr (always). XP-K-04 (#1608): ANSI only on an
+    // interactive terminal — redirected stderr gets clean text.
     let text_layer = fmt::layer()
         .with_writer(std::io::stderr)
-        .with_ansi(!no_color)
+        .with_ansi(crate::domain::console::ansi_enabled(
+            std::io::stderr().is_terminal(),
+            no_color,
+        ))
         .with_target(true)
         .pretty();
 

@@ -101,7 +101,20 @@ pub(crate) struct StoreLock {
 }
 
 impl StoreLock {
-    /// Acquire an exclusive advisory lock at `<state>.lock`.
+    /// Acquire an exclusive OS file lock at `<state>.lock`.
+    ///
+    /// Semantics differ by platform (XP-F-04, #1608) — the lock is
+    /// "advisory" only on POSIX:
+    ///
+    /// - **Unix**: `flock(2)` is advisory — it excludes only other
+    ///   cooperating `flock` users, not arbitrary readers/writers.
+    /// - **Windows**: fs2 maps `lock_exclusive` to `LockFileEx` byte-range
+    ///   locks, which the OS enforces against other processes' file access.
+    ///
+    /// The mutual-exclusion contract of this store is between cooperating
+    /// webfang processes on either platform, which both primitives provide.
+    /// It is NOT a claim of protection against non-cooperating programs on
+    /// unix.
     pub(crate) fn acquire(state_path: &std::path::Path) -> Result<Self, RecordStoreError> {
         let mut lock_path = state_path.as_os_str().to_owned();
         lock_path.push(".lock");

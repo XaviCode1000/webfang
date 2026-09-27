@@ -89,14 +89,15 @@ fn recommendation_for(keyring_available: bool, detected: &Option<PathBuf>) -> Au
     recommendation
 }
 
-/// Ruta por defecto del almacén cifrado (`~/.config/webfang/credentials.age`),
-/// respetando `XDG_CONFIG_HOME`.
+/// Ruta por defecto del almacén cifrado (`<config>/webfang/credentials.age`).
+///
+/// XP-F-05 (#1608): la base sale del helper único de platform paths
+/// (`dirs::config_dir`); en Linux respeta `XDG_CONFIG_HOME` como antes.
 fn default_encrypted_file_path() -> PathBuf {
-    let dir = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::home_dir().map(|h| h.join(".config")))
-        .unwrap_or_else(|| PathBuf::from(".config"));
-    dir.join("webfang").join("credentials.age")
+    crate::domain::paths::config_base_dir()
+        .unwrap_or_else(|| PathBuf::from(".config"))
+        .join("webfang")
+        .join("credentials.age")
 }
 
 /// Comprueba el backend de keyring compilado para la plataforma actual.
@@ -115,13 +116,22 @@ fn detect_keyring() -> bool {
         let Ok(entry) = keyring::Entry::new("webfang-setup-probe", "detect") else {
             return false;
         };
-        // Una entrada inexistente con backend operativo devuelve NoEntry, no
-        // error de plataforma: eso significa "keyring disponible".
-        !matches!(
-            entry.get_password(),
-            Err(keyring::Error::PlatformFailure(_) | keyring::Error::Ambiguous(_))
-        )
+        probe_reports_operational_backend(&entry.get_password())
     }
+}
+
+/// Veredicto de la sonda de keyring (XP-K-02, #1608). Pura: testeada sin
+/// depender del entorno.
+///
+/// El backend cuenta como disponible SOLO si `get_password` responde bien
+/// (`Ok`) o reporta `NoEntry` — la forma documentada de "backend operativo,
+/// entrada ausente". Cualquier otro error (`PlatformFailure`,
+/// `NoStorageAccess`, `Ambiguous`, `BadEncoding`, ...) es evidencia de que
+/// el backend NO es usable de forma fiable, y el wizard no debe
+/// recomendarlo. La versión anterior trataba "cualquier error no de
+/// plataforma" como disponible, lo que daba por bueno un backend roto.
+fn probe_reports_operational_backend(result: &Result<String, keyring::Error>) -> bool {
+    matches!(result, Ok(_) | Err(keyring::Error::NoEntry))
 }
 
 fn detect_default_encrypted_file() -> Option<PathBuf> {
@@ -154,6 +164,42 @@ mod tests {
         let json = serde_json::to_string(&DetectedStore::detect()).unwrap();
         assert!(!json.contains("sk-secret-value-must-not-appear"));
         drop(guard);
+    }
+
+    // ---- XP-K-02 (#1608) — the probe verdict is conservative ------------
+
+    #[test]
+    fn probe_ok_or_noentry_means_backend_available() {
+        assert!(probe_reports_operational_backend(&Ok("secret".into())));
+        assert!(probe_reports_operational_backend(&Err(
+            keyring::Error::NoEntry
+        )));
+    }
+
+    /// XP-K-02 core: EVERY other error — including non-platform ones the old
+    /// logic treated as "available" — means the backend must not be
+    /// recommended.
+    #[test]
+    fn probe_any_other_error_means_backend_unavailable() {
+        let platform: Box<dyn std::error::Error + Send + Sync> =
+            std::io::Error::other("locked keyring").into();
+        assert!(!probe_reports_operational_backend(&Err(
+            keyring::Error::PlatformFailure(platform)
+        )));
+        let access: Box<dyn std::error::Error + Send + Sync> =
+            std::io::Error::other("store unreachable").into();
+        assert!(!probe_reports_operational_backend(&Err(
+            keyring::Error::NoStorageAccess(access)
+        )));
+        assert!(!probe_reports_operational_backend(&Err(
+            keyring::Error::BadEncoding(vec![0xff])
+        )));
+        assert!(!probe_reports_operational_backend(&Err(
+            keyring::Error::TooLong("service".into(), 32)
+        )));
+        assert!(!probe_reports_operational_backend(&Err(
+            keyring::Error::Ambiguous(Vec::new())
+        )));
     }
 
     /// Regla institucional fijada con la evidencia de persistencia (docs de

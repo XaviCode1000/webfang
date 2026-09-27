@@ -19,6 +19,7 @@ pub mod body_cap;
 pub mod clock;
 pub mod config;
 pub mod config_value;
+pub mod console;
 pub mod cpu_executor;
 pub mod crawl_job;
 pub mod crawler_entities;
@@ -40,6 +41,7 @@ pub mod local_secret_store;
 /// Typed 8-state page lifecycle (persisted enum + compile-time
 /// typestate wrapper). See module docs for the legacy-encoding mapping.
 pub mod page_state;
+pub mod paths;
 pub mod pattern_matching;
 /// Pipeline stage definitions and scraped item types for the crawl pipeline.
 pub mod pipeline_item;

@@ -358,6 +358,15 @@ async fn p85_sigterm_shutdown_is_resumable() {
     p85_signal_case("TERM", "SIGTERM run").await;
 }
 
+/// XP-S-03 (#1608) — SIGHUP behaves exactly like SIGINT/SIGTERM: closing the
+/// terminal no longer kills the run abruptly; it drains, persists state and
+/// resumes idempotently. Unix-only (SIGHUP does not exist on Windows).
+#[cfg(unix)]
+#[tokio::test]
+async fn p85_sighup_shutdown_is_resumable() {
+    p85_signal_case("HUP", "SIGHUP run").await;
+}
+
 // ---------------------------------------------------------------------------
 // F-39 — the SIGINT checkpoint frontier is bounded
 // ---------------------------------------------------------------------------

@@ -73,39 +73,79 @@ async fn wait_for_signal(token: CancellationToken) {
     }
 }
 
-/// Resolve when SIGINT (or, on unix, SIGTERM) arrives.
+/// Resolve when SIGINT (or, on unix, SIGTERM/SIGHUP) arrives.
+///
+/// SIGHUP joins the set (XP-S-03, #1608): closing the terminal or dropping
+/// the connection no longer kills the run abruptly — it drains like
+/// SIGINT/SIGTERM. A rejected registration must never abort the run: degrade
+/// to whatever registered and say so, matching the engine's handler (#509).
 async fn next_termination_signal() {
-    let ctrl_c = tokio::signal::ctrl_c();
-
     #[cfg(unix)]
-    {
-        use tokio::signal::unix::{signal, SignalKind};
-        // A rejected SIGTERM registration must never abort the run: degrade to
-        // SIGINT-only and say so, matching the engine's handler (#509).
-        match signal(SignalKind::terminate()) {
-            Ok(mut sigterm) => {
-                tokio::select! {
-                    _ = ctrl_c => info!("received SIGINT — draining in-flight work"),
-                    _ = sigterm.recv() => info!("received SIGTERM — draining in-flight work"),
-                }
-            },
-            // LCOV_EXCL_START defensive: signal-registration — the OS rejects the SIGTERM handler only on an invariant break
-            Err(e) => {
-                warn!(
-                    error = %e,
-                    "SIGTERM handler registration failed — shutdown will only respond to SIGINT"
-                );
-                ctrl_c.await.ok();
-            },
-            // LCOV_EXCL_STOP
-        }
-    }
-
+    wait_for_unix_termination_signal().await;
     #[cfg(not(unix))]
     {
-        ctrl_c.await.ok();
+        tokio::signal::ctrl_c().await.ok();
         info!("received interrupt — draining in-flight work");
     }
+}
+
+/// Unix signal set: SIGINT + SIGTERM + SIGHUP, degrading per-signal when a
+/// registration is rejected (never panic, always say so — #509).
+#[cfg(unix)]
+async fn wait_for_unix_termination_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut sigterm = signal(SignalKind::terminate());
+    let mut sighup = signal(SignalKind::hangup());
+    // LCOV_EXCL_START defensive: signal-registration — the OS rejects a handler only on an invariant break
+    if let Err(e) = &sigterm {
+        warn!(
+            error = %e,
+            "SIGTERM handler registration failed — shutdown will only respond to SIGINT"
+        );
+    }
+    if let Err(e) = &sighup {
+        warn!(
+            error = %e,
+            "SIGHUP handler registration failed — closing the terminal will terminate the run"
+        );
+    }
+    // LCOV_EXCL_STOP
+
+    let name = first_termination_signal(sigterm.as_mut().ok(), sighup.as_mut().ok()).await;
+    info!("received {name} — draining in-flight work");
+}
+
+/// Await the FIRST termination signal among those that registered and
+/// return its name (SIGINT always registers via `ctrl_c`).
+///
+/// A flat `futures::future::select_all` over boxed waits — no nested
+/// `select!` arms — keeps this under the #516 complexity ratchet while
+/// handling every subset of registered signals uniformly.
+#[cfg(unix)]
+async fn first_termination_signal(
+    sigterm: Option<&mut tokio::signal::unix::Signal>,
+    sighup: Option<&mut tokio::signal::unix::Signal>,
+) -> &'static str {
+    let mut names: Vec<&'static str> = vec!["SIGINT"];
+    let mut waits: Vec<std::pin::Pin<Box<dyn futures::Future<Output = ()> + Send>>> =
+        vec![Box::pin(async {
+            tokio::signal::ctrl_c().await.ok();
+        })];
+    if let Some(sigterm) = sigterm {
+        names.push("SIGTERM");
+        waits.push(Box::pin(async move {
+            sigterm.recv().await;
+        }));
+    }
+    if let Some(sighup) = sighup {
+        names.push("SIGHUP");
+        waits.push(Box::pin(async move {
+            sighup.recv().await;
+        }));
+    }
+    let (_, index, _) = futures::future::select_all(waits).await;
+    names[index]
 }
 
 #[cfg(test)]

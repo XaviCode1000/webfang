@@ -240,10 +240,12 @@ mod tests {
         let notes = read_vault_notes(tmp.path()).unwrap();
         assert_eq!(notes.len(), 3);
 
-        let paths: Vec<&str> = notes.iter().map(|n| n.path.as_str()).collect();
-        assert!(paths.contains(&"notes/rust.md"));
-        assert!(paths.contains(&"notes/go.md"));
-        assert!(paths.contains(&"readme.md"));
+        // Windows produces backslash separators: normalize the OBSERVED side
+        // so the expected constants stay forward-slash and cross-platform.
+        let paths: Vec<String> = notes.iter().map(|n| n.path.replace('\\', "/")).collect();
+        assert!(paths.contains(&"notes/rust.md".to_string()));
+        assert!(paths.contains(&"notes/go.md".to_string()));
+        assert!(paths.contains(&"readme.md".to_string()));
     }
 
     #[test]
@@ -385,9 +387,10 @@ mod tests {
         let notes = read_vault_notes(tmp.path()).unwrap();
         assert_eq!(notes.len(), 2);
 
-        let paths: Vec<&str> = notes.iter().map(|n| n.path.as_str()).collect();
-        assert!(paths.contains(&"a/b/c/deep.md"));
-        assert!(paths.contains(&"top.md"));
+        // Separator-agnostic on the observed side (Windows: backslashes).
+        let paths: Vec<String> = notes.iter().map(|n| n.path.replace('\\', "/")).collect();
+        assert!(paths.contains(&"a/b/c/deep.md".to_string()));
+        assert!(paths.contains(&"top.md".to_string()));
     }
 
     #[test]
@@ -423,7 +426,8 @@ mod tests {
         let notes = reader.read_vault_notes(tmp.path()).unwrap();
 
         assert_eq!(notes.len(), 1);
-        assert_eq!(notes[0].path, "notes/rust.md");
+        // Separator-agnostic on the observed side (Windows: backslashes).
+        assert_eq!(notes[0].path.replace('\\', "/"), "notes/rust.md");
         assert_eq!(notes[0].content, "# Rust\nport path");
         // DTO mapping fidelity: every domain field equals the infra DTO.
         let direct = read_vault_notes(tmp.path()).unwrap();
