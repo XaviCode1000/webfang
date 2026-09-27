@@ -163,10 +163,19 @@ struct KillOnDrop(Child);
 
 impl Drop for KillOnDrop {
     fn drop(&mut self) {
-        // Best-effort and deliberately ignored: after `wait_exit` reaped the
-        // child, `kill` fails with ESRCH (or the Windows equivalent) and that
-        // is the success case, not an error worth reporting.
+        // Both steps, both best-effort and both deliberately ignored.
+        //
+        // `kill` alone is NOT enough: it asks the OS to terminate, which
+        // leaves the child as a zombie that still occupies the process table
+        // until it is reaped — so nextest's leak check can still see it and
+        // the "no leaked processes" promise this type makes stays unproven.
+        // `wait` is what turns the request into a reaped exit.
+        //
+        // After `wait_exit` already reaped the child, `kill` fails (ESRCH, or
+        // the Windows equivalent) and `wait` returns the stored status
+        // immediately — that is the success case, not an error to report.
         let _ = self.0.kill();
+        let _ = self.0.wait();
     }
 }
 
