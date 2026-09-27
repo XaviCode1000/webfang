@@ -6884,6 +6884,7 @@ dependencies = [
  "anyhow",
  "axum 0.8.9",
  "clap",
+ "futures",
  "governor",
  "insta",
  "proptest",

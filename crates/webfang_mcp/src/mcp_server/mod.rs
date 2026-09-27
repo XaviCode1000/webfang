@@ -31,12 +31,15 @@ pub mod validation;
 #[cfg(feature = "ai")]
 pub mod ai_wiring;
 
+use futures::FutureExt;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::ServerHandler;
-use rmcp::model::{CallToolResult, ListToolsResult, ServerCapabilities, ServerInfo, Tool};
+use rmcp::model::{CallToolResult, Content, ListToolsResult, ServerCapabilities, ServerInfo, Tool};
 use rmcp::service::RequestContext;
 use rmcp::{ErrorData as McpError, RoleServer};
 
+use std::any::Any;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use webfang_core::di::ContainerExt;
 
@@ -231,6 +234,60 @@ impl McpHandler {
             tool_router: handlers::build_tool_router(),
         }
     }
+
+    /// Create a new MCP handler from a caller-supplied [`ToolRouter`].
+    ///
+    /// Exists so tests can mount an extra tool on the REAL server composition
+    /// (same router, same middleware stack, same transport) instead of
+    /// simulating one. The production path never calls it: both composition
+    /// roots go through [`McpHandler::new`], so the advertised tool surface
+    /// cannot drift because of it.
+    ///
+    /// The F2 use is panic containment (#1611): a test tool whose body panics
+    /// must be reachable through the real stack to prove the panic becomes a
+    /// tool error instead of a dead session.
+    pub fn with_tool_router(state: McpState, tool_router: ToolRouter<Self>) -> Self {
+        Self { state, tool_router }
+    }
+}
+
+/// User-facing (Spanish) text a client receives when a tool panics.
+///
+/// Deliberately free of the panic payload: the payload may embed request data,
+/// and it belongs in the trace, not in an answer an agent will read back into a
+/// conversation (#1611, F2).
+const PANIC_CONTAINED_TOOL_ERROR: &str =
+    "La herramienta entró en un error interno y fue contenida. La sesión sigue activa: \
+     reintenta la llamada o usa otra herramienta.";
+
+/// Render a panic payload as a SHORT, non-sensitive string for the trace.
+///
+/// This is the ONLY structured record of a contained panic on every transport,
+/// so it must stand on its own: bounded (a handler can panic with a megabyte of
+/// buffered HTML in the message), total (a `panic_any` with a non-string type
+/// is legal, and the logger must not panic while reporting a panic), and free of
+/// anything the client should not read back into a conversation.
+///
+/// It is NOT the full record. The panic hook (`super::panic_hook`) adds the
+/// panic LOCATION, and it is installed by [`start_mcp_server`] only — the stdio
+/// transport does not install it, so on stdio the location is whatever the
+/// default stderr hook prints and nothing more. Do not make a location-bearing
+/// diagnosis depend on this function, and do not "upgrade" it to carry one.
+///
+/// [`start_mcp_server`]: super::server::start_mcp_server
+pub(crate) fn render_panic_payload(payload: &(dyn Any + Send)) -> String {
+    const MAX_CHARS: usize = 200;
+    let raw = payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or("<non-string panic payload>");
+    if raw.chars().count() > MAX_CHARS {
+        let truncated: String = raw.chars().take(MAX_CHARS).collect();
+        format!("{truncated}…")
+    } else {
+        raw.to_string()
+    }
 }
 
 /// Implement ServerHandler for McpHandler.
@@ -238,13 +295,59 @@ impl McpHandler {
 /// Uses the combined `self.tool_router` field (all 9 category routers)
 /// for tool dispatch, listing, and lookup.
 impl ServerHandler for McpHandler {
+    /// Dispatch a tool call, containing a panicking tool body (#1611, F2).
+    ///
+    /// Why the HTTP layer is not enough: rmcp's
+    /// `StreamableHttpService::spawn_session_worker` runs this handler inside
+    /// `tokio::spawn`, and rmcp 1.8.0 has no `catch_unwind` anywhere in its
+    /// source. A panic raised in a tool therefore never unwinds the HTTP
+    /// request future — it unwinds the session worker task, which drops
+    /// `svc.waiting()`, closes the session, and leaves the client holding a
+    /// dead transport with no error. `CatchPanicLayer` on the router (see
+    /// `super::server::build_mcp_router`) can only see panics raised on the
+    /// HTTP request path, so it cannot rescue this one.
+    ///
+    /// Catching it here makes the failure a normal tool error over HTTP 200
+    /// (`isError: true`), keeps the session worker alive for the next call,
+    /// and works on every transport (stdio included), because containment
+    /// happens at the dispatch boundary rather than at the HTTP boundary.
+    ///
+    /// `AssertUnwindSafe` is the honest annotation: the guarded future borrows
+    /// `&self` across awaits, which the compiler cannot prove unwind-safe,
+    /// and the invariant we rely on is exactly the one this function
+    /// establishes — a caught panic is logged and reported, never resumed.
+    ///
+    /// Known limit, accepted on purpose: containment restores the TRANSPORT, not
+    /// the side effects. A tool that panicked after having already written an
+    /// export, spawned a crawl, or charged a rate-limit token is reported as a
+    /// clean failure, so a client that retries duplicates that work. Rolling the
+    /// effect back is a per-tool idempotency concern (the CLI export path owns
+    /// it), not something a boundary `catch_unwind` can provide — and a tool
+    /// that panics is the one case where the caller is told exactly what
+    /// happened, because the panic hook logged it.
     async fn call_tool(
         &self,
         request: rmcp::model::CallToolRequestParams,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, McpError> {
+        let tool_name = request.name.clone();
         let tcc = rmcp::handler::server::tool::ToolCallContext::new(self, request, context);
-        self.tool_router.call(tcc).await
+        match AssertUnwindSafe(self.tool_router.call(tcc))
+            .catch_unwind()
+            .await
+        {
+            Ok(result) => result,
+            Err(payload) => {
+                tracing::error!(
+                    tool = %tool_name,
+                    panic.payload = %render_panic_payload(payload.as_ref()),
+                    "MCP tool panicked — contained as a tool error; session worker survives"
+                );
+                Ok(CallToolResult::error(vec![Content::text(
+                    PANIC_CONTAINED_TOOL_ERROR,
+                )]))
+            },
+        }
     }
 
     async fn list_tools(

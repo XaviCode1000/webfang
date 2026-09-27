@@ -2,14 +2,18 @@
 //!
 //! Sets up the MCP server using rmcp's StreamableHttpService
 //! mounted on an Axum router at /mcp, with a full middleware stack:
-//! panic hook, timeout, body limit, rate limiting, and optional auth.
+//! panic containment, panic hook, timeout, body limit, rate limiting, and
+//! optional auth.
 
+use std::any::Any;
 use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::State;
+use axum::http::{header, StatusCode};
+use axum::response::{IntoResponse, Response};
 use axum::{middleware, Router};
 use governor::{
     clock::DefaultClock,
@@ -20,6 +24,7 @@ use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager, tower::StreamableHttpService,
 };
 use tokio_util::sync::CancellationToken;
+use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
@@ -27,6 +32,7 @@ use tracing::info;
 
 use super::auth::{validate_auth, AuthState};
 use super::panic_hook::setup_panic_hook;
+use super::render_panic_payload;
 use super::state::McpState;
 use super::McpHandler;
 
@@ -85,6 +91,43 @@ pub fn require_auth_for_external_bind(bind: SocketAddr, token_present: bool) -> 
 
 /// Build the Axum router with MCP endpoint and full middleware stack.
 ///
+/// This is the production composition root: it builds the rmcp
+/// [`StreamableHttpService`] over [`McpHandler::new`] and hands it to
+/// [`build_mcp_router_with_service`], which owns the whole middleware stack.
+/// The signature is unchanged for every existing caller (the HTTP binary, the
+/// test harness and the integration suites).
+///
+/// [`StreamableHttpService`]: rmcp::transport::streamable_http_server::tower::StreamableHttpService
+pub fn build_mcp_router(state: McpState, options: &ServerOptions) -> Router {
+    let service = StreamableHttpService::new(
+        move || Ok(McpHandler::new(state.clone())),
+        LocalSessionManager::default().into(),
+        Default::default(),
+    );
+
+    build_mcp_router_with_service(service, options)
+}
+
+/// Mount an already-built MCP service under `/mcp` behind the full stack.
+///
+/// # Why the service is a parameter
+///
+/// The stack is the load-bearing part of the panic-containment design
+/// (#1611, F2) and it must be provable on the REAL composition, not on a
+/// hand-rolled replica — a test that mounted a different stack would prove
+/// nothing. So the stack lives here and the `/mcp` service is injected. The
+/// bounds are exactly what [`Router::nest_service`] requires, deliberately NOT
+/// specialized to `StreamableHttpService<McpHandler, _>`: that would force the
+/// seam back to a single concrete service, and the panic-to-JSON-RPC mapping
+/// (`jsonrpc_panic_response`, module-private) could then only be exercised
+/// through a live listener. Generic over the service, `tower::ServiceExt::oneshot`
+/// can drive the identical stack in-process with a service that panics, which is
+/// what pins the mapping deterministically.
+///
+/// Production callers keep using [`build_mcp_router`]; the generic parameter
+/// exists for tests that must mount a different service (`StreamableHttpService`
+/// over a handler carrying a test-only tool) or a deliberately panicking one.
+///
 /// # Protocol-shape answers we do not own
 ///
 /// The `/mcp` service is rmcp's [`StreamableHttpService`], which answers
@@ -106,12 +149,17 @@ pub fn require_auth_for_external_bind(bind: SocketAddr, token_present: bool) -> 
 /// rmcp bump (design decision, #1294 slice A).
 ///
 /// [`StreamableHttpService`]: rmcp::transport::streamable_http_server::tower::StreamableHttpService
-pub fn build_mcp_router(state: McpState, options: &ServerOptions) -> Router {
-    let service = StreamableHttpService::new(
-        move || Ok(McpHandler::new(state.clone())),
-        LocalSessionManager::default().into(),
-        Default::default(),
-    );
+pub fn build_mcp_router_with_service<S>(service: S, options: &ServerOptions) -> Router
+where
+    S: tower::Service<axum::http::Request<axum::body::Body>, Error = std::convert::Infallible>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    S::Response: IntoResponse + 'static,
+    S::Future: Send + 'static,
+{
+    let service = tower::ServiceExt::map_response(service, into_axum_response);
 
     let rate_limiter = build_rate_limiter(options);
     let auth_state = AuthState {
@@ -131,6 +179,62 @@ pub fn build_mcp_router(state: McpState, options: &ServerOptions) -> Router {
         ))
         .layer(RequestBodyLimitLayer::new(options.body_limit_bytes))
         .layer(TraceLayer::new_for_http())
+        // Outermost: applied LAST, so it wraps auth, rate limiting, timeout,
+        // body limit, tracing and the nested service. Any panic still escaping
+        // an inner layer becomes a JSON-RPC error body instead of tearing the
+        // connection down. A tool-handler panic is contained one level deeper,
+        // in `McpHandler::call_tool` (#1611, F2).
+        .layer(CatchPanicLayer::custom(jsonrpc_panic_response))
+}
+
+/// Erase the concrete response body type: axum routers and the tower-http
+/// layers above are all monomorphic in `Response<Body>`, and `nest_service`
+/// only requires the `IntoResponse` contract.
+fn into_axum_response<R: IntoResponse>(response: R) -> Response {
+    response.into_response()
+}
+
+/// JSON-RPC `Internal error` code (JSON-RPC 2.0 spec) — what a contained panic
+/// maps to.
+const JSONRPC_INTERNAL_ERROR: i64 = -32603;
+
+/// User-facing (Spanish) body of a contained panic. Fixed text: the panic
+/// payload may embed request data, so it goes to the trace, never to the client.
+const PANIC_HTTP_ERROR: &str =
+    "Error interno del servidor MCP contenido. La petición falló de forma inesperada.";
+
+/// Map a panic raised anywhere on the HTTP request path to a JSON-RPC
+/// `-32603` error body (HTTP 500, `application/json`).
+///
+/// Named (not a closure) so the contract is unit-testable: the mapping is the
+/// only thing an agent sees when a panic escapes the inner layers, and
+/// tower-http's own default handler answers with an EMPTY body, which an agent
+/// reads as a transport failure rather than a server error.
+///
+/// A named `fn` is also what satisfies
+/// [`CatchPanicLayer::custom`]: the handler must be `FnMut + Clone`, so a
+/// closure would have to be written as an explicitly cloneable wrapper.
+fn jsonrpc_panic_response(payload: Box<dyn Any + Send + 'static>) -> Response {
+    tracing::error!(
+        panic.payload = %render_panic_payload(payload.as_ref()),
+        "MCP request panicked — mapped to a JSON-RPC -32603 response"
+    );
+
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": serde_json::Value::Null,
+        "error": {
+            "code": JSONRPC_INTERNAL_ERROR,
+            "message": PANIC_HTTP_ERROR,
+        },
+    });
+
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        [(header::CONTENT_TYPE, "application/json")],
+        body.to_string(),
+    )
+        .into_response()
 }
 
 /// Build a `governor` rate limiter from [`ServerOptions`].
@@ -248,6 +352,47 @@ mod tests {
     use super::*;
     use webfang_core::config::Config;
     use webfang_core::di::{Container, ContainerExt};
+
+    /// The contained-panic mapping contract is asserted above; this test makes
+    /// the whole stack panic-safe in-process: a service that panics on the HTTP
+    /// request path, driven through the REAL stack with `oneshot` (no
+    /// listener, no sleep, no network).
+    #[tokio::test]
+    async fn panic_on_the_http_path_is_mapped_by_the_real_stack() {
+        use tower::ServiceExt;
+
+        async fn panicking_route(
+            _req: axum::http::Request<axum::body::Body>,
+        ) -> Result<Response, std::convert::Infallible> {
+            panic!("probe: panic on the HTTP request path");
+        }
+
+        let app = build_mcp_router_with_service(
+            tower::service_fn(panicking_route),
+            &ServerOptions::default(),
+        );
+        let request = axum::http::Request::builder()
+            .uri("/mcp")
+            .body(axum::body::Body::empty())
+            .expect("valid request");
+
+        let response = app
+            .oneshot(request)
+            .await
+            .expect("CatchPanicLayer turns the panic into a response");
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body reads");
+        let text = String::from_utf8_lossy(&body);
+        let parsed: serde_json::Value = serde_json::from_slice(&body).expect("mapped body is JSON");
+        assert_eq!(parsed["error"]["code"], JSONRPC_INTERNAL_ERROR);
+        assert!(
+            !text.contains("HTTP request path"),
+            "the panic payload must not leak through the stack: {text}"
+        );
+    }
 
     /// Build a test McpHandler with DI container.
     async fn test_handler() -> McpHandler {
@@ -528,5 +673,91 @@ mod tests {
     fn require_auth_non_loopback_with_token_is_ok() {
         let bind: SocketAddr = "0.0.0.0:8080".parse().unwrap();
         assert!(require_auth_for_external_bind(bind, true).is_ok());
+    }
+
+    // ------------------------------------------------------------------
+    // F2 panic containment (#1611) — the HTTP-layer mapping
+    // ------------------------------------------------------------------
+
+    /// The mapping is a fixed JSON-RPC `-32603` document: HTTP 500,
+    /// `application/json`, and NOT the empty body tower-http answers by
+    /// default (which an agent reads as a dead transport, not a server error).
+    ///
+    /// The payload is a secret-shaped string on purpose: it must not appear
+    /// anywhere in the answer. The trace owns the payload, the client owns a
+    /// sentence.
+    #[tokio::test]
+    async fn panic_mapping_answers_jsonrpc_internal_error_without_payload() {
+        let response =
+            jsonrpc_panic_response(Box::new(String::from("probe payload: sk-do-not-leak")));
+
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("application/json"),
+            "the contained-panic body must be JSON, not an empty/text fallback"
+        );
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("mapping body reads");
+        let text = String::from_utf8_lossy(&body);
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&body).expect("mapping body is JSON");
+        assert_eq!(parsed["jsonrpc"], "2.0");
+        assert!(
+            parsed["id"].is_null(),
+            "an unknown request has no id: {parsed}"
+        );
+        assert_eq!(parsed["error"]["code"], JSONRPC_INTERNAL_ERROR);
+        assert_eq!(parsed["error"]["message"], PANIC_HTTP_ERROR);
+        assert!(
+            !text.contains("sk-do-not-leak"),
+            "the panic payload must never reach the client: {text}"
+        );
+    }
+
+    /// The user-facing text is Spanish, per the project convention for
+    /// user-facing errors (tracing fields and code comments stay English).
+    ///
+    /// Pinned on markers an English sentence cannot contain (the article `La`
+    /// and a Spanish-specific character — `ñ`, or an accented vowel): an "is
+    /// it non-empty / is it lowercase" check would pass on the English
+    /// translation of the same sentence, so it would pin nothing.
+    #[test]
+    fn panic_messages_are_spanish() {
+        for (label, message) in [
+            ("http", PANIC_HTTP_ERROR),
+            ("tool", crate::mcp_server::PANIC_CONTAINED_TOOL_ERROR),
+        ] {
+            let has_spanish_char = message
+                .chars()
+                .any(|c| matches!(c, 'ñ' | 'á' | 'é' | 'í' | 'ó' | 'ú'));
+            assert!(
+                message.contains("La ") && has_spanish_char,
+                "the {label} message must be Spanish, got: {message}"
+            );
+        }
+    }
+
+    /// `render_panic_payload` must be total: it never panics, never returns
+    /// more than its bound, and says so plainly for a non-string payload
+    /// (`panic_any` with a custom type is legal).
+    #[test]
+    fn render_panic_payload_is_bounded_and_total() {
+        assert_eq!(render_panic_payload(&String::from("boom")), "boom");
+        assert_eq!(render_panic_payload(&"boom"), "boom");
+        assert_eq!(render_panic_payload(&42_u32), "<non-string panic payload>");
+
+        let long = "x".repeat(5_000);
+        let rendered = render_panic_payload(&long);
+        assert!(
+            rendered.chars().count() <= 201,
+            "the rendered payload must stay bounded, got {} chars",
+            rendered.chars().count()
+        );
     }
 }

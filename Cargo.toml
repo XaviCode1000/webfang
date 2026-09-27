@@ -119,7 +119,12 @@ hf-hub = { version = "0.5", default-features = false, features = ["tokio", "rust
 rmcp = { version = "1.7", features = ["server", "macros", "schemars", "transport-streamable-http-server"] }
 axum = "0.8"
 tower = "0.5"
-tower-http = { version = "0.6", features = ["trace", "limit", "timeout"] }
+# `catch-panic` backs the MCP outermost panic-containment layer (#1611, F2).
+# It maps a panic raised on the HTTP request path to a JSON-RPC -32603 body.
+# It does NOT cover a tool-handler panic: rmcp runs the MCP handler inside a
+# `tokio::spawn`ed session worker, so that panic is contained in
+# `McpHandler::call_tool` instead (see `mcp_server::mod`).
+tower-http = { version = "0.6", features = ["trace", "limit", "timeout", "catch-panic"] }
 schemars = "1.0"
 
 # CLI
