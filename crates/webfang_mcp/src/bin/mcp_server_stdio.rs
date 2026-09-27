@@ -15,7 +15,8 @@ use tokio::io::AsyncWrite;
 use tokio::sync::Notify;
 use webfang_core::cli::error::{CliExit, EXIT_IO_ERROR};
 use webfang_mcp::mcp_server::{
-    build_container, build_mcp_state, default_dom_inspector, spawn_ai_wiring, McpHandler, McpState,
+    build_container, build_mcp_state, default_dom_inspector, panic_hook::setup_panic_hook,
+    spawn_ai_wiring, McpHandler, McpState,
 };
 
 /// Webfang MCP Server — Stdio transport.
@@ -183,6 +184,19 @@ async fn main() -> CliExit {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .init();
+
+    // #1626 PC-3: transport parity. `start_mcp_server` (server.rs) installs
+    // this hook, and a CONTAINED panic on stdio owes the operator the same
+    // structured record — message AND location — that the HTTP transport
+    // guarantees. Without it, stdio logs the payload from `call_tool` but the
+    // panic LOCATION is only whatever the default hook prints.
+    //
+    // Safe to add on this transport for the same reason it is there at all: the
+    // hook emits `tracing::error!` through the subscriber installed just above
+    // and then delegates to the default hook, and BOTH write to stderr, which
+    // this transport reserves for logs (see the serve comment below). stdout
+    // carries JSON-RPC and is never touched.
+    setup_panic_hook();
 
     let args = Args::parse();
 

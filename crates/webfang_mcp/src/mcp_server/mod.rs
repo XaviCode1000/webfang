@@ -25,6 +25,10 @@ pub mod schema_bridge;
 pub mod server;
 pub mod ssrf;
 pub mod state;
+// Crate-internal: the env-gated panic probe is a test trigger, not API an
+// integrator should reach for. See `handlers::build_tool_router` for the
+// security posture and the registration site.
+pub(crate) mod test_probe;
 pub mod validation;
 
 /// Vault-search AI port wiring (#433) — only compiled with the `ai` feature.

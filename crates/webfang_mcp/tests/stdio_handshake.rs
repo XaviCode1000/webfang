@@ -22,16 +22,42 @@
 //! tests assert the handshake is answered while that warmup is still pending.
 //! The flag is passed on every spawn: it is honestly ignored on non-AI builds
 //! and exercises the lazy wiring path on AI builds.
+//!
+//! The last section (#1626, PC-3) covers contained panics on this transport:
+//! a panic reaching the server from the wire must be caught, recorded with its
+//! LOCATION by the shared panic hook, and leave the session usable. Its trigger
+//! is the env-gated `test_panic_probe` tool, spawned only for that one test —
+//! every other spawn here runs with the switch off, which is what keeps the
+//! registry-size assertion at 36 honest.
 
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-use tokio::process::ChildStdout;
+use tokio::process::{ChildStderr, ChildStdout};
 
 /// Per-read timeout: generous enough for cold starts + BoringSSL init.
 const READ_TIMEOUT: Duration = Duration::from_secs(15);
 /// Timeout for the graceful-shutdown wait on stdin EOF.
 const EXIT_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Environment variable that switches the test-only panic probe on in the
+/// CHILD process (#1626, PC-3). Restated here, not imported: this file asserts
+/// the wire contract, so the literal name is the thing under test.
+const PANIC_PROBE_ENV: &str = "WEBFANG_MCP_TEST_PANIC_TOOL";
+
+/// Wire name of the env-gated probe tool. Unmistakably test-only on sight in a
+/// `tools/list` dump, which is the point: if a report ever contains it, the
+/// switch was set.
+const PANIC_PROBE_TOOL: &str = "test_panic_probe";
+
+/// Panic message the probe raises. Unique enough that a real panic cannot
+/// produce it by accident, so the stderr assertion below cannot pass for the
+/// wrong reason.
+const PANIC_PROBE_MESSAGE: &str = "webfang-pc3-panic-probe: deliberate tool panic";
+
+/// A cheap, network-free tool used as the "the session is still alive" probe —
+/// pure URL string logic, so it is deterministic by construction.
+const SURVIVAL_TOOL: &str = "extract_domain";
 
 /// Spawn the real `webfang-mcp-stdio` binary with piped JSON-RPC stdio.
 ///
@@ -48,16 +74,40 @@ fn spawn_stdio_server() -> tokio::process::Child {
     cmd.spawn().expect("spawn the webfang-mcp-stdio binary")
 }
 
-/// Same as [`spawn_stdio_server`] but with stderr piped, so #1108 failure-mode
-/// tests can assert the absence of a panic backtrace on the child's stderr.
-fn spawn_stdio_server_with_stderr() -> tokio::process::Child {
+/// Spawn with stderr piped, so #1108 failure-mode tests can assert the ABSENCE
+/// of a panic backtrace on the child's stderr, and so #1626 PC-3 can assert the
+/// structured record a contained panic leaves behind.
+///
+/// `panic_probe` is the env switch for the test-only probe tool: when `false`
+/// the child's advertised tool surface is exactly what it was before #1626
+/// (`stdin` is inherited, so the child cannot accidentally read the test's own
+/// console).
+fn spawn_stdio_server_with_stderr(panic_probe: bool) -> tokio::process::Child {
     let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_webfang-mcp-stdio"));
     cmd.arg("--enable-ai")
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
+    if panic_probe {
+        // Any non-empty value enables the probe — presence is the switch.
+        cmd.env(PANIC_PROBE_ENV, "1");
+    }
     cmd.spawn().expect("spawn the webfang-mcp-stdio binary")
+}
+
+/// Read the child's stderr to EOF on a background task.
+///
+/// The drain has to run while the session is still LIVE: a child whose stderr
+/// pipe fills up blocks on the write, which is indistinguishable from a hang.
+fn spawn_stderr_drain(mut stderr: ChildStderr) -> tokio::task::JoinHandle<String> {
+    tokio::spawn(async move {
+        let mut buf = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut stderr, &mut buf)
+            .await
+            .expect("read the child's stderr to EOF");
+        String::from_utf8_lossy(&buf).into_owned()
+    })
 }
 
 /// Drain the child's stderr to a string. Call after the child has exited.
@@ -265,7 +315,7 @@ async fn stdio_server_exits_cleanly_on_stdin_eof() {
 /// error and exit with the I/O error code (74), with no panic text on stderr.
 #[tokio::test]
 async fn stdio_server_exits_gracefully_on_pre_handshake_stdin_eof() {
-    let mut child = spawn_stdio_server_with_stderr();
+    let mut child = spawn_stdio_server_with_stderr(false);
     // Close stdin before any JSON-RPC: serve() fails with ConnectionClosed.
     drop(child.stdin.take().expect("piped stdin"));
     // Nobody reads stdout; drop it so the child can never block on the pipe.
@@ -301,7 +351,7 @@ async fn stdio_server_exits_gracefully_on_pre_handshake_stdin_eof() {
 /// hang by blocking the child on a write.
 #[tokio::test]
 async fn issue_1151_post_handshake_stdout_close_exits_cleanly() {
-    let mut child = spawn_stdio_server_with_stderr();
+    let mut child = spawn_stdio_server_with_stderr(false);
     let mut stdin = child.stdin.take().expect("piped stdin");
     let mut reader = BufReader::new(child.stdout.take().expect("piped stdout"));
     let mut stderr = child.stderr.take().expect("piped stderr");
@@ -352,7 +402,7 @@ async fn issue_1151_post_handshake_stdout_close_exits_cleanly() {
 /// `TransportError { BrokenPipe }`. The binary must exit cleanly instead.
 #[tokio::test]
 async fn stdio_server_exits_gracefully_on_broken_stdout_pipe() {
-    let mut child = spawn_stdio_server_with_stderr();
+    let mut child = spawn_stdio_server_with_stderr(false);
     let mut stdin = child.stdin.take().expect("piped stdin");
     // Close the read end of the stdout pipe BEFORE the first server write:
     // sending the initialize response fails with EPIPE.
@@ -381,5 +431,139 @@ async fn stdio_server_exits_gracefully_on_broken_stdout_pipe() {
         status.code(),
         Some(74),
         "broken pipe must exit with the I/O error code (74); stderr:\n{stderr}"
+    );
+}
+
+// ===========================================================================
+// Contained panic on stdio — transport parity for the panic hook (#1626, PC-3)
+// ===========================================================================
+
+/// #1626 PC-3: a contained panic on the stdio transport must leave the SAME
+/// structured record the HTTP transport owes the operator, and must not take
+/// the session down with it.
+///
+/// The asymmetry this closes: `setup_panic_hook()` was installed only by
+/// `start_mcp_server` (the HTTP transport), so a contained panic over stdio
+/// logged the payload — and never the panic LOCATION, which is exactly what an
+/// operator needs to find the bug. Both transports now owe the same record, and
+/// this test drives the real `webfang-mcp-stdio` binary end to end: the panic
+/// comes from the wire (the env-gated `test_panic_probe` tool), not from an
+/// in-crate seam an integration test cannot see.
+///
+/// The four assertions are the four halves of the contract:
+/// 1. the env switch reached the child (the probe is advertised);
+/// 2. the panicking call is CONTAINED — `isError`, plain explanation, and the
+///    payload withheld from the client (a dead transport answers nothing, and
+///    `read_json_line` would time out instead);
+/// 3. the child's stderr carries the hook's structured record, message AND
+///    location;
+/// 4. a FOLLOWING call on the SAME session still succeeds — the F2 promise
+///    that a contained panic restores the session.
+#[tokio::test]
+async fn stdio_contained_panic_is_recorded_with_location_and_keeps_the_session() {
+    // Arrange
+    let mut child = spawn_stdio_server_with_stderr(true);
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let mut reader = BufReader::new(child.stdout.take().expect("piped stdout"));
+    let stderr_drain = spawn_stderr_drain(child.stderr.take().expect("piped stderr"));
+
+    handshake(&mut stdin, &mut reader).await;
+
+    // Act: list the registry. Reaching this point already proves the handshake
+    // was answered, so the only new thing asserted here is the env switch.
+    let list = serde_json::json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}});
+    send(&mut stdin, &list).await;
+    let response = read_json_line(&mut reader).await;
+    let tools = response["result"]["tools"]
+        .as_array()
+        .expect("tools/list result must carry a tools array");
+    assert!(
+        tools.iter().any(|t| t["name"] == PANIC_PROBE_TOOL),
+        "{PANIC_PROBE_ENV} must register the probe tool in the child; got {} tools",
+        tools.len()
+    );
+
+    // Act: call it. The panic is raised here and contained by the existing
+    // `catch_unwind` in `McpHandler::call_tool`.
+    let panic_call = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {"name": PANIC_PROBE_TOOL, "arguments": {}}
+    });
+    send(&mut stdin, &panic_call).await;
+
+    // Assert: containment, not a dead transport.
+    let response = read_json_line(&mut reader).await;
+    let result = &response["result"];
+    assert_eq!(
+        result["isError"], true,
+        "a contained panic must answer a normal tool error; got: {response}"
+    );
+    let explanation = result["content"][0]["text"]
+        .as_str()
+        .expect("tool call content[0] must be a text block");
+    assert!(
+        explanation.contains("fue contenida"),
+        "the caller must get the plain containment explanation; got: {explanation}"
+    );
+    assert!(
+        !explanation.contains(PANIC_PROBE_MESSAGE),
+        "the panic payload must never reach the client; got: {explanation}"
+    );
+
+    // Act: the F2 promise — a following call on the SAME session works.
+    let survivor = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "tools/call",
+        "params": {
+            "name": SURVIVAL_TOOL,
+            "arguments": {"url": "https://rust-lang.org/after-panic"}
+        }
+    });
+    send(&mut stdin, &survivor).await;
+    let response = read_json_line(&mut reader).await;
+    let result = &response["result"];
+    assert!(
+        !result["isError"].as_bool().unwrap_or(false),
+        "the session must still be dispatching after a contained panic; got: {response}"
+    );
+    let text = result["content"][0]["text"]
+        .as_str()
+        .expect("tool call content[0] must be a text block");
+    assert!(
+        text.contains("rust-lang.org"),
+        "the surviving call must return its real answer; got: {text}"
+    );
+
+    // Act: close the channel so the child exits and its stderr reaches EOF.
+    drop(stdin);
+    let status = wait_exited(&mut child).await;
+    let stderr = stderr_drain
+        .await
+        .expect("the stderr drain task completes once the child exits");
+
+    // Assert: the panic hook's structured record. Matched as independent
+    // substrings, never as a rendered line — the `fmt()` layout, its ANSI
+    // styling, and even its line breaks are not a stable contract, and the
+    // record's `panic.message` value embeds a newline of its own. What IS a
+    // contract: `server panicked` and the `panic.location` field name are
+    // emitted by `panic_hook::setup_panic_hook` and by nothing else, and the
+    // location names the probe because that is where the panic is raised.
+    for expected in [
+        "server panicked",   // the hook's tracing event
+        "panic.location",    // ...carrying the panic LOCATION...
+        "test_probe.rs:",    // ...which names the probe's source file
+        PANIC_PROBE_MESSAGE, // the panic message itself
+    ] {
+        assert!(
+            stderr.contains(expected),
+            "child stderr must contain {expected:?} after a contained panic; stderr:\n{stderr}"
+        );
+    }
+    assert!(
+        status.success(),
+        "a contained panic must not change the exit code; got: {status}\nstderr:\n{stderr}"
     );
 }
