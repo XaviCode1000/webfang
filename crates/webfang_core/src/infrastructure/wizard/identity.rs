@@ -187,6 +187,18 @@ mod tests {
                 & 0o777;
             assert_eq!(mode, 0o600, "identity con modo exacto 0600");
         }
+        #[cfg(windows)]
+        {
+            // XP-F-01 (#1608): en Windows no hay mode-bits; los invariantes
+            // verificables aquí son: el archivo quedó en disco y el temporal
+            // de la escritura atómica fue limpiado por el rename.
+            assert!(
+                !path
+                    .with_file_name(".identity.key.tmp")
+                    .exists(),
+                "el temporal de la escritura atómica debe desaparecer tras el rename"
+            );
+        }
     }
 
     #[test]
@@ -219,6 +231,24 @@ mod tests {
                 .mode()
                 & 0o077;
             assert_eq!(mode, 0o000, "sin bits para grupo/otros: {mode:o}");
+        }
+        #[cfg(windows)]
+        {
+            // XP-F-01 (#1608): sin mode-bits que verificar en NTFS — las ACL
+            // por defecto del perfil son el equivalente de confidencialidad.
+            // Lo verificable desde std: el archivo existe, es no vacío, y no
+            // quedó ningún temporal con el secreto a medio escribir.
+            assert!(path.exists(), "la identity debe existir");
+            assert!(
+                !std::fs::read(&path)
+                    .expect("legible")
+                    .is_empty(),
+                "la identity no debe estar vacía"
+            );
+            assert!(
+                !path.with_file_name(".identity.key.tmp").exists(),
+                "ningún temporal debe sobrevivir a la escritura atómica"
+            );
         }
     }
 

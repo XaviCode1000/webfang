@@ -806,9 +806,18 @@ mod tests {
 
     // --- Task 4.9: Directory creation failure test ---
 
+    /// An output base directory that is GUARANTEED unusable, per OS:
+    ///
+    /// - unix: `/root/no-permission/…` — the superuser home is not writable
+    ///   by the test user, so `create_dir_all` fails with EACCES.
+    /// - windows: `C:\inva:lid\…` — a colon in a path segment other than
+    ///   the drive prefix is an invalid NTFS path (ERROR_INVALID_NAME), so
+    ///   directory creation fails for every user, permission-free. `/root`
+    ///   would be a perfectly valid (and usually creatable) path on
+    ///   Windows, so the unix fixture cannot be reused there.
+    #[cfg(unix)]
     #[test]
     fn test_vector_exporter_directory_creation_fails() {
-        // Use a path that is guaranteed to fail (no permission on /root)
         let config = ExporterConfig::new(
             PathBuf::from("/root/no-permission/test_vector"),
             ExportFormat::Vector,
@@ -821,6 +830,28 @@ mod tests {
         assert!(
             result.is_err(),
             "export to /root should fail with directory creation error"
+        );
+    }
+
+    /// Windows counterpart of the directory-creation-failure pin: an
+    /// invalid-character path (`:` mid-segment) fails for every user,
+    /// permission-free. COMPILE-PROOF ONLY from the Linux checkout — the
+    /// Windows advisory lane must verify it at runtime (#1608).
+    #[cfg(windows)]
+    #[test]
+    fn test_vector_exporter_directory_creation_fails() {
+        let config = ExporterConfig::new(
+            PathBuf::from(r"C:\inva:lid\no-such-dir\test_vector"),
+            ExportFormat::Vector,
+            "test_export",
+        );
+        let exporter = VectorExporter::new(config);
+        let doc = create_test_chunk();
+
+        let result = exporter.export(doc);
+        assert!(
+            result.is_err(),
+            "export to a path with an invalid character should fail with directory creation error"
         );
     }
 

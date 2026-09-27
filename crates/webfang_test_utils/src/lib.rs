@@ -502,6 +502,17 @@ mod tests {
     use super::*;
     use std::path::Path;
 
+    /// The expected binary leaf name is platform-dependent: Windows builds
+    /// `webfang.exe`. Mirrors `resolve_webfang_path`'s own
+    /// `set_extension("exe")` so the expected constants stay cross-platform.
+    fn expected_binary_name() -> &'static str {
+        if cfg!(windows) {
+            "webfang.exe"
+        } else {
+            "webfang"
+        }
+    }
+
     /// #1366 regression pin: with BOTH harness variables absent
     /// (`CARGO_BIN_EXE_webfang` unset — the binary belongs to a sibling crate —
     /// and `CARGO_TARGET_DIR` unset — a runner without direnv), the fallback
@@ -519,7 +530,10 @@ mod tests {
         let path = resolve_webfang_path(None, None, manifest);
 
         let root = workspace_root_from_manifest(manifest);
-        assert_eq!(path, root.join("target").join("debug").join("webfang"));
+        assert_eq!(
+            path,
+            root.join("target").join("debug").join(expected_binary_name())
+        );
 
         // The two-hop root must be the real workspace root: it holds the
         // virtual manifest, and it is NOT the three-hop directory the #1366
@@ -575,7 +589,10 @@ mod tests {
         );
 
         let via_target = resolve_webfang_path(None, Some("/custom/target"), manifest);
-        assert_eq!(via_target, PathBuf::from("/custom/target/debug/webfang"));
+        assert_eq!(
+            via_target,
+            PathBuf::from("/custom/target/debug").join(expected_binary_name())
+        );
     }
 
     #[test]

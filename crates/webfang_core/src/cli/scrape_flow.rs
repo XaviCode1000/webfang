@@ -1405,8 +1405,11 @@ mod tests {
     #[test]
     fn resolve_default_state_dir_contains_webfang_state() {
         let dir = super::resolve_default_state_dir();
+        // Normalize the OBSERVED separator so the expected constant stays
+        // forward-slash and cross-platform (Windows: backslashes).
+        let normalized = dir.to_string_lossy().replace('\\', "/");
         assert!(
-            dir.to_string_lossy().contains("webfang/state"),
+            normalized.contains("webfang/state"),
             "default state dir should contain webfang/state, got: {dir:?}"
         );
     }
