@@ -13,6 +13,16 @@
 //! - **macOS**: `~/Library/Application Support` for config, `~/Library/Caches`
 //!   for cache.
 //!
+//! On top of the platform convention, an ABSOLUTE `$XDG_CONFIG_HOME` /
+//! `$XDG_CACHE_HOME` wins on every platform (dirs only honors them on
+//! Linux). This is deliberate, not Linux leakage: the repo's hermeticity
+//! contract (#1126) and several tests inject these vars to redirect webfang's
+//! writes to a temp dir, and silently ignoring the injection on macOS/Windows
+//! would make tests read and write the operator's real profile directories
+//! (evidenced by `test_fresh_cache_served_from_disk_off_the_executor`
+//! failing on both non-Linux CI lanes). The absolute-path requirement keeps
+//! the same strictness `dirs` applies on Linux.
+//!
 //! Callers append the webfang-specific component (`webfang/…`) themselves so
 //! the base-dir policy and the file-layout policy stay separable.
 
@@ -25,7 +35,7 @@ use std::path::PathBuf;
 /// the behavior each site already had.
 #[must_use]
 pub(crate) fn config_base_dir() -> Option<PathBuf> {
-    dirs::config_dir()
+    xdg_override("XDG_CONFIG_HOME").or_else(dirs::config_dir)
 }
 
 /// Base directory for cache / state files.
@@ -34,7 +44,16 @@ pub(crate) fn config_base_dir() -> Option<PathBuf> {
 /// their own fail-soft fallback, matching their previous behavior.
 #[must_use]
 pub(crate) fn cache_base_dir() -> Option<PathBuf> {
-    dirs::cache_dir()
+    xdg_override("XDG_CACHE_HOME").or_else(dirs::cache_dir)
+}
+
+/// Explicit XDG override, honored on every platform when ABSOLUTE (matching
+/// the strictness `dirs` applies on Linux). Empty or relative values are
+/// ignored.
+fn xdg_override(var: &str) -> Option<PathBuf> {
+    std::env::var_os(var)
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
 }
 
 #[cfg(test)]
@@ -86,6 +105,25 @@ mod tests {
             assert!(config_base_dir().is_some());
             assert!(cache_base_dir().is_some());
         }
+        drop(guard);
+    }
+
+    /// The XDG override must be ABSOLUTE to be honored (the same strictness
+    /// `dirs` applies on Linux): a relative value must fall through to the
+    /// platform convention instead of being taken verbatim. This is the
+    /// contract the hermeticity harness (#1126) and the non-Linux CI lanes
+    /// rely on.
+    #[test]
+    fn relative_xdg_override_is_ignored() {
+        use webfang_test_utils::EnvGuard;
+
+        let guard = EnvGuard::with(&[("XDG_CONFIG_HOME", "relative/config")]);
+        let base = config_base_dir();
+        assert_ne!(
+            base.as_deref(),
+            Some(std::path::Path::new("relative/config")),
+            "a relative XDG override must never be taken verbatim"
+        );
         drop(guard);
     }
 }
