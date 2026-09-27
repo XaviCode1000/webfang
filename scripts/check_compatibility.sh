@@ -197,9 +197,82 @@ failure_path_check() {
   echo "  failure-path ok ($name)"
 }
 
+# --- preflight (read-only, cheap) ---
+
+# True when the combo's cargo invocation links the ONNX Runtime static library:
+# `full` passes --all-features (which includes the `ai` feature), and any
+# explicit feature list carrying the `ai` token does.
+combo_links_ort() {
+  local flags="$1"
+  local -a tokens=()
+  local token
+  if [ "$flags" = "full" ]; then
+    return 0
+  fi
+  IFS=',' read -r -a tokens <<<"$flags"
+  for token in "${tokens[@]}"; do
+    if [ "$token" = "ai" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Directory the ort-sys build script downloads the ONNX Runtime static library
+# into: $ORT_CACHE_DIR, else ${XDG_CACHE_HOME:-$HOME/.cache}/ort.pyke.io.
+ort_cache_dir() {
+  printf '%s\n' "${ORT_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/ort.pyke.io}"
+}
+
+# Preflight for the ai-bearing combos. The ONNX Runtime static library is
+# downloaded by the ort-sys build script at build time, and it lands OUTSIDE
+# target/ unless ORT_CACHE_DIR points inside it. rust-cache saves only target/,
+# which is where the build script's recorded `cargo:rustc-link-search` lives, so
+# a restored target/ can replay that link-search line while the library it names
+# does not exist on this runner — and the link dies with "could not find native
+# static library `onnxruntime`" (issue #1639). Naming the cause before the
+# combos run is what makes the failure readable from the job log alone.
+#
+# Advisory only: it never fails the harness. The combo loop already reports the
+# failure, and the library is legitimately absent on a cold cache, where the
+# first ort-sys build downloads it.
+preflight_ort_native_lib() {
+  local combo name flags dir
+  for combo in "${COMBOS[@]}"; do
+    IFS=":" read -r name flags <<<"$combo"
+    if ! combo_links_ort "$flags"; then
+      continue
+    fi
+    dir=$(ort_cache_dir)
+    if [ -n "$(find "$dir" -type f -name libonnxruntime.a -print -quit 2>/dev/null)" ]; then
+      return 0
+    fi
+    {
+      echo "  [preflight] ONNX Runtime native library not found, but combo '$name' links it"
+      echo "  [preflight]   missing file : libonnxruntime.a (host target)"
+      echo "  [preflight]   searched dir : $dir"
+      echo "  [preflight]   the ort-sys build script downloads that library at build"
+      echo "  [preflight]   time into \$ORT_CACHE_DIR, else"
+      echo "  [preflight]   \${XDG_CACHE_HOME:-\$HOME/.cache}/ort.pyke.io"
+      echo "  [preflight]   A target/ restored from a CI cache can carry the cached"
+      echo "  [preflight]   ort-sys build-script fingerprint, which records a"
+      echo "  [preflight]   cargo:rustc-link-search naming that directory, without the"
+      echo "  [preflight]   library itself. The link then fails with"
+      echo "  [preflight]   \"error: could not find native static library \`onnxruntime\`\"."
+      echo "  [preflight]   Expected on a cold cache (the first build downloads it)."
+      echo "  [preflight]   If a link error follows anyway, drop the stale ort-sys"
+      echo "  [preflight]   build state with 'cargo clean -p ort-sys' so the build"
+      echo "  [preflight]   script re-runs."
+    } >&2
+    return 0
+  done
+  return 0
+}
+
 # --- main loop ---
 echo "Compatibility harness: mode=$MODE combos=${#COMBOS[@]}"
 echo "Retention: cargo hack --each-feature (isolated) stays in ci.yml feature-matrix"
+preflight_ort_native_lib
 overall_fail=0
 for c in "${COMBOS[@]}"; do
   IFS=":" read -r name flags <<<"$c"

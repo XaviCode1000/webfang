@@ -888,6 +888,24 @@ jobs:
     needs: [clippy]
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      # The `ort-sys` build script downloads the ONNX Runtime static library to
+      # $ORT_CACHE_DIR, else ${XDG_CACHE_HOME:-$HOME/.cache}/ort.pyke.io -- a
+      # directory OUTSIDE target/ and outside every path Swatinem/rust-cache
+      # saves. The build script's fingerprint and recorded output, which carry
+      # `cargo:rustc-link-search=native=<that dir>`, ARE cached inside target/.
+      # A restore can therefore replay a fingerprint whose library directory
+      # does not exist on the fresh runner, and the link dies with
+      # "error: could not find native static library `onnxruntime`".
+      # Co-locating the library under target/ makes the pair atomic: the cache
+      # carries the library or it carries neither.
+      #
+      # MUST stay absolute (ort-sys records the value verbatim and resolves it
+      # against the crate root) and byte-identical for this job's cache lineage:
+      # ORT_CACHE_DIR is not a declared rerun input of the build script, so
+      # changing it against a warm target silently replays the previous -L.
+      # See odd/tasks/fix-feature-matrix-ai-onnxruntime.md.
+      ORT_CACHE_DIR: ${{ github.workspace }}/target/ort-cache
     permissions:
       contents: read
     steps:
@@ -910,6 +928,20 @@ jobs:
       # matrix. Compile the test targets for the combo that exposed the gap (#737).
       - name: Feature-gated test targets compile (adaptive-selectors)
         run: cargo check -p webfang_core --no-default-features --features adaptive-selectors --tests
+      - name: Reset ort-sys build state before the harness
+        run: |
+          # `cargo hack check` (above) runs the `ort-sys` build script in check
+          # mode: it leaves a cached fingerprint but no ort_sys rlib, so this
+          # job's cached target/ can restore a fingerprint whose native library
+          # was never downloaded. The harness then rebuilds the rlib, finds the
+          # build script unit fresh, skips it, and fails to link. Dropping the
+          # stale ort-sys build state forces the build script to re-run and
+          # re-download.
+          #
+          # ~20 files / 101.5 MiB. The co-located ORT_CACHE_DIR is not a
+          # package artifact, so an already-downloaded library survives this and
+          # no re-download is triggered on a self-consistent cache.
+          cargo clean -p ort-sys
       # Per-combo runtime probes: build + behavioral crawl + resume round-trip +
       # exit-contract gates (65/78) for default, no-default, ai, chromium, mcp and
       # full feature sets. Advisory only (not in `gate` needs). The script
