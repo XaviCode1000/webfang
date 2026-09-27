@@ -5,10 +5,10 @@
 //! [`confine`], which enforces, in order:
 //!
 //! 1. non-empty and ≤ [`MAX_PATH_LEN`];
-//! 2. rejection of rooted-but-not-absolute forms ([`PathShape::RootedNotAbsolute`]:
-//!    `\foo`, `C:foo`, drive-relative paths). `Path::is_absolute` is
-//!    platform-specific, so a form the host does not consider absolute must
-//!    never be silently treated as "relative";
+//! 2. classification into a [`PathShape`] (platform-aware, see the table
+//!    below) and rejection of [`PathShape::RootedNotAbsolute`] forms.
+//!    `Path::is_absolute` is platform-specific, so a form the host does not
+//!    consider absolute must never be silently treated as "relative";
 //! 3. rejection of any `..` component (lexical normalization would resolve it
 //!    *before* symlinks — exactly what this gate must not do);
 //! 4. relative paths pass (they resolve against the server's CWD, the #696
@@ -18,6 +18,30 @@
 //!    resolves symlinks/junctions on BOTH sides, so a symlink inside a root
 //!    that points outside it is rejected (the purely lexical check this
 //!    replaces could not see it).
+//!
+//! This order is the SECURITY order (fail-closed preconditions before any
+//! work) and is IDENTICAL on every platform (#1608): only the classification
+//! inputs differ per host — the precedence of rooted-form vs missing-roots vs
+//! `..` vs containment never does.
+//!
+//! ## Classification semantics (path form × host platform)
+//!
+//! | Form | Windows host | POSIX host |
+//! | :--- | :--- | :--- |
+//! | `exports/2026`, `./output` | Relative | Relative |
+//! | `/srv/exports` | `RootedNotAbsolute` — root WITHOUT a drive prefix is current-drive-relative under std semantics | `Absolute` → containment |
+//! | `\foo` | `RootedNotAbsolute` — same rule (root without prefix) | `RootedNotAbsolute` (lexical probe; `\` is an ordinary filename byte on Unix) |
+//! | `C:\x`, `c:/x` | `Absolute` (prefix + root) → containment | `RootedNotAbsolute` (not absolute on POSIX) |
+//! | `C:foo`, `C:` | `RootedNotAbsolute` — drive-RELATIVE (prefix, no root separator; XP-P-01) | `RootedNotAbsolute` |
+//! | `\\server\share` (UNC) | `Absolute` → containment | `RootedNotAbsolute` |
+//!
+//! Fail-closed rationale (#1608): drive-absolute forms (`C:\exports`) are
+//! ordinary absolute paths on a Windows host and flow through the same
+//! containment pipeline (canonicalize + within-roots + symlink resolution)
+//! as POSIX absolutes — no shortcut. Drive-relative (`C:foo`) and
+//! root-without-prefix (`\foo`, `/foo`) forms depend on an OS-level implicit
+//! current drive; `std` does not consider them absolute on Windows either, so
+//! the gate rejects them there too rather than guessing a drive.
 //!
 //! ## Residual TOCTOU window (explicitly out of scope for #1588)
 //!
@@ -161,11 +185,15 @@ fn components_start_with(path: &Path, root: &Path, case_insensitive: bool) -> bo
 pub(crate) enum PathShape {
     /// Purely relative (`exports/2026`, `./output`) — resolves against CWD.
     Relative,
-    /// Absolute on this host (`/srv/exports`, `C:\exports` on Windows).
+    /// Absolute on this host: `/srv/exports` on POSIX; `C:\exports`, `c:/x`
+    /// and UNC `\\server\share` on Windows. Flows through the containment
+    /// pipeline (roots → canonicalize → within-roots).
     Absolute,
-    /// Rooted but NOT absolute: `\foo` (leading backslash / UNC-ish),
-    /// drive-relative `C:foo`/`C:`. Rejected on every platform — never a
-    /// safe relative path.
+    /// Rooted but NOT absolute: drive-relative `C:foo`/`C:` (every
+    /// platform), `\foo`/`/foo` on Windows (root without drive prefix —
+    /// current-drive-relative under std semantics), and `C:\x`/`\foo` on
+    /// POSIX (the host does not consider them absolute). Rejected on every
+    /// platform — never a safe relative path.
     RootedNotAbsolute,
 }
 
@@ -177,21 +205,58 @@ fn has_drive_prefix(raw: &str) -> bool {
     bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':'
 }
 
-/// Classify a raw path string into a [`PathShape`].
+/// Classify a raw path string into a [`PathShape`] for the compiling host.
 ///
-/// Probes the raw string in addition to [`Path::has_root`] because on Unix a
-/// leading `\` is an ordinary filename byte yet must still be rejected (the
-/// server may be fronted by or shared with Windows volumes, and no Unix tool
-/// needs it).
+/// The platform-specific answers come from `std` (authoritative: the gate
+/// must always agree with the `canonicalize`/containment layer below it) and
+/// are passed as data to [`classify_with`], the pure core. The raw string is
+/// probed IN ADDITION to [`Path::has_root`] because on Unix a leading `\` is
+/// an ordinary filename byte yet must still be rejected (the server may be
+/// fronted by or shared with Windows volumes, and no Unix tool needs it).
 pub(crate) fn classify(raw: &str) -> PathShape {
     let path = Path::new(raw);
-    if path.is_absolute() {
+    classify_with(raw, path.is_absolute(), path.has_root())
+}
+
+/// Pure, host-independent core of [`classify`] (#1608).
+///
+/// `is_absolute`/`has_root` are the platform-specific `std::path` answers for
+/// `raw`. Production passes the compiling host's answers; tests pass
+/// simulated answers for either platform, which makes BOTH branches of the
+/// semantics table in the module docs unit-testable on a Linux host.
+///
+/// Ordering inside the core is fail-closed-first: anything std does not vouch
+/// for as absolute, but that is rooted or drive-prefixed, lands in
+/// [`PathShape::RootedNotAbsolute`] — never silently in `Relative`. The
+/// drive-prefix probe is what rejects drive-relative forms (`C:foo`, `C:`):
+/// std gives them NO root on any platform, so `has_root` alone would miss
+/// them (XP-P-01).
+fn classify_with(raw: &str, is_absolute: bool, has_root: bool) -> PathShape {
+    if is_absolute {
         return PathShape::Absolute;
     }
-    if raw.starts_with('\\') || has_drive_prefix(raw) || path.has_root() {
+    if has_root || raw.starts_with('\\') || has_drive_prefix(raw) {
         return PathShape::RootedNotAbsolute;
     }
     PathShape::Relative
+}
+
+/// Map a POSIX-spelled absolute test literal to a host-appropriate absolute
+/// path (test-only, shared by the `path_gate`, `state` and export-handler
+/// tests, #1608).
+///
+/// On a Windows host `/srv/exports` is a root-without-prefix form
+/// (current-drive-relative under std semantics) — NOT the absolute path the
+/// absolute-containment tests mean — so there it is spelled `C:\srv\exports`
+/// to exercise the real absolute pipeline. On POSIX hosts this is the
+/// identity, keeping local Linux CI byte-identical to the previous tests.
+#[cfg(test)]
+pub(crate) fn host_abs(p: &str) -> String {
+    if cfg!(windows) {
+        format!("C:\\{}", p.trim_start_matches('/')).replace('/', "\\")
+    } else {
+        p.to_string()
+    }
 }
 
 /// The single confinement check for every MCP filesystem write destination
@@ -288,8 +353,12 @@ mod tests {
         assert_eq!(classify("C:"), PathShape::RootedNotAbsolute);
         // Leading backslash / UNC-ish form.
         assert_eq!(classify("\\foo"), PathShape::RootedNotAbsolute);
-        #[cfg(unix)]
+        #[cfg(not(windows))]
         {
+            // Drive-absolute spellings are NOT absolute on a POSIX host —
+            // they stay fail-closed there (byte-identical to the pre-#1608
+            // behavior on Linux).
+            assert_eq!(classify("c:/x"), PathShape::RootedNotAbsolute);
             assert_eq!(classify("C:\\Windows"), PathShape::RootedNotAbsolute);
             assert_eq!(classify("\\\\server\\share"), PathShape::RootedNotAbsolute);
         }
@@ -305,8 +374,98 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn classify_absolute_windows() {
+        // Drive-absolute and UNC forms are ordinary absolute paths on a
+        // Windows host (prefix + root) — #1608.
         assert_eq!(classify("C:\\Windows"), PathShape::Absolute);
+        assert_eq!(classify("c:/x"), PathShape::Absolute);
+        assert_eq!(classify("\\\\server\\share"), PathShape::Absolute);
+        // Root WITHOUT a prefix stays rejected (current-drive-relative under
+        // std semantics; fail-closed).
         assert_eq!(classify("/foo"), PathShape::RootedNotAbsolute);
+        assert_eq!(classify("\\foo"), PathShape::RootedNotAbsolute);
+    }
+
+    /// Simulated `std::path` answers on a WINDOWS host, lexically derived and
+    /// host-independent: `is_absolute` = UNC or a drive prefix followed by a
+    /// root separator; `has_root` = leading separator. Only the well-known
+    /// forms the tests exercise are covered — production always consults the
+    /// real std answers for the compiling host.
+    fn windows_host_answers(raw: &str) -> (bool, bool) {
+        let bytes = raw.as_bytes();
+        let unc = raw.starts_with("\\\\");
+        let drive_absolute =
+            has_drive_prefix(raw) && bytes.len() >= 3 && (bytes[2] == b'\\' || bytes[2] == b'/');
+        let has_root = raw.starts_with('\\') || raw.starts_with('/');
+        (unc || drive_absolute, has_root)
+    }
+
+    /// Both branches of the classification table must hold REGARDLESS of the
+    /// compiling host, so they are pinned through the pure core with
+    /// simulated std answers (deterministic on Linux CI, #1608).
+    #[test]
+    fn classify_with_reproduces_windows_host_semantics() {
+        let cases: &[(&str, PathShape)] = &[
+            ("C:\\exports", PathShape::Absolute),
+            ("c:/x", PathShape::Absolute),
+            ("\\\\server\\share", PathShape::Absolute),
+            // XP-P-01: drive-RELATIVE — prefix without a root separator.
+            ("C:foo", PathShape::RootedNotAbsolute),
+            ("C:", PathShape::RootedNotAbsolute),
+            // Root without prefix (current-drive-relative under std).
+            ("\\foo", PathShape::RootedNotAbsolute),
+            ("/foo", PathShape::RootedNotAbsolute),
+            ("foo", PathShape::Relative),
+            ("foo\\bar", PathShape::Relative),
+        ];
+        for (raw, expected) in cases {
+            let (is_absolute, has_root) = windows_host_answers(raw);
+            assert_eq!(
+                classify_with(raw, is_absolute, has_root),
+                *expected,
+                "wrong Windows-host shape for {raw}"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_with_reproduces_posix_host_semantics() {
+        // POSIX std answers, lexically simulated: absolute iff leading `/`
+        // (and `has_root` then says the same thing).
+        let cases: &[(&str, PathShape)] = &[
+            ("/srv/exports", PathShape::Absolute),
+            // Byte-identical to the pre-#1608 behavior on POSIX hosts:
+            ("C:\\Windows", PathShape::RootedNotAbsolute),
+            ("c:/x", PathShape::RootedNotAbsolute),
+            ("\\\\server\\share", PathShape::RootedNotAbsolute),
+            ("\\foo", PathShape::RootedNotAbsolute),
+            ("C:foo", PathShape::RootedNotAbsolute),
+            ("foo", PathShape::Relative),
+        ];
+        for (raw, expected) in cases {
+            let absolute = raw.starts_with('/');
+            assert_eq!(
+                classify_with(raw, absolute, absolute),
+                *expected,
+                "wrong POSIX-host shape for {raw}"
+            );
+        }
+    }
+
+    /// XP-P-01 re-check (#1608): the gate must never classify by
+    /// `is_absolute()` alone. Drive-relative forms have NO std root on any
+    /// platform (`C:foo` on Windows: prefix without root separator), so the
+    /// lexical drive-prefix probe is what rejects them. Pinned here under
+    /// simulated WINDOWS host answers — runnable on Linux.
+    #[test]
+    fn drive_relative_forms_rejected_under_windows_semantics() {
+        for raw in ["C:foo", "c:foo", "C:"] {
+            let (is_absolute, has_root) = windows_host_answers(raw);
+            assert_eq!(
+                classify_with(raw, is_absolute, has_root),
+                PathShape::RootedNotAbsolute,
+                "drive-relative '{raw}' must stay rejected on a Windows host"
+            );
+        }
     }
 
     // --- confine: shape-level rejections ----------------------------------
@@ -334,7 +493,9 @@ mod tests {
 
     #[test]
     fn confine_rejects_rooted_not_absolute_forms() {
-        for raw in ["C:foo", "\\foo", "c:/x"] {
+        // Drive-relative forms — the #1588 escape class — rejected on EVERY
+        // platform, with or without a separator; leading backslash too.
+        for raw in ["C:foo", "c:foo", "C:", "\\foo"] {
             let err = confine("output_dir", raw, &[])
                 .expect_err("rooted non-absolute form must be rejected");
             assert!(
@@ -342,14 +503,41 @@ mod tests {
                 "{raw}: got: {err}"
             );
         }
+        // `c:/x` is drive-ABSOLUTE on a Windows host (prefix + root): there
+        // it flows into the normal absolute pipeline (no roots →
+        // missing-roots error), while on POSIX hosts it stays a rooted
+        // non-absolute form. The precedence ORDER is identical on every
+        // platform — only the classification input differs (#1608).
+        #[cfg(not(windows))]
+        {
+            let err = confine("output_dir", "c:/x", &[])
+                .expect_err("drive-absolute spelling must be a rooted form on POSIX hosts");
+            assert!(
+                err.to_string().contains("rooted non-absolute"),
+                "got: {err}"
+            );
+        }
+        #[cfg(windows)]
+        {
+            let err = confine("output_dir", "c:/x", &[])
+                .expect_err("drive-absolute spelling is a real absolute path on Windows");
+            assert!(
+                err.to_string()
+                    .contains("requires server-configured export roots"),
+                "got: {err}"
+            );
+        }
     }
 
     #[test]
     fn confine_rejects_dotdot_before_containment() {
         // Absolute `..`: rejected up-front (lexical `..` resolution would run
-        // before symlinks — wrong order for containment).
-        let roots = vec![PathBuf::from("/srv/exports")];
-        let err = confine("output_dir", "/srv/exports/../other", &roots)
+        // before symlinks — wrong order for containment). The root and the
+        // candidate use host-appropriate absolute spellings (`host_abs`), so
+        // the `..` check — not a rooted-form rejection — is what fires on
+        // every platform.
+        let roots = vec![PathBuf::from(host_abs("/srv/exports"))];
+        let err = confine("output_dir", &host_abs("/srv/exports/../other"), &roots)
             .expect_err("`..` must be rejected before any containment logic");
         assert!(err.to_string().contains("'..' traversal"), "got: {err}");
         // Relative `..`: also rejected (behavior change vs. the old
@@ -363,7 +551,7 @@ mod tests {
 
     #[test]
     fn confine_absolute_without_roots_fails_closed() {
-        let err = confine("output_dir", "/srv/exports/x", &[])
+        let err = confine("output_dir", &host_abs("/srv/exports/x"), &[])
             .expect_err("absolute path with no roots must be rejected");
         let msg = err.to_string();
         assert!(
@@ -372,7 +560,7 @@ mod tests {
         );
         // The field name is interpolated so `checkpoint_dir` errors are
         // distinguishable from `output_dir` ones.
-        let err = confine("checkpoint_dir", "/srv/checkpoints", &[])
+        let err = confine("checkpoint_dir", &host_abs("/srv/checkpoints"), &[])
             .expect_err("absolute checkpoint_dir with no roots must be rejected");
         let msg = err.to_string();
         assert!(msg.contains("checkpoint_dir"), "got: {msg}");
@@ -384,18 +572,18 @@ mod tests {
 
     #[test]
     fn confine_absolute_inside_root_allowed() {
-        let roots = vec![PathBuf::from("/srv/exports")];
-        confine("output_dir", "/srv/exports/sub/file.txt", &roots)
+        let roots = vec![PathBuf::from(host_abs("/srv/exports"))];
+        confine("output_dir", &host_abs("/srv/exports/sub/file.txt"), &roots)
             .expect("path under a configured root must be allowed");
         // The root itself is a valid destination.
-        confine("output_dir", "/srv/exports", &roots)
+        confine("output_dir", &host_abs("/srv/exports"), &roots)
             .expect("the root path itself must be allowed");
     }
 
     #[test]
     fn confine_absolute_outside_root_rejected() {
-        let roots = vec![PathBuf::from("/srv/exports")];
-        let err = confine("output_dir", "/etc/passwd", &roots)
+        let roots = vec![PathBuf::from(host_abs("/srv/exports"))];
+        let err = confine("output_dir", &host_abs("/etc/passwd"), &roots)
             .expect_err("path outside every root must be rejected");
         let msg = err.to_string();
         assert!(
@@ -406,10 +594,10 @@ mod tests {
 
     #[test]
     fn confine_sibling_prefix_is_not_a_match() {
-        // `/srv/exports_evil` must NOT satisfy root `/srv/exports` — the check
-        // is component-based (`starts_with`), not string-based.
-        let roots = vec![PathBuf::from("/srv/exports")];
-        confine("output_dir", "/srv/exports_evil/file", &roots)
+        // `<root>_evil` must NOT satisfy the root — the check is
+        // component-based (`starts_with`), not string-based.
+        let roots = vec![PathBuf::from(host_abs("/srv/exports"))];
+        confine("output_dir", &host_abs("/srv/exports_evil/file"), &roots)
             .expect_err("string-prefix sibling dir must not match the root");
     }
 

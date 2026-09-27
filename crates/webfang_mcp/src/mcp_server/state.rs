@@ -705,9 +705,12 @@ mod tests {
     #[tokio::test]
     async fn export_dir_absolute_rejected_without_roots() {
         let (_tmp, container) = test_container().await;
-        let state = McpState::new(container); // fail-closed default
+        // Fail-closed default. `host_abs` spells the candidate as a real
+        // absolute path on THIS host (POSIX literals like `/etc` are
+        // root-without-prefix forms on Windows, #1608).
+        let state = McpState::new(container);
         let err = state
-            .validate_export_dir(Path::new("/etc"))
+            .validate_export_dir(Path::new(&path_gate::host_abs("/etc")))
             .expect_err("absolute path must be rejected with no roots");
         let msg = err.to_string();
         assert!(
@@ -730,9 +733,10 @@ mod tests {
     #[tokio::test]
     async fn export_dir_absolute_rejected_outside_root() {
         let (tmp, container) = test_container().await;
+        // `host_abs`: host-appropriate absolute spelling (see #1608).
         let state = McpState::new(container).with_export_roots(vec![tmp.path().to_path_buf()]);
         let err = state
-            .validate_export_dir(Path::new("/etc"))
+            .validate_export_dir(Path::new(&path_gate::host_abs("/etc")))
             .expect_err("path outside roots must be rejected");
         let msg = err.to_string();
         assert!(
@@ -792,9 +796,11 @@ mod tests {
     #[tokio::test]
     async fn checkpoint_dir_absolute_rejected_without_roots() {
         let (_tmp, container) = test_container().await;
-        let state = McpState::new(container); // fail-closed default
+        // Fail-closed default; `host_abs` = host-appropriate absolute
+        // spelling (see #1608).
+        let state = McpState::new(container);
         let err = state
-            .validate_checkpoint_dir(Path::new("/etc"))
+            .validate_checkpoint_dir(Path::new(&path_gate::host_abs("/etc")))
             .expect_err("absolute checkpoint_dir must be rejected with no roots");
         let msg = err.to_string();
         assert!(
@@ -818,9 +824,10 @@ mod tests {
     #[tokio::test]
     async fn checkpoint_dir_absolute_rejected_outside_root() {
         let (tmp, container) = test_container().await;
+        // `host_abs`: host-appropriate absolute spelling (see #1608).
         let state = McpState::new(container).with_export_roots(vec![tmp.path().to_path_buf()]);
         let err = state
-            .validate_checkpoint_dir(Path::new("/etc"))
+            .validate_checkpoint_dir(Path::new(&path_gate::host_abs("/etc")))
             .expect_err("checkpoint_dir outside roots must be rejected");
         let msg = err.to_string();
         assert!(
