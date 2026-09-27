@@ -1,8 +1,9 @@
-//! Generación de la identity `age` local (primer run en Linux, §8a).
+//! Generación de la identity `age` local (primer run, §8a).
 //!
-//! La identity vive en `~/.config/webfang/identity.key` con permisos 0600
-//! (modelo `~/.ssh/id_ed25519`). Escritura ATÓMICA con 0600 desde la
-//! creación: nunca write-then-chmod (deja ventana legible por otros).
+//! La identity vive en `<config>/webfang/identity.key` con confidencialidad
+//! de dueño único (0600 en unix; ACL por defecto del perfil en Windows).
+//! Escritura ATÓMICA con permisos restrictivos desde la creación: nunca
+//! write-then-chmod (deja ventana legible por otros).
 
 use std::path::{Path, PathBuf};
 
@@ -91,9 +92,55 @@ fn write_0600_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
-/// Sin POSIX no hay modo 0600 que verificar: fail closed con mensaje claro
-/// (mover el config a un FS POSIX o usar el override de env consciente).
-#[cfg(not(unix))]
+/// Windows (XP-F-01, #1608): no hay bits de modo POSIX que verificar — no
+/// existe un mapeo directo de 0600. El equivalente de confidencialidad lo dan
+/// las ACL por defecto de NTFS sobre el perfil de usuario (`%USERPROFILE%` /
+/// `%APPDATA%` solo son accesibles al usuario y a los administradores); este
+/// hecho queda documentado aquí y NO se puede afirmar con un chequeo de
+/// mode-bits como en unix.
+///
+/// Atomicidad: archivo temporal en el MISMO directorio (mismo volumen ⇒
+/// `rename` es atómico) + rename final. El temporal se abre con
+/// `share_mode(0)` — sin `FILE_SHARE_READ` ni `FILE_SHARE_WRITE` — para que
+/// ningún otro proceso lea el secreto mientras se escribe.
+#[cfg(windows)]
+fn write_0600_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    use std::os::windows::fs::OpenOptionsExt as _;
+
+    let file_name = path.file_name().ok_or_else(|| {
+        std::io::Error::other(format!(
+            "la ruta de la identity no tiene nombre de archivo: {}",
+            path.display()
+        ))
+    })?;
+    let tmp = path.with_file_name(format!(".{}.tmp", file_name.to_string_lossy()));
+    // Un .tmp huérfano de un run anterior haría fallar create_new: limpiarlo
+    // es seguro (es un artefacto nuestro, nunca un archivo del usuario).
+    std::fs::remove_file(&tmp).ok();
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .share_mode(0)
+        .open(&tmp)?;
+    file.write_all(contents)?;
+    file.sync_all()?;
+    drop(file);
+    // `std::fs::rename` en Windows reemplaza el destino (MoveFileEx con
+    // MOVEFILE_REPLACE_EXISTING): si el rename falla, limpiar el temporal.
+    match std::fs::rename(&tmp, path) {
+        Ok(()) => Ok(()),
+        Err(source) => {
+            std::fs::remove_file(&tmp).ok();
+            Err(source)
+        },
+    }
+}
+
+/// Plataformas sin POSIX ni Win32 (compilaciones exóticas): fail closed con
+/// mensaje claro (mover el config a un FS POSIX o usar el override de env
+/// consciente).
+#[cfg(not(any(unix, windows)))]
 fn write_0600_atomic(path: &Path, contents: &[u8]) -> std::io::Result<()> {
     std::fs::remove_file(path).ok();
     Err(std::io::Error::other(format!(
