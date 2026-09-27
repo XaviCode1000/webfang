@@ -887,7 +887,7 @@ jobs:
     name: Feature matrix
     needs: [clippy]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
@@ -898,7 +898,11 @@ jobs:
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # The compatibility harness runs `cargo nextest` per combo; `cargo hack`
+      # comes from this action's default tool at the pinned ref.
       - uses: taiki-e/install-action@4787a8cb96c211ae024644db52123a03bf511c68
+        with:
+          tool: cargo-hack,nextest
       - name: Feature matrix check
         run: cargo hack check --each-feature --workspace --no-dev-deps
       # `cargo hack check` never compiles test targets (and `--no-dev-deps` drops
@@ -906,6 +910,12 @@ jobs:
       # matrix. Compile the test targets for the combo that exposed the gap (#737).
       - name: Feature-gated test targets compile (adaptive-selectors)
         run: cargo check -p webfang_core --no-default-features --features adaptive-selectors --tests
+      # Per-combo runtime probes: build + behavioral crawl + resume round-trip +
+      # exit-contract gates (65/78) for default, no-default, ai, chromium, mcp and
+      # full feature sets. Advisory only (not in `gate` needs). The script
+      # rebuilds per combo, so the timeout is generous.
+      - name: Compatibility harness (per-combo probes)
+        run: bash scripts/check_compatibility.sh --ci-required
 
   # ============================================================================
   # MCP SMOKE: After full tests pass
