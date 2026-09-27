@@ -2312,6 +2312,12 @@ mod tests {
 
     /// `first_existing_in_dirs` is dir-major: every candidate name is tried
     /// inside a directory before moving to the next directory.
+    ///
+    /// The `PATH` value is built with `std::env::join_paths`, never with a
+    /// hardcoded separator: a `:`-joined string is one bogus entry for
+    /// `split_paths` on Windows (which splits on `;` and keeps `C:` drive
+    /// letters intact), which is why this test failed there with "a
+    /// candidate must resolve" while passing on Linux/macOS.
     #[test]
     fn first_existing_in_dirs_prefers_earlier_directory() {
         let dir1 = tempfile::TempDir::new().expect("tempdir");
@@ -2321,16 +2327,38 @@ mod tests {
         std::fs::write(dir2.path().join("google-chrome"), "#!/bin/sh\n").expect("write");
 
         let names = vec!["google-chrome".to_string(), "chromium".to_string()];
-        let resolved = first_existing_in_dirs(
-            std::env::split_paths(&format!(
-                "{}:{}",
-                dir1.path().display(),
-                dir2.path().display()
-            )),
-            &names,
-        )
-        .expect("a candidate must resolve");
+        let path_value =
+            std::env::join_paths([dir1.path(), dir2.path()]).expect("joinable temp dirs");
+        let resolved = first_existing_in_dirs(std::env::split_paths(&path_value), &names)
+            .expect("a candidate must resolve");
         assert_eq!(resolved, dir1.path().join("chromium"));
+    }
+
+    /// Windows-shaped resolution through the injectable seam: the
+    /// `PATHEXT` expansion is supplied as DATA (`bare_name_candidates`),
+    /// never read from process env, so the Windows answer is exercised on
+    /// every platform. Dir-major order must hold for the expanded
+    /// candidates too: the earlier directory's `chromium.exe` (a PATHEXT
+    /// candidate) wins over the later directory's bare `chromium`.
+    #[test]
+    fn first_existing_in_dirs_resolves_pathext_expansion_in_earlier_directory() {
+        let dir1 = tempfile::TempDir::new().expect("tempdir");
+        let dir2 = tempfile::TempDir::new().expect("tempdir");
+        // dir1 only has an extension-bearing candidate; dir2 has the bare name.
+        std::fs::write(dir1.path().join("chromium.exe"), "MZ fake binary\n").expect("write");
+        std::fs::write(dir2.path().join("chromium"), "#!/bin/sh\n").expect("write");
+
+        let names = bare_name_candidates("chromium", Some(".COM;.EXE"));
+        assert_eq!(names, ["chromium", "chromium.com", "chromium.exe"]);
+        let path_value =
+            std::env::join_paths([dir1.path(), dir2.path()]).expect("joinable temp dirs");
+        let resolved = first_existing_in_dirs(std::env::split_paths(&path_value), &names)
+            .expect("a PATHEXT candidate must resolve");
+        assert_eq!(
+            resolved,
+            dir1.path().join("chromium.exe"),
+            "the earlier directory's extension candidate must win dir-major"
+        );
     }
 
     /// Directories named like a candidate are skipped (`is_file`, the
