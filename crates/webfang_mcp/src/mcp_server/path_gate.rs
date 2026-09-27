@@ -97,8 +97,10 @@ fn resolve_fully(path: &Path) -> PathBuf {
 ///
 /// Symlinks/junctions are resolved via [`resolve_fully`] before the check, so
 /// a link inside a root that points outside it does not match. The match is
-/// component-based ([`Path::starts_with`]), never a string prefix, so sibling
-/// directories (`/srv/exports_evil` vs `/srv/exports`) do not match.
+/// component-based (see [`components_start_with`]), never a string prefix, so
+/// sibling directories (`/srv/exports_evil` vs `/srv/exports`) do not match.
+/// On case-insensitive filesystems (NTFS, APFS) the component comparison is
+/// case-insensitive too (XP-P-02, issue #1608).
 ///
 /// Empty `roots` always yields `false` — the CALLER owns the empty-roots
 /// policy: [`confine`] rejects absolute paths (fail-closed) and
@@ -110,7 +112,46 @@ pub(crate) fn resolved_within_roots(path: &Path, roots: &[PathBuf]) -> bool {
     let resolved = resolve_fully(path);
     roots
         .iter()
-        .any(|root| resolved.starts_with(resolve_fully(root)))
+        .any(|root| components_start_with(&resolved, &resolve_fully(root), FS_CASE_INSENSITIVE))
+}
+
+/// Compile-time case-sensitivity of the target filesystem family (XP-P-02,
+/// issue #1608): Windows (NTFS) and macOS (APFS default) compare paths
+/// case-insensitively, so a root declared as `/Users/Xavi/exports` must
+/// contain a candidate spelled `/users/xavi/exports`. `cfg!` is evaluated at
+/// compile time — on Linux this constant is `false` and the containment
+/// behavior is byte-identical to the previous `Path::starts_with` check.
+const FS_CASE_INSENSITIVE: bool = cfg!(windows) || cfg!(target_os = "macos");
+
+/// Component-based prefix containment with an explicit case-sensitivity
+/// switch.
+///
+/// `case_insensitive = false` behaves byte-identically to
+/// [`Path::starts_with`]. With `true`, each overlapping component compares
+/// ASCII-lowercased lossy strings, so a root stated with different case still
+/// contains the candidate on case-insensitive filesystems (NTFS, APFS). The
+/// check stays component-based in both branches: a string-prefix sibling
+/// (`/srv/exports_evil`) never matches.
+fn components_start_with(path: &Path, root: &Path, case_insensitive: bool) -> bool {
+    let mut path_comps = path.components();
+    for root_comp in root.components() {
+        match path_comps.next() {
+            Some(path_comp) => {
+                let equal = if case_insensitive {
+                    path_comp.as_os_str().to_string_lossy().to_lowercase()
+                        == root_comp.as_os_str().to_string_lossy().to_lowercase()
+                } else {
+                    path_comp.as_os_str() == root_comp.as_os_str()
+                };
+                if !equal {
+                    return false;
+                }
+            },
+            // The path ended before the root was consumed: not contained.
+            None => return false,
+        }
+    }
+    true
 }
 
 /// The shape of a raw path string, decided WITHOUT relying on
@@ -443,6 +484,68 @@ mod tests {
             !resolved_within_roots(Path::new("/srv/exports_evil/file"), &roots),
             "a string-prefix sibling dir must yield false"
         );
+    }
+
+    // --- case sensitivity of the containment check (XP-P-02, #1608) ---------
+
+    /// cfg! alone cannot be tested on Linux, so the comparison is factored
+    /// into `components_start_with(case_insensitive)` and BOTH branches are
+    /// exercised explicitly here.
+    #[test]
+    fn components_start_with_covers_both_sensitivity_branches() {
+        let root = Path::new("/srv/Exports");
+
+        // Case-insensitive branch (what NTFS/APFS hosts compile to): a root
+        // declared with different case still contains the candidate.
+        assert!(
+            components_start_with(Path::new("/srv/exports/sub/file.txt"), root, true),
+            "case-insensitive containment must match case-differing components"
+        );
+        assert!(
+            components_start_with(Path::new("/SRV/EXPORTS"), root, true),
+            "case-insensitive containment covers every component"
+        );
+
+        // Case-sensitive branch (what Linux compiles to): byte-identical to
+        // the previous `Path::starts_with` behavior.
+        assert!(
+            !components_start_with(Path::new("/srv/exports/sub/file.txt"), root, false),
+            "case-sensitive containment must reject case-differing components"
+        );
+        assert!(
+            components_start_with(Path::new("/srv/Exports/sub/file.txt"), root, false),
+            "case-sensitive containment still accepts the exact-case spelling"
+        );
+
+        // A string-prefix sibling matches in NEITHER branch.
+        assert!(!components_start_with(
+            Path::new("/srv/Exports_evil/f"),
+            root,
+            true
+        ));
+        assert!(!components_start_with(
+            Path::new("/srv/Exports_evil/f"),
+            root,
+            false
+        ));
+
+        // The candidate ending before the root is not contained in either.
+        assert!(!components_start_with(Path::new("/srv"), root, true));
+        assert!(!components_start_with(Path::new("/srv"), root, false));
+    }
+
+    #[test]
+    fn resolved_within_roots_stays_case_sensitive_on_this_host() {
+        // Compile-time wiring check for THIS host: on Linux/macOS CI and
+        // Windows runners the expectation differs, and `cfg!` inside the
+        // test keeps both worlds honest.
+        let roots = vec![PathBuf::from("/srv/Exports")];
+        let case_differing = resolved_within_roots(Path::new("/srv/exports/f"), &roots);
+        if FS_CASE_INSENSITIVE {
+            assert!(case_differing, "case-insensitive host must match");
+        } else {
+            assert!(!case_differing, "case-sensitive host must not match");
+        }
     }
 
     // --- symlink resolution (the #1588 fix itself) -------------------------

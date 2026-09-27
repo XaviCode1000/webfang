@@ -20,10 +20,10 @@ use webfang_core::domain::options_spec::{self as options_spec, export};
 use webfang_core::domain::ValidUrl;
 
 use crate::mcp_server::validation::{
-    invalid_params, require_http_url, require_max_len, require_max_value_u64, require_non_empty,
-    require_one_of, require_range_u64, require_safe_domain, require_safe_filename,
-    require_safe_name, require_safe_path, require_safe_path_allow_absolute, require_safe_seed,
-    MAX_BLOB_LEN, MAX_URL_LEN,
+    invalid_params, require_max_len, require_max_value_u64, require_non_empty, require_one_of,
+    require_range_u64, require_safe_domain, require_safe_filename, require_safe_name,
+    require_safe_path, require_safe_path_allow_absolute, require_safe_seed, MAX_BLOB_LEN,
+    MAX_URL_LEN,
 };
 
 /// A URL parsed and hardened EXACTLY ONCE, at the MCP deserialization
@@ -663,11 +663,36 @@ pub(crate) struct ValidateUrlParams {
     pub url: String,
 }
 
-impl ValidateUrlParams {
+// Deliberately NO `validate()` (issue #1608, G-12): the only tool using this
+// struct is `validate_url`, whose pinned contract (#590 bug #7) reports an
+// invalid URL as a tool-level `valid:false` JSON payload, never as a
+// protocol-level `McpError`. The handler routes the raw string through
+// `require_http_url` itself so the hardened rules (length cap, empty
+// rejection, scheme allow-list) still apply — just mapped to that JSON
+// shape. Tools that CAN hard-error use `UrlToFilePathParams` or `McpUrl`.
+
+/// Parameters for the `url_to_file_path` tool.
+///
+/// G-14 (issue #1608): unlike `validate_url` — whose JSON-not-error contract
+/// (#590 bug #7) requires a raw `String` input so invalid URLs can be
+/// reported as a `valid:false` payload — `url_to_file_path` has no such
+/// contract and hard-errors like its siblings. The URL is therefore parsed
+/// and hardened EXACTLY ONCE at the boundary as an [`McpUrl`] (#1116
+/// pattern): unparseable input fails deserialization, and non-http(s)
+/// schemes, oversized strings and embedded credentials never reach the
+/// handler.
+#[derive(Deserialize, JsonSchema, Debug)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct UrlToFilePathParams {
+    /// URL to convert to a file path
+    pub url: McpUrl,
+}
+
+impl UrlToFilePathParams {
     /// # Errors
-    /// Returns `McpError::invalid_params` if `url` is not a valid http(s) URL.
+    /// Never returns an error: `url` is parsed+hardened at the boundary by
+    /// [`McpUrl`].
     pub fn validate(&self) -> Result<(), McpError> {
-        require_http_url("url", &self.url)?;
         Ok(())
     }
 }
@@ -922,7 +947,14 @@ pub(crate) struct GenerateFrontmatterParams {
     /// Document title
     pub title: Option<String>,
     /// Source URL
-    pub url: Option<String>,
+    ///
+    /// G-14 (issue #1608): parsed+hardened at the boundary as an
+    /// [`McpUrl`] (#1116 pattern) instead of a raw `String` validated
+    /// imperatively in `validate()` — unparseable input, non-http(s)
+    /// schemes, oversize strings and embedded `user:pass@` credentials are
+    /// unrepresentable, so a hostile URL can no longer reach the generated
+    /// frontmatter (or the tracing `fields(params = ?params)` span) verbatim.
+    pub url: Option<McpUrl>,
     /// Author name
     pub author: Option<String>,
     /// Excerpt or summary
@@ -934,12 +966,10 @@ pub(crate) struct GenerateFrontmatterParams {
 impl GenerateFrontmatterParams {
     /// # Errors
     /// Returns `McpError::invalid_params` if any optional string exceeds its
-    /// per-field length cap, `url` (when present) is not a valid http(s) URL,
-    /// `tags` has more than 64 entries, or any tag exceeds 64 bytes.
+    /// per-field length cap, `tags` has more than 64 entries, or any tag
+    /// exceeds 64 bytes. `url` (when present) is parsed+hardened at the
+    /// boundary by [`McpUrl`].
     pub fn validate(&self) -> Result<(), McpError> {
-        if let Some(u) = &self.url {
-            require_http_url("url", u)?;
-        }
         if let Some(t) = &self.title {
             require_max_len("title", t, 512)?;
         }

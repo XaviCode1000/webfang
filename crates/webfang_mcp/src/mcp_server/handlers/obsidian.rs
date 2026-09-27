@@ -241,19 +241,21 @@ mod tests {
     #[tokio::test]
     async fn build_obsidian_uri_rejects_control_chars() {
         let (handler, _tmp) = test_handler().await;
+        // Issue #1608: control characters in `file_path` are now rejected at
+        // the params boundary (`require_safe_path` per-component checks) as a
+        // protocol-level invalid-params error — strictly EARLIER than the old
+        // tool-level neutralized error, and consistent with every other
+        // boundary rejection (e.g. `export_file`'s filename traversal, #601).
+        // The tool-level `validate_obsidian_input` path stays reachable for
+        // inputs the boundary passes through (e.g. control chars in
+        // `vault_name`, which `require_safe_name` does not inspect).
         let res = handler
             .build_obsidian_uri(Parameters(BuildObsidianUriParams {
                 vault_name: "MyVault".to_string(),
                 file_path: "Notes\note.md".to_string(),
             }))
-            .await
-            .expect("build returns Ok on invalid input");
-        let json = serde_json::to_value(&res).expect("serialize");
-        assert_eq!(
-            json.get("isError").and_then(|v| v.as_bool()),
-            Some(true),
-            "control chars must map to isError:true, got: {json}"
-        );
+            .await;
+        assert!(res.is_err(), "control chars must be a protocol error");
     }
 
     #[tokio::test]
@@ -264,13 +266,7 @@ mod tests {
                 vault_name: "MyVault".to_string(),
                 file_path: "Notes\note.md".to_string(),
             }))
-            .await
-            .expect("open returns Ok on invalid input");
-        let json = serde_json::to_value(&res).expect("serialize");
-        assert_eq!(
-            json.get("isError").and_then(|v| v.as_bool()),
-            Some(true),
-            "control chars must map to isError:true, got: {json}"
-        );
+            .await;
+        assert!(res.is_err(), "control chars must be a protocol error");
     }
 }

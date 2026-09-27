@@ -15,6 +15,39 @@ use url::Url;
 /// Maximum length for a derived filename component (ext4 per-file limit).
 pub(crate) const MAX_FILENAME_LEN: usize = 255;
 
+/// Windows reserved device names (case-insensitive).
+/// <https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file>
+///
+/// These names cannot be used as file names on Windows, regardless of
+/// extension. Attempting to create files with these names will crash on
+/// Windows.
+const WINDOWS_RESERVED: &[&str] = &[
+    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+];
+
+/// Suffix appended when a reserved name must be neutralized. Matches the
+/// convention of `UrlPath::to_safe_filename_with_format` (`CON` → `CON_safe`).
+const RESERVED_SAFE_SUFFIX: &str = "_safe";
+
+/// True when the STEM of `name` (everything before the FIRST `.`) matches a
+/// Windows reserved device name, ASCII case-insensitively.
+///
+/// Windows treats everything up to the first period as the device name, so
+/// `CON.txt` is just as unusable as `CON`; `docs-page-CON` (no dot) is NOT
+/// reserved because its whole string is the stem and does not match.
+///
+/// Shared vocabulary for every filename-derivation surface in the workspace:
+/// [`sanitize_filename_component`] (this module) neutralizes reserved stems,
+/// and `adapters::url_path` uses the same check for URL-derived filenames
+/// (issue #1608).
+#[must_use]
+pub fn is_windows_reserved(name: &str) -> bool {
+    let stem = name.split('.').next().unwrap_or(name);
+    let upper = stem.to_ascii_uppercase();
+    WINDOWS_RESERVED.contains(&upper.as_str())
+}
+
 /// Simple percent-decoding for filenames (`%20` → space; invalid hex kept).
 #[inline]
 #[must_use]
@@ -76,6 +109,12 @@ pub fn parse_content_disposition(value: &str) -> Option<String> {
 /// the cap fires, a deterministic `DefaultHasher`-based suffix keeps distinct
 /// over-long names distinct (#914); inputs under the cap are byte-identical
 /// to their input. Returns `None` when nothing safe remains (`.` / `..`).
+///
+/// Windows reserved device names (XP-P-04, issue #1608): a candidate whose
+/// stem is reserved (`CON`, `CON.txt`, ...) gets the `"_safe"` suffix
+/// appended so the derived name is creatable on Windows hosts. The check
+/// runs BEFORE the length cap, so a suffixed name over the cap still goes
+/// through the hash-truncation path.
 #[must_use]
 pub fn sanitize_filename_component(name: &str) -> Option<String> {
     // Remove control characters first (NUL included): they cannot appear in
@@ -86,6 +125,11 @@ pub fn sanitize_filename_component(name: &str) -> Option<String> {
         .split(['/', '\\'])
         .rfind(|segment| !segment.is_empty() && *segment != "." && *segment != "..")
         .map(str::to_string)?;
+
+    let mut candidate = candidate;
+    if is_windows_reserved(&candidate) {
+        candidate.push_str(RESERVED_SAFE_SUFFIX);
+    }
 
     if candidate.len() <= MAX_FILENAME_LEN {
         return (!candidate.is_empty()).then_some(candidate);
@@ -253,5 +297,57 @@ mod tests {
         assert_eq!(confine_filename_component("..\\escape", "export"), "escape");
         assert_eq!(confine_filename_component("..", "export"), "export");
         assert_eq!(confine_filename_component("a/../b", "export"), "b");
+    }
+
+    // --- Windows reserved stems (issue #1608, XP-P-04) ----------------------
+
+    #[test]
+    fn is_windows_reserved_matches_stem_case_insensitively() {
+        assert!(is_windows_reserved("CON"));
+        assert!(is_windows_reserved("con"));
+        assert!(is_windows_reserved("Con"));
+        assert!(is_windows_reserved("CON.txt"));
+        assert!(is_windows_reserved("nul.tar.gz"));
+        assert!(is_windows_reserved("com1"));
+        assert!(is_windows_reserved("lpt9.md"));
+        // No dot: the whole string is the stem.
+        assert!(!is_windows_reserved("docs-page-CON"));
+        // Stem before the FIRST dot does not match.
+        assert!(!is_windows_reserved("document.2026"));
+        assert!(!is_windows_reserved("config"));
+        // lookalikes that are not reserved
+        assert!(!is_windows_reserved("console"));
+        assert!(!is_windows_reserved("com10"));
+    }
+
+    #[test]
+    fn sanitize_neutralizes_reserved_stems() {
+        assert_eq!(
+            sanitize_filename_component("CON"),
+            Some("CON_safe".to_string())
+        );
+        assert_eq!(
+            sanitize_filename_component("con.txt"),
+            Some("con.txt_safe".to_string())
+        );
+        // Case-insensitive, mixed case preserved.
+        assert_eq!(
+            sanitize_filename_component("Nul"),
+            Some("Nul_safe".to_string())
+        );
+        // Non-reserved names stay byte-identical.
+        assert_eq!(
+            sanitize_filename_component("document.txt"),
+            Some("document.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn confine_reserved_name_is_idempotent() {
+        // First pass neutralizes (and warns via safe != raw); the output is
+        // itself safe, so a second pass must return it byte-identical.
+        let once = confine_filename_component("CON", "export");
+        assert_eq!(once, "CON_safe");
+        assert_eq!(confine_filename_component(&once, "export"), once);
     }
 }

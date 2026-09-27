@@ -223,6 +223,15 @@ async fn test_detect_obsidian_vault_explicit_path() {
 /// `open_in_obsidian` must reject invalid input BEFORE attempting to launch
 /// the Obsidian app. The control-character path is deterministic and never
 /// spawns a real process (no `xdg-open` on CI).
+///
+/// Issue #1608: `file_path` control characters are now rejected at the
+/// params boundary (`require_safe_path` per-component checks) as a
+/// protocol-level JSON-RPC invalid-params error (-32602) — strictly earlier
+/// than the old tool-level `isError:true` result, and consistent with every
+/// other boundary rejection. The tool-level `validate_obsidian_input`
+/// contract remains covered by
+/// `test_build_obsidian_uri_rejects_control_chars` (control chars in
+/// `vault_name`, which the boundary's `require_safe_name` does not inspect).
 #[tokio::test]
 async fn test_open_in_obsidian_control_chars_validation_error() {
     let (base_url, _handle) = start_test_server_ssrf_enabled().await;
@@ -237,18 +246,13 @@ async fn test_open_in_obsidian_control_chars_validation_error() {
         json!({ "vault_name": "MyVault", "file_path": "note\rpath" }),
     )
     .await;
-    let result = resp
-        .get("result")
-        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
-        .clone();
 
-    assert_control_chars_rejected(&result);
-    // Rejection is signaled by `isError:true`, NOT the Spanish error message
-    // (user-facing text, may change). The handler returns
-    // `Ok(CallToolResult::error(...))` — a tool-level error with no `code`.
-    let text = tool_text(&result);
-    assert!(
-        !text.contains("Opened in Obsidian"),
-        "no real app launch may be reported, got: {text}"
+    let error = resp
+        .get("error")
+        .unwrap_or_else(|| panic!("control chars must yield a JSON-RPC error, got: {resp}"));
+    let code = error.get("code").and_then(|c| c.as_i64()).unwrap_or(0);
+    assert_eq!(
+        code, -32602,
+        "control chars in file_path must map to invalid-params (-32602), got: {error}"
     );
 }

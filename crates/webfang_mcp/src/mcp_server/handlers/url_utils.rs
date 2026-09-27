@@ -34,22 +34,15 @@ impl McpHandler {
         // Tool-level validation: never return a protocol error for invalid
         // input. The acceptance criterion is a JSON result with `valid:false`
         // so callers can reason about it programmatically (issue #590, bug #7).
-        match url::Url::parse(&params.url) {
+        //
+        // G-12 (issue #1608): the raw string goes through the SAME hardened
+        // validation as every sibling tool (`require_http_url` — length cap
+        // + empty rejection + scheme allow-list) instead of a bespoke inline
+        // `Url::parse` + scheme match. The JSON-not-error contract is
+        // preserved by mapping the `McpError` into the `valid:false` reason.
+        match crate::mcp_server::validation::require_http_url("url", &params.url) {
             Ok(u) => {
-                // Scheme allow-list (#606): only http/https are valid targets.
-                // Non-http schemes (ftp://, file://, gopher://, ...) and hosts
-                // that cannot be reached are rejected as `valid:false`.
                 let scheme = u.scheme();
-                if !matches!(scheme, "http" | "https") {
-                    let info = serde_json::json!({
-                        "valid": false,
-                        "reason": format!("unsupported scheme '{scheme}' (only http and https are allowed)"),
-                    });
-                    return Ok(provenance::local_text(
-                        &serde_json::to_string_pretty(&info)
-                            .expect("serializing JSON to a string cannot fail"),
-                    ));
-                }
                 let info = serde_json::json!({
                     "valid": true,
                     "scheme": scheme,
@@ -173,13 +166,19 @@ impl McpHandler {
     #[allow(clippy::expect_used)]
     async fn url_to_file_path(
         &self,
-        Parameters(params): Parameters<ValidateUrlParams>,
+        Parameters(params): Parameters<UrlToFilePathParams>,
     ) -> Result<CallToolResult, McpError> {
         params.validate()?;
 
         let _permit = acquire_semaphore!(self, url_utils);
 
-        match webfang_core::adapters::url_path::OutputPath::from_url(&params.url) {
+        // G-14 (issue #1608): `params.url` is parsed+hardened at the
+        // boundary (`McpUrl`, #1116 pattern) like every sibling tool — the
+        // raw-String + inline-revalidation shape this tool used to have is
+        // gone. `OutputPath::from_url` re-parses an already-validated URL;
+        // its Err arm stays as an honest defensive failure, unreachable at
+        // this boundary.
+        match webfang_core::adapters::url_path::OutputPath::from_url(params.url.as_str()) {
             Ok(output_path) => {
                 let info = serde_json::json!({
                     "full_path": output_path.to_full_path(),
@@ -498,8 +497,8 @@ mod handler_tests {
     async fn url_to_file_path_valid() {
         let (handler, _tmp) = test_handler().await;
         let res = handler
-            .url_to_file_path(Parameters(ValidateUrlParams {
-                url: "https://example.com/docs/page".to_string(),
+            .url_to_file_path(Parameters(UrlToFilePathParams {
+                url: vu("https://example.com/docs/page"),
             }))
             .await
             .expect("url_to_file_path returns Ok");
@@ -507,6 +506,20 @@ mod handler_tests {
         assert!(
             text.contains("example.com"),
             "file path must include domain: {text}"
+        );
+    }
+
+    /// G-14 (issue #1608): a non-http(s) scheme is unrepresentable as
+    /// `McpUrl` — deserialization fails before the handler runs, exactly
+    /// like every sibling tool on the #1116 boundary.
+    #[test]
+    fn url_to_file_path_non_http_scheme_is_unrepresentable() {
+        let res = serde_json::from_value::<UrlToFilePathParams>(serde_json::json!({
+            "url": "file:///etc/passwd"
+        }));
+        assert!(
+            res.is_err(),
+            "file:// URL must fail to deserialize: {res:?}"
         );
     }
 
@@ -521,9 +534,7 @@ mod handler_tests {
         let (handler, _tmp) = test_handler().await;
         let raw = "https://example.com/..%2F..%2Fetc%2Fpasswd%0Ahidden";
         let res = handler
-            .url_to_file_path(Parameters(ValidateUrlParams {
-                url: raw.to_string(),
-            }))
+            .url_to_file_path(Parameters(UrlToFilePathParams { url: vu(raw) }))
             .await
             .expect("url_to_file_path returns Ok");
         let text = result_text(&res);

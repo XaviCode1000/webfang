@@ -158,7 +158,10 @@ impl McpHandler {
         let _permit = acquire_semaphore!(self, content);
 
         let title = params.title.as_deref().unwrap_or("Untitled");
-        let url = params.url.as_deref().unwrap_or("");
+        // G-14 (issue #1608): `params.url` is an `McpUrl` — already parsed,
+        // credential-stripped and scheme-allow-listed at the boundary; only
+        // its hardened string form reaches the frontmatter.
+        let url = params.url.as_ref().map(|u| u.as_str()).unwrap_or("");
         let author = params.author.as_deref();
         let excerpt = params.excerpt.as_deref();
         let tags = params.tags.as_deref().unwrap_or(&[]);
@@ -372,7 +375,7 @@ mod tests {
         let res = handler
             .generate_frontmatter(Parameters(GenerateFrontmatterParams {
                 title: Some("Hello".to_string()),
-                url: Some("https://example.com/p".to_string()),
+                url: Some(vu("https://example.com/p")),
                 author: None,
                 excerpt: None,
                 tags: None,
@@ -390,6 +393,35 @@ mod tests {
         );
     }
 
+    /// G-14 (issue #1608): a hostile URL is unrepresentable as `McpUrl` at
+    /// the deserialization boundary — a non-http(s) scheme fails outright,
+    /// and embedded `user:pass@` credentials are stripped by `ValidUrl`, so
+    /// neither can reach the generated frontmatter or the tracing span.
+    #[test]
+    fn generate_frontmatter_hostile_urls_never_reach_the_frontmatter() {
+        // Non-http(s) scheme: deserialization fails.
+        let res = serde_json::from_value::<GenerateFrontmatterParams>(serde_json::json!({
+            "url": "file:///etc/passwd"
+        }));
+        assert!(
+            res.is_err(),
+            "file:// URL must fail to deserialize: {res:?}"
+        );
+
+        // Embedded credentials: parse succeeds but they are STRIPPED — the
+        // handler only ever sees the hardened string form.
+        let params: GenerateFrontmatterParams = serde_json::from_value(serde_json::json!({
+            "url": "https://user:pass@example.com/x"
+        }))
+        .expect("credentialled URL deserializes after stripping");
+        let url = params.url.as_ref().expect("url is present");
+        assert!(
+            !url.as_str().contains("user:pass"),
+            "credentials must be stripped at the boundary: {}",
+            url.as_str()
+        );
+    }
+
     #[tokio::test]
     async fn generate_frontmatter_honors_author_excerpt_tags() {
         let (handler, _tmp) = test_handler().await;
@@ -399,7 +431,7 @@ mod tests {
         let res = handler
             .generate_frontmatter(Parameters(GenerateFrontmatterParams {
                 title: Some("My Post".to_string()),
-                url: Some("https://example.com/post".to_string()),
+                url: Some(vu("https://example.com/post")),
                 author: Some("Jane Doe".to_string()),
                 excerpt: Some("A brief summary".to_string()),
                 tags: Some(vec!["rust".to_string(), "web".to_string()]),

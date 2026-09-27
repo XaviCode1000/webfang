@@ -277,12 +277,13 @@ impl McpState {
     /// (they resolve against CWD).
     ///
     /// #769: when roots are configured, also checks the container's own
-    /// `output_dir` — the write target of `process_export_pipeline`, which is
-    /// the ONE export path that never goes through
-    /// [`validate_export_dir`](Self::validate_export_dir). If it is absolute
-    /// and outside every root, a tracing warning reports the inconsistency
-    /// (the operator declared a boundary the server's own pipeline would
-    /// violate). Deliberately warn-only: no new failure mode was added.
+    /// `output_dir` — the write target of `process_export_pipeline`, which
+    /// is gated against the same roots at request time (XP-P-08/G-9, issue
+    /// #1608). If it is rooted (absolute, or a Windows-style rooted form on
+    /// a host that does not consider it absolute) and outside every root, a
+    /// tracing warning reports the inconsistency (the operator declared a
+    /// boundary the server's own pipeline would violate). Deliberately
+    /// warn-only at startup: the request-time gate is the enforcement.
     #[must_use]
     pub fn with_export_roots(mut self, roots: Vec<PathBuf>) -> Self {
         if !roots.is_empty() {
@@ -427,19 +428,29 @@ impl McpState {
 /// the declared export roots (#769).
 ///
 /// `process_export_pipeline` exports to `container.scraper_config.output_dir`
-/// and never goes through [`McpState::validate_export_dir`] (the #696/#1588
-/// gate), so this is the sole check for the operator's own `--output`-style
-/// config. A relative `output_dir` (the `ScraperConfig::default()` `"output"`)
-/// is skipped: like [`validate_export_dir`], it resolves against the server's
-/// CWD and the server's own boundary does not apply. Warn-only by design —
-/// no new rejection mode for a non-exploitable consistency gap.
+/// (which now DOES go through [`McpState::validate_export_dir`] at request
+/// time — XP-P-08/G-9, issue #1608), so this startup check is the early,
+/// operator-facing signal for the same inconsistency.
+///
+/// A relative `output_dir` (the `ScraperConfig::default()` `"output"`) is
+/// skipped: like [`validate_export_dir`], it resolves against the server's
+/// CWD and the server's own boundary does not apply. The shape decision goes
+/// through [`path_gate::classify`](crate::mcp_server::path_gate::classify)
+/// instead of the old platform-blind `Path::is_absolute()` (G-8, issue
+/// #1608): a configured `C:\exports` is not absolute on POSIX, and the #769
+/// warn used to silently skip it — a rooted form the request gate would
+/// reject must still surface at startup. Warn-only by design — #769
+/// semantics.
 ///
 /// Containment uses the shared #1588 helper
 /// [`resolved_within_roots`](crate::mcp_server::path_gate::resolved_within_roots)
 /// (symlinks resolved on both sides), so the startup check and the request
 /// gate never disagree about the same path.
 fn warn_if_configured_output_dir_outside_roots(output_dir: &Path, roots: &[PathBuf]) {
-    if !output_dir.is_absolute() {
+    if matches!(
+        path_gate::classify(&output_dir.to_string_lossy()),
+        path_gate::PathShape::Relative
+    ) {
         return;
     }
     if path_gate::resolved_within_roots(output_dir, roots) {
@@ -1023,5 +1034,32 @@ mod tests {
             .filter(|e| e.level == Level::WARN && e.message.contains(OUTSIDE_ROOTS_WARN))
             .count();
         assert_eq!(stray, 0, "a relative output_dir must not warn");
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn with_export_roots_warns_for_windows_rooted_output_dir_on_posix() {
+        // G-8 (issue #1608): the old `is_absolute()` probe was platform-blind
+        // — on POSIX a configured `C:\exports` is not absolute, so the #769
+        // warn silently skipped it. `path_gate::classify` decides the shape
+        // from the raw string, so the rooted form warns on every host. The
+        // roots fixture is irrelevant to the verdict: a `C:\`-prefixed path
+        // can never resolve under a Unix root either way.
+        ensure_global_subscriber();
+        let root = TempDir::new().expect("create root temp dir");
+        let container = container_with_output_dir(PathBuf::from("C:\\exports")).await;
+        let state = McpState::new(container);
+
+        let (_state, events) =
+            capture_events_during(|| state.with_export_roots(vec![root.path().to_path_buf()]));
+
+        let warns = events
+            .iter()
+            .filter(|e| e.level == Level::WARN && e.message.contains(OUTSIDE_ROOTS_WARN))
+            .count();
+        assert_eq!(
+            warns, 1,
+            "a Windows-style rooted output_dir must warn on every host"
+        );
     }
 }

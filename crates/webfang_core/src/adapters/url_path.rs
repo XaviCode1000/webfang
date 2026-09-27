@@ -16,6 +16,7 @@
 use std::path::PathBuf;
 use thiserror::Error;
 
+use crate::domain::crawler_port::filename::is_windows_reserved;
 use crate::domain::DomainError;
 use crate::OutputFormat;
 
@@ -48,15 +49,9 @@ fn truncate_with_hash(s: &str, max_bytes: usize) -> String {
     format!("{}_{:08x}", &s[..safe_cut], hash_val & 0xFFFF_FFFF)
 }
 
-/// Windows reserved device names (case-insensitive)
-/// https://learn.microsoft.com/en-us/windows/win32/fileio/naming-a-file
-///
-/// These names cannot be used as file names on Windows, regardless of extension.
-/// Attempting to create files with these names will crash on Windows.
-const WINDOWS_RESERVED: &[&str] = &[
-    "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
-    "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
-];
+// Windows reserved device names are shared with the domain filename port:
+// see `is_windows_reserved` (`domain::crawler_port::filename`), the single
+// vocabulary since issue #1608 (stem-aware, so `CON.txt` is covered too).
 
 /// Domain extracted from URL, validated and sanitized.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -233,9 +228,10 @@ impl UrlPath {
             .replace(' ', "_");
         let sanitized = Self::sanitize_path_segment(&slug);
 
-        // Check Windows reserved names (case-insensitive)
-        let upper = sanitized.to_uppercase();
-        let is_reserved = WINDOWS_RESERVED.iter().any(|&r| r == upper);
+        // Check Windows reserved names via the shared stem-aware helper
+        // (issue #1608): `CON.txt` is reserved on Windows (stem check), while
+        // `docs-page-CON` is not (no dot — the whole slug is the stem).
+        let is_reserved = is_windows_reserved(&sanitized);
         let final_name = if is_reserved {
             format!("{sanitized}_safe")
         } else {
@@ -672,6 +668,17 @@ mod tests {
         let url2 = UrlPath::from_url_path("/Con");
         let filename2 = url2.to_safe_filename();
         assert_eq!(filename2, "Con_safe.md");
+    }
+
+    #[test]
+    fn test_windows_reserved_stem_with_extension() {
+        // Issue #1608 (XP-P-04): the old exact-name check uppercased the WHOLE
+        // slug, so a reserved name carrying an extension (`CON.txt`) slipped
+        // through even though Windows treats everything up to the first dot
+        // as the device name. The shared stem-aware helper catches it.
+        let url = UrlPath::from_url_path("/CON.txt");
+        let filename = url.to_safe_filename();
+        assert_eq!(filename, "CON.txt_safe.md");
     }
 
     #[test]
