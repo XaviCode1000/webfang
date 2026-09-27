@@ -120,21 +120,18 @@ async fn sitemap_url_scrapes_listed_urls() {
     assert_snapshot_redacted("sitemap_url_scrapes_listed_urls", output.path(), exported);
 }
 
-/// Render one exported file for snapshotting, canonicalising JSONL.
+/// Render one exported file for snapshotting, comparing raw JSONL bytes.
 ///
-/// The JSONL writer emits `extra_metadata` as a `HashMap<String, String>`
-/// flattened into the record, so the key order in the serialized line
-/// follows that map's per-process hash seed and differs between runs.
-/// Round-tripping each line through `serde_json::Value` re-serializes it
-/// with sorted keys (`serde_json` is built without `preserve_order`, so
-/// `Value::Object` is a `BTreeMap`), which makes the snapshot stable without
-/// asserting anything about key order. Every other field - including
-/// `checksum_sha256` - is still compared verbatim.
+/// The JSONL writer emits `extra_metadata` as a `BTreeMap<String, String>`
+/// flattened into the record (#1595), so the key order in the serialized
+/// line is lexicographic and byte-stable across processes and runs. Raw
+/// lines are therefore compared verbatim — no `serde_json::Value`
+/// round-trip remains. Every field — including `checksum_sha256` — is
+/// asserted exactly as written.
 ///
-/// This normalizes a serialization detail, it does not weaken the
-/// assertion: `sitemap_crawl_run_staleness_test.rs` in webfang_mcp uses the
-/// same idiom for the same field. Non-JSONL files (Markdown) are returned
-/// untouched.
+/// This asserts the production ordering guarantee end to end:
+/// `sitemap_crawl_run_staleness_test.rs` in webfang_mcp uses the same idiom
+/// for the same field. Non-JSONL files (Markdown) are returned untouched.
 fn canonical_export(file: &std::path::Path) -> String {
     let raw =
         std::fs::read_to_string(file).unwrap_or_else(|e| panic!("read {}: {e}", file.display()));
@@ -144,11 +141,6 @@ fn canonical_export(file: &std::path::Path) -> String {
 
     raw.lines()
         .filter(|line| !line.trim().is_empty())
-        .map(|line| {
-            let value: serde_json::Value =
-                serde_json::from_str(line).unwrap_or_else(|e| panic!("{line:?} must be JSON: {e}"));
-            serde_json::to_string(&value).expect("a parsed Value always re-serializes")
-        })
         .collect::<Vec<_>>()
         .join("\n")
 }

@@ -1,5 +1,6 @@
 ---
 source: crates/webfang_core/tests/behavioral/main.rs
+assertion_line: 43
 expression: redacted
 ---
 ## 127.0.0.1/page-a.md
@@ -25,5 +26,5 @@ excerpt: Substantive content from sitemap page B, long enough to clear the fifty
 
 Substantive content from sitemap page B, long enough to clear the fifty character minimum content guard comfortably.
 ## export.jsonl
-{"checksum_sha256":"cfc38f5598770aafa7a538a4c67968b54fd1f9f661e25ce2c6e5fcaf27fc3653","content":"Page ASubstantive content from sitemap page A, long enough to clear the fifty character minimum content guard comfortably.","content_length":122,"extra_metadata":{"domain":"127.0.0.1","excerpt":"Substantive content from sitemap page A, long enough to clear the fifty character minimum content guard comfortably."},"metadata_version":"2.1.0","reading_time":1,"timestamp_utc":"<TIMESTAMP>","title":"Document: [127.0.0.1]","url":"http://127.0.0.1:<PORT>/page-a","word_count":18}
-{"checksum_sha256":"975e3dd42797a7af1414e632002e5bdeee3c5e62fa78ab8389c19e9b4c013620","content":"Page BSubstantive content from sitemap page B, long enough to clear the fifty character minimum content guard comfortably.","content_length":122,"extra_metadata":{"domain":"127.0.0.1","excerpt":"Substantive content from sitemap page B, long enough to clear the fifty character minimum content guard comfortably."},"metadata_version":"2.1.0","reading_time":1,"timestamp_utc":"<TIMESTAMP>","title":"Document: [127.0.0.1]","url":"http://127.0.0.1:<PORT>/page-b","word_count":18}
+{"url":"http://127.0.0.1:<PORT>/page-a","timestamp_utc":"<TIMESTAMP>","title":"Document: [127.0.0.1]","content":"Page ASubstantive content from sitemap page A, long enough to clear the fifty character minimum content guard comfortably.","checksum_sha256":"cfc38f5598770aafa7a538a4c67968b54fd1f9f661e25ce2c6e5fcaf27fc3653","metadata_version":"2.1.0","content_length":122,"word_count":18,"reading_time":1,"extra_metadata":{"domain":"127.0.0.1","excerpt":"Substantive content from sitemap page A, long enough to clear the fifty character minimum content guard comfortably."}}
+{"url":"http://127.0.0.1:<PORT>/page-b","timestamp_utc":"<TIMESTAMP>","title":"Document: [127.0.0.1]","content":"Page BSubstantive content from sitemap page B, long enough to clear the fifty character minimum content guard comfortably.","checksum_sha256":"975e3dd42797a7af1414e632002e5bdeee3c5e62fa78ab8389c19e9b4c013620","metadata_version":"2.1.0","content_length":122,"word_count":18,"reading_time":1,"extra_metadata":{"domain":"127.0.0.1","excerpt":"Substantive content from sitemap page B, long enough to clear the fifty character minimum content guard comfortably."}}

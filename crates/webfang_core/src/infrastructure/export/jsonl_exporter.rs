@@ -18,7 +18,7 @@
 //! - `language`: Detected language (optional)
 //! - `content_type`: Content type classification (optional)
 //! - `scrape_date`: Date of scrape (optional)
-//! - `extra_metadata`: Additional metadata HashMap (optional)
+//! - `extra_metadata`: Additional metadata BTreeMap (optional, keys in lexicographic order)
 
 use std::fs;
 
@@ -66,7 +66,7 @@ pub struct WebfangMetadata<'a> {
     pub scrape_date: Option<String>,
     /// Additional metadata (excerpt, author, etc.)
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub extra_metadata: Option<std::collections::HashMap<String, String>>,
+    pub extra_metadata: Option<std::collections::BTreeMap<String, String>>,
 }
 
 impl<'a> WebfangMetadata<'a> {
@@ -122,7 +122,13 @@ impl<'a> WebfangMetadata<'a> {
             if meta.is_empty() {
                 None
             } else {
-                Some(meta)
+                // #1595 — collect into BTreeMap so serde_json emits keys in
+                // lexicographic order, byte-stable across processes and runs.
+                // Membership preserved exactly; only the container changes.
+                Some(
+                    meta.into_iter()
+                        .collect::<std::collections::BTreeMap<_, _>>(),
+                )
             }
         };
 
@@ -592,5 +598,70 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
         let extra = value["extra_metadata"].as_object().unwrap();
         assert_eq!(extra["excerpt"], repaired);
+    }
+
+    // #1595 — byte-order pin: extra_metadata keys must serialize in ascending
+    // lexicographic order, stable across runs. Mirrors the record_store.rs
+    // determinism precedent (raw-string byte-position asserts, not
+    // parse-back-to-Value per-key asserts, which are order-blind by design).
+    #[test]
+    fn test_webfang_metadata_extra_metadata_key_order_sorted() {
+        use crate::domain::Validated;
+        use chrono::Utc;
+        use uuid::Uuid;
+
+        // Non-alphabetical insertion order: HashMap preserves no order here.
+        // Six residual keys make an accidental sorted order on HashMap
+        // measure-zero (1/720), so RED is robust, not lucky.
+        let mut meta = std::collections::HashMap::new();
+        meta.insert("zeta".to_string(), "sixth".to_string());
+        meta.insert("alpha".to_string(), "first".to_string());
+        meta.insert("mid".to_string(), "fourth".to_string());
+        meta.insert("beta".to_string(), "second".to_string());
+        meta.insert("omega".to_string(), "fifth".to_string());
+        meta.insert("gamma".to_string(), "third".to_string());
+        // Promoted keys must stay top-level record fields (duplicated in the
+        // map by the current membership contract — preserved exactly).
+        meta.insert("language".to_string(), "en".to_string());
+        meta.insert("content_type".to_string(), "article".to_string());
+
+        let chunk = crate::domain::DocumentChunkValidated {
+            id: Uuid::new_v4(),
+            url: "https://example.com/order".to_string(),
+            title: "Order Pin".to_string(),
+            content: "hello world content here".to_string(),
+            metadata: meta,
+            timestamp: Utc::now(),
+            embeddings: None,
+            correlation_id: None,
+            _state: std::marker::PhantomData::<Validated>,
+        };
+
+        // Repeated serialization of one fixed chunk is byte-identical.
+        let line1 = serde_json::to_string(&WebfangMetadata::from_chunk(&chunk)).unwrap();
+        let line2 = serde_json::to_string(&WebfangMetadata::from_chunk(&chunk)).unwrap();
+        assert_eq!(line1, line2, "same chunk must serialize byte-identical");
+
+        // Residual keys appear in strictly ascending lexicographic order
+        // in the raw line bytes.
+        let alpha_pos = line1.find("\"alpha\"").expect("alpha key in line");
+        let beta_pos = line1.find("\"beta\"").expect("beta key in line");
+        let gamma_pos = line1.find("\"gamma\"").expect("gamma key in line");
+        let mid_pos = line1.find("\"mid\"").expect("mid key in line");
+        let omega_pos = line1.find("\"omega\"").expect("omega key in line");
+        let zeta_pos = line1.find("\"zeta\"").expect("zeta key in line");
+        assert!(
+            alpha_pos < beta_pos
+                && beta_pos < gamma_pos
+                && gamma_pos < mid_pos
+                && mid_pos < omega_pos
+                && omega_pos < zeta_pos,
+            "extra_metadata keys must be byte-ordered alpha < beta < gamma < mid < omega < zeta, got: {line1}"
+        );
+
+        // Promoted keys remain top-level record fields.
+        let value: serde_json::Value = serde_json::from_str(&line1).unwrap();
+        assert_eq!(value["language"], "en");
+        assert_eq!(value["content_type"], "article");
     }
 }
