@@ -90,7 +90,7 @@ pub enum DispatchStatus {
 /// Open a note in Obsidian using the URI protocol.
 ///
 /// Uses `xdg-open` on Linux, `open` on macOS, `explorer.exe` on Windows
-/// (XP-S-01/XP-C-04, #1608 — see [`dispatch_windows`]).
+/// (XP-S-01/XP-C-04, #1608 — see `dispatch_windows`).
 /// Spawns the handler, waits (bounded — XP-S-06) for exit, and reports
 /// whether the system's protocol handler accepted the URI (issue #591 —
 /// honest dispatch).

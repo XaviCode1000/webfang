@@ -885,7 +885,8 @@ pub(crate) fn resolve_chrome_binary_with(candidates: &[&str], path_value: &str) 
 
 /// Process-PATH entry point for `resolve_chrome_binary_with`: the
 /// production resolution over the platform default candidates
-/// ([`default_chrome_candidates`]). Called once after the gate passes
+/// the platform default candidates (`default_chrome_candidates`). Called once
+/// after the gate passes
 /// (`main.rs` 6c); the result travels in `CrawlOptions.network.chrome_binary`
 /// so the launcher runs exactly the certified binary.
 pub fn resolve_chrome_binary() -> Option<PathBuf> {
