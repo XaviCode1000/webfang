@@ -131,10 +131,7 @@ fn detect_keyring() -> bool {
 /// recomendarlo. La versión anterior trataba "cualquier error no de
 /// plataforma" como disponible, lo que daba por bueno un backend roto.
 fn probe_reports_operational_backend(result: &Result<String, keyring::Error>) -> bool {
-    matches!(
-        result,
-        Ok(_) | Err(keyring::Error::NoEntry)
-    )
+    matches!(result, Ok(_) | Err(keyring::Error::NoEntry))
 }
 
 fn detect_default_encrypted_file() -> Option<PathBuf> {
@@ -174,7 +171,9 @@ mod tests {
     #[test]
     fn probe_ok_or_noentry_means_backend_available() {
         assert!(probe_reports_operational_backend(&Ok("secret".into())));
-        assert!(probe_reports_operational_backend(&Err(keyring::Error::NoEntry)));
+        assert!(probe_reports_operational_backend(&Err(
+            keyring::Error::NoEntry
+        )));
     }
 
     /// XP-K-02 core: EVERY other error — including non-platform ones the old
@@ -198,7 +197,9 @@ mod tests {
         assert!(!probe_reports_operational_backend(&Err(
             keyring::Error::TooLong("service".into(), 32)
         )));
-        assert!(!probe_reports_operational_backend(&Err(keyring::Error::Ambiguous(Vec::new()))));
+        assert!(!probe_reports_operational_backend(&Err(
+            keyring::Error::Ambiguous(Vec::new())
+        )));
     }
 
     /// Regla institucional fijada con la evidencia de persistencia (docs de

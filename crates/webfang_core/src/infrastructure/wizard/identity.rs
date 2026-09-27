@@ -193,9 +193,7 @@ mod tests {
             // verificables aquí son: el archivo quedó en disco y el temporal
             // de la escritura atómica fue limpiado por el rename.
             assert!(
-                !path
-                    .with_file_name(".identity.key.tmp")
-                    .exists(),
+                !path.with_file_name(".identity.key.tmp").exists(),
                 "el temporal de la escritura atómica debe desaparecer tras el rename"
             );
         }
@@ -240,9 +238,7 @@ mod tests {
             // quedó ningún temporal con el secreto a medio escribir.
             assert!(path.exists(), "la identity debe existir");
             assert!(
-                !std::fs::read(&path)
-                    .expect("legible")
-                    .is_empty(),
+                !std::fs::read(&path).expect("legible").is_empty(),
                 "la identity no debe estar vacía"
             );
             assert!(

@@ -532,7 +532,9 @@ mod tests {
         let root = workspace_root_from_manifest(manifest);
         assert_eq!(
             path,
-            root.join("target").join("debug").join(expected_binary_name())
+            root.join("target")
+                .join("debug")
+                .join(expected_binary_name())
         );
 
         // The two-hop root must be the real workspace root: it holds the

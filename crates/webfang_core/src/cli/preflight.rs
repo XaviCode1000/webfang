@@ -825,7 +825,10 @@ const DEFAULT_CHROME_CANDIDATES: [&str; 4] = [
 fn default_chrome_candidates() -> Vec<String> {
     #[cfg(not(any(windows, target_os = "macos")))]
     {
-        DEFAULT_CHROME_CANDIDATES.iter().map(|s| (*s).into()).collect()
+        DEFAULT_CHROME_CANDIDATES
+            .iter()
+            .map(|s| (*s).into())
+            .collect()
     }
     #[cfg(windows)]
     {
@@ -2296,7 +2299,13 @@ mod tests {
         let candidates = bare_name_candidates("chrome", Some(".COM;.EXE;.BAT;.CMD"));
         assert_eq!(
             candidates,
-            ["chrome", "chrome.com", "chrome.exe", "chrome.bat", "chrome.cmd"]
+            [
+                "chrome",
+                "chrome.com",
+                "chrome.exe",
+                "chrome.bat",
+                "chrome.cmd"
+            ]
         );
     }
 
@@ -2312,7 +2321,11 @@ mod tests {
 
         let names = vec!["google-chrome".to_string(), "chromium".to_string()];
         let resolved = first_existing_in_dirs(
-            std::env::split_paths(&format!("{}:{}", dir1.path().display(), dir2.path().display())),
+            std::env::split_paths(&format!(
+                "{}:{}",
+                dir1.path().display(),
+                dir2.path().display()
+            )),
             &names,
         )
         .expect("a candidate must resolve");
@@ -2346,11 +2359,8 @@ mod tests {
         std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755))
             .expect("chmod +x probe");
 
-        let output = run_version_probe_with_timeout(
-            &bin_path,
-            std::time::Duration::from_secs(5),
-        )
-        .expect("probe must complete");
+        let output = run_version_probe_with_timeout(&bin_path, std::time::Duration::from_secs(5))
+            .expect("probe must complete");
         assert!(output.status.success());
         assert!(String::from_utf8_lossy(&output.stdout).contains("0.2.0"));
     }

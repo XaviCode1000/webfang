@@ -313,8 +313,7 @@ mod tests {
 
         // kill_on_drop sends the signal without waiting for the reap: poll
         // briefly until the process is gone (or a zombie).
-        let pid_raw =
-            std::fs::read_to_string(&pid_path).expect("fake obscura must record its pid");
+        let pid_raw = std::fs::read_to_string(&pid_path).expect("fake obscura must record its pid");
         let pid: i32 = pid_raw.trim().parse().expect("integer pid");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
         loop {

@@ -408,8 +408,7 @@ mod tests {
             .spawn()
             .expect("spawn sleep");
         let started = std::time::Instant::now();
-        let outcome =
-            wait_for_exit_with_timeout(&mut child, std::time::Duration::from_millis(150));
+        let outcome = wait_for_exit_with_timeout(&mut child, std::time::Duration::from_millis(150));
         assert!(outcome.is_none(), "sleep 30 must hit the 150ms deadline");
         // The kill must have happened at (not long after) the deadline.
         assert!(

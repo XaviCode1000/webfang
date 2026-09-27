@@ -69,10 +69,7 @@ mod tests {
         use webfang_test_utils::EnvGuard;
 
         let tmp = tempfile::TempDir::new().expect("tmpdir");
-        let guard = EnvGuard::with(&[(
-            "XDG_CONFIG_HOME",
-            tmp.path().to_str().expect("utf8 tmp"),
-        )]);
+        let guard = EnvGuard::with(&[("XDG_CONFIG_HOME", tmp.path().to_str().expect("utf8 tmp"))]);
         assert_eq!(config_base_dir(), Some(tmp.path().to_path_buf()));
         drop(guard);
     }
@@ -83,10 +80,7 @@ mod tests {
         use webfang_test_utils::EnvGuard;
 
         let tmp = tempfile::TempDir::new().expect("tmpdir");
-        let guard = EnvGuard::with(&[(
-            "XDG_CACHE_HOME",
-            tmp.path().to_str().expect("utf8 tmp"),
-        )]);
+        let guard = EnvGuard::with(&[("XDG_CACHE_HOME", tmp.path().to_str().expect("utf8 tmp"))]);
         assert_eq!(cache_base_dir(), Some(tmp.path().to_path_buf()));
         drop(guard);
     }
