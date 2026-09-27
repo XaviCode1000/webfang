@@ -47,9 +47,18 @@ pub struct UserAgentCache {
 }
 
 impl UserAgentCache {
-    /// Get cache file path: ~/.cache/webfang/user_agents.json
+    /// Get cache file path: `<cache base>/webfang/user_agents.json`
+    ///
+    /// Resolved through the domain `paths` helper (the ONE base-dir
+    /// definition, XP-F-05) instead of `dirs::cache_dir()` directly:
+    /// `dirs` honors `$XDG_CACHE_HOME` on Linux only, so on Windows and
+    /// macOS this cache silently read and wrote the operator's real profile
+    /// directory, and tests injecting an absolute `XDG_CACHE_HOME` (#1126
+    /// hermeticity contract) never saw their cache served — exactly the
+    /// non-Linux failure of
+    /// `test_fresh_cache_served_from_disk_off_the_executor`.
     fn cache_path() -> PathBuf {
-        dirs::cache_dir()
+        crate::domain::paths::cache_base_dir()
             .unwrap_or_else(|| PathBuf::from("."))
             .join("webfang")
             .join("user_agents.json")
