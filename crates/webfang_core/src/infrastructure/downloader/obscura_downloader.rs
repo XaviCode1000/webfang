@@ -1,7 +1,10 @@
 //! Obscura subprocess downloader.
 //!
-//! Wraps the `obscura` CLI tool via `std::process::Command`, executed inside
-//! `tokio::task::spawn_blocking` to avoid blocking the async runtime.
+//! Wraps the `obscura` CLI tool via `tokio::process::Command`, which keeps the
+//! runtime non-blocking and — crucially — owns the child handle so the
+//! timeout can kill it (XP-S-05, #1608): `kill_on_drop(true)` terminates the
+//! subprocess when the `Child` future is dropped, so a timed-out fetch never
+//! leaves an orphaned obscura process behind.
 //! Returns **HTML** output (`fetch --dump html`, #793) so Readability,
 //! CSS-selector extraction, and WAF inspection receive the format they expect;
 //! the returned [`FetchedPage`] carries a `content-type: text/html` header
@@ -22,12 +25,12 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::Duration;
 
 use futures::future::BoxFuture;
+use tokio::process::Command;
 use tokio::time::timeout;
-use tracing::{debug, instrument, Instrument};
+use tracing::{debug, instrument};
 use url::Url;
 
 use super::{DownloadError, Downloader, FetchedPage};
@@ -125,19 +128,27 @@ impl ObscuraDownloader {
         }
         // LCOV_EXCL_STOP
 
-        let result = timeout(
-            self.timeout,
-            tokio::task::spawn_blocking(move || {
-                Command::new(&binary)
-                    .args(["fetch", "--dump", "html", &url_string])
-                    .output()
-            })
-            .in_current_span(),
-        )
-        .await;
+        // XP-S-05 (#1608): the child handle is owned by the awaited future
+        // with `kill_on_drop(true)`. On timeout the future (and the handle)
+        // is dropped, which terminates the subprocess — no orphaned obscura
+        // keeps fetching after the caller gave up. No Mutex is held across
+        // the await: the `Child` is moved into the future, never shared.
+        let mut command = Command::new(&binary);
+        command
+            .args(["fetch", "--dump", "html", &url_string])
+            .kill_on_drop(true)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+
+        let child = command.spawn().map_err(|e| {
+            DownloadError::Internal(format!("obscura process failed to start: {e}"))
+        })?;
+
+        let result = timeout(self.timeout, child.wait_with_output()).await;
 
         match result {
-            Ok(Ok(Ok(output))) => {
+            Ok(Ok(output)) => {
                 if !output.status.success() {
                     let stderr = String::from_utf8_lossy(&output.stderr);
                     return Err(DownloadError::Internal(format!(
@@ -158,10 +169,9 @@ impl ObscuraDownloader {
                     cookies: vec![],
                 })
             },
-            Ok(Ok(Err(e))) => Err(DownloadError::Internal(format!(
-                "obscura process failed to start: {e}"
+            Ok(Err(e)) => Err(DownloadError::Internal(format!(
+                "obscura process failed while running: {e}"
             ))),
-            Ok(Err(_)) => Err(DownloadError::Timeout(self.timeout.as_secs())),
             Err(_) => Err(DownloadError::Timeout(self.timeout.as_secs())),
         }
     }
@@ -252,6 +262,72 @@ mod tests {
             matches!(result, DownloadError::Internal(_)),
             "expected a spawn failure, got: {result:?}"
         );
+    }
+
+    // ---- XP-S-05 (#1608) — the timeout kills the child ------------------
+
+    /// /proc/<pid>/stat process state, if the process exists. `Z` (zombie)
+    /// counts as dead: the kernel slot lingers until reaped, but the process
+    /// no longer runs.
+    #[cfg(unix)]
+    fn linux_process_state(pid: i32) -> Option<char> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        // The comm field may contain spaces; everything after its closing
+        // paren starts with the state char.
+        let after_comm = stat.rsplit(") ").next()?;
+        after_comm.split_whitespace().next()?.chars().next()
+    }
+
+    /// XP-S-05 (#1608): a fetch that exceeds the timeout must TERMINATE the
+    /// obscura subprocess instead of abandoning it (the old `spawn_blocking`
+    /// + `output()` path orphaned the child). The fake binary records its
+    /// pid and sleeps far past the timeout; after the fetch reports
+    /// `Timeout`, the process must be gone (kill_on_drop).
+    #[cfg_attr(miri, ignore)] // Command::spawn unsupported by Miri (#775)
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn timed_out_fetch_kills_the_obscura_child() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let bin_path = tmp.path().join("obscura");
+        let pid_path = tmp.path().join("pid.txt");
+        let script = format!(
+            "#!/bin/sh\nif [ \"$1\" = \"fetch\" ]; then\n  echo $$ > \"{pid}\"\n  sleep 30\nfi\n",
+            pid = pid_path.display(),
+        );
+        std::fs::write(&bin_path, script).expect("write fake obscura");
+        std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod +x fake obscura");
+
+        let dl = ObscuraDownloader::new(1, &bin_path);
+        let url: Url = "https://example.com/slow".parse().expect("valid test URL");
+        let err = dl
+            .fetch(&url)
+            .await
+            .expect_err("a fetch past the timeout must fail");
+        assert!(
+            matches!(err, DownloadError::Timeout(1)),
+            "expected Timeout, got: {err:?}"
+        );
+
+        // kill_on_drop sends the signal without waiting for the reap: poll
+        // briefly until the process is gone (or a zombie).
+        let pid_raw =
+            std::fs::read_to_string(&pid_path).expect("fake obscura must record its pid");
+        let pid: i32 = pid_raw.trim().parse().expect("integer pid");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            let dead = match linux_process_state(pid) {
+                None => true,
+                Some(state) => state == 'Z',
+            };
+            if dead || std::time::Instant::now() >= deadline {
+                assert!(dead, "obscura child (pid {pid}) survived the timeout");
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
     }
 
     // ---- #793 — fake obscura executable --------------------------------
