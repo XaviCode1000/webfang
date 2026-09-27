@@ -41,6 +41,7 @@ pub mod local_secret_store;
 /// typestate wrapper). See module docs for the legacy-encoding mapping.
 pub mod page_state;
 pub mod pattern_matching;
+pub mod paths;
 /// Pipeline stage definitions and scraped item types for the crawl pipeline.
 pub mod pipeline_item;
 pub mod ports;

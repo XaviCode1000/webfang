@@ -69,10 +69,14 @@ impl ConfigDefaults {
 ///
 /// Shared by the CLI and MCP composition roots so both read the same
 /// `[[providers]]` declarations (#1462): the daemon owns no argv, and only
-/// this file can carry its embedding-slot selection.
+/// this file can carry its embedding-slot selection. The base comes from
+/// the single platform-paths helper (XP-F-05, #1608): `dirs::config_dir()`
+/// — XDG on Linux (unchanged behavior), %APPDATA% on Windows,
+/// ~/Library/Application Support on macOS. The `.` fallback keeps this
+/// site's previous fail-soft behavior when no user home exists.
 #[must_use]
 pub fn resolve_config_path() -> std::path::PathBuf {
-    dirs::config_dir()
+    crate::domain::paths::config_base_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("webfang")
         .join("config.toml")

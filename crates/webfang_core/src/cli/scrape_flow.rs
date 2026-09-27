@@ -38,19 +38,20 @@ use crate::application::adaptive_engine::AdaptiveSelectorEngine;
 #[cfg(not(feature = "adaptive-selectors"))]
 type AdaptiveSelectorEngine = ();
 
-/// Resolve the default state directory (XDG_CACHE_HOME or `~/.cache/webfang/state`).
+/// Resolve the default state directory (`<cache>/webfang/state` —
+/// XDG_CACHE_HOME or `~/.cache` on Linux; %LOCALAPPDATA% / ~/Library/Caches
+/// elsewhere).
 ///
-/// Pure helper extracted for `PersistenceMode::from_config` callers.
+/// Pure helper extracted for `PersistenceMode::from_config` callers. The
+/// base comes from the single platform-paths helper (XP-F-05, #1608); the
+/// fallback keeps this site's previous fail-soft behavior when no user home
+/// exists.
 #[must_use]
 pub fn resolve_default_state_dir() -> PathBuf {
-    let cache_base = std::env::var("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| {
-            dirs::home_dir()
-                .unwrap_or_else(|| PathBuf::from("."))
-                .join(".cache")
-        });
-    cache_base.join("webfang").join("state")
+    crate::domain::paths::cache_base_dir()
+        .unwrap_or_else(|| PathBuf::from(".cache"))
+        .join("webfang")
+        .join("state")
 }
 
 /// Apply resume mode filtering via `PersistenceMode`.

@@ -89,14 +89,15 @@ fn recommendation_for(keyring_available: bool, detected: &Option<PathBuf>) -> Au
     recommendation
 }
 
-/// Ruta por defecto del almacén cifrado (`~/.config/webfang/credentials.age`),
-/// respetando `XDG_CONFIG_HOME`.
+/// Ruta por defecto del almacén cifrado (`<config>/webfang/credentials.age`).
+///
+/// XP-F-05 (#1608): la base sale del helper único de platform paths
+/// (`dirs::config_dir`); en Linux respeta `XDG_CONFIG_HOME` como antes.
 fn default_encrypted_file_path() -> PathBuf {
-    let dir = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::home_dir().map(|h| h.join(".config")))
-        .unwrap_or_else(|| PathBuf::from(".config"));
-    dir.join("webfang").join("credentials.age")
+    crate::domain::paths::config_base_dir()
+        .unwrap_or_else(|| PathBuf::from(".config"))
+        .join("webfang")
+        .join("credentials.age")
 }
 
 /// Comprueba el backend de keyring compilado para la plataforma actual.

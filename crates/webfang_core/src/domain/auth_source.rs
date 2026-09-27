@@ -125,18 +125,22 @@ fn resolve_keyring(service: &str, account: &str) -> Result<ApiKey, AuthError> {
 /// corto de CI, nunca el default que el wizard recomienda.
 const AGE_IDENTITY_ENV: &str = "WEBFANG_AGE_IDENTITY";
 
-/// Ruta por defecto de la identidad `age` local (`~/.config/webfang/identity.key`),
-/// respetando `XDG_CONFIG_HOME`.
+/// Ruta por defecto de la identidad `age` local
+/// (`<config>/webfang/identity.key`, según la plataforma vía
+/// [`crate::domain::paths`]: XDG en Linux, %APPDATA% en Windows).
 ///
 /// `pub(crate)`: el wizard (`infrastructure::wizard`) reutiliza esta ruta para
 /// generar el archivo — una sola definición de "dónde vive la identity", no dos
 /// que puedan divergir.
 pub(crate) fn default_identity_path() -> std::path::PathBuf {
-    let dir = std::env::var_os("XDG_CONFIG_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::home_dir().map(|h| h.join(".config")))
-        .unwrap_or_else(|| std::path::PathBuf::from(".config"));
-    dir.join("webfang").join("identity.key")
+    // XP-F-05 (#1608): la base sale del helper único de platform paths
+    // (`dirs::config_dir` — XDG en Linux, %APPDATA% en Windows, ~/Library/
+    // Application Support en macOS). El fallback ".config" es el fail-soft
+    // que este sitio ya tenía cuando no hay home.
+    crate::domain::paths::config_base_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from(".config"))
+        .join("webfang")
+        .join("identity.key")
 }
 
 /// Resuelve la identidad `age`: env si está configurado (override de CI),
