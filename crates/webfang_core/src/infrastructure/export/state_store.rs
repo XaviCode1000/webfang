@@ -18,7 +18,6 @@ use crate::domain::entities::StateVersion;
 use crate::domain::exporter::StateStorePort;
 use crate::domain::ExportState;
 use crate::error::ScraperError;
-use dirs::cache_dir;
 use tracing::{debug, info, warn};
 
 /// StateStore manages persistence of export state for a specific domain
@@ -53,9 +52,11 @@ impl StateStore {
     /// ```
     #[must_use]
     pub fn new(domain: &str) -> Self {
-        // Get cache directory using dirs crate
-        // Following **mem-with-capacity**: Pre-allocate path buffer
-        let mut cache_dir = cache_dir().unwrap_or_else(|| PathBuf::from(".cache"));
+        // Get cache directory through the platform base-dir helper (XP-F-05,
+        // #1608): honors absolute XDG overrides on every platform, so test
+        // hermeticity (#1126) holds off Linux too.
+        let mut cache_dir =
+            crate::domain::paths::cache_base_dir().unwrap_or_else(|| PathBuf::from(".cache"));
         cache_dir.push("webfang");
         cache_dir.push("state");
 

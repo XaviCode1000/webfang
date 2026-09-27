@@ -205,7 +205,8 @@ impl RecordStore {
         let mut path = match &self.state_dir {
             Some(dir) => dir.clone(),
             None => {
-                let mut p = dirs::cache_dir().unwrap_or_else(|| PathBuf::from(".cache"));
+                let mut p = crate::domain::paths::cache_base_dir()
+                    .unwrap_or_else(|| PathBuf::from(".cache"));
                 p.push("webfang");
                 p.push("state");
                 p
