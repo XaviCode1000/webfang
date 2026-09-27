@@ -35,6 +35,33 @@ else
 fi
 
 # --- helpers (fail-closed: any failure aborts combo) ---
+
+# Map a combo flags token to cargo feature arguments for `-p webfang_core`,
+# mirroring compile()/start_build(): `default` → no flags (the package
+# default), `full` → --all-features, `--no-default-features` → the cargo
+# switch itself, anything else → --features <list>. Emits one word per line
+# (empty for `default`); callers collect with a read loop.
+core_feature_args() {
+  case "$1" in
+    default) ;;
+    --no-default-features) printf '%s\n' "--no-default-features" ;;
+    full) printf '%s\n' "--all-features" ;;
+    *) printf '%s\n' "--features" "$1" ;;
+  esac
+}
+
+# Run a command with its output captured; on success return 0 (output
+# discarded), on failure print the last 40 lines to stderr and return the
+# failing status. Keeps CI logs small while staying fail-closed.
+run_logged() {
+  local out
+  if out=$("$@" 2>&1); then
+    return 0
+  fi
+  printf '%s\n' "$out" | tail -40 >&2
+  return 1
+}
+
 compile() {
   local flags="$1"
   local name="$2"
@@ -77,13 +104,22 @@ crawl_check() {
   local flags="$1"
   local name="$2"
   echo "  [crawl] $name ($flags)"
-  # Behavioral harness via wiremock: run a single filtered nextest test if available,
-  # otherwise fallback to compile-check of behavioral suite.
+  local -a fargs=()
+  local w
+  while IFS= read -r w; do fargs+=("$w"); done < <(core_feature_args "$flags")
+  # Behavioral harness via wiremock: run the crawl-filtered behavioral suite
+  # if it is available, otherwise fallback to compile-check of core.
   if cargo nextest run -p webfang_core --lib -- --list 2>/dev/null | grep -q "behavioral"; then
-    cargo nextest run -p webfang_core --features "$flags" --test behavioral -- crawl 2>&1 | tail -5 || true
+    if ! run_logged cargo nextest run -p webfang_core "${fargs[@]}" --no-tests fail --test behavioral crawl; then
+      echo "FAIL crawl $name" >&2
+      return 1
+    fi
   else
     # Fallback: at least check that core lib compiles with this feature set
-    cargo check -p webfang_core --features "$flags" --tests >/dev/null
+    if ! run_logged cargo check -p webfang_core "${fargs[@]}" --tests; then
+      echo "FAIL crawl $name (fallback compile-check)" >&2
+      return 1
+    fi
   fi
 }
 
@@ -91,6 +127,9 @@ resume_check() {
   local flags="$1"
   local name="$2"
   echo "  [resume] $name ($flags)"
+  local -a fargs=()
+  local w
+  while IFS= read -r w; do fargs+=("$w"); done < <(core_feature_args "$flags")
   # Pre-seed StateStore and verify round-trip + corrupt degrade
   tmp=$(mktemp -d)
   trap 'rm -rf "$tmp"' RETURN
@@ -100,28 +139,62 @@ resume_check() {
 {"domain":"example.com","version":1,"processed_urls":["https://example.com/a"],"last_export":null,"total_exported":1}
 JSON
   # Load via StateStore test harness (uses same serde path as --resume)
-  cargo nextest run -p webfang_core --features "$flags" -- test_load_or_default_keeps >/dev/null 2>&1 || true
+  local rc=0
+  if ! run_logged cargo nextest run -p webfang_core "${fargs[@]}" --no-tests fail --lib test_load_or_default_keeps; then
+    echo "FAIL resume $name (fresh state round-trip)" >&2
+    rc=1
+  fi
   # Corrupted JSON — should degrade (propagate Serialization, filter returns all URLs)
   echo "not json {{{" > "$tmp/webfang/state/example.com.json"
-  cargo nextest run -p webfang_core --features "$flags" -- test_load_or_default_corrupt >/dev/null 2>&1 || true
+  if ! run_logged cargo nextest run -p webfang_core "${fargs[@]}" --no-tests fail --lib test_load_or_default_corrupt; then
+    echo "FAIL resume $name (corrupt state degrade)" >&2
+    rc=1
+  fi
+  if [ "$rc" -ne 0 ]; then
+    return 1
+  fi
   echo "  resume fresh+corrupt ok ($name)"
 }
 
 failure_path_check() {
-  local name="$1"
-  echo "  [failure-path] $name"
-  # 65: --output-vectors without vectors; 74: bad state-dir; 77: all-blocked
-  # We run via cargo nextest behavioral error_path suite where possible.
-  if [ -x "./target/debug/webfang" ]; then
-    set +e
-    ./target/debug/webfang --output-vectors --url https://example.com >/dev/null 2>&1; rc=$?; [ "$rc" -eq 65 ] || echo "  warn: expected 65 got $rc (ok if no vectors feature)"
-    ./target/debug/webfang --resume --state-dir /dev/null/nope --url https://example.com >/dev/null 2>&1; rc=$?; [ "$rc" -eq 74 ] || echo "  warn: expected 74 got $rc"
-    set -e
-  else
-    echo "  skip failure-path (binary not built)"
+  local flags="$1"
+  local name="$2"
+  echo "  [failure-path] $name ($flags)"
+  # Deterministic, pre-network exit contracts, asserted per combo:
+  #   65: --output-vectors <path> on a build WITH the `ai` feature but
+  #       without --clean-ai (data-format error, #703);
+  #   78: --output-vectors <path> on a build WITHOUT the `ai` feature
+  #       (config error, #652).
+  # Both gates fire in run() before any fetch, so they are feature- and
+  # network-independent. (The old bad --state-dir probe is dropped: record
+  # store persist failures are advisory by design (#1230/#1247) — logged,
+  # never fatal — so that command's exit code is network-dependent, not a
+  # state contract. The 69/74 I/O classes stay pinned by the error_path
+  # suite, which runs against wiremock.)
+  local expected_vectors=78
+  case "$flags" in
+    ai|full|ai,persistence) expected_vectors=65 ;;
+  esac
+  local -a fargs=()
+  local w
+  while IFS= read -r w; do fargs+=("$w"); done < <(core_feature_args "$flags")
+  if [ ! -x "./target/debug/webfang" ]; then
+    echo "FAIL failure-path $name: binary not built at ./target/debug/webfang" >&2
+    return 1
   fi
-  # Also run behavioral error_path tests if present
-  cargo nextest run -p webfang_core -- error_path 2>&1 | tail -3 || true
+  set +e
+  ./target/debug/webfang --output-vectors vectors-compat.tmp --url https://example.com >/dev/null 2>&1
+  rc=$?
+  set -e
+  if [ "$rc" -ne "$expected_vectors" ]; then
+    echo "FAIL failure-path $name: --output-vectors expected $expected_vectors got $rc" >&2
+    return 1
+  fi
+  if ! run_logged cargo nextest run -p webfang_core "${fargs[@]}" --no-tests fail --test behavioral error_path; then
+    echo "FAIL failure-path $name (error_path tests)" >&2
+    return 1
+  fi
+  echo "  failure-path ok ($name)"
 }
 
 # --- main loop ---
@@ -136,7 +209,7 @@ for c in "${COMBOS[@]}"; do
   if ! help_check "$name"; then echo "FAIL $name --help"; overall_fail=1; continue; fi
   if ! crawl_check "$flags" "$name"; then echo "FAIL $name crawl"; overall_fail=1; continue; fi
   if ! resume_check "$flags" "$name"; then echo "FAIL $name resume"; overall_fail=1; continue; fi
-  if ! failure_path_check "$name"; then echo "FAIL $name failure-path"; overall_fail=1; continue; fi
+  if ! failure_path_check "$flags" "$name"; then echo "FAIL $name failure-path"; overall_fail=1; continue; fi
   echo "PASS $name"
 done
 
