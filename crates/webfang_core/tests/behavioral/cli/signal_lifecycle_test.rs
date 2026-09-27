@@ -16,6 +16,16 @@
 //!
 //! Determinism: the signal moment is pinned by wiremock's request log, not by
 //! sleeps; wiremock delays only slow the crawl so the signal lands mid-run.
+//!
+//! Portability: every test that DELIVERS a signal is unix-only. Windows has no
+//! POSIX signal delivery to another process — the `kill` on the runner is
+//! MSYS's, and it never reaches the child as a console control event, so the
+//! assertions measured the harness instead of the product (#1631). The product
+//! DOES wire the Windows drain path (`tokio::signal::ctrl_c()` under
+//! `cfg(not(unix))`), but reaching it from a test needs a console-control
+//! trigger this crate does not have; that coverage belongs with XP-S-02
+//! (#1608), not with a cfg here.
+#![cfg_attr(not(unix), allow(dead_code))]
 
 use crate::BehavioralTest;
 use std::collections::BTreeMap;
@@ -123,7 +133,11 @@ fn send_signal(child: &Child, signal: &str, what: &str) {
 
 /// Wait for the child to exit on its own; fail (after SIGKILL) if it exceeds
 /// [`EXIT_TIMEOUT`] — a graceful shutdown must not hang.
-fn wait_exit(mut child: Child, what: &str) -> std::process::ExitStatus {
+///
+/// Takes the [`KillOnDrop`] handle by value: `Deref` covers the method calls
+/// below, but a by-value argument needs the guard itself so the kill-on-drop
+/// guarantee survives this call too.
+fn wait_exit(mut child: KillOnDrop, what: &str) -> std::process::ExitStatus {
     let deadline = Instant::now() + EXIT_TIMEOUT;
     loop {
         match child.try_wait().expect("try_wait") {
@@ -139,11 +153,42 @@ fn wait_exit(mut child: Child, what: &str) -> std::process::ExitStatus {
     }
 }
 
+/// A `Child` that dies with its handle. `std::process::Child` has no
+/// kill-on-drop (that is `tokio::process::Command`'s), and a dropped `Child`
+/// does not reap: a crawl that is still running when an assertion panics
+/// survives the test and nextest reports it LEAKY, burying the real failure
+/// under process noise — the exact `FL+LK` shape recorded in #1631. `Deref`
+/// keeps `send_signal`/`wait_exit` reading the handle they always did.
+struct KillOnDrop(Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        // Best-effort and deliberately ignored: after `wait_exit` reaped the
+        // child, `kill` fails with ESRCH (or the Windows equivalent) and that
+        // is the success case, not an error worth reporting.
+        let _ = self.0.kill();
+    }
+}
+
+impl std::ops::Deref for KillOnDrop {
+    type Target = Child;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for KillOnDrop {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
 /// Spawn the real binary as a bare `std::process::Command` with piped
 /// output, replicating the harness's hermetic env (no `WEBFANG_*`/AI model
 /// poisoning, fresh `XDG_CACHE_HOME`) — needed because the test must hold
 /// the child handle to deliver the signal.
-fn spawn_webfang(args: &[String], cache_dir: &std::path::Path, what: &str) -> Child {
+fn spawn_webfang(args: &[String], cache_dir: &std::path::Path, what: &str) -> KillOnDrop {
     let mut c = Command::new(crate::common::webfang_path());
     c.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
     for (k, _) in std::env::vars() {
@@ -159,8 +204,10 @@ fn spawn_webfang(args: &[String], cache_dir: &std::path::Path, what: &str) -> Ch
         webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
         "1",
     );
-    c.spawn()
-        .unwrap_or_else(|e| panic!("{what}: spawn failed: {e}"))
+    KillOnDrop(
+        c.spawn()
+            .unwrap_or_else(|e| panic!("{what}: spawn failed: {e}")),
+    )
 }
 
 /// Mount a sitemap listing exactly `paths` and return the sitemap URL.
@@ -346,6 +393,11 @@ async fn p85_signal_case(signal: &str, label: &'static str) {
 
 /// P8-5 — SIGINT mid-scrape shuts down gracefully and the state is resumable
 /// with zero duplicate fetches (ADR-0016 §3 "After signal" row).
+///
+/// Unix-only: see the module header — the signal cannot be delivered to a
+/// child process on Windows, so the run would assert on the harness, not on
+/// the product (#1631).
+#[cfg(unix)]
 #[tokio::test]
 async fn p85_sigint_shutdown_is_resumable() {
     p85_signal_case("INT", "SIGINT run").await;
@@ -353,6 +405,11 @@ async fn p85_sigint_shutdown_is_resumable() {
 
 /// P8-5 — SIGTERM behaves exactly like SIGINT: graceful drain, persisted
 /// state, idempotent resume.
+///
+/// Unix-only (SIGTERM does not exist on Windows): the product registers only
+/// `tokio::signal::ctrl_c()` there (`cli/shutdown.rs`), so a SIGTERM case can
+/// never observe the drain semantics it asserts.
+#[cfg(unix)]
 #[tokio::test]
 async fn p85_sigterm_shutdown_is_resumable() {
     p85_signal_case("TERM", "SIGTERM run").await;
@@ -377,6 +434,10 @@ async fn p85_sighup_shutdown_is_resumable() {
 /// the resumed run does not replay a foreign frontier: every page is fetched
 /// at most twice (once per run) and the resumed crawl stays inside its own
 /// budget (ADR-0016 §3, checkpoint-as-scheduling-state).
+///
+/// Unix-only: the SIGINT delivery is the same non-portable step as P8-5
+/// (#1631), and the checkpoint frontier is only reachable through it.
+#[cfg(unix)]
 #[tokio::test]
 async fn f39_sigint_checkpoint_frontier_is_bounded() {
     const MAX_PAGES: usize = 5;
