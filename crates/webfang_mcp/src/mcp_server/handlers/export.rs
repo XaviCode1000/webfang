@@ -510,6 +510,7 @@ mod tests {
 #[cfg(test)]
 mod handler_tests {
     use super::*;
+    use crate::mcp_server::path_gate::host_abs;
     /// Test helper: build an `McpUrl` from a KNOWN-VALID http(s) string.
     fn vu(s: &str) -> crate::mcp_server::params::McpUrl {
         s.parse().expect("test url must be valid http(s)")
@@ -820,7 +821,9 @@ mod handler_tests {
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .export_file(Parameters(ExportFileParams {
-                output_dir: "/tmp/webfang-mcp-exploit".to_string(),
+                // `host_abs`: host-appropriate absolute spelling (#1608) — a POSIX
+                // literal is a root-without-prefix form on Windows hosts.
+                output_dir: host_abs("/tmp/webfang-mcp-exploit"),
                 filename: "doc".to_string(),
                 content_format: "jsonl".to_string(),
                 content: "hello".to_string(),
@@ -841,7 +844,7 @@ mod handler_tests {
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .export_jsonl(Parameters(ExportJsonlParams {
-                output_dir: Some("/tmp/webfang-mcp-exploit".to_string()),
+                output_dir: Some(host_abs("/tmp/webfang-mcp-exploit")),
                 filename: Some("out".to_string()),
             }))
             .await;
@@ -859,7 +862,7 @@ mod handler_tests {
         let (handler, _tmp) = test_handler().await;
         let res = handler
             .export_vector(Parameters(ExportVectorParams {
-                output_dir: Some("/tmp/webfang-mcp-exploit".to_string()),
+                output_dir: Some(host_abs("/tmp/webfang-mcp-exploit")),
                 filename: Some("vec".to_string()),
             }))
             .await;
