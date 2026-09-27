@@ -760,4 +760,39 @@ mod tests {
             rendered.chars().count()
         );
     }
+
+    /// The bound is a CHARACTER bound on a multibyte payload (#1626, PC-2).
+    ///
+    /// The truncation index has to land on a char boundary, or the slice would
+    /// not be valid UTF-8 and the renderer would panic — while reporting a
+    /// panic. A megabyte of multibyte characters is also what makes the gap
+    /// between the old full `chars().count()` walk and the bounded one enormous
+    /// in bytes while identical in output, which is why the input is
+    /// megabyte-scale on purpose.
+    ///
+    /// What this does NOT pin: that the walk is bounded. Complexity is not
+    /// observable from a unit test without a timing assertion, and a timing
+    /// assertion on a panic path is exactly the flake that hides a real
+    /// regression. The bounded walk is justified by construction
+    /// (`char_indices().nth(MAX_CHARS)`); this test pins the *semantics* it has
+    /// to preserve.
+    #[test]
+    fn render_panic_payload_truncates_multibyte_at_a_char_boundary() {
+        let payload = "é".repeat(1_000_000); // 2 MB, 1M chars
+        let rendered = render_panic_payload(&payload);
+
+        assert_eq!(
+            rendered.chars().count(),
+            201,
+            "expected MAX_CHARS plus the ellipsis, split on a char boundary"
+        );
+        assert!(
+            rendered.ends_with('…'),
+            "truncation must be marked: {rendered:?}"
+        );
+        assert!(
+            rendered.starts_with(&"é".repeat(200)),
+            "the kept prefix must be verbatim, not re-encoded"
+        );
+    }
 }

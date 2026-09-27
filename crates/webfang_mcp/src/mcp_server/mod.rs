@@ -260,15 +260,35 @@ const PANIC_CONTAINED_TOOL_ERROR: &str =
     "La herramienta entró en un error interno y fue contenida. La sesión sigue activa: \
      reintenta la llamada o usa otra herramienta.";
 
-/// Render a panic payload as a SHORT, non-sensitive string for the trace.
+/// Render a panic payload as a SHORT string for the trace.
+///
+/// # What lands in the trace
 ///
 /// This is the ONLY structured record of a contained panic on every transport,
-/// so it must stand on its own: bounded (a handler can panic with a megabyte of
-/// buffered HTML in the message), total (a `panic_any` with a non-string type
-/// is legal, and the logger must not panic while reporting a panic), and free of
-/// anything the client should not read back into a conversation.
+/// so it must stand on its own on two axes:
 ///
-/// It is NOT the full record. The panic hook (`super::panic_hook`) adds the
+/// - **Total.** A `panic_any` with a non-string type is legal, and the logger
+///   must not panic while reporting a panic.
+/// - **Bounded in the OUTPUT, cheaply.** A handler can panic with a megabyte of
+///   buffered HTML in its message, so at most `MAX_CHARS` characters are kept
+///   and the rest is dropped. The bound is applied while walking, not after:
+///   counting the whole payload to decide whether to truncate cost as much as
+///   logging it, and the cost is exactly what a panic wants to avoid (#1626,
+///   PC-2).
+///
+/// # What it does NOT do
+///
+/// It is not a redaction layer, and it must not be described as one — the
+/// earlier version of this doc called it "non-sensitive", which was false: the
+/// payload is copied verbatim, and a panic message can embed request data, a URL
+/// with credentials, or buffered page content. If a handler panics with a secret
+/// in its message, the first 200 characters of it reach the trace. That is a
+/// deliberate trade: an operator debugging a panic needs the message, and the
+/// trace is the operator's own sink. The rule that follows from it is at the
+/// call site — **never write a secret into a panic message** — not a
+/// transformation this function performs.
+///
+/// It is also not the full record. The panic hook (`super::panic_hook`) adds the
 /// panic LOCATION, and it is installed by [`start_mcp_server`] only — the stdio
 /// transport does not install it, so on stdio the location is whatever the
 /// default stderr hook prints and nothing more. Do not make a location-bearing
@@ -282,11 +302,13 @@ pub(crate) fn render_panic_payload(payload: &(dyn Any + Send)) -> String {
         .map(String::as_str)
         .or_else(|| payload.downcast_ref::<&str>().copied())
         .unwrap_or("<non-string panic payload>");
-    if raw.chars().count() > MAX_CHARS {
-        let truncated: String = raw.chars().take(MAX_CHARS).collect();
-        format!("{truncated}…")
-    } else {
-        raw.to_string()
+    // `char_indices().nth(MAX_CHARS)` stops on the (MAX_CHARS + 1)-th char, so
+    // the walk is bounded by the constant instead of by the payload length —
+    // the whole point of PC-2. The index it yields is a char boundary, so the
+    // slice below is always valid UTF-8.
+    match raw.char_indices().nth(MAX_CHARS) {
+        Some((cut, _)) => format!("{}…", &raw[..cut]),
+        None => raw.to_string(),
     }
 }
 
