@@ -75,8 +75,18 @@ impl ConfigDefaults {
 /// — XDG on Linux (unchanged behavior), %APPDATA% on Windows,
 /// ~/Library/Application Support on macOS. The `.` fallback keeps this
 /// site's previous fail-soft behavior when no user home exists.
+///
+/// One explicit override is honored ahead of that base, and it is the only
+/// one that works on every platform: `dirs::config_dir()` reads
+/// `XDG_CONFIG_HOME` on Linux but NO env var on Windows (it calls
+/// `SHGetKnownFolderPath(FOLDERID_RoamingAppData)`), so neither a test nor a
+/// user can redirect a Windows install by env alone. `WEBFANG_CONFIG` names
+/// the config FILE path verbatim (#1631).
 #[must_use]
 pub fn resolve_config_path() -> std::path::PathBuf {
+    if let Some(explicit) = std::env::var_os("WEBFANG_CONFIG").filter(|p| !p.is_empty()) {
+        return std::path::PathBuf::from(explicit);
+    }
     crate::domain::paths::config_base_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("webfang")
