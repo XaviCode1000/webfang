@@ -13,7 +13,7 @@ use clap::Parser;
 use webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV;
 use webfang_mcp::mcp_server::server::{
     require_auth_for_external_bind, start_mcp_server, ServerOptions, DEFAULT_MAX_SESSIONS,
-    DEFAULT_MCP_ADDR, DEFAULT_SESSION_CAP_WINDOW_SECS,
+    DEFAULT_MCP_ADDR, DEFAULT_SESSION_CAP_WINDOW_SECS, MAX_ALLOWED_SESSIONS_CAP,
 };
 use webfang_mcp::mcp_server::{
     build_container, build_mcp_state, default_dom_inspector, spawn_ai_wiring, McpState,
@@ -49,7 +49,8 @@ struct Args {
     burst: u32,
 
     /// Admission cap: how many new MCP sessions may be created per window
-    /// before the server sheds further ones with 429 (#1611, F6). Must be > 0.
+    /// before the server sheds further ones with 429 (#1611, F6). Must be
+    /// > 0 and <= MAX_ALLOWED_SESSIONS_CAP.
     #[arg(
         long,
         env = "WEBFANG_MCP_MAX_SESSIONS",
@@ -59,6 +60,8 @@ struct Args {
 
     /// Admission cap: how long (seconds) one admitted session keeps its slot in
     /// the budget. Must be > 0. Defaults to rmcp's own session keep-alive.
+    /// Shorter values are accepted with a warning: the cap then bounds the
+    /// CREATION RATE, not the number of live sessions.
     #[arg(
         long,
         env = "WEBFANG_MCP_SESSION_CAP_WINDOW_SECS",
@@ -103,7 +106,19 @@ fn build_state(
 /// it to 1 in silence is how `CategoryLimits` used to hide one, and reading it
 /// as "never release" would turn the cap into a lifetime lockout. Both fail
 /// fast with a Spanish operator message instead.
+///
+/// The upper bound is the same discipline applied to MAGNITUDE rather than to
+/// zero: `SessionCap` pre-reserves its deque to the accepted maximum, so an
+/// absurd value is not a big number, it is a multi-gigabyte reservation that
+/// aborts the process with a raw allocator message before this function can
+/// say anything. See [`MAX_ALLOWED_SESSIONS_CAP`] for the ceiling and its
+/// justification.
 fn require_positive_max_sessions(raw: usize) -> Result<NonZeroUsize> {
+    if raw > MAX_ALLOWED_SESSIONS_CAP {
+        return Err(anyhow::anyhow!(
+            "El límite de sesiones no puede superar {MAX_ALLOWED_SESSIONS_CAP} (recibido: {raw}). Defina --max-sessions o WEBFANG_MCP_MAX_SESSIONS con un valor dentro del rango."
+        ));
+    }
     NonZeroUsize::new(raw).ok_or_else(|| {
         anyhow::anyhow!(
             "El límite de sesiones debe ser mayor que 0 (recibido: {raw}). Defina --max-sessions o WEBFANG_MCP_MAX_SESSIONS con un valor positivo."
@@ -111,15 +126,39 @@ fn require_positive_max_sessions(raw: usize) -> Result<NonZeroUsize> {
     })
 }
 
+/// Spanish warning for a window shorter than rmcp's session keep-alive: a slot
+/// is released one window after its admission, so a window shorter than the
+/// session's maximum life no longer bounds the number of LIVE sessions — it
+/// bounds the creation rate instead, while the session map keeps growing until
+/// rmcp reaps it. Accepted with a warning rather than refused, because a short
+/// window is a legitimate (if different) policy, and silently accepting it
+/// leaves the operator believing a cap is on when it is not bounding anything
+/// that matters.
+const SHORT_WINDOW_WARNING: &str =
+    "La ventana del límite de sesiones es más corta que el keep-alive de sesión de rmcp: el límite ya no acota las sesiones vivas, solo la tasa de creación. Aumente --session-cap-window-secs o WEBFANG_MCP_SESSION_CAP_WINDOW_SECS.";
+
 /// Window counterpart of [`require_positive_max_sessions`]: zero would mean
 /// "a slot is never released", silently converting the cap into a permanent one
-/// for the life of the process.
+/// for the life of the process. A window that is merely SHORT is accepted, with
+/// the operator told what it changes (see [`SHORT_WINDOW_WARNING`]).
 fn require_positive_session_cap_window(raw: u64) -> Result<NonZeroU64> {
-    NonZeroU64::new(raw).ok_or_else(|| {
+    let window = NonZeroU64::new(raw).ok_or_else(|| {
         anyhow::anyhow!(
             "La ventana del límite de sesiones debe ser mayor que 0 segundos (recibido: {raw}). Defina --session-cap-window-secs o WEBFANG_MCP_SESSION_CAP_WINDOW_SECS con un valor positivo."
         )
-    })
+    })?;
+
+    if raw < DEFAULT_SESSION_CAP_WINDOW_SECS {
+        tracing::warn!(
+            session_cap_window_secs = raw,
+            keep_alive_secs = DEFAULT_SESSION_CAP_WINDOW_SECS,
+            user_message = SHORT_WINDOW_WARNING,
+            "session admission cap window is shorter than the session keep-alive — \
+             the cap bounds the creation rate, not the number of live sessions"
+        );
+    }
+
+    Ok(window)
 }
 
 #[tokio::main]
@@ -263,6 +302,38 @@ mod tests {
         );
     }
 
+    /// A magnitude is a misconfiguration too, and a much more expensive one:
+    /// the cap pre-reserves its deque to the accepted maximum, so
+    /// `--max-sessions 1000000000` is a ~16 GB `Instant` reservation that
+    /// aborts the process with a raw allocator message — the exact failure the
+    /// fail-fast discipline above exists to prevent, arriving one step later.
+    #[test]
+    fn an_absurd_session_cap_is_refused_with_a_spanish_message() {
+        let err = require_positive_max_sessions(MAX_ALLOWED_SESSIONS_CAP + 1)
+            .expect_err("a cap above the ceiling must be refused, not accepted")
+            .to_string();
+        assert!(
+            err.contains("--max-sessions"),
+            "message must name the flag: {err}"
+        );
+        assert!(
+            err.contains("WEBFANG_MCP_MAX_SESSIONS"),
+            "message must name the env var: {err}"
+        );
+        assert!(
+            err.contains(&MAX_ALLOWED_SESSIONS_CAP.to_string()),
+            "message must name the accepted ceiling: {err}"
+        );
+        // The ceiling itself is valid — the bound must not drift into rejecting
+        // the largest value the crate documents as accepted.
+        assert_eq!(
+            require_positive_max_sessions(MAX_ALLOWED_SESSIONS_CAP)
+                .expect("the ceiling is accepted")
+                .get(),
+            MAX_ALLOWED_SESSIONS_CAP
+        );
+    }
+
     /// Same for the window: zero would mean "never release a slot", i.e. a
     /// lifetime cap nobody asked for.
     #[test]
@@ -284,5 +355,88 @@ mod tests {
                 .get(),
             1
         );
+    }
+
+    /// Run `f` with an in-memory `tracing` subscriber and return what it logged.
+    ///
+    /// The warning is an operator-facing event, not a return value, so a test
+    /// that only checks the returned `NonZeroU64` would pass with the warning
+    /// deleted — which is the whole behavior here.
+    fn capture_logs(f: impl FnOnce()) -> String {
+        use std::sync::{Arc, Mutex};
+
+        /// Shared sink behind the subscriber's writer.
+        #[derive(Clone, Default)]
+        struct Buffer(Arc<Mutex<Vec<u8>>>);
+
+        impl std::io::Write for Buffer {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0
+                    .lock()
+                    .expect("capture buffer lock is not poisoned")
+                    .write(bytes)
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                self.0
+                    .lock()
+                    .expect("capture buffer lock is not poisoned")
+                    .flush()
+            }
+        }
+
+        let buffer = Buffer::default();
+        let sink = buffer.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_writer(move || sink.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, f);
+        let bytes = buffer
+            .0
+            .lock()
+            .expect("capture buffer lock is not poisoned")
+            .clone();
+        String::from_utf8(bytes).expect("tracing writes UTF-8")
+    }
+
+    /// A window shorter than rmcp's keep-alive is accepted, but the operator
+    /// is told: from then on the cap bounds the creation RATE, not the number
+    /// of live sessions, and a server that looks capped is not.
+    #[test]
+    fn a_short_window_warns_in_spanish_that_live_sessions_are_unbounded() {
+        let logs = capture_logs(|| {
+            require_positive_session_cap_window(1).expect("one second is still valid");
+        });
+        assert!(
+            logs.contains("sesiones vivas"),
+            "the warning must say what stopped being bounded: {logs}"
+        );
+        assert!(
+            logs.contains(&DEFAULT_SESSION_CAP_WINDOW_SECS.to_string()),
+            "the warning must name the window that is actually needed: {logs}"
+        );
+        assert!(
+            logs.contains("keep-alive"),
+            "the warning must name rmcp's keep-alive, the reason for the number: {logs}"
+        );
+    }
+
+    /// And the warning does not fire for a window that does bound live
+    /// sessions — including the default every deployment starts from.
+    #[test]
+    fn a_window_at_or_above_keep_alive_does_not_warn() {
+        for window in [
+            DEFAULT_SESSION_CAP_WINDOW_SECS,
+            DEFAULT_SESSION_CAP_WINDOW_SECS + 60,
+        ] {
+            let logs = capture_logs(move || {
+                require_positive_session_cap_window(window).expect("valid window");
+            });
+            assert!(
+                !logs.contains("keep-alive"),
+                "a {window}s window still bounds live sessions, so it must not warn: {logs}"
+            );
+        }
     }
 }
