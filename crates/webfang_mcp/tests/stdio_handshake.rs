@@ -511,6 +511,12 @@ async fn stdio_oversize_stdin_frame_is_refused_with_a_visible_reason() {
         Some(74),
         "an oversize frame must exit with the I/O error code (74); stderr:\n{stderr}"
     );
+    // This assertion is STRUCTURAL, not probabilistic. It used to depend on
+    // `select!` happening to pick the stdin-death arm over `server.waiting()`:
+    // rmcp resolves `waiting()` for a read error just as it does for EOF, so
+    // both arms were ready and the pick was random. The stdin signal is now
+    // checked before the select's outcome is destructured, so the refusal is
+    // reported no matter which branch won (R3-STDIN-SELECT-RACE).
     // The operator-facing line, same shape as every other transport death.
     assert!(
         stderr.contains("Error:"),

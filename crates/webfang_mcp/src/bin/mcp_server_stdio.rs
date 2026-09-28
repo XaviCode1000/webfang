@@ -461,6 +461,23 @@ async fn main() -> CliExit {
         }
     }
 
+    // The stdin cap is checked BEFORE the select's own outcome is destructured,
+    // and not only inside the death arm.
+    //
+    // rmcp turns a read error into the same completion as EOF, so a refusal
+    // resolves `waiting()` while `stdin_signal` is ALSO ready. `select!` picks
+    // a ready branch at random, and the `Some` arm used to never consult the
+    // stdin signal — so an oversize refusal could lose that race and finish as
+    // `CliExit::Success`, which is precisely the silent exit 0 the cap exists
+    // to prevent. In practice `BoundedStdin` marks the signal at the poll where
+    // the cap is crossed, one or two polls before the read loop unwinds, so
+    // `waiting()` almost never wins; "almost" is not a guarantee, and nothing
+    // in the types or the test enforced it. Checking unconditionally makes the
+    // refusal observable regardless of which branch won.
+    if let Some(detail) = stdin_signal.first_error_message() {
+        exit_transport_death("stdin frame refused by the admission cap", &detail);
+    }
+
     // Neither half surfaces its own death through `waiting()` — rmcp swallows
     // the write error (#1151) and turns a read error into the same `None` a
     // hangup produces (F7) — so both get the same clean log + I/O-error exit
@@ -468,9 +485,6 @@ async fn main() -> CliExit {
     // is checked FIRST because a refusal is the more actionable fact when both
     // tripped: the client sent something the server will not accept.
     let Some(waiting_result) = session_outcome else {
-        if let Some(detail) = stdin_signal.first_error_message() {
-            exit_transport_death("stdin frame refused by the admission cap", &detail);
-        }
         let detail = stdout_signal
             .first_error_message()
             .unwrap_or_else(|| "el cliente cerró la tubería de salida".to_string());
