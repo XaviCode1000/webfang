@@ -59,6 +59,13 @@ const PANIC_PROBE_MESSAGE: &str = "webfang-pc3-panic-probe: deliberate tool pani
 /// pure URL string logic, so it is deterministic by construction.
 const SURVIVAL_TOOL: &str = "extract_domain";
 
+/// Per-frame byte cap the CHILD enforces on stdin (#1611 F7). Restated here,
+/// not imported, for the reason above: this suite asserts the wire contract,
+/// and the wire contract is "a frame larger than this is refused". Keeping the
+/// literal means a silent change to the binary's `MAX_STDIN_LINE_BYTES` fails
+/// here instead of being rubber-stamped by a shared constant.
+const STDIN_FRAME_CAP: usize = 1_048_576;
+
 /// Spawn the real `webfang-mcp-stdio` binary with piped JSON-RPC stdio.
 ///
 /// `kill_on_drop(true)` guarantees no orphan process survives a test panic.
@@ -432,6 +439,97 @@ async fn stdio_server_exits_gracefully_on_broken_stdout_pipe() {
         Some(74),
         "broken pipe must exit with the I/O error code (74); stderr:\n{stderr}"
     );
+}
+
+// ===========================================================================
+// Per-frame admission cap on stdin (#1611, F7)
+// ===========================================================================
+
+/// The read side of the transport was unbounded: rmcp's stdio transport reads
+/// with `read_until(b'\n', &mut line_buf)` over an unbounded `Vec<u8>`
+/// (`rmcp-1.8.0/src/transport/async_rw.rs:125-133`, `:52`), so a peer decides
+/// how much memory the server allocates before a byte is parsed. The binary now
+/// hands `serve()` a bounded reader instead of `tokio::io::stdin()`.
+///
+/// What this pins, end to end through the real binary:
+/// 1. the session is ALIVE first (a full handshake), so the refusal cannot be
+///    confused with a boot failure;
+/// 2. an oversize frame is refused — the payload here is VALID JSON of the
+///    oversize kind, so this is a size refusal, not rmcp's parse error;
+/// 3. it leaves a non-zero exit and a structured record on stderr, because
+///    rmcp's own reaction (log line + session end) is indistinguishable from a
+///    client hangup — the whole reason the refusal is observable here at all.
+#[tokio::test]
+async fn stdio_oversize_stdin_frame_is_refused_with_a_visible_reason() {
+    let mut child = spawn_stdio_server_with_stderr(false);
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    // Read end stays OPEN for the whole test: dropping it would make the
+    // child's writes fail with EPIPE and the refusal could be reported through
+    // the stdout-death path instead. Nothing is read after the handshake — the
+    // refused frame is never dispatched, so the child has nothing to say.
+    let mut reader = BufReader::new(child.stdout.take().expect("piped stdout"));
+    let stderr_drain = spawn_stderr_drain(child.stderr.take().expect("piped stderr"));
+
+    handshake(&mut stdin, &mut reader).await;
+
+    // One valid JSON-RPC line, past the cap. The padding rides in an
+    // `arguments` key the tool would never read: the frame must be refused on
+    // its SIZE, before any parsing or dispatch.
+    let padding = "x".repeat(STDIN_FRAME_CAP + 4096);
+    let frame = format!(
+        "{{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\",\"params\":{{\
+         \"name\":\"scrape_url\",\"arguments\":{{\"url\":\"https://example.com/\",\
+         \"pad\":\"{padding}\"}}}}}}\n"
+    );
+    assert!(
+        frame.len() > STDIN_FRAME_CAP,
+        "the payload must really exceed the cap under test; got {} bytes",
+        frame.len()
+    );
+
+    // The child refuses the frame and exits WHILE this write is still in
+    // flight, so a broken pipe is the expected outcome, not a failure. A
+    // timeout is NOT expected: the server is reading.
+    tokio::time::timeout(READ_TIMEOUT, async {
+        let _ = stdin.write_all(frame.as_bytes()).await;
+        let _ = stdin.flush().await;
+    })
+    .await
+    .expect("the child kept draining its stdin until it refused the frame");
+
+    let status = wait_exited(&mut child).await;
+    let stderr = stderr_drain
+        .await
+        .expect("the stderr drain task completes once the child exits");
+
+    assert!(
+        !stderr.contains("panicked at"),
+        "a cap refusal must not surface a panic backtrace; stderr:\n{stderr}"
+    );
+    assert_eq!(
+        status.code(),
+        Some(74),
+        "an oversize frame must exit with the I/O error code (74); stderr:\n{stderr}"
+    );
+    // The operator-facing line, same shape as every other transport death.
+    assert!(
+        stderr.contains("Error:"),
+        "stderr must carry the user-facing error line; got:\n{stderr}"
+    );
+    // The structured record, matched as independent substrings for the reason
+    // the panic-probe test above documents: the `fmt()` layout is not a
+    // contract, the event and the field NAME are.
+    for expected in [
+        "mcp stdio stdin refused: input frame exceeded the per-line cap", // the event
+        "refused_at_bytes",                                               // ...and where it stopped
+        "stdin cap", // the reason main() reports
+    ] {
+        assert!(
+            stderr.contains(expected),
+            "child stderr must contain {expected:?} after refusing an oversize \
+             frame; stderr:\n{stderr}"
+        );
+    }
 }
 
 // ===========================================================================

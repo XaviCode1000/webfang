@@ -11,7 +11,7 @@ use std::task::{Context, Poll};
 
 use clap::Parser;
 use rmcp::service::ServiceExt;
-use tokio::io::AsyncWrite;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::Notify;
 use webfang_core::cli::error::{CliExit, EXIT_IO_ERROR};
 use webfang_mcp::mcp_server::{
@@ -40,19 +40,26 @@ struct Args {
     export_roots: Vec<std::path::PathBuf>,
 }
 
-// #1151: shared death signal for the stdout half of the stdio transport.
+// #1151: shared death signal for EITHER half of the stdio transport.
 //
 // rmcp's server loop discards handler-response send errors and only quits on
 // stdin EOF or cancellation — so after a successful handshake, a client that
 // closes its read end of stdout leaves `server.waiting()` pending forever
 // with no exit code and no log. The Rust runtime ignores SIGPIPE, hence the
 // broken pipe surfaces as an `Err` from `AsyncWrite`, not a signal.
-// Recording the first write failure here lets `main()` observe the transport
-// death at our layer and shut down cleanly. No wall-clock timeout around
+// Recording the first transport failure here lets `main()` observe the death
+// at our layer and shut down cleanly. No wall-clock timeout around
 // `waiting()`: MCP sessions are legitimately long-lived and a timeout would
 // kill healthy ones.
+//
+// #1611 F7 widened "either half": the stdin wrapper added below records the
+// read half's rejection (an input frame past [`MAX_STDIN_LINE_BYTES`]) through
+// the same signal, because rmcp reports that one exactly as it reports a dead
+// pipe — `receive()` logs and returns `None`, which is indistinguishable from a
+// client hangup — and an admission-control refusal must NOT look like an
+// ordinary disconnect.
 #[derive(Debug, Clone)]
-struct StdoutDeathSignal {
+struct TransportDeathSignal {
     inner: Arc<SignalInner>,
 }
 
@@ -63,7 +70,7 @@ struct SignalInner {
     first_error: std::sync::Mutex<Option<String>>,
 }
 
-impl StdoutDeathSignal {
+impl TransportDeathSignal {
     fn new() -> Self {
         Self {
             inner: Arc::new(SignalInner {
@@ -74,9 +81,10 @@ impl StdoutDeathSignal {
         }
     }
 
-    /// Record a stdout write failure, keeping only the first message for the
+    /// Record a transport failure, keeping only the first message for the
     /// shutdown log. Never blocks: the mutex is held for a single `Option`
-    /// store, never across `.await` (this runs inside `poll_write`).
+    /// store, never across `.await` (this runs inside `poll_write` /
+    /// `poll_read`).
     fn mark_broken(&self, error: &std::io::Error) {
         if !self.inner.broken.swap(true, Ordering::SeqCst) {
             if let Ok(mut slot) = self.inner.first_error.lock() {
@@ -94,10 +102,10 @@ impl StdoutDeathSignal {
             .and_then(|slot| slot.clone())
     }
 
-    /// Resolve when the stdout half dies. The notified future is created
+    /// Resolve when either half dies. The notified future is created
     /// BEFORE checking the flag so a `mark_broken` racing this check cannot
     /// be missed (no wall-clock timeout involved).
-    #[tracing::instrument(skip(self), name = "mcp_stdio_stdout_death_watch")]
+    #[tracing::instrument(skip(self), name = "mcp_stdio_transport_death_watch")]
     async fn wait_broken(&self) {
         loop {
             let notified = self.inner.notify.notified();
@@ -111,13 +119,13 @@ impl StdoutDeathSignal {
 
 /// `AsyncWrite` adapter that observes stdout transport death at our layer
 /// (#1151). Forwards every call to the inner writer unchanged; on failure it
-/// raises the shared [`StdoutDeathSignal`] and returns the error to rmcp
+/// raises the shared [`TransportDeathSignal`] and returns the error to rmcp
 /// untouched, so the wire behavior is identical and only the observability
 /// is new.
 #[derive(Debug)]
 struct ObservingStdout<W> {
     inner: W,
-    signal: StdoutDeathSignal,
+    signal: TransportDeathSignal,
 }
 
 impl<W> AsyncWrite for ObservingStdout<W>
@@ -157,6 +165,159 @@ where
             other => other,
         }
     }
+}
+
+/// Max bytes accepted for ONE newline-delimited JSON-RPC frame on stdin
+/// (#1611 F7).
+///
+/// rmcp's stdio transport reads with `read_until(b'\n', &mut line_buf)` over an
+/// UNBOUNDED `Vec<u8>` (`rmcp-1.8.0/src/transport/async_rw.rs:125-133`, and
+/// the `line_buf` field at `:52`), so a peer that never sends a newline picks
+/// how much memory this process allocates before a single byte is parsed. The
+/// `JsonRpcMessageCodec::new_with_max_length` knob that exists in the same file
+/// (`async_rw.rs:196`) cannot bound it: that is a `Decoder` setting, and the
+/// server's read path builds its codec with `default()` (`async_rw.rs:60-64`) —
+/// it is unreachable from here, so a read wrapper is the only place the bound
+/// can live.
+///
+/// 1 MiB is this crate's own "largest legitimate input" figure
+/// (`webfang_mcp::mcp_server::validation::MAX_BLOB_LEN`) AND the frame budget
+/// the `urls` cap needs: the biggest legitimate `scrape_batch` request is
+/// [`URLS_MAX`](webfang_mcp::mcp_server::params::URLS_MAX) × `MAX_URL_LEN`
+/// = 100 × 8 KiB ≈ 800 KiB, so no call the validator accepts is refused here.
+/// The two caps are one budget seen from both ends — a cap that could reject a
+/// valid batch would be a bug, not a defense.
+pub const MAX_STDIN_LINE_BYTES: usize = 1_048_576;
+
+/// `AsyncRead` adapter that caps one input frame at [`MAX_STDIN_LINE_BYTES`]
+/// (#1611 F7) — the read-side analogue of [`ObservingStdout`], for the same
+/// reason: rmcp swallows the transport failure, so without an adapter at our
+/// layer the refusal is invisible and indistinguishable from a hangup.
+///
+/// Bytes are forwarded to rmcp untouched; the count is PER FRAME, reset at
+/// every `\n` (JSON-RPC over stdio is newline-delimited), so a long but legal
+/// session is never throttled by its own history. Crossing the cap raises the
+/// shared [`TransportDeathSignal`], logs a structured record, and fails the
+/// read with `InvalidData` (on the poll AFTER the offending bytes — see
+/// [`BoundedStdin::pending_error`]) — which is what makes the refusal
+/// observable from `main()`:
+///
+/// - rmcp's `receive()` answers a read error with a `tracing::error!` and
+///   `None` (`async_rw.rs:131-135`), i.e. the very same "clean EOF" a client
+///   hangup produces, so a silent exit 0 is the alternative this replaces;
+/// - a JSON-RPC `-32700` parse error was considered and rejected: this is a
+///   transport-level admission refusal, not a malformed frame — a peer that
+///   sends garbage still gets rmcp's parse error, and one that sends too much
+///   gets a logged, non-zero exit the operator can see.
+#[derive(Debug)]
+struct BoundedStdin<R> {
+    inner: R,
+    signal: TransportDeathSignal,
+    max_line_bytes: usize,
+    line_bytes: usize,
+    /// Refusal latched until the caller observes it.
+    ///
+    /// It cannot be returned on the same poll that delivered the bytes which
+    /// crossed the cap: `AsyncRead` consumers treat a read that fills its
+    /// buffer AND returns `Err` as a contract violation — tokio's
+    /// `read_to_end` debug-asserts that a failing read read nothing
+    /// (`io/util/read_to_end.rs:125`), and a debug build panics on it. So the
+    /// offending bytes are handed over first and the error lands on the next,
+    /// empty poll — which is also what drops the rest of the garbage line
+    /// instead of buffering it.
+    pending_error: Option<std::io::Error>,
+}
+
+impl<R> BoundedStdin<R> {
+    fn new(inner: R, signal: TransportDeathSignal, max_line_bytes: usize) -> Self {
+        Self {
+            inner,
+            signal,
+            max_line_bytes,
+            line_bytes: 0,
+            pending_error: None,
+        }
+    }
+}
+
+impl<R> AsyncRead for BoundedStdin<R>
+where
+    R: AsyncRead + Unpin,
+{
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut Context<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        if let Some(error) = self.pending_error.take() {
+            return Poll::Ready(Err(error));
+        }
+        let before = buf.filled().len();
+        let (completed, remaining) = match Pin::new(&mut self.inner).poll_read(cx, buf) {
+            Poll::Ready(Ok(())) => {
+                let fresh = &buf.filled()[before..];
+                match fresh.iter().position(|byte| *byte == b'\n') {
+                    // The frame that just ended is the one rmcp is about to
+                    // parse: `line_bytes + nl` bytes, newline excluded. What
+                    // follows it starts a NEW frame, counted from zero.
+                    Some(nl) => (self.line_bytes.saturating_add(nl), fresh.len() - nl - 1),
+                    // No terminator in this chunk: the open frame just grew.
+                    None => (0, self.line_bytes.saturating_add(fresh.len())),
+                }
+            },
+            other => return other,
+        };
+        self.line_bytes = remaining;
+
+        // One chunk can touch two frames, so the refusal measures the LARGER
+        // of them: the one that just completed and the one still open.
+        // Reporting `self.line_bytes` alone would print the empty remainder
+        // after a completed oversize frame — a cap trip logged as "0 bytes".
+        let refused_at = completed.max(self.line_bytes);
+        if refused_at > self.max_line_bytes {
+            let message = format!(
+                "JSON-RPC frame exceeds the {}-byte stdin cap (refused at {refused_at} bytes)",
+                self.max_line_bytes
+            );
+            // Structured at the point of refusal, where the numbers are known;
+            // `main()` adds the shutdown line when it acts on the signal.
+            tracing::error!(
+                limit_bytes = self.max_line_bytes,
+                refused_at_bytes = refused_at,
+                "mcp stdio stdin refused: input frame exceeded the per-line cap",
+            );
+            self.signal.mark_broken(&std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                message.clone(),
+            ));
+            // This poll already delivered bytes, so the refusal waits for the
+            // next one (see `pending_error`).
+            self.pending_error = Some(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                message,
+            ));
+        }
+        Poll::Ready(Ok(()))
+    }
+}
+
+/// Report a dead stdio transport and leave the process with the I/O error code.
+///
+/// `std::process::exit`, not `return`: the peer that broke the transport may
+/// still hold the OTHER pipe open, so the blocking-pool thread parked in
+/// `read(stdin)` by the abandoned serve loop can never observe EOF — and
+/// `Runtime` drop joins that thread, which would hang the shutdown path
+/// exactly like the bug it replaced (verified via gdb: main in `BlockingPool`
+/// drop, worker in `read(stdin)`). The crawl-result writer is already drained
+/// by the caller; the OS reaps the rest.
+///
+/// The user-facing line is Spanish on stderr, matching `CliExit::IoError`'s
+/// `Termination::report` that this bypasses; stdout stays reserved for JSON-RPC.
+fn exit_transport_death(event: &'static str, detail: &str) -> ! {
+    tracing::error!(error = %detail, "mcp stdio transport dead: {event}, shutting down");
+    let message = format!("El servidor MCP por stdio terminó con error: {detail}");
+    eprintln!("Error: {message}");
+    std::process::exit(EXIT_IO_ERROR.into());
 }
 
 /// Compose the [`McpState`] this binary ships (#1294 NS-01).
@@ -256,12 +417,22 @@ async fn main() -> CliExit {
     // records post-handshake write failures (EPIPE when the client closes
     // its read end) that rmcp would otherwise swallow while `waiting()`
     // pends forever.
-    let stdout_signal = StdoutDeathSignal::new();
+    // #1611 F7: the same treatment for the read half — `BoundedStdin` is
+    // main's AsyncRead, and rmcp's blanket transport impl accepts it as-is
+    // (`AsyncRead + Send + 'static + Unpin`, `async_rw.rs:24-31`), so the
+    // per-frame cap costs exactly one type change at the call site.
+    let stdin_signal = TransportDeathSignal::new();
+    let stdin = BoundedStdin::new(
+        tokio::io::stdin(),
+        stdin_signal.clone(),
+        MAX_STDIN_LINE_BYTES,
+    );
+    let stdout_signal = TransportDeathSignal::new();
     let stdout = ObservingStdout {
         inner: tokio::io::stdout(),
         signal: stdout_signal.clone(),
     };
-    let transport = (tokio::io::stdin(), stdout);
+    let transport = (stdin, stdout);
     let server = match handler.serve(transport).await {
         Ok(server) => server,
         Err(e) => {
@@ -271,12 +442,13 @@ async fn main() -> CliExit {
     };
 
     // Wait for the server to finish (client disconnects or stdin closes)
-    // — or for OUR layer to observe the stdout half dying underneath a
+    // — or for OUR layer to observe EITHER half dying underneath a
     // live session. No wall-clock timeout: MCP sessions are legitimately
     // long-lived and a timeout would kill healthy ones (#1151).
     let session_outcome = tokio::select! {
         result = server.waiting() => Some(result),
         () = stdout_signal.wait_broken() => None,
+        () = stdin_signal.wait_broken() => None,
     };
 
     // #1121: same drain as the HTTP transport (server.rs) — the stdio tools
@@ -289,27 +461,20 @@ async fn main() -> CliExit {
         }
     }
 
-    // A post-handshake stdout death (client closed the read end) never
-    // surfaces through `waiting()` — rmcp swallows the write error — so
-    // it gets the same clean log + I/O-error exit instead of hanging
-    // forever with no exit code and no log (#1151).
+    // Neither half surfaces its own death through `waiting()` — rmcp swallows
+    // the write error (#1151) and turns a read error into the same `None` a
+    // hangup produces (F7) — so both get the same clean log + I/O-error exit
+    // instead of hanging forever with no exit code and no log. The stdin half
+    // is checked FIRST because a refusal is the more actionable fact when both
+    // tripped: the client sent something the server will not accept.
     let Some(waiting_result) = session_outcome else {
+        if let Some(detail) = stdin_signal.first_error_message() {
+            exit_transport_death("stdin frame refused by the admission cap", &detail);
+        }
         let detail = stdout_signal
             .first_error_message()
             .unwrap_or_else(|| "el cliente cerró la tubería de salida".to_string());
-        tracing::error!(error = %detail, "mcp stdio stdout broken pipe: client closed read end, shutting down");
-        let message = format!("El servidor MCP por stdio terminó con error: {detail}");
-        // Mirror of `CliExit::IoError`'s `Termination::report` (which is
-        // bypassed below): user-facing Spanish line on stderr + EX_IOERR.
-        eprintln!("Error: {message}");
-        // `std::process::exit`, not `return`: the dead client still holds
-        // the stdin write end open, so the blocking-pool thread parked in
-        // `read(stdin)` by the abandoned serve loop can never observe EOF
-        // — and `Runtime` drop joins that thread, which would hang this
-        // branch exactly like the original bug (verified via gdb: main in
-        // `BlockingPool` drop, worker in `read(stdin)`). The crawl-result
-        // writer above is already drained; the OS reaps the rest.
-        std::process::exit(EXIT_IO_ERROR.into());
+        exit_transport_death("stdout broken pipe: client closed read end", &detail);
     };
 
     // Normal EOF shutdown returns Ok → exit 0; a transport error mid-session
@@ -367,6 +532,119 @@ mod tests {
             state.allowed_export_roots.as_slice(),
             roots.as_slice(),
             "stdio must honor --export-roots / WEBFANG_MCP_EXPORT_ROOTS (#696)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // #1611 F7 — the stdin per-frame cap
+    // -----------------------------------------------------------------------
+    //
+    // These pin the WRAPPER, not the cap value (the value is justified in
+    // `MAX_STDIN_LINE_BYTES`'s doc and shared with the `urls` cap's test in
+    // `tests/mcp_params_validation_test.rs`). What must hold is the shape: a
+    // frame under the limit is forwarded byte-for-byte, the count is per frame
+    // and not per session, and crossing it is a typed `InvalidData` refusal
+    // that raises the death signal `main()` acts on.
+
+    /// A frame of exactly the cap is legal — the limit is inclusive, and
+    /// `poll_read` refuses on `> max_line_bytes`, not `>=`.
+    #[tokio::test]
+    async fn bounded_stdin_accepts_a_frame_exactly_at_the_cap() {
+        let (mut client, server) = tokio::io::duplex(8);
+        let mut stdin = BoundedStdin::new(server, TransportDeathSignal::new(), 4);
+        tokio::io::AsyncWriteExt::write_all(&mut client, b"abcd\n")
+            .await
+            .expect("write one frame");
+        drop(client);
+
+        let mut seen = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut stdin, &mut seen)
+            .await
+            .expect("a frame exactly at the cap must pass through");
+        assert_eq!(seen, b"abcd\n", "bytes must reach rmcp untouched");
+    }
+
+    /// The counter is per FRAME: a long session of legal frames is never
+    /// throttled by its own history (the newline resets it).
+    #[tokio::test]
+    async fn bounded_stdin_counts_each_frame_separately() {
+        let (mut client, server) = tokio::io::duplex(8);
+        let mut stdin = BoundedStdin::new(server, TransportDeathSignal::new(), 8);
+        tokio::io::AsyncWriteExt::write_all(&mut client, b"abcd\nab\n")
+            .await
+            .expect("write two frames");
+        drop(client);
+
+        let mut seen = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut stdin, &mut seen)
+            .await
+            .expect("two frames under the cap must both pass through");
+        assert_eq!(seen, b"abcd\nab\n");
+    }
+
+    /// A frame with no newline in sight is refused as soon as it crosses the
+    /// cap — the unbounded-allocation case rmcp's `line_buf` cannot stop.
+    #[tokio::test]
+    async fn bounded_stdin_refuses_an_unterminated_oversize_frame() {
+        let (mut client, server) = tokio::io::duplex(1024);
+        let signal = TransportDeathSignal::new();
+        let observer = signal.clone();
+        let mut stdin = BoundedStdin::new(server, signal, 16);
+        let payload = vec![b'x'; 40];
+        tokio::io::AsyncWriteExt::write_all(&mut client, &payload)
+            .await
+            .expect("write an oversize frame");
+        drop(client);
+
+        let mut seen = Vec::new();
+        let err = tokio::io::AsyncReadExt::read_to_end(&mut stdin, &mut seen)
+            .await
+            .expect_err("a frame past the cap must be refused");
+        assert_eq!(
+            err.kind(),
+            std::io::ErrorKind::InvalidData,
+            "a cap refusal is bad input, not an I/O fault; got: {err}"
+        );
+        assert!(
+            err.to_string().contains("16"),
+            "the refusal must name the cap the operator configured; got: {err}"
+        );
+        // main() can only act on this through the signal: rmcp reports the read
+        // error as a plain log line and ends the session as if it were EOF.
+        let detail = observer
+            .first_error_message()
+            .expect("the death signal must carry the refusal reason");
+        assert!(
+            detail.contains("stdin cap"),
+            "the signal must carry the reason; got: {detail}"
+        );
+    }
+
+    /// The frame that JUST COMPLETED is the one rmcp is about to parse, so it
+    /// is measured before the counter resets — an oversize line followed by a
+    /// newline is still refused even though nothing is left over, and the
+    /// refusal names THAT length (a regression once logged it as the empty
+    /// remainder, "refused at 0 bytes").
+    #[tokio::test]
+    async fn bounded_stdin_refuses_the_completed_frame_not_the_remainder() {
+        let (mut client, server) = tokio::io::duplex(1024);
+        let mut stdin = BoundedStdin::new(server, TransportDeathSignal::new(), 10);
+        let mut payload = vec![b'x'; 20];
+        payload.push(b'\n');
+        tokio::io::AsyncWriteExt::write_all(&mut client, &payload)
+            .await
+            .expect("write an oversize terminated frame");
+        drop(client);
+
+        let mut seen = Vec::new();
+        let err = tokio::io::AsyncReadExt::read_to_end(&mut stdin, &mut seen)
+            .await
+            .expect_err("the completed frame's own length is what is capped");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData, "got: {err}");
+        assert!(
+            err.to_string().contains("refused at 20 bytes"),
+            "the refusal must report the completed frame's length, not the empty \
+             remainder after it; got: {err}"
         );
     }
 }
