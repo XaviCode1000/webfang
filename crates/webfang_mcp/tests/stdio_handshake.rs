@@ -64,7 +64,14 @@ const SURVIVAL_TOOL: &str = "extract_domain";
 /// and the wire contract is "a frame larger than this is refused". Keeping the
 /// literal means a silent change to the binary's `MAX_STDIN_LINE_BYTES` fails
 /// here instead of being rubber-stamped by a shared constant.
-const STDIN_FRAME_CAP: usize = 1_048_576;
+///
+/// The child's value is `MAX_BLOB_LEN + STDIN_ENVELOPE_HEADROOM` =
+/// 1_048_576 + 65_536. It is not a flat 1 MiB because a blob of exactly
+/// `MAX_BLOB_LEN` is the largest input the crate declares legitimate, and its
+/// JSON-RPC wrapper — method name, parameter names, JSON syntax — pushes the
+/// encoded frame over a flat 1 MiB. A flat cap here refused calls its own
+/// validator accepts.
+const STDIN_FRAME_CAP: usize = 1_114_112;
 
 /// Spawn the real `webfang-mcp-stdio` binary with piped JSON-RPC stdio.
 ///

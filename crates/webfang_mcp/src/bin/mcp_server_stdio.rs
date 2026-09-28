@@ -16,7 +16,7 @@ use tokio::sync::Notify;
 use webfang_core::cli::error::{CliExit, EXIT_IO_ERROR};
 use webfang_mcp::mcp_server::{
     build_container, build_mcp_state, default_dom_inspector, panic_hook::setup_panic_hook,
-    spawn_ai_wiring, McpHandler, McpState,
+    spawn_ai_wiring, validation::MAX_BLOB_LEN, McpHandler, McpState,
 };
 
 /// Webfang MCP Server — Stdio transport.
@@ -180,27 +180,60 @@ where
 /// it is unreachable from here, so a read wrapper is the only place the bound
 /// can live.
 ///
-/// 1 MiB is this crate's own "largest legitimate input" figure
-/// (`webfang_mcp::mcp_server::validation::MAX_BLOB_LEN`) AND the frame budget
-/// the `urls` cap needs: the biggest legitimate `scrape_batch` request is
-/// [`URLS_MAX`](webfang_mcp::mcp_server::params::URLS_MAX) × `MAX_URL_LEN`
-/// = 100 × 8 KiB ≈ 800 KiB, so no call the validator accepts is refused here.
-/// The two caps are one budget seen from both ends — a cap that could reject a
-/// valid batch would be a bug, not a defense.
-pub const MAX_STDIN_LINE_BYTES: usize = 1_048_576;
+/// The cap is [`MAX_BLOB_LEN`] + envelope headroom, DERIVED rather than
+/// hand-picked, so the "a legitimate call is never refused" property is
+/// structural instead of a claim in a comment.
+///
+/// The envelope matters in BOTH directions, which is what an earlier version of
+/// this file got wrong:
+///
+/// - A blob of exactly `MAX_BLOB_LEN` (1 MiB) is the largest input this crate
+///   declares legitimate, but its JSON-RPC wrapper — method name, parameter
+///   names, JSON syntax — pushes the encoded frame OVER 1 MiB. A flat 1 MiB cap
+///   therefore refuses a call its own validator accepts.
+/// - The largest legitimate `scrape_batch` request is
+///   [`URLS_MAX`](webfang_mcp::mcp_server::params::URLS_MAX) × `MAX_URL_LEN`
+///   (8 KiB) ≈ 800 KiB, comfortably under `MAX_BLOB_LEN`.
+///
+/// So `MAX_BLOB_LEN` + headroom is the binding constraint, and expressing it as
+/// the sum keeps it true when either constant moves.
+pub const MAX_STDIN_LINE_BYTES: usize = MAX_BLOB_LEN + STDIN_ENVELOPE_HEADROOM;
+
+/// Slack for the JSON-RPC envelope around a maximum-size payload: method name,
+/// parameter names, quoting and separators. 64 KiB is far more than any
+/// current tool's envelope needs; it is headroom, not a tuned figure.
+const STDIN_ENVELOPE_HEADROOM: usize = 64 * 1024;
+
+/// Staging size for the bytes a single poll may pull off the peer before this
+/// adapter has decided whether to publish them. Bounded on purpose: an adapter
+/// whose job is to bound the memory a peer can make this process allocate must
+/// not itself allocate without a limit.
+const READ_CHUNK_BYTES: usize = 8 * 1024;
 
 /// `AsyncRead` adapter that caps one input frame at [`MAX_STDIN_LINE_BYTES`]
 /// (#1611 F7) — the read-side analogue of [`ObservingStdout`], for the same
 /// reason: rmcp swallows the transport failure, so without an adapter at our
 /// layer the refusal is invisible and indistinguishable from a hangup.
 ///
-/// Bytes are forwarded to rmcp untouched; the count is PER FRAME, reset at
-/// every `\n` (JSON-RPC over stdio is newline-delimited), so a long but legal
-/// session is never throttled by its own history. Crossing the cap raises the
-/// shared [`TransportDeathSignal`], logs a structured record, and fails the
-/// read with `InvalidData` (on the poll AFTER the offending bytes — see
-/// [`BoundedStdin::pending_error`]) — which is what makes the refusal
-/// observable from `main()`:
+/// Bytes are published to rmcp untouched, EXCEPT that a chunk which would push
+/// any frame past the cap is published as nothing at all: the adapter stages the
+/// bytes, measures them, and only hands them over when the whole chunk is
+/// admissible. That staging is what makes the cap a REFUSAL rather than a
+/// post-hoc abort — rmcp's `read_until` cannot complete a frame it never
+/// receives, so an oversize `tools/call` never reaches a handler. The previous
+/// version latched the error and returned the offending bytes successfully on
+/// the way out; when the crossing chunk also carried the terminating newline,
+/// `read_until` completed without another poll and the request was dispatched
+/// before the error existed.
+///
+/// Staging also satisfies the `AsyncRead` contract: tokio's `read_to_end`
+/// debug-asserts that a failing read filled nothing (`io/util/read_to_end.rs:125`)
+/// and panics on it in debug builds. Publishing nothing and failing in the same
+/// poll is legal in a way that "deliver, then fail next poll" was not.
+///
+/// Crossing the cap raises the shared [`TransportDeathSignal`] and logs a
+/// structured record, which is what makes the refusal observable from
+/// `main()`:
 ///
 /// - rmcp's `receive()` answers a read error with a `tracing::error!` and
 ///   `None` (`async_rw.rs:131-135`), i.e. the very same "clean EOF" a client
@@ -214,18 +247,13 @@ struct BoundedStdin<R> {
     inner: R,
     signal: TransportDeathSignal,
     max_line_bytes: usize,
+    /// Bytes of the frame currently open, reset at every newline.
     line_bytes: usize,
-    /// Refusal latched until the caller observes it.
-    ///
-    /// It cannot be returned on the same poll that delivered the bytes which
-    /// crossed the cap: `AsyncRead` consumers treat a read that fills its
-    /// buffer AND returns `Err` as a contract violation — tokio's
-    /// `read_to_end` debug-asserts that a failing read read nothing
-    /// (`io/util/read_to_end.rs:125`), and a debug build panics on it. So the
-    /// offending bytes are handed over first and the error lands on the next,
-    /// empty poll — which is also what drops the rest of the garbage line
-    /// instead of buffering it.
-    pending_error: Option<std::io::Error>,
+    /// Fixed-size staging area. A fixed `Box<[u8]>` rather than a `Vec`: it is
+    /// allocated and zeroed once, and `ReadBuf::new` needs a slice with a
+    /// LENGTH — `ReadBuf::new(&mut vec)` would coerce to `&mut vec[..]`, i.e.
+    /// length 0, and the inner reader could never stage a single byte.
+    chunk: Box<[u8]>,
 }
 
 impl<R> BoundedStdin<R> {
@@ -235,7 +263,7 @@ impl<R> BoundedStdin<R> {
             signal,
             max_line_bytes,
             line_bytes: 0,
-            pending_error: None,
+            chunk: vec![0_u8; READ_CHUNK_BYTES].into_boxed_slice(),
         }
     }
 }
@@ -245,58 +273,79 @@ where
     R: AsyncRead + Unpin,
 {
     fn poll_read(
-        mut self: Pin<&mut Self>,
+        self: Pin<&mut Self>,
         cx: &mut Context<'_>,
         buf: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        if let Some(error) = self.pending_error.take() {
-            return Poll::Ready(Err(error));
-        }
-        let before = buf.filled().len();
-        let (completed, remaining) = match Pin::new(&mut self.inner).poll_read(cx, buf) {
-            Poll::Ready(Ok(())) => {
-                let fresh = &buf.filled()[before..];
-                match fresh.iter().position(|byte| *byte == b'\n') {
-                    // The frame that just ended is the one rmcp is about to
-                    // parse: `line_bytes + nl` bytes, newline excluded. What
-                    // follows it starts a NEW frame, counted from zero.
-                    Some(nl) => (self.line_bytes.saturating_add(nl), fresh.len() - nl - 1),
-                    // No terminator in this chunk: the open frame just grew.
-                    None => (0, self.line_bytes.saturating_add(fresh.len())),
-                }
-            },
-            other => return other,
-        };
-        self.line_bytes = remaining;
+        let this = self.get_mut();
 
-        // One chunk can touch two frames, so the refusal measures the LARGER
-        // of them: the one that just completed and the one still open.
-        // Reporting `self.line_bytes` alone would print the empty remainder
-        // after a completed oversize frame — a cap trip logged as "0 bytes".
-        let refused_at = completed.max(self.line_bytes);
-        if refused_at > self.max_line_bytes {
+        // Stage no more than the caller can take: `read_to_end` starts with a
+        // small probe buffer, and `put_slice` panics if the slice exceeds
+        // `remaining()`. Bounding the stage by the caller's spare capacity is
+        // why no carry-over buffer is needed — what is staged is always exactly
+        // what is published.
+        let stage_len = buf.remaining().min(READ_CHUNK_BYTES);
+        let staged_len = {
+            let mut staged = ReadBuf::new(&mut this.chunk[..stage_len]);
+            match Pin::new(&mut this.inner).poll_read(cx, &mut staged) {
+                Poll::Ready(Ok(())) => staged.filled().len(),
+                other => return other,
+            }
+        };
+        let chunk = &this.chunk[..staged_len];
+
+        // Measure EVERY frame boundary in the chunk, not just the first. A
+        // chunk can carry several newline-delimited frames; counting the tail
+        // after the first newline as one open frame charged a healthy client's
+        // whole session against a single frame's budget and killed it at ~1 MiB
+        // of total traffic.
+        let mut running = this.line_bytes;
+        let mut refused_at = None;
+        for (offset, byte) in chunk.iter().enumerate() {
+            if *byte == b'\n' {
+                running = 0;
+            } else {
+                running = running.saturating_add(1);
+                if running > this.max_line_bytes && refused_at.is_none() {
+                    // The trip point, or the frame's true length when this
+                    // chunk carries its terminator. An operator reading
+                    // "refused at 11 bytes" against a 10-byte cap learns
+                    // nothing; "this frame was 20 bytes" says how far over the
+                    // peer went. The bytes are already staged, so the length
+                    // is known without reading further.
+                    let frame_len = chunk[offset..]
+                        .iter()
+                        .position(|byte| *byte == b'\n')
+                        .map_or_else(
+                            || this.line_bytes.saturating_add(offset).saturating_add(1),
+                            |nl| this.line_bytes.saturating_add(offset).saturating_add(nl),
+                        );
+                    refused_at = Some(frame_len);
+                }
+            }
+        }
+        this.line_bytes = running;
+
+        if let Some(refused_at) = refused_at {
             let message = format!(
                 "JSON-RPC frame exceeds the {}-byte stdin cap (refused at {refused_at} bytes)",
-                self.max_line_bytes
+                this.max_line_bytes
             );
             // Structured at the point of refusal, where the numbers are known;
             // `main()` adds the shutdown line when it acts on the signal.
             tracing::error!(
-                limit_bytes = self.max_line_bytes,
+                limit_bytes = this.max_line_bytes,
                 refused_at_bytes = refused_at,
                 "mcp stdio stdin refused: input frame exceeded the per-line cap",
             );
-            self.signal.mark_broken(&std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                message.clone(),
-            ));
-            // This poll already delivered bytes, so the refusal waits for the
-            // next one (see `pending_error`).
-            self.pending_error = Some(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                message,
-            ));
+            let error = std::io::Error::new(std::io::ErrorKind::InvalidData, message);
+            this.signal.mark_broken(&error);
+            // `buf` was never written: the staged bytes are dropped, not
+            // published.
+            return Poll::Ready(Err(error));
         }
+
+        buf.put_slice(chunk);
         Poll::Ready(Ok(()))
     }
 }
@@ -557,14 +606,21 @@ mod tests {
     // `MAX_STDIN_LINE_BYTES`'s doc and shared with the `urls` cap's test in
     // `tests/mcp_params_validation_test.rs`). What must hold is the shape: a
     // frame under the limit is forwarded byte-for-byte, the count is per frame
-    // and not per session, and crossing it is a typed `InvalidData` refusal
-    // that raises the death signal `main()` acts on.
+    // and not per session, crossing the cap is a typed `InvalidData` refusal
+    // that raises the death signal `main()` acts on, and — the property the
+    // staging design exists for — a refused chunk reaches the consumer as
+    // NOTHING, so no handler can ever see the request that tripped the cap.
+    //
+    // Every duplex below is sized well above what the test writes. A
+    // `write_all` larger than the duplex capacity blocks until a reader
+    // appears, and these tests only start reading afterwards, so an
+    // undersized duplex deadlocks the test rather than failing it.
 
     /// A frame of exactly the cap is legal — the limit is inclusive, and
     /// `poll_read` refuses on `> max_line_bytes`, not `>=`.
     #[tokio::test]
     async fn bounded_stdin_accepts_a_frame_exactly_at_the_cap() {
-        let (mut client, server) = tokio::io::duplex(8);
+        let (mut client, server) = tokio::io::duplex(64);
         let mut stdin = BoundedStdin::new(server, TransportDeathSignal::new(), 4);
         tokio::io::AsyncWriteExt::write_all(&mut client, b"abcd\n")
             .await
@@ -582,7 +638,7 @@ mod tests {
     /// throttled by its own history (the newline resets it).
     #[tokio::test]
     async fn bounded_stdin_counts_each_frame_separately() {
-        let (mut client, server) = tokio::io::duplex(8);
+        let (mut client, server) = tokio::io::duplex(64);
         let mut stdin = BoundedStdin::new(server, TransportDeathSignal::new(), 8);
         tokio::io::AsyncWriteExt::write_all(&mut client, b"abcd\nab\n")
             .await
@@ -594,6 +650,35 @@ mod tests {
             .await
             .expect("two frames under the cap must both pass through");
         assert_eq!(seen, b"abcd\nab\n");
+    }
+
+    /// Regression: several frames arriving in ONE chunk must be counted one
+    /// by one, not charged as one open frame. Counting only the first newline
+    /// and attributing the whole tail to the frame after it charged a healthy
+    /// client's session against a single frame's budget, killing it at ~1 MiB
+    /// of total traffic (R2-002 / R4-multiframe-overcount).
+    #[tokio::test]
+    async fn bounded_stdin_does_not_charge_a_multi_frame_chunk_to_one_frame() {
+        // 40 bytes total, but every individual frame is 4 bytes under a
+        // 16-byte cap. Under the old first-newline-only accounting the 30
+        // bytes after the first newline were counted as one open frame and
+        // this healthy client was refused.
+        let (mut client, server) = tokio::io::duplex(256);
+        let mut stdin = BoundedStdin::new(server, TransportDeathSignal::new(), 16);
+        let mut payload = Vec::new();
+        for _ in 0..10 {
+            payload.extend_from_slice(b"abcd\n");
+        }
+        tokio::io::AsyncWriteExt::write_all(&mut client, &payload)
+            .await
+            .expect("write ten small frames in one chunk");
+        drop(client);
+
+        let mut seen = Vec::new();
+        tokio::io::AsyncReadExt::read_to_end(&mut stdin, &mut seen)
+            .await
+            .expect("a session of small frames must survive its own total size");
+        assert_eq!(seen, payload, "every frame must reach rmcp untouched");
     }
 
     /// A frame with no newline in sight is refused as soon as it crosses the
@@ -659,6 +744,19 @@ mod tests {
             err.to_string().contains("refused at 20 bytes"),
             "the refusal must report the completed frame's length, not the empty \
              remainder after it; got: {err}"
+        );
+        // The property the staging design exists for, and the one the previous
+        // version got wrong: an oversize frame that arrives COMPLETE, with its
+        // newline in the same chunk, must reach the consumer as nothing at
+        // all. rmcp's `read_until` only completes a frame it receives, so zero
+        // published bytes means zero chance of a handler being dispatched with
+        // the request that tripped the cap.
+        assert!(
+            seen.is_empty(),
+            "a refused chunk must be published as nothing, or `read_until` \
+             completes the frame and dispatches it before the refusal lands; \
+             got {} bytes: {seen:?}",
+            seen.len()
         );
     }
 }
