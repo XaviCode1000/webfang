@@ -171,6 +171,31 @@ dry_run_refused_seed_exits_69_with_spanish_error    PASS   3.585s
 INT-5, explícitamente fuera de scope y trackeado en T5.** nextest sale distinto de cero también por
 `TMT`, por eso el job sigue en rojo por una razón que esta PR declaró que no cubría.
 
+### Lane final, head `e23dae4c` (run `36477820517`)
+
+El run anterior era sobre `f0b70556`. El head de entrega es `e23dae4c`, y su lane está **completamente
+verde, Windows y macOS incluidos**:
+
+| Lane | Resultado |
+| --- | --- |
+| `CI Gate` | pass |
+| `Tests (windows-latest)` | pass |
+| `Tests (macos-latest)` | pass |
+| `Tests (all features)` | pass |
+| `Tests (unit + integration + behavioral)` | pass |
+| `Clippy (strict)` | pass |
+| `Check formatting` | pass |
+| `Documentation quality` | pass |
+
+El `TMT` de INT-5 **no** disparó en este run: el job de Windows salió verde sin el fix. No es
+una señal de que INT-5 esté resuelto — sigue siendo flake, y T5 lo trackea. Lo que la lane final
+demuestra es lo que esta PR afirma: INT-2, INT-3 e INT-4 están verdes **sobre Windows y macOS
+reales**, que es la razón de ser del PR.
+
+> La descripción de la PR citaba solo la evidencia local de Linux bajo "Verification". Eso leía
+> como "no se probó en Windows" y era una inferencia razonable pero falsa: la matriz siempre corrió.
+> Corregido en la descripción con el run y el head explícitos.
+
 ## Por qué el commit 4 fue necesario (mecanismo, para el que lea esto después)
 
 El token `<NET_ERR>` del commit 2 unificaba el texto OS de la *hoja*, pero no la *capa de la cadena*
