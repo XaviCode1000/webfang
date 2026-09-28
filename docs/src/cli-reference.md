@@ -82,6 +82,18 @@ A missing file is not an error: webfang falls back to its defaults, so
 `WEBFANG_CONFIG` pointing at a nonexistent path is safe and means "use
 defaults".
 
+Two edge cases matter because this variable is usually set from a script or a
+service unit rather than typed:
+
+- An **empty** value counts as unset. `WEBFANG_CONFIG= webfang ...` behaves
+  exactly like not setting the variable at all, so a script that exports it
+  before it has a value falls back to the platform lookup instead of failing.
+- A **relative** path is resolved against the current working directory of the
+  process, not against your home directory. That is predictable in an
+  interactive shell and arbitrary under a daemon or service manager, whose
+  working directory is whatever the supervisor chose. Use an absolute path
+  there.
+
 ```bash
 WEBFANG_CONFIG=/etc/webfang/config.toml webfang https://example.com
 ```
