@@ -155,6 +155,17 @@ fn sanitize_env(mut cmd: Command) -> Command {
         "1",
     );
     cmd.env("XDG_CACHE_HOME", hermetic_cache_dir());
+    // Config gets the same treatment, and for a stronger reason than the
+    // cache: the CLI resolves its config file through `WEBFANG_CONFIG`
+    // (`webfang_cli::main::resolve_config_path`), so pointing that at a path
+    // that does not exist means a spawned binary can never read the
+    // developer's real `~/.config/webfang/config.toml` — `ConfigDefaults::load`
+    // would otherwise fall back to `Self::default()` for a file it never saw,
+    // and the run would depend on the operator's machine. A per-test
+    // `.env("WEBFANG_CONFIG", …)` applied after `cmd()` still wins: both
+    // writes land in the inner `std::process::Command` env map, and the last
+    // write for a key is the one applied at spawn.
+    cmd.env("WEBFANG_CONFIG", hermetic_absent_config_file());
     cmd
 }
 
@@ -169,6 +180,23 @@ fn hermetic_cache_dir() -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("webfang-test-cache-{}-{n}", std::process::id()));
     let _ = std::fs::create_dir_all(&dir);
     dir
+}
+
+/// A config file path for one spawned-binary invocation that is NEVER
+/// created — the hermetic twin of [`hermetic_cache_dir`].
+///
+/// Cache state is created eagerly because code may observe a missing parent;
+/// this one must stay absent on purpose, because an existing file is exactly
+/// what `ConfigDefaults::load` would read. `strip_poisoned_env` removes the
+/// developer's own `WEBFANG_CONFIG` on the way in, so nothing from outside
+/// the process can land here either.
+fn hermetic_absent_config_file() -> std::path::PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "webfang-test-absent-config-{}-{n}.toml",
+        std::process::id()
+    ))
 }
 
 /// Shared test harness: one mock server + one temp output directory.
@@ -376,7 +404,22 @@ pub(crate) fn redact_nondeterministic(dir: &Path, text: &str) -> String {
     // Normalize tracing source file paths (e.g. "at crates/.../orchestrator.rs:<LINE>")
     // so moving a function between files does not break snapshots (#462).
     let file_path = Regex::new(r"(at\s+)\S+\.rs").unwrap();
-    file_path.replace_all(&text, "$1<FILE>.rs").into_owned()
+    let text = file_path.replace_all(&text, "$1<FILE>.rs").into_owned();
+    // INT-1 (#1631): collapse the OS-dependent connection-failure surface to
+    // ONE token. Unix reports `Connection refused (os error 111)`, Windows
+    // reports the WSA prose `No connection could be made because the target
+    // machine actively refused it. (os error 10061)`, and an unreachable host
+    // on Windows never refuses at all — it degrades to our own `request timed
+    // out after 2s`, which redaction alone cannot bridge, so the timeout tail
+    // collapses to the same token. The snapshot therefore records THAT a
+    // network failure happened, not WHICH one: an intentional loss, because
+    // the affected test asserts a failure is mentioned rather than its kind
+    // (the same tradeoff #1645 accepted for the panic payload).
+    let net_err = Regex::new(
+        r"(?i)(?:connection refused|connection timed out|no connection could be made[^()\n]*|an attempt to connect[^()\n]*)\s*(?:\(\s*os error\s*\d+\s*\))?|request timed out after \d+\s*s",
+    )
+    .unwrap();
+    net_err.replace_all(&text, "<NET_ERR>").into_owned()
 }
 pub(crate) fn assert_snapshot_redacted(name: &str, dir: &Path, value: impl Into<String>) {
     let redacted = redact_nondeterministic(dir, &value.into());

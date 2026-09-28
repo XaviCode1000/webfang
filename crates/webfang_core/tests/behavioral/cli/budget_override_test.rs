@@ -21,20 +21,29 @@
 
 use crate::cmd;
 use regex::Regex;
+use std::path::PathBuf;
 use std::time::Duration;
 use tempfile::TempDir;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
-/// Write `$XDG_CONFIG_HOME/webfang/config.toml` with the given TOML body and
-/// return the temp dir backing it. The CLI resolves its config through
-/// `dirs::config_dir()`, which honors `XDG_CONFIG_HOME` on Linux.
-fn write_toml_config(body: &str) -> TempDir {
-    let xdg = TempDir::new().expect("create XDG temp dir");
-    let conf_dir = xdg.path().join("webfang");
-    std::fs::create_dir_all(&conf_dir).expect("create webfang config dir");
-    std::fs::write(conf_dir.join("config.toml"), body).expect("write config.toml");
-    xdg
+/// Write a `config.toml` with the given TOML body, returning the temp dir
+/// backing it plus the exact config file path.
+///
+/// The path is returned so the caller can point `WEBFANG_CONFIG` at it, which
+/// is what makes this helper platform-independent (#1631). It used to return
+/// only the dir and rely on the caller setting `XDG_CONFIG_HOME`, which
+/// `dirs::config_dir()` honors on Linux alone: macOS ignored it silently and
+/// Windows cannot be redirected by env at all, so on those platforms the
+/// budget under test never reached enforcement and the assertions failed
+/// against the auto-derived defaults. The temp dir must be kept alive by the
+/// caller for the same reason it always was — `Command` cannot own a
+/// `TempDir`'s lifetime.
+fn write_toml_config(body: &str) -> (TempDir, PathBuf) {
+    let conf_dir = TempDir::new().expect("create config temp dir");
+    let config_path = conf_dir.path().join("config.toml");
+    std::fs::write(&config_path, body).expect("write config.toml");
+    (conf_dir, config_path)
 }
 
 /// Standard two-page discovery mock: robots.txt allow-all plus a sitemap
@@ -111,10 +120,10 @@ async fn toml_concurrency_reaches_scrape_enforcement() {
     let server = MockServer::start().await;
     mount_two_page_site(&server).await;
     let output = TempDir::new().expect("temp output dir");
-    let _xdg = write_toml_config("concurrency = \"2\"\n");
+    let (_conf, conf_path) = write_toml_config("concurrency = \"2\"\n");
 
     let assert = cmd()
-        .env("XDG_CONFIG_HOME", _xdg.path())
+        .env("WEBFANG_CONFIG", &conf_path)
         .args([
             "--url",
             &server.uri(),
@@ -145,10 +154,10 @@ async fn cli_concurrency_flag_outranks_toml_config() {
     let server = MockServer::start().await;
     mount_two_page_site(&server).await;
     let output = TempDir::new().expect("temp output dir");
-    let _xdg = write_toml_config("concurrency = \"2\"\n");
+    let (_conf, conf_path) = write_toml_config("concurrency = \"2\"\n");
 
     let assert = cmd()
-        .env("XDG_CONFIG_HOME", _xdg.path())
+        .env("WEBFANG_CONFIG", &conf_path)
         .args([
             "--url",
             &server.uri(),
@@ -249,10 +258,10 @@ async fn toml_crawl_and_cli_download_survive_same_merge() {
     let server = MockServer::start().await;
     mount_two_page_site(&server).await;
     let output = TempDir::new().expect("temp output dir");
-    let _xdg = write_toml_config("concurrency = \"2\"\n");
+    let (_conf, conf_path) = write_toml_config("concurrency = \"2\"\n");
 
     let assert = cmd()
-        .env("XDG_CONFIG_HOME", _xdg.path())
+        .env("WEBFANG_CONFIG", &conf_path)
         .args([
             "--url",
             &server.uri(),
@@ -310,10 +319,10 @@ fn cli_rate_limit_burst_zero_hard_errors() {
 #[test]
 fn toml_rate_limit_burst_zero_hard_errors() {
     let output = TempDir::new().expect("temp output dir");
-    let _xdg = write_toml_config("rate_limit_burst = 0\n");
+    let (_conf, conf_path) = write_toml_config("rate_limit_burst = 0\n");
 
     let assert = cmd()
-        .env("XDG_CONFIG_HOME", _xdg.path())
+        .env("WEBFANG_CONFIG", &conf_path)
         .args([
             "--url",
             "https://example.com",

@@ -417,7 +417,22 @@ pub fn redact_nondeterministic(dir: &Path, text: &str) -> String {
     // Normalize tracing source file paths (e.g. "at crates/.../orchestrator.rs:<LINE>")
     // so moving a function between files does not break snapshots (#462).
     let file_path = Regex::new(r"(at\s+)\S+\.rs").expect("valid file path regex");
-    file_path.replace_all(&text, "$1<FILE>.rs").into_owned()
+    let text = file_path.replace_all(&text, "$1<FILE>.rs").into_owned();
+    // INT-1 (#1631): collapse the OS-dependent connection-failure surface to
+    // ONE token. Unix reports `Connection refused (os error 111)`, Windows
+    // reports the WSA prose `No connection could be made because the target
+    // machine actively refused it. (os error 10061)`, and an unreachable host
+    // on Windows never refuses at all — it degrades to our own `request timed
+    // out after 2s`, which redaction alone cannot bridge, so the timeout tail
+    // collapses to the same token. The snapshot therefore records THAT a
+    // network failure happened, not WHICH one: an intentional loss, because
+    // the affected test asserts a failure is mentioned rather than its kind
+    // (the same tradeoff #1645 accepted for the panic payload).
+    let net_err = Regex::new(
+        r"(?i)(?:connection refused|connection timed out|no connection could be made[^()\n]*|an attempt to connect[^()\n]*)\s*(?:\(\s*os error\s*\d+\s*\))?|request timed out after \d+\s*s",
+    )
+    .expect("valid network error regex");
+    net_err.replace_all(&text, "<NET_ERR>").into_owned()
 }
 
 /// Resolve the workspace root by climbing from a crate manifest directory.
@@ -865,5 +880,39 @@ mod tests {
         let input = "    at crates/webfang_core/src/cli/orchestrator.rs:42";
         let result = redact_nondeterministic(dir, input);
         assert_eq!(result, "    at <FILE>.rs:<LINE>");
+    }
+
+    /// INT-1 (#1631) pin, Unix shape: the errno is OS text (`os error 111`
+    /// on Linux, `61` on macOS) and a snapshot must not bake it in. The
+    /// surrounding Spanish error prefix is product-owned and must survive.
+    #[test]
+    fn redact_nondeterministic_collapses_unix_connection_refused() {
+        let dir = Path::new("/tmp/test");
+        let input = "error de red: I/O error: Connection refused (os error 111)";
+        let result = redact_nondeterministic(dir, input);
+        assert_eq!(result, "error de red: I/O error: <NET_ERR>");
+    }
+
+    /// INT-1 (#1631) pin, Windows shape: the refusal is WSA prose plus the
+    /// same errno parenthetical, so the WHOLE phrase must collapse — a
+    /// narrower rule that only replaced the number would still leave
+    /// Windows-only text in a Linux-authored snapshot.
+    #[test]
+    fn redact_nondeterministic_collapses_windows_wsa_prose() {
+        let dir = Path::new("/tmp/test");
+        let input = "No connection could be made because the target machine actively refused it. (os error 10061)";
+        let result = redact_nondeterministic(dir, input);
+        assert_eq!(result, "<NET_ERR>");
+    }
+
+    /// INT-1 (#1631) pin, Windows timeout-degradation shape: an unreachable
+    /// host on Windows never refuses, it times out, so the snapshot has to
+    /// see the SAME token the Unix refusal produces.
+    #[test]
+    fn redact_nondeterministic_collapses_windows_timeout_degradation() {
+        let dir = Path::new("/tmp/test");
+        let input = "error de red: request timed out after 2s";
+        let result = redact_nondeterministic(dir, input);
+        assert_eq!(result, "error de red: <NET_ERR>");
     }
 }
