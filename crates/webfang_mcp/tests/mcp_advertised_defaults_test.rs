@@ -35,7 +35,9 @@ use webfang_core::config::Config;
 use webfang_core::di::{Container, ContainerExt};
 use webfang_core::domain::config::ScraperConfig;
 use webfang_mcp::mcp_server::handlers::scraping::SCRAPE_BATCH_DEFAULT_CONCURRENCY;
-use webfang_mcp::mcp_server::params::{ScrapeBatchParams, CONCURRENCY_MAX, CONCURRENCY_MIN};
+use webfang_mcp::mcp_server::params::{
+    ScrapeBatchParams, CONCURRENCY_MAX, CONCURRENCY_MIN, URLS_MAX,
+};
 use webfang_mcp::mcp_server::schema_bridge::{
     default_overrides_for_tool, merged_input_schema, SCRAPE_BATCH_PROPERTIES,
 };
@@ -46,6 +48,9 @@ const TOOL: &str = "scrape_batch";
 
 /// The property the issue is about.
 const CONCURRENCY: &str = "concurrency";
+
+/// The `scrape_batch` array parameter under the F7 admission cap (#1611).
+const URLS: &str = "urls";
 
 /// Bounds `ScrapeBatchParams::validate` enforces, taken from the production constants
 /// so this suite cannot pin a range the validator no longer uses.
@@ -253,6 +258,67 @@ fn concurrency_bounds_are_advertised_in_schema() {
         prop.get("maximum"),
         Some(&json!(CONCURRENCY_UPPER)),
         "{CONCURRENCY} must advertise its upper bound as enforced by validate(): {prop}"
+    );
+}
+
+// ============================================================================
+// F7 — the `urls` cap is enforced AND advertised from one constant
+// ============================================================================
+
+/// F7 (#1611) is the same defect class as NS-04, on the other operand: a
+/// validator-only bound is a bound a client cannot see, so an LLM consumer
+/// discovers the cap by getting rejected — and, worse, a schema that says
+/// "array of any length" while the server refuses is the exact lie #1294
+/// called out for `concurrency`.
+///
+/// Unlike `concurrency`, the advertised side comes from the schemars derive
+/// (`#[schemars(extend("maxItems" = URLS_MAX))]`) and not from a
+/// `DefaultOverride::SetBounds`: that variant only speaks `minimum` /
+/// `maximum`, which are NUMERIC keywords and would be meaningless on an array
+/// property. `urls` is MCP-only (it has no OptionsSpec row, exactly like
+/// `concurrency`), and `SCRAPE_BATCH_PROPERTIES` leaves it on the derive, so
+/// the extension reaches the served schema through the same bridge pass.
+#[test]
+fn urls_cap_is_advertised_in_schema() {
+    let prop = property(URLS);
+    assert_eq!(
+        prop.get("maxItems"),
+        Some(&json!(URLS_MAX)),
+        "{URLS} must advertise the cap `validate()` enforces, read from the same \
+         constant: {prop}"
+    );
+}
+
+/// The other half of the same contract, and the reason the assertion above is
+/// not a snapshot: the advertised number IS the enforced number. If a future
+/// change tightens the validator without touching the schema (or the reverse),
+/// this fails even though both sides still look plausible in isolation.
+#[test]
+fn urls_cap_is_enforced_at_the_advertised_bound() {
+    let params = |count: usize| {
+        serde_json::json!({
+            "urls": (0..count)
+                .map(|i| format!("https://example.com/{i}"))
+                .collect::<Vec<String>>(),
+        })
+    };
+
+    serde_json::from_value::<ScrapeBatchParams>(params(URLS_MAX))
+        .expect("a batch at the advertised cap must deserialize")
+        .validate()
+        .expect("a batch at the advertised cap must be accepted");
+
+    let err = serde_json::from_value::<ScrapeBatchParams>(params(URLS_MAX + 1))
+        .expect(
+            "one URL past the cap still deserializes — the bound is a \
+                 validator rule, not a serde one",
+        )
+        .validate()
+        .expect_err("one URL past the advertised cap must be refused");
+    assert_eq!(
+        err.code,
+        rmcp::model::ErrorCode::INVALID_PARAMS,
+        "got: {err:?}"
     );
 }
 
