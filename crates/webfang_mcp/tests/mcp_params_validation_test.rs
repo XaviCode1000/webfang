@@ -314,6 +314,68 @@ fn scrape_batch_params_rejects_oversize_concurrency() {
     assert!(matches!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS));
 }
 
+/// #1611 F7: `validate()` used to reject only an EMPTY `urls`, so one call
+/// could carry an unbounded array — deserialized element by element into
+/// parsed `McpUrl`s and then handed to the batch runner in one call. The cap
+/// is [`URLS_MAX`]; the batch is refused with the SAME `invalid_params`
+/// envelope as the emptiness check, so a client sees one uniform error shape
+/// for both ends of the range.
+///
+/// The only assertions in this file that look at anything but
+/// `ErrorCode::INVALID_PARAMS` are the last two, and both are deliberate: the
+/// `data` tag is structured (which field was wrong) and the message is the one
+/// place a client learns the NUMBER to split at — an admission refusal whose
+/// error cannot be acted on is only half a contract. Arrange is 9 lines because
+/// the batch must be built at the real bound rather than a stand-in.
+#[test]
+fn scrape_batch_params_rejects_a_batch_past_the_cap() {
+    let p = ScrapeBatchParams {
+        urls: (0..=URLS_MAX)
+            .map(|i| vu(&format!("https://example.com/{i}")))
+            .collect(),
+        concurrency: None,
+        ignore_robots: None,
+        single_page: None,
+        delay_ms: None,
+    };
+    let err = p
+        .validate()
+        .expect_err("a batch over the cap must be refused");
+    assert!(
+        matches!(err.code, rmcp::model::ErrorCode::INVALID_PARAMS),
+        "an oversize batch is a parameter error; got: {err:?}"
+    );
+    assert_eq!(
+        err.data,
+        Some(serde_json::json!("urls")),
+        "the field tag must be the same `urls` the emptiness check uses"
+    );
+    assert!(
+        err.message.contains(&URLS_MAX.to_string()),
+        "the message must name the cap so the client can split its batch; got: {}",
+        err.message
+    );
+}
+
+/// The other end of the same boundary: exactly [`URLS_MAX`] URLs is legal, so
+/// the cap rejects only what it claims to reject. A cap of `< 3` would break
+/// the integration suites that batch three URLs (`scraping_coverage_test.rs`),
+/// which is why the boundary is pinned from both sides here.
+#[test]
+fn scrape_batch_params_accepts_a_batch_exactly_at_the_cap() {
+    let p = ScrapeBatchParams {
+        urls: (0..URLS_MAX)
+            .map(|i| vu(&format!("https://example.com/{i}")))
+            .collect(),
+        concurrency: None,
+        ignore_robots: None,
+        single_page: None,
+        delay_ms: None,
+    };
+    p.validate()
+        .expect("a batch of exactly URLS_MAX urls is inside the cap");
+}
+
 #[test]
 fn scrape_batch_params_accepts_valid() {
     let p = ScrapeBatchParams {

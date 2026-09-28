@@ -31,7 +31,7 @@ use webfang_ai::{ModelConfig, SemanticCleanerImpl, SemanticError};
 #[cfg(feature = "adaptive-selectors")]
 use webfang_core::application::adaptive_engine::{AdaptiveSelectorEngine, AdaptiveSelectorOptions};
 use webfang_core::application::crawl_options::CrawlOptions;
-use webfang_core::cli::config::ConfigDefaults;
+use webfang_core::cli::config::{resolve_config_path, ConfigDefaults};
 use webfang_core::cli::error::CliExit;
 use webfang_core::cli::preflight;
 use webfang_core::cli::preflight::ArgSources;
@@ -265,14 +265,6 @@ async fn resolve_url(args: &mut Args) -> Result<(), CliExit> {
     }
 
     Err(CliExit::UsageError("--url is required for scraping".into()))
-}
-
-/// Resolve the webfang config file path (graceful: missing file = defaults).
-fn resolve_config_path() -> std::path::PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("webfang")
-        .join("config.toml")
 }
 
 /// Map verbosity count to tracing levels (0=WARN, 1=INFO, 2=DEBUG, 3+=TRACE).

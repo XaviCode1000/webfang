@@ -75,8 +75,18 @@ impl ConfigDefaults {
 /// — XDG on Linux (unchanged behavior), %APPDATA% on Windows,
 /// ~/Library/Application Support on macOS. The `.` fallback keeps this
 /// site's previous fail-soft behavior when no user home exists.
+///
+/// One explicit override is honored ahead of that base. It is not redundant
+/// with the `XDG_CONFIG_HOME` support above, which has two gaps it does not
+/// close: it only applies when the variable is ABSOLUTE, and it names a
+/// DIRECTORY while this names the file itself — so a test or user can point at
+/// a `config.toml` that is not in the `webfang/` subdirectory, which is what
+/// the budget tests need (#1631).
 #[must_use]
 pub fn resolve_config_path() -> std::path::PathBuf {
+    if let Some(explicit) = std::env::var_os("WEBFANG_CONFIG").filter(|p| !p.is_empty()) {
+        return std::path::PathBuf::from(explicit);
+    }
     crate::domain::paths::config_base_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("webfang")
