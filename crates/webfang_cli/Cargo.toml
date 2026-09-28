@@ -35,9 +35,6 @@ clap = { version = "4", features = ["derive", "env"] }
 # Async
 tokio = { workspace = true }
 
-# Error handling
-dirs = { workspace = true }
-
 # Logging
 tracing = { workspace = true }
 

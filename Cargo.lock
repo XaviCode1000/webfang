@@ -6790,7 +6790,6 @@ name = "webfang_cli"
 version = "2.3.1"
 dependencies = [
  "clap",
- "dirs 5.0.1",
  "tokio",
  "tracing",
  "webfang_ai",
