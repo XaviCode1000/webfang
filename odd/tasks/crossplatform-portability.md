@@ -86,15 +86,21 @@ Solo el **último** slice lleva `Closes #1631`. Todos los anteriores llevan
 ## Tareas
 
 - [x] **T1 — Root-cause de INT-4 + reclasificación de INT-2.** Hecho 2026-09-28. Ver arriba.
-- [ ] **T2 — PR 1: INT-1 + INT-2 + INT-3 + INT-4 + el hole de hermeticidad.** En ejecución.
+- [x] **T2 — PR 1: INT-1 + INT-2 + INT-3 + INT-4 + el hole de hermeticidad.** Cerrada 2026-09-28
+      en la PR #1651 (head `f0b70556`). La verificación que cierra la tarea es la **lane**, no la
+      suite local: ver "Verificación de lane" abajo.
       Superficies: `cli_harness.rs`, `common/mod.rs`, `webfang_test_utils/src/lib.rs`,
       `sitemap_test.rs`, `budget_override_test.rs`, `webfang_cli/src/main.rs`.
 - [ ] **T3 — Drift entre las dos copias de `redact_nondeterministic`.** La copia de
       `webfang_test_utils` no tiene la regla `<TRACE_ID>` que la de `cli_harness` sí tiene.
       30 call sites dependen de esto. **Fuera del PR 1 a propósito** — tocar sólo la regla nueva
       en ambas deja el drift preexistente igual de visible, que es lo correcto. Issue aparte.
-- [ ] **T4 — `WEBFANG_CONFIG` en los otros dos call sites.** `main.rs:660` y `main.rs:684`
-      resuelven config de providers por un camino aparte. El worker debe **reportar**, no tocar.
+- [x] **T4 — `WEBFANG_CONFIG` en los otros dos call sites.** **Obsoleta — cerrada sin trabajo
+      adicional.** El commit `4646fa8d` borró la copia privada de `resolve_config_path` en
+      `webfang_cli/src/main.rs` y movió el override al resolver canónico de
+      `webfang_core::cli::config`. Los tres call sites del CLI llaman ahora a la función única, así
+      que heredan el override sin tocar nada. De paso se cerró **#1648** por el camino corto: el
+      defeecto de las dos copias no se documentó, se eliminó.
 - [ ] **T5 — INT-5 + INT-6.** Hang de stdin en Windows y slow-timeout de `trybuild`. INT-6 tiene
       sus propios acceptance criteria en el issue (incluido "un fix por timeout no puede
       convertir una regresión real de compilación en pass o skip").
@@ -129,14 +135,76 @@ problema no existe.
 
 ## Evidencia de commits
 
-| Tarea | Commit | Verificación |
+| # | Commit | Qué aportó |
 | --- | --- | --- |
-| T2a — override de producto | `6c7ca07d` `feat(cli): honor WEBFANG_CONFIG…` | 3813/3813 verde |
-| T2b — portabilidad de test | `08d3e9d8` `test(core): make the integration suite…` | 3813/3813 verde |
+| 1 | `6c7ca07d` `feat(cli): honor WEBFANG_CONFIG…` | Override de producto (T2a) |
+| 2 | `08d3e9d8` `test(core): make the integration suite…` | INT-1/2/3/4 en el harness (T2b) |
+| 3 | `4646fa8d` `feat(cli): … and delete the duplicate config resolver` | Cierra #1648; **efecto colateral no declarado**: `dirs` quedó sin uso en `webfang_cli`, y el CLI pasó a honrar `XDG_CONFIG_HOME` absoluto en macOS/Windows |
+| 4 | `0003501d` `fix(test): collapse the I/O error layer with the network failure` | **El fix de INT-1** — ver abajo |
+| 5 | `f0b70556` `chore(cli): drop the now-unused dirs dep, and document WEBFANG_CONFIG` | Resuelve el rojo de `cargo-machete` y documenta la env var |
 
-Ambos pasan `cargo check --all-targets --all-features`, `clippy` estricto (con los ratchets de
-#516), `cargo fmt --all -- --check`, `RUSTDOCFLAGS=-D warnings cargo doc` y la suite completa.
-Sin fallos preexistentes fuera de alcance.
+> ⚠️ **Los commits 1 y 2 solos NO cerraron INT-1.** Su "3813/3813 verde" era la suite **local en
+> Linux**, donde el bug no se manifiesta. El commit 4 existe porque la lane de Windows siguió roja
+> con 1 `FAILED` después de que 1 y 2 ya fueran verdes. La lección queda escrita: en una PR de
+> portabilidad, el verde local **no** es evidencia.
+
+## Verificación de lane (la autoritativa)
+
+Run `36462875420`, head `f0b70556`:
+
+| Lane | Resultado |
+| --- | --- |
+| `CI Gate` | pass |
+| `Tests (macos-latest)` | pass |
+| `Code quality (machete + duplication ratchet)` | pass |
+| `Tests (windows-latest)` | **0 failed** — 866 run, 865 passed (1 leaky), 1 timed out, 16 skipped |
+
+Los tres tests de las clases tocadas, en verde **sobre Windows real**:
+
+```
+unreachable_host_stderr_mentions_failure            PASS   5.847s   <- el blocker de INT-1
+test_single_page_custom_timeout_is_used_by_scrape_client  PASS  13.725s
+dry_run_refused_seed_exits_69_with_spanish_error    PASS   3.585s
+```
+
+**Lo único que queda rojo en Windows es `batch_empty_file_exits_64` (`TMT`, timeout ×3) — eso es
+INT-5, explícitamente fuera de scope y trackeado en T5.** nextest sale distinto de cero también por
+`TMT`, por eso el job sigue en rojo por una razón que esta PR declaró que no cubría.
+
+## Por qué el commit 4 fue necesario (mecanismo, para el que lea esto después)
+
+El token `<NET_ERR>` del commit 2 unificaba el texto OS de la *hoja*, pero no la *capa de la cadena*
+que webfang agrega arriba. Son dos variantes de producto distintas:
+
+- `DownloadError::Io` → `#[error("I/O error: {0}")]` — `domain/downloader_port.rs:78`
+- `DownloadError::Timeout` → `request timed out after {0}s` — `domain/downloader_port.rs:99`
+
+Un connect **rechazado** cae en la variante `Io`; en Windows, el mismo connect a un puerto loopback
+cerrado **pierde la carrera contra el timeout** y cae en `Timeout`, que no lleva esa capa. Resultado:
+`error de red: I/O error: <NET_ERR>` en Linux contra `error de red: <NET_ERR>` en Windows. El fix es
+que la regla consuma la capa, no que la matchee.
+
+**Detalle que explica por qué el otro snapshot no se rompió:** `unreachable_host` corre con
+`--timeout-secs 2` y `dry_run_refused_seed` con el presupuesto default. Ambos golpean un puerto
+loopback cerrado, pero sólo el presupuesto corto pierde la carrera en Windows. Por eso
+`dry_run_refused_seed` seguía verde con `I/O error:` presente mientras `unreachable_host` fallaba.
+
+**Sobre el pin que faltaba:** los dos pins del commit 2 pasaban con la regla rota, porque cada uno
+afirmaba sólo su propia forma — el de Unix además afirmaba que la capa `I/O error: ` *sobrevive*,
+es decir, codificaba el bug. El defecto sólo era visible al comparar los dos. El commit 4 agrega un
+tercer pin que asserta la **comparación** (`unix == windows`), no una forma individual. Dos pins
+individualmente correctos no pueden ver una divergencia cross-platform por construcción.
+
+## Nota de hygiene
+
+- El título de la PR es `fix(cli,test): …` y **no** `fix(test): …`: la PR cambió comportamiento de
+  producto (`WEBFANG_CONFIG` + el honor de `XDG_CONFIG_HOME` en el CLI). Como el merge por defecto
+  es `--squash`, **release-plz lee el título de la PR, no el commit `feat(cli):` de adentro** —
+  arrancando con `fix` el bump sigue siendo patch. Mergear con `--merge` en su lugar haría
+  aflorear ese `feat:` como minor.
+- `docs/src/cli-reference.md` recibió una sección "Configuration file" para `WEBFANG_CONFIG`
+  (commit 5). Sin eso, la env var era indemostrable y la promesa de "cerrar un hueco de usuario"
+  era falsa.
 
 **Nota de conteo (para el que lea esto después):** la suite corre **3833** tests
 (3813 passed + 20 skipped). `cargo nextest list` devuelve 3813 porque no lista los ignorados; no
