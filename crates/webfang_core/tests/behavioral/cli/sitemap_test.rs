@@ -110,7 +110,14 @@ async fn sitemap_url_scrapes_listed_urls() {
         let relative = file
             .strip_prefix(output.path())
             .expect("WalkDir yields paths under the output dir");
-        exported.push_str(&format!("## {}\n", relative.display()));
+        // The snapshot heading is a document line, and the document format
+        // requires `/` as the separator on every platform. `display()` is
+        // platform-native, so on Windows it would render
+        // `## 127.0.0.1\page-a.md` against a Linux-authored snapshot. Only
+        // the heading text is normalized — the tree the exporter wrote on
+        // disk is untouched and already correct (#1631).
+        let heading = relative.to_string_lossy().replace('\\', "/");
+        exported.push_str(&format!("## {heading}\n"));
         exported.push_str(&canonical_export(file));
         if !exported.ends_with('\n') {
             exported.push('\n');

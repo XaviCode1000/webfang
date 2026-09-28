@@ -2,9 +2,9 @@
 source: crates/webfang_core/tests/behavioral/main.rs
 expression: redacted
 ---
-  <TIMESTAMP> ERROR <MODULE>: page scrape failed, error: error de red: request timed out after 1s, url: http://127.0.0.1:<PORT>/slow, stage: scrape, trace_id: "<TRACE_ID>"
+  <TIMESTAMP> ERROR <MODULE>: page scrape failed, error: error de red: <NET_ERR>, url: http://127.0.0.1:<PORT>/slow, stage: scrape, trace_id: "<TRACE_ID>"
     at <FILE>.rs:<LINE>
 
-Failed to scrape http://127.0.0.1:<PORT>/slow: error de red: request timed out after 1s
+Failed to scrape http://127.0.0.1:<PORT>/slow: error de red: <NET_ERR>
 No pages were successfully scraped
 Error: No pages were successfully scraped

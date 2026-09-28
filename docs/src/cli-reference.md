@@ -50,6 +50,42 @@ silently turned into another value.
   falls back to the hardware-derived default (numeric zero and
   out-of-range values are still rejected).
 
+## Configuration file
+
+Flags can also come from a TOML file, which is how you set values once
+instead of on every invocation. webfang looks for `webfang/config.toml`
+under the platform's user config directory:
+
+| Platform | Resolved from |
+| --- | --- |
+| Linux | `$XDG_CONFIG_HOME`, else `~/.config` |
+| macOS | `~/Library/Application Support` |
+| Windows | `%APPDATA%` |
+
+An **absolute** `XDG_CONFIG_HOME` is honored on every platform, not just
+Linux — that is what makes hermetic test fixtures possible.
+
+To point at a specific file instead, set **`WEBFANG_CONFIG`** to the path of
+the `config.toml` itself. It takes precedence over the table above, and it
+differs from `XDG_CONFIG_HOME` in two ways worth knowing:
+
+- It names the **file**, while `XDG_CONFIG_HOME` names a **directory** that
+  webfang appends `webfang/` to. Use it when your file does not live in that
+  subdirectory.
+- It is honored on Windows, where no environment variable reaches the
+  platform config lookup: that lookup calls
+  `SHGetKnownFolderPath(FOLDERID_RoamingAppData)`, a Windows Shell API that
+  reads no env var at all. Until `WEBFANG_CONFIG` existed, a Windows install
+  could not be redirected to a config file by env at all.
+
+A missing file is not an error: webfang falls back to its defaults, so
+`WEBFANG_CONFIG` pointing at a nonexistent path is safe and means "use
+defaults".
+
+```bash
+WEBFANG_CONFIG=/etc/webfang/config.toml webfang https://example.com
+```
+
 ## Complete flag reference
 
 Everything below is the verbatim output of `webfang --help` and
