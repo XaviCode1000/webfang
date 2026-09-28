@@ -76,12 +76,12 @@ impl ConfigDefaults {
 /// ~/Library/Application Support on macOS. The `.` fallback keeps this
 /// site's previous fail-soft behavior when no user home exists.
 ///
-/// One explicit override is honored ahead of that base, and it is the only
-/// one that works on every platform: `dirs::config_dir()` reads
-/// `XDG_CONFIG_HOME` on Linux but NO env var on Windows (it calls
-/// `SHGetKnownFolderPath(FOLDERID_RoamingAppData)`), so neither a test nor a
-/// user can redirect a Windows install by env alone. `WEBFANG_CONFIG` names
-/// the config FILE path verbatim (#1631).
+/// One explicit override is honored ahead of that base. It is not redundant
+/// with the `XDG_CONFIG_HOME` support above, which has two gaps it does not
+/// close: it only applies when the variable is ABSOLUTE, and it names a
+/// DIRECTORY while this names the file itself — so a test or user can point at
+/// a `config.toml` that is not in the `webfang/` subdirectory, which is what
+/// the budget tests need (#1631).
 #[must_use]
 pub fn resolve_config_path() -> std::path::PathBuf {
     if let Some(explicit) = std::env::var_os("WEBFANG_CONFIG").filter(|p| !p.is_empty()) {

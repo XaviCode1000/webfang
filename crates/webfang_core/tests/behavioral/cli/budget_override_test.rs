@@ -32,13 +32,18 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 ///
 /// The path is returned so the caller can point `WEBFANG_CONFIG` at it, which
 /// is what makes this helper platform-independent (#1631). It used to return
-/// only the dir and rely on the caller setting `XDG_CONFIG_HOME`, which
-/// `dirs::config_dir()` honors on Linux alone: macOS ignored it silently and
-/// Windows cannot be redirected by env at all, so on those platforms the
-/// budget under test never reached enforcement and the assertions failed
-/// against the auto-derived defaults. The temp dir must be kept alive by the
-/// caller for the same reason it always was — `Command` cannot own a
-/// `TempDir`'s lifetime.
+/// only the dir and rely on the caller setting `XDG_CONFIG_HOME` to the parent
+/// of a `webfang/` subdirectory. That is Linux-shaped in two ways, and the
+/// first attempt at this helper only fixed one: `XDG_CONFIG_HOME` was read
+/// through a private `main.rs` copy of the resolver that called
+/// `dirs::config_dir()` raw, so macOS ignored it silently and Windows could
+/// not be redirected by env at all. The resolver is now the shared one and
+/// `domain::paths` honors an ABSOLUTE `XDG_CONFIG_HOME` on every platform, so
+/// the env var alone would work again — but it names a DIRECTORY and the
+/// shared resolver appends `webfang/` to it, while this helper writes the file
+/// at the root. `WEBFANG_CONFIG` names the file itself and drops that
+/// assumption. The temp dir must be kept alive by the caller for the same
+/// reason it always was — `Command` cannot own a `TempDir`'s lifetime.
 fn write_toml_config(body: &str) -> (TempDir, PathBuf) {
     let conf_dir = TempDir::new().expect("create config temp dir");
     let config_path = conf_dir.path().join("config.toml");

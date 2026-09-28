@@ -419,17 +419,29 @@ pub fn redact_nondeterministic(dir: &Path, text: &str) -> String {
     let file_path = Regex::new(r"(at\s+)\S+\.rs").expect("valid file path regex");
     let text = file_path.replace_all(&text, "$1<FILE>.rs").into_owned();
     // INT-1 (#1631): collapse the OS-dependent connection-failure surface to
-    // ONE token. Unix reports `Connection refused (os error 111)`, Windows
-    // reports the WSA prose `No connection could be made because the target
-    // machine actively refused it. (os error 10061)`, and an unreachable host
-    // on Windows never refuses at all — it degrades to our own `request timed
-    // out after 2s`, which redaction alone cannot bridge, so the timeout tail
-    // collapses to the same token. The snapshot therefore records THAT a
-    // network failure happened, not WHICH one: an intentional loss, because
-    // the affected test asserts a failure is mentioned rather than its kind
-    // (the same tradeoff #1645 accepted for the panic payload).
+    // ONE token. Unix reports `I/O error: Connection refused (os error 111)`,
+    // Windows reports our own `request timed out after 2s` (a refused
+    // connection never happens there — it degrades to the request timeout), and
+    // a Windows WSA refusal reads `No connection could be made ... (os error
+    // 10061)`. Redaction cannot bridge a different error, so the timeout tail
+    // collapses to the same token.
+    //
+    // The `I/O error: ` layer is part of the SAME collapse and must be
+    // consumed with it: it is our `DownloadError::Io` wrapper, present only
+    // when the inner error is an `io::Error`. On Unix the io::Error is what
+    // carries the connection failure; on the timeout path the error is
+    // `DownloadError::Timeout`, which has no such wrapper. Collapsing only the
+    // tail would still leave `error de red: I/O error: <NET_ERR>` on Linux
+    // against `error de red: <NET_ERR>` on Windows — same failure, different
+    // snapshot. Verified against the Windows lane log, not inferred.
+    //
+    // The token therefore records THAT a network failure happened, not WHICH
+    // one: an intentional loss, because the affected test asserts a failure is
+    // mentioned rather than its kind (the same tradeoff #1645 accepted for the
+    // panic payload). Pinned below against the byte-exact strings both
+    // platforms produce.
     let net_err = Regex::new(
-        r"(?i)(?:connection refused|connection timed out|no connection could be made[^()\n]*|an attempt to connect[^()\n]*)\s*(?:\(\s*os error\s*\d+\s*\))?|request timed out after \d+\s*s",
+        r"(?i)(?:I/O error:\s*)?(?:(?:connection refused|connection timed out|no connection could be made[^()\n]*|an attempt to connect[^()\n]*)\s*(?:\(\s*os error\s*\d+\s*\))?|request timed out after \d+\s*s)",
     )
     .expect("valid network error regex");
     net_err.replace_all(&text, "<NET_ERR>").into_owned()
@@ -884,13 +896,16 @@ mod tests {
 
     /// INT-1 (#1631) pin, Unix shape: the errno is OS text (`os error 111`
     /// on Linux, `61` on macOS) and a snapshot must not bake it in. The
-    /// surrounding Spanish error prefix is product-owned and must survive.
+    /// surrounding Spanish error prefix is product-owned and survives; the
+    /// `I/O error: ` layer does NOT, because the Windows timeout path has no
+    /// such layer and keeping it made the two platforms disagree — see
+    /// `redact_nondeterministic_makes_both_platforms_agree`.
     #[test]
     fn redact_nondeterministic_collapses_unix_connection_refused() {
         let dir = Path::new("/tmp/test");
         let input = "error de red: I/O error: Connection refused (os error 111)";
         let result = redact_nondeterministic(dir, input);
-        assert_eq!(result, "error de red: I/O error: <NET_ERR>");
+        assert_eq!(result, "error de red: <NET_ERR>");
     }
 
     /// INT-1 (#1631) pin, Windows shape: the refusal is WSA prose plus the
@@ -914,5 +929,38 @@ mod tests {
         let input = "error de red: request timed out after 2s";
         let result = redact_nondeterministic(dir, input);
         assert_eq!(result, "error de red: <NET_ERR>");
+    }
+
+    /// The pin that would have caught the `I/O error: ` layer the first two
+    /// pins missed. Both strings below are copied BYTE-EXACT from the stderr
+    /// each platform produced for `unreachable_host_stderr_mentions_failure`
+    /// (Windows lane, run 36356048341) — not reconstructed from memory:
+    ///
+    /// ```text
+    /// linux:   error de red: I/O error: Connection refused (os error 111)
+    /// windows: error de red: request timed out after 2s
+    /// ```
+    ///
+    /// Written as two separate pins, they both passed while the RULE was wrong,
+    /// because each pin asserted only its own shape: the Unix pin expected the
+    /// `I/O error: ` layer to SURVIVE, and the Windows pin had no layer to
+    /// begin with. The defect was only visible when the two are compared, so
+    /// this asserts the comparison itself — the whole point of the collapse.
+    #[test]
+    fn redact_nondeterministic_makes_both_platforms_agree() {
+        let dir = Path::new("/tmp/test");
+        let unix = redact_nondeterministic(
+            dir,
+            "Failed to scrape http://x/: error de red: I/O error: Connection refused (os error 111)",
+        );
+        let windows = redact_nondeterministic(
+            dir,
+            "Failed to scrape http://x/: error de red: request timed out after 2s",
+        );
+        assert_eq!(unix, windows, "the two platforms must redact identically");
+        assert_eq!(
+            unix, "Failed to scrape http://x/: error de red: <NET_ERR>",
+            "and both must land on the documented token"
+        );
     }
 }

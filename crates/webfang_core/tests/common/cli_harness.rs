@@ -406,17 +406,29 @@ pub(crate) fn redact_nondeterministic(dir: &Path, text: &str) -> String {
     let file_path = Regex::new(r"(at\s+)\S+\.rs").unwrap();
     let text = file_path.replace_all(&text, "$1<FILE>.rs").into_owned();
     // INT-1 (#1631): collapse the OS-dependent connection-failure surface to
-    // ONE token. Unix reports `Connection refused (os error 111)`, Windows
-    // reports the WSA prose `No connection could be made because the target
-    // machine actively refused it. (os error 10061)`, and an unreachable host
-    // on Windows never refuses at all — it degrades to our own `request timed
-    // out after 2s`, which redaction alone cannot bridge, so the timeout tail
-    // collapses to the same token. The snapshot therefore records THAT a
-    // network failure happened, not WHICH one: an intentional loss, because
-    // the affected test asserts a failure is mentioned rather than its kind
-    // (the same tradeoff #1645 accepted for the panic payload).
+    // ONE token. Unix reports `I/O error: Connection refused (os error 111)`,
+    // Windows reports our own `request timed out after 2s` (a refused
+    // connection never happens there — it degrades to the request timeout), and
+    // a Windows WSA refusal reads `No connection could be made ... (os error
+    // 10061)`. Redaction cannot bridge a different error, so the timeout tail
+    // collapses to the same token.
+    //
+    // The `I/O error: ` layer is part of the SAME collapse and must be
+    // consumed with it: it is our `DownloadError::Io` wrapper, present only
+    // when the inner error is an `io::Error`. On Unix the io::Error is what
+    // carries the connection failure; on the timeout path the error is
+    // `DownloadError::Timeout`, which has no such wrapper. Collapsing only the
+    // tail would still leave `error de red: I/O error: <NET_ERR>` on Linux
+    // against `error de red: <NET_ERR>` on Windows — same failure, different
+    // snapshot. Verified against the Windows lane log, not inferred.
+    //
+    // The token therefore records THAT a network failure happened, not WHICH
+    // one: an intentional loss, because the affected test asserts a failure is
+    // mentioned rather than its kind (the same tradeoff #1645 accepted for the
+    // panic payload). Pinned in `webfang_test_utils` against the byte-exact
+    // strings both platforms produce.
     let net_err = Regex::new(
-        r"(?i)(?:connection refused|connection timed out|no connection could be made[^()\n]*|an attempt to connect[^()\n]*)\s*(?:\(\s*os error\s*\d+\s*\))?|request timed out after \d+\s*s",
+        r"(?i)(?:I/O error:\s*)?(?:(?:connection refused|connection timed out|no connection could be made[^()\n]*|an attempt to connect[^()\n]*)\s*(?:\(\s*os error\s*\d+\s*\))?|request timed out after \d+\s*s)",
     )
     .unwrap();
     net_err.replace_all(&text, "<NET_ERR>").into_owned()
