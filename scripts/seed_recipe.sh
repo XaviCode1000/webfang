@@ -62,6 +62,60 @@ SEED_RECIPE_WRAPPER_POLICY="prescribed-empty"
 # rust-toolchain.toml said while the key had hashed the ambient override. Here
 # the active toolchain is captured, and the build is given that exact one
 # explicitly rather than being left to re-resolve it.
+# Resolve the two installation roots ONCE, to absolute paths, and pin them.
+#
+# A relative CARGO_HOME is a latent identity bug: the same string resolves to a
+# different directory depending on the working directory, so the config-surface
+# walk — and cargo itself — would read different files from different worktrees
+# under one recipe. RUSTUP_HOME decides which rustup installation a toolchain
+# name resolves through, and it was being re-injected straight from the ambient
+# environment, which is the implicit control the rest of the recipe exists to
+# remove.
+#
+# These are pinned, not hashed: the same compiler installed in two places is the
+# same compiler for artifact purposes, and putting an absolute installation path
+# in the key would make every seed machine-specific. What the key does carry is
+# `rustc -V` and the resolved toolchain id, which is the semantic anchor.
+seed_recipe_resolve_homes() {
+  local h
+  SEED_RECIPE_CARGO_HOME="$(seed_recipe_abs "${CARGO_HOME:-$HOME/.cargo}" "CARGO_HOME")"
+  SEED_RECIPE_RUSTUP_HOME=""
+  if [ -n "${RUSTUP_HOME:-}" ]; then
+    SEED_RECIPE_RUSTUP_HOME="$(seed_recipe_abs "$RUSTUP_HOME" "RUSTUP_HOME")"
+  fi
+}
+
+seed_recipe_abs() {
+  local v="$1" name="$2" out
+  if ! out="$(realpath -m -- "$v" 2>/dev/null)" || [ -z "$out" ]; then
+    echo "seed_recipe: cannot canonicalise $name ('$v')." >&2
+    echo "  A relative or unresolvable $name would be read differently from" >&2
+    echo "  different working directories, which is a contract that is not" >&2
+    echo "  reproducible. Refusing rather than pinning something ambiguous." >&2
+    exit 1
+  fi
+  printf '%s' "$out"
+}
+
+# ── 3. qué binarios ejecuta el build ──
+seed_recipe_resolve_binaries() {
+  SEED_RECIPE_CARGO_BIN="$(command -v cargo 2>/dev/null || true)"
+  [ -n "$SEED_RECIPE_CARGO_BIN" ] || {
+    echo "seed_recipe: cargo is not on PATH; the recipe pins the exact cargo" >&2
+    echo "  binary it runs, so a build that used some other one is not this" >&2
+    echo "  recipe's build." >&2
+    exit 1; }
+  if [ -n "${SEED_RECIPE_TOOLCHAIN:-}" ] && command -v rustup >/dev/null 2>&1; then
+    SEED_RECIPE_RUSTC_BIN="$(RUSTUP_TOOLCHAIN="$SEED_RECIPE_TOOLCHAIN" rustup which rustc 2>/dev/null || true)"
+  fi
+  [ -n "${SEED_RECIPE_RUSTC_BIN:-}" ] || SEED_RECIPE_RUSTC_BIN="$(command -v rustc 2>/dev/null || true)"
+  [ -n "${SEED_RECIPE_RUSTC_BIN:-}" ] || {
+    echo "seed_recipe: rustc is not on PATH and rustup could not resolve the" >&2
+    echo "  pinned toolchain; the recipe cannot know which compiler it would" >&2
+    echo "  be describing." >&2
+    exit 1; }
+}
+
 seed_recipe_resolve_toolchain() {
   local repo="$1"
   SEED_RECIPE_TOOLCHAIN=""
@@ -88,7 +142,7 @@ seed_recipe_resolve_toolchain() {
 # costs correctness. Modelling cargo's full precedence chain to be cleverer than
 # that would buy nothing and risk being wrong in the expensive direction.
 seed_recipe_config_digest() {
-  local repo="$1" home="${CARGO_HOME:-$HOME/.cargo}" out="" f dir
+  local repo="$1" home="${SEED_RECIPE_CARGO_HOME:-${CARGO_HOME:-$HOME/.cargo}}" out="" f dir
   # CONTENT, not paths.
   #
   # The first version of this recorded "F <absolute path> <hash>" for every
@@ -133,7 +187,7 @@ seed_recipe_config_digest() {
 # toolchain the flag is inert — which is exactly why refusing it is a decision
 # rather than a workaround.
 seed_recipe_has_build_dir() {
-  local repo="$1" home="${CARGO_HOME:-$HOME/.cargo}" f dir
+  local repo="$1" home="${SEED_RECIPE_CARGO_HOME:-${CARGO_HOME:-$HOME/.cargo}}" f dir
   if [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then return 0; fi
   for f in "$repo/.cargo/config.toml" "$repo/.cargo/config" "$home/config.toml" "$home/config"; do
     if [ -f "$f" ] && grep -q 'build-dir' "$f" 2>/dev/null; then return 0; fi
@@ -155,7 +209,8 @@ seed_recipe_has_build_dir() {
 # leaving the lock byte-identical, both verified:
 #
 #     [profile.dev] opt-level / lto changed in the root Cargo.toml
-#     a dependency's features, optionality or target condition changed
+#     a dependency's features, default-feature flag, optionality or target
+#       condition changed
 #
 # In both cases the key was identical, so a seed built under one profile was
 # offered to a consumer compiling under another. Dependency features are resolved
@@ -204,6 +259,7 @@ seed_recipe_workspace_contract() {
               dependencies: [ .dependencies[] | {
                 name, req, kind, optional,
                 features: (.features | sort),
+                uses_default_features,
                 target, rename, registry
               } ] | sort_by(.name, .kind, .target // ""),
               features: (.features | to_entries | map({ (.key): (.value | sort) }) | add // {})
@@ -238,6 +294,7 @@ seed_recipe_workspace_contract() {
               dependencies: [ .dependencies[] | {
                 name, req, kind, optional,
                 features: (.features | sort),
+                uses_default_features,
                 target, rename, registry
               } ] | sort_by(.name, .kind, .target // ""),
               features: (.features | to_entries | map({ (.key): (.value | sort) }) | add // {})
@@ -264,7 +321,7 @@ seed_recipe_workspace_contract() {
 # discovered later. The alternative — resolving includes recursively — needs a real
 # config parser with cargo's exact precedence, and a wrong answer here is silent.
 seed_recipe_has_config_include() {
-  local repo="$1" home="${CARGO_HOME:-$HOME/.cargo}" f dir
+  local repo="$1" home="${SEED_RECIPE_CARGO_HOME:-${CARGO_HOME:-$HOME/.cargo}}" f dir
   for f in "$repo/.cargo/config.toml" "$repo/.cargo/config" "$home/config.toml" "$home/config"; do
     if [ -f "$f" ] && grep -qE '^[[:space:]]*include[[:space:]]*=' "$f" 2>/dev/null; then return 0; fi
   done
@@ -328,10 +385,11 @@ seed_recipe_parse() {
   done
 
   seed_recipe_resolve_toolchain "$repo"
+  seed_recipe_resolve_homes
+  seed_recipe_resolve_binaries
   SEED_RECIPE_CONFIG_DIGEST="$(seed_recipe_config_digest "$repo")"
   SEED_RECIPE_WORKSPACE_DIGEST="$(seed_recipe_workspace_contract "$repo")" \
     || { echo "seed_recipe: refusing to proceed without a workspace build contract" >&2; exit 1; }
-  SEED_RECIPE_CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
   # Canonicalise the feature list once, so "ai,mcp" and "mcp,ai" cannot become
   # two seeds, and so the string handed to cargo is the same one that was keyed.
   SEED_RECIPE_FEATURES_CANON="$(
@@ -353,6 +411,7 @@ seed_recipe_key_args() {
     --recipe-schema "$SEED_RECIPE_SCHEMA" \
     --wrapper-policy "$SEED_RECIPE_WRAPPER_POLICY" \
     --toolchain-id "$SEED_RECIPE_TOOLCHAIN" \
+    --rustc-bin "$SEED_RECIPE_RUSTC_BIN" \
     --config-digest "$SEED_RECIPE_CONFIG_DIGEST" \
     --workspace-digest "$SEED_RECIPE_WORKSPACE_DIGEST"
   [ -n "$SEED_RECIPE_TARGET" ] && printf -- '--target\n%s\n' "$SEED_RECIPE_TARGET"
@@ -366,6 +425,7 @@ seed_recipe_compute_key() {
   SEED_RECIPE_KEY="$(
     RUSTUP_TOOLCHAIN="$SEED_RECIPE_TOOLCHAIN" \
     RUSTFLAGS="$SEED_RECIPE_RUSTFLAGS" \
+    CARGO_HOME="$SEED_RECIPE_CARGO_HOME" \
     CARGO_INCREMENTAL="$SEED_RECIPE_INCREMENTAL" \
     bash "$SEED_RECIPE_SELF_DIR/seed_compat_key.sh" "${args[@]}"
   )"
@@ -426,6 +486,11 @@ seed_recipe_build_env() {
     RUSTFLAGS="$SEED_RECIPE_RUSTFLAGS"
   )
   [ -n "$SEED_RECIPE_TOOLCHAIN" ] && env_args+=(RUSTUP_TOOLCHAIN="$SEED_RECIPE_TOOLCHAIN")
-  [ -n "${RUSTUP_HOME:-}" ]      && env_args+=(RUSTUP_HOME="$RUSTUP_HOME")
+  [ -n "${SEED_RECIPE_RUSTUP_HOME:-}" ] && env_args+=(RUSTUP_HOME="$SEED_RECIPE_RUSTUP_HOME")
+  # RUSTC pins the COMPILER cargo runs, so the one the key hashed and the one that
+  # compiles are the same binary by construction. Without this the key reads
+  # `rustc` from PATH and the build gets whatever cargo picks, and nothing checks
+  # that they agree.
+  env_args+=(RUSTC="$SEED_RECIPE_RUSTC_BIN")
   printf '%s\n' "${env_args[@]}"
 }

@@ -59,6 +59,7 @@ fi
   printf 'RUSTUP_TOOLCHAIN\t%s\n' "${RUSTUP_TOOLCHAIN-<unset>}"
   printf 'CARGO_TARGET_DIR\t%s\n' "${CARGO_TARGET_DIR-<unset>}"
   printf 'RUSTC_WRAPPER\t%s\n' "${RUSTC_WRAPPER-<unset>}"
+    printf 'RUSTC\t%s\n' "${RUSTC-<unset>}"
 } >> "$SEED_TEST_LOG"
 [ -n "${CARGO_METADATA:-}" ] && printf '{"packages":[{"name":"webfang_core","targets":[{"name":"webfang_core"}]}]}\n'
 exit 0
@@ -298,6 +299,63 @@ if grep -q 'include' "$SANDBOX/err2"; then
 else
   bad "producer did not refuse on include grounds: $(head -1 "$SANDBOX/err2")"
 fi
+
+# --- 11. every declarative field that changes a unit is in the contract ------
+# `foo = "1"` and `foo = { version = "1", default-features = false }` produce the
+# same lock and the same explicit feature list, and cargo still compiles them with
+# different feature sets. `uses_default_features` was missing from the normaliser
+# and this was verified identical-key before it was added.
+DF="$SANDBOX/deffeat"
+mk_tree "$DF/base"; mk_tree "$DF/nodefault"
+python3 - "$DF/nodefault/crates/webfang_core/Cargo.toml" <<'PY2'
+import pathlib, re, sys
+p = pathlib.Path(sys.argv[1]); s = p.read_text()
+m = re.search(r'^(\w[\w-]* = \{ version = "[^"]+", features = \[[^\]]*\] \})$', s, re.M)
+if m:
+    p.write_text(s[:m.start()] + m.group(1)[:-2] + ', default-features = false }' + s[m.end():])
+PY2
+KF="$(tree_key "$DF/base")"; KN="$(tree_key "$DF/nodefault")"
+if [ -n "$KN" ] && [ "$KF" != "$KN" ]; then
+  ok "default-features=false moves the key, with Cargo.lock untouched"
+else bad "uses_default_features is not in the workspace contract (KN='$KN')"; fi
+
+# --- 12. the recipe pins which cargo and which rustc actually run -------------
+pub >/dev/null 2>&1
+# The recipe pins the compiler the key hashed. The previous version of this check
+# accepted an ABSENT RUSTC as a pass, so it was satisfied by not pinning the
+# compiler at all — green for the wrong reason, and the mutation that removed the
+# pin did not turn it red.
+PINNED_RUSTC="$( # shellcheck source=scripts/seed_recipe.sh
+  . "$SCRIPT_DIR/seed_recipe.sh"; seed_recipe_parse "$REPO_ROOT" --features ""
+                  printf '%s' "$SEED_RECIPE_RUSTC_BIN" 2>/dev/null)"
+GOT_RUSTC="$(cargo_field RUSTC)"
+if [ -n "$GOT_RUSTC" ] && [ "$GOT_RUSTC" != "<unset>" ]; then
+  if [ "$GOT_RUSTC" = "$PINNED_RUSTC" ]; then
+    ok "the build compiles with the same rustc the key hashed"
+  else
+    bad "the build's RUSTC is '$GOT_RUSTC', the recipe resolved '$PINNED_RUSTC'"
+  fi
+else
+  bad "the recipe does not pin a compiler for the build (RUSTC=${GOT_RUSTC:-absent});"
+  echo "       the key hashed a rustc the build was free to ignore"
+fi
+PINNED_HOME="$( # shellcheck source=scripts/seed_recipe.sh
+  . "$SCRIPT_DIR/seed_recipe.sh"; seed_recipe_parse "$REPO_ROOT" --features ""
+                  printf '%s' "$SEED_RECIPE_CARGO_HOME" 2>/dev/null)"
+case "$PINNED_HOME" in
+  /*) ok "CARGO_HOME is pinned to an absolute path" ;;
+  *)  bad "CARGO_HOME is pinned to a relative path: '$PINNED_HOME'" ;;
+esac
+# a relative CARGO_HOME must be canonicalised, not carried through: the same
+# string reads different files from different working directories.
+REL="$( # shellcheck source=scripts/seed_recipe.sh
+  . "$SCRIPT_DIR/seed_recipe.sh"
+        CARGO_HOME=relhome seed_recipe_parse "$REPO_ROOT" --features ""
+        printf '%s' "$SEED_RECIPE_CARGO_HOME" 2>/dev/null)"
+case "$REL" in
+  /*relhome) ok "a relative CARGO_HOME is canonicalised before being pinned" ;;
+  *)        bad "a relative CARGO_HOME was carried through as '$REL'" ;;
+esac
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"

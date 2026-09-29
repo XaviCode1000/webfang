@@ -64,6 +64,7 @@ EMIT=""
 VERIFY=""
 CONFIG_DIGEST_ARG=""
 WORKSPACE_DIGEST_ARG=""
+RUSTC_BIN=""
 RECIPE_SCHEMA=""
 WRAPPER_POLICY=""
 TOOLCHAIN_ID=""
@@ -76,6 +77,7 @@ while [ $# -gt 0 ]; do
     --target)   TARGET="${2:-}";   shift 2 ;;
     --config-digest) CONFIG_DIGEST_ARG="${2:-}"; shift 2 ;;
     --workspace-digest) WORKSPACE_DIGEST_ARG="${2:-}"; shift 2 ;;
+    --rustc-bin) RUSTC_BIN="${2:-}"; shift 2 ;;
     --recipe-schema) RECIPE_SCHEMA="${2:-}"; shift 2 ;;
     --wrapper-policy) WRAPPER_POLICY="${2:-}"; shift 2 ;;
     --toolchain-id)  TOOLCHAIN_ID="${2:-}"; shift 2 ;;
@@ -86,14 +88,19 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-command -v rustc >/dev/null || { echo "seed_compat_key.sh: rustc not on PATH" >&2; exit 1; }
+# The recipe pins the exact compiler, and the build runs that same binary, so
+# the version hashed here is the version that compiles. Resolving rustc from PATH
+# independently would let the two sides describe different compilers.
+RUSTC_BIN="${RUSTC_BIN:-rustc}"
+[ -x "$RUSTC_BIN" ] || command -v "$RUSTC_BIN" >/dev/null 2>&1 \
+  || { echo "seed_compat_key.sh: no rustc at '$RUSTC_BIN'" >&2; exit 1; }
 
 # --- the build contract, as semantic values ---------------------------------
-RUSTC_V="$(rustc -V)"
+RUSTC_V="$("$RUSTC_BIN" -V)"
 if [ -n "$TARGET" ]; then
   TARGET_TRIPLE="$TARGET"
 else
-  TARGET_TRIPLE="$(rustc -vV | sed -n 's/^host: //p')"
+  TARGET_TRIPLE="$("$RUSTC_BIN" -vV | sed -n 's/^host: //p')"
 fi
 [ -n "$TARGET_TRIPLE" ] || { echo "seed_compat_key.sh: could not determine host triple" >&2; exit 1; }
 

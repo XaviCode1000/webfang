@@ -215,7 +215,7 @@ echo "==> building the reference (cold; includes BoringSSL's C++)..."
   echo "    recipe: ${CARGO_ARGS[*]}"
   ( cd "$REPO_ROOT" \
     && env "${BUILD_ENV[@]}" \
-         cargo "${CARGO_ARGS[@]}" \
+         "$SEED_RECIPE_CARGO_BIN" "${CARGO_ARGS[@]}" \
   ) >"$STAGE/build.log" 2>&1 \
   || { echo "seed_publish.sh: reference build failed" >&2; tail -20 "$STAGE/build.log" >&2; exit 1; }
 
