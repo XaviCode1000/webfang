@@ -60,6 +60,11 @@
 # fail the caller, it must only widen the lanes that run downstream.
 
 set -euo pipefail
+# `lastpipe` runs the LAST command of a pipeline in the CURRENT shell instead
+# of a subshell. The `git diff -z` capture below needs exactly that: without it
+# `mapfile` would populate a throwaway subshell and the NUL-separated names
+# would never reach the caller's array (#1643).
+shopt -s lastpipe
 
 # ---------------------------------------------------------------------------
 # Path semantics. Each output below lists the filename patterns it matches.
@@ -287,18 +292,30 @@ classify() {
     if [[ -z "$resolved" ]]; then
       diff_ok=false
     else
-      local raw=""
-      if raw="$(git -C "$root" diff --name-only -z "${resolved}...${head}" -- 2>/dev/null)"; then
+      # NUL-separated, read WITHOUT a command substitution: bash silently
+      # DROPS NUL bytes inside `$(...)`, so `-z` output captured that way
+      # concatenated EVERY changed path into one pseudo-path and any
+      # multi-file PR reported `1 file(s)` against that garbage entry
+      # (#1643). The concatenated string usually missed every known category
+      # and was widened by the unknown-surface net, but when it happened to
+      # match a narrow one (a leading `.github/...` path) it set that flag
+      # alone — a PR touching CI plus Rust code lost its code lanes.
+      # Feeding git straight into `mapfile` keeps the split lossless; the
+      # `-z` delimiter is what makes paths with spaces one element each.
+      # `lastpipe` keeps `raw` in this shell; `pipefail` still carries git's
+      # exit status, which is what drives the fail-closed `diff_ok`.
+      local -a raw=()
+      if git -C "$root" diff --name-only -z "${resolved}...${head}" -- 2>/dev/null \
+        | mapfile -d '' -t raw; then
         :
-      elif raw="$(git -C "$root" diff --name-only -z "$resolved" "$head" -- 2>/dev/null)"; then
+      elif git -C "$root" diff --name-only -z "$resolved" "$head" -- 2>/dev/null \
+        | mapfile -d '' -t raw; then
         :
       else
         diff_ok=false
       fi
-      if $diff_ok && [[ -n "$raw" ]]; then
-        # NUL-separated: safe for spaces in paths. mapfile may return
-        # non-zero on empty input, hence `|| true` under `set -e`.
-        mapfile -d '' -t files <<< "$raw" || true
+      if $diff_ok && [[ ${#raw[@]} -gt 0 ]]; then
+        files=("${raw[@]}")
       fi
     fi
   fi

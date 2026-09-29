@@ -1,15 +1,17 @@
 //! Shared CLI behavioral test harness for the `webfang` binary.
 //!
-//! `#![allow(dead_code)]`: this file is included via `#[path]` from three
-//! separate test crates (`behavioral`, `cli_binary`, `cli_behavioral`), each of
-//! which uses a different subset of the helpers. Items unused by a given crate
-//! would otherwise trip `-D warnings`; gating them here is intentional.
-#![allow(dead_code)]
+//! `#![allow(dead_code, unused_imports)]`: this file is included via `#[path]`
+//! from fifteen separate test crates, each of which uses a different subset of
+//! the helpers. Items (and the re-exports below) unused by a given crate would
+//! otherwise trip `-D warnings`; gating them here is intentional — the same
+//! two lints the `common` module already gates for the crates that reach this
+//! file through `common/mod.rs`.
+#![allow(dead_code, unused_imports)]
 //!
-//! Centralized helpers used by the `behavioral`, `cli_binary`, and
-//! `cli_behavioral` test binaries so the `webfang_path()` resolver, the
-//! `BehavioralTest` mock-server/temp-dir harness, and the output-redaction
-//! helpers live in exactly one place.
+//! Centralized helpers used by the `webfang_core` test binaries that include
+//! this file, so the `webfang_path()` resolver, the `BehavioralTest`
+//! mock-server/temp-dir harness, and the output-redaction helpers live in
+//! exactly one place.
 //!
 //! The snapshot-assertion wrappers (`assert_snapshot_redacted` /
 //! `assert_snapshot_plain`) are intentionally NOT defined here: insta derives a
@@ -27,7 +29,6 @@
 
 use assert_cmd::Command;
 use insta::assert_snapshot;
-use regex::Regex;
 use std::path::Path;
 use wiremock::matchers::{method, path as wm_path};
 use wiremock::{Mock, ResponseTemplate};
@@ -367,72 +368,18 @@ pub(crate) async fn mock_robots(server: &wiremock::MockServer, robots_body: &str
         .await;
 }
 
-/// Redact the per-run temp-dir path so snapshots stay stable across machines.
+/// The output-redaction chain lives in `webfang_test_utils` — the crate
+/// every `webfang_*` test target already depends on — and is re-exported here
+/// so `crate::redact_nondeterministic` keeps resolving for the test crates
+/// that reach this file via `#[path]`.
 ///
-/// Output paths embed an absolute `TempDir` location that changes on every
-/// run; collapse it to the fixed placeholder `<OUT_DIR>` before snapshotting.
-pub(crate) fn redact_temp_path(dir: &Path, text: &str) -> String {
-    text.replace(dir.to_string_lossy().as_ref(), "<OUT_DIR>")
-}
+/// #1649: this file used to carry its OWN copy of both functions, and the two
+/// copies drifted (only the local one had the `#688` `<TRACE_ID>` rule), so the
+/// same output was sanitized differently depending on which harness recorded
+/// it. `redact_temp_path` is re-exported alongside the chain because the chain
+/// is built on it; `redact_nondeterministic` is the one every consumer uses.
+pub(crate) use webfang_test_utils::{redact_nondeterministic, redact_temp_path};
 
-/// Redact common non-deterministic output so snapshots are stable run-to-run:
-/// the temp dir, ISO-8601 log timestamps, dynamic wiremock ports, and ANSI
-/// color escape sequences.
-pub(crate) fn redact_nondeterministic(dir: &Path, text: &str) -> String {
-    let text = redact_temp_path(dir, text);
-    let ansi = Regex::new(r"\x1b\[[0-9;]*m").unwrap();
-    let text = ansi.replace_all(&text, "").into_owned();
-    let ts =
-        Regex::new(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?([+-]\d{2}:?\d{2}|Z)").unwrap();
-    let text = ts.replace_all(&text, "<TIMESTAMP>").into_owned();
-    let port = Regex::new(r"127\.0\.0\.1:\d+").unwrap();
-    let text = port.replace_all(&text, "127.0.0.1:<PORT>").into_owned();
-    // Normalize source line numbers in tracing spans (e.g. "scrape_flow.rs:193").
-    // These shift with #[cfg(feature = "...")] blocks and differ across feature sets.
-    let line_no = Regex::new(r"(\.rs:)\d+").unwrap();
-    let text = line_no.replace_all(&text, "$1<LINE>").into_owned();
-    // Normalize tracing module paths (e.g. "WARN webfang_core::cli::orchestrator:")
-    // so snapshots decouple from source location and survive function moves (#462).
-    let module = Regex::new(r"((?:WARN|INFO|ERROR|DEBUG|TRACE)\s+)\w+(?:::\w+)+").unwrap();
-    let text = module.replace_all(&text, "$1<MODULE>").into_owned();
-    // Normalize trace/correlation UUIDs emitted by log_scrape_error's trace_id
-    // field (#688) so trace snapshots stay deterministic run-to-run.
-    let trace_id =
-        Regex::new(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
-            .unwrap();
-    let text = trace_id.replace_all(&text, "<TRACE_ID>").into_owned();
-    // Normalize tracing source file paths (e.g. "at crates/.../orchestrator.rs:<LINE>")
-    // so moving a function between files does not break snapshots (#462).
-    let file_path = Regex::new(r"(at\s+)\S+\.rs").unwrap();
-    let text = file_path.replace_all(&text, "$1<FILE>.rs").into_owned();
-    // INT-1 (#1631): collapse the OS-dependent connection-failure surface to
-    // ONE token. Unix reports `I/O error: Connection refused (os error 111)`,
-    // Windows reports our own `request timed out after 2s` (a refused
-    // connection never happens there — it degrades to the request timeout), and
-    // a Windows WSA refusal reads `No connection could be made ... (os error
-    // 10061)`. Redaction cannot bridge a different error, so the timeout tail
-    // collapses to the same token.
-    //
-    // The `I/O error: ` layer is part of the SAME collapse and must be
-    // consumed with it: it is our `DownloadError::Io` wrapper, present only
-    // when the inner error is an `io::Error`. On Unix the io::Error is what
-    // carries the connection failure; on the timeout path the error is
-    // `DownloadError::Timeout`, which has no such wrapper. Collapsing only the
-    // tail would still leave `error de red: I/O error: <NET_ERR>` on Linux
-    // against `error de red: <NET_ERR>` on Windows — same failure, different
-    // snapshot. Verified against the Windows lane log, not inferred.
-    //
-    // The token therefore records THAT a network failure happened, not WHICH
-    // one: an intentional loss, because the affected test asserts a failure is
-    // mentioned rather than its kind (the same tradeoff #1645 accepted for the
-    // panic payload). Pinned in `webfang_test_utils` against the byte-exact
-    // strings both platforms produce.
-    let net_err = Regex::new(
-        r"(?i)(?:I/O error:\s*)?(?:(?:connection refused|connection timed out|no connection could be made[^()\n]*|an attempt to connect[^()\n]*)\s*(?:\(\s*os error\s*\d+\s*\))?|request timed out after \d+\s*s)",
-    )
-    .unwrap();
-    net_err.replace_all(&text, "<NET_ERR>").into_owned()
-}
 pub(crate) fn assert_snapshot_redacted(name: &str, dir: &Path, value: impl Into<String>) {
     let redacted = redact_nondeterministic(dir, &value.into());
     let mut settings = insta::Settings::clone_current();
@@ -448,4 +395,43 @@ pub(crate) fn assert_snapshot_plain(name: &str, value: impl Into<String>) {
     settings.bind(|| {
         assert_snapshot!(name, value.into());
     });
+}
+
+#[cfg(test)]
+mod redact_nondeterministic_divergence {
+    use super::redact_nondeterministic;
+    use std::path::Path;
+
+    /// #1649: the redaction chain used to exist TWICE — here and in
+    /// `webfang_test_utils` — and they drifted (only the local copy had the
+    /// `#688` `<TRACE_ID>` rule), so the same output was sanitized
+    /// differently depending on which harness recorded it. This file now
+    /// re-exports the shared implementation, so the equality below is
+    /// structural; the test is kept as the pin that says so, and it is the
+    /// assertion that fails if anyone reintroduces a local copy.
+    ///
+    /// It lives here, in the file that used to be the divergent copy, so a
+    /// reintroduced copy is caught at the exact place it would be written.
+    #[test]
+    fn local_harness_and_shared_utils_redact_identically() {
+        let dir = Path::new("/tmp/.tmpABC123");
+        let input = concat!(
+            "wrote /tmp/.tmpABC123/output.md at 2024-03-15T10:30:00.123+01:00 ",
+            "on 127.0.0.1:34567 WARN webfang_core::cli::orchestrator ",
+            "trace_id=3f2504e0-4f89-11d3-9a0c-0305e82c3301",
+        );
+
+        let local = redact_nondeterministic(dir, input);
+        let shared = webfang_test_utils::redact_nondeterministic(dir, input);
+
+        assert_eq!(
+            local, shared,
+            "both paths must apply the same redaction chain (#1649)"
+        );
+        assert_eq!(
+            local,
+            "wrote <OUT_DIR>/output.md at <TIMESTAMP> on 127.0.0.1:<PORT> \
+             WARN <MODULE> trace_id=<TRACE_ID>"
+        );
+    }
 }
