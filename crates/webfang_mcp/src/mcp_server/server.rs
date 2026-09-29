@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::extract::State;
-use axum::http::{header, Method, StatusCode};
+use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{middleware, Router};
 use governor::{
@@ -63,6 +63,8 @@ pub struct ServerOptions {
     ///
     /// A [`NonZeroUsize`], like every count limit in this crate: a cap of zero
     /// is a misconfiguration, not a mode (cf. `McpState::CategoryLimits`).
+    /// The magnitude is bounded separately, at the argv boundary, by
+    /// [`MAX_ALLOWED_SESSIONS_CAP`].
     pub max_sessions: NonZeroUsize,
     /// Lifetime of one admission slot, in seconds (default: 300, see
     /// [`DEFAULT_SESSION_CAP_WINDOW_SECS`]).
@@ -340,6 +342,22 @@ pub const DEFAULT_MAX_SESSIONS: usize = 64;
 /// shorter one would free slots belonging to live sessions.
 pub const DEFAULT_SESSION_CAP_WINDOW_SECS: u64 = 300;
 
+/// Ceiling accepted for the `--max-sessions` /
+/// `WEBFANG_MCP_MAX_SESSIONS` override (enforced at the argv boundary, in the
+/// `webfang-mcp` binary).
+///
+/// `NonZeroUsize` says the value is not zero; it says nothing about MAGNITUDE,
+/// and this cap is not only a number the limiter compares against: the deque
+/// behind it (`SessionCap`) is pre-reserved to the accepted maximum, and an
+/// `Instant` is 16 bytes, so
+/// `--max-sessions 1000000000` reserves ~16 GB at startup and aborts the
+/// process with a raw allocator failure — before the fail-fast checks next to
+/// it could say anything in Spanish. 100 000 is three orders of magnitude
+/// above any real fleet (the default is 64) while capping the reservation at
+/// ~1.6 MB, so a fat-fingered magnitude is an error message instead of a dead
+/// process.
+pub const MAX_ALLOWED_SESSIONS_CAP: usize = 100_000;
+
 /// Header rmcp uses to bind a request to an existing session. The literal is
 /// mirrored here because rmcp keeps `HEADER_SESSION_ID` crate-private
 /// (`transport/common/http_header.rs`); it is the same literal the transport
@@ -352,8 +370,12 @@ const SESSION_OPERATION: &str = "mcp.session.create";
 /// Spanish sentence for the operator to hand to whoever is being shed, carried
 /// as the `user_message` field of the rejection event (see
 /// `session_cap_middleware` for why it is not an HTTP body).
+/// Says what actually happened, with no promise about the wait: the wait is
+/// one admission window — 300s by default — so "in a few seconds" would be a
+/// lie for the very configuration the crate ships. The machine-readable half
+/// of the same answer is the `Retry-After` header on the 429.
 const SESSION_CAP_USER_MESSAGE: &str =
-    "Límite de sesiones MCP alcanzado. Inténtelo de nuevo en unos segundos.";
+    "Límite de sesiones MCP alcanzado. La ventana de admisión está completa; reintente cuando expire la sesión más antigua.";
 
 /// Whether `path` addresses the nested MCP endpoint (`/mcp` or `/mcp/…`).
 ///
@@ -370,14 +392,36 @@ fn is_mcp_endpoint(path: &str) -> bool {
 /// Whether this request is one rmcp will turn into a new session.
 ///
 /// Deliberately NOT "the body says `initialize`". The predicate mirrors
-/// rmcp 1.8.0's own allocation trigger: `handle_post` calls
-/// `session_manager.create_session()` in exactly one place (`tower.rs:1129`),
-/// the `else` arm of "do we have a session id?" — a POST to `/mcp` with no
-/// `mcp-session-id` header. Everything else (a session-bearing POST, GET,
-/// DELETE) rides an existing session or allocates nothing.
+/// rmcp 1.8.0's own allocation trigger, and mirrors it EXACTLY — including the
+/// string conversion. `handle_post` reads the header as
+///
+/// ```text
+/// let session_id = part.headers.get(HEADER_SESSION_ID).and_then(|v| v.to_str().ok());
+/// ```
+///
+/// (`transport/streamable_http_server/tower.rs:1059-1060`) and calls
+/// `session_manager.create_session()` in exactly one place (`tower.rs:1129`):
+/// the `else` arm of "do we have a session id?". The charged condition is
+/// therefore "carries no USABLE `mcp-session-id`", and a `to_str()` failure
+/// counts as absent.
+///
+/// That distinction is the whole security value of the predicate, not a
+/// detail. `HeaderValue` accepts obs-text bytes (0x80-0xFF) as perfectly legal
+/// bytes, so a client that sends `mcp-session-id: \x80` is read by rmcp as
+/// session-less and gets a session allocated — while a `contains_key`-shaped
+/// predicate charged it nothing: unbounded sessions, and never a 429. Using
+/// `to_str()` here is what keeps the two in step; changing either side alone
+/// reopens that hole.
+///
+/// Everything else (a session-bearing POST, GET, DELETE) rides an existing
+/// session or allocates nothing.
 fn creates_session(request: &axum::http::Request<axum::body::Body>) -> bool {
     request.method() == Method::POST
-        && !request.headers().contains_key(MCP_SESSION_ID_HEADER)
+        && request
+            .headers()
+            .get(MCP_SESSION_ID_HEADER)
+            .and_then(|value| value.to_str().ok())
+            .is_none()
         && is_mcp_endpoint(request.uri().path())
 }
 
@@ -415,7 +459,8 @@ fn creates_session(request: &axum::http::Request<axum::body::Body>) -> bool {
 /// of anything else is answered `422` and still leaves an entry in the session
 /// map — whose worker gives up on `init_timeout` without the manager ever
 /// removing it. The predicate therefore charges the requests that allocate,
-/// and over-charges the ones rmcp rejects at its own gates (406 / 415 / 422) —
+/// and over-charges the ones rmcp rejects at its OWN gates (its DNS-rebinding
+/// / 406 / 415 checks all answer before `create_session` is ever called) —
 /// over-counting sheds load, never admits it.
 ///
 /// # What this cap does NOT know (all three accepted, none hidden)
@@ -438,13 +483,29 @@ fn creates_session(request: &axum::http::Request<axum::body::Body>) -> bool {
 ///    faster than that is doing exactly what the cap exists to bound. Raise
 ///    `max_sessions` for a larger fleet.
 ///
-/// # One honest limitation
+/// # Two honest limitations
 ///
-/// Admission is a check-then-act on a shared counter, so N requests racing at
-/// the same instant can admit up to N slots. There is no atomic reservation
-/// across the request boundary, and there is no later eviction to undo it, so
-/// concurrent overshoot past `max_sessions` is possible and accepted; the
-/// per-window expiry is what bounds it in time.
+/// Neither of them is a race: the bound itself is EXACT. The prune, the
+/// `held >= max` test and the `push_back` all run inside the one `Mutex`
+/// critical section of [`SessionCap::try_admit`], so any number of concurrent
+/// session-creating requests can admit at most `max` slots — there is no
+/// check-then-act window to slip through.
+///
+/// 1. **The predicate is a proxy for rmcp's decision, not rmcp's decision.**
+///    It re-implements the shape of the transport's "do we have a session
+///    id?" branch; it does not call it. A refactor upstream that widened or
+///    narrowed that branch would desynchronize the two, and the only thing
+///    that notices is the regression row in the predicate test plus
+///    `tests/mcp_transport_contract_test.rs`. The divergence is one-directional
+///    by design (over-charging, see above), but a one-directional bug is still
+///    a bug.
+/// 2. **Accounting is per REQUEST, not per confirmed session.** rmcp decides
+///    to allocate here, this crate decides to charge here, and the two are the
+///    same decision reached twice — a session that is allocated and then
+///    reaped a microsecond later still spent a slot, and a request charged
+///    here is not proof that a session exists. Reading the real live count
+///    would mean wrapping `SessionManager`, which is the agreed follow-up
+///    (see "Why a middleware and not a `SessionManager` wrapper").
 struct SessionCap {
     /// Slots available inside one window.
     max: NonZeroUsize,
@@ -458,6 +519,16 @@ struct SessionCap {
 
 impl SessionCap {
     /// Build a cap of `max` slots, each living `window`.
+    ///
+    /// The deque is pre-reserved to `max` so `try_admit`'s `push_back` can
+    /// never reallocate: that allocation would happen with the lock held, on
+    /// the request path, and the deque is bounded by `max` anyway (a refused
+    /// request never pushes), so reserving the maximum is exact rather than a
+    /// guess. The property is load-bearing — it is why the lock section is
+    /// prune + test + push and nothing else — and it is only affordable
+    /// because the magnitude is bounded at the argv boundary by
+    /// [`MAX_ALLOWED_SESSIONS_CAP`]. `NonZeroUsize` alone would not stop
+    /// `--max-sessions 1000000000` from asking for ~16 GB here.
     fn new(max: NonZeroUsize, window: Duration) -> Self {
         Self {
             max,
@@ -491,6 +562,27 @@ impl SessionCap {
         Ok(held + 1)
     }
 
+    /// Seconds until the OLDEST live admission ages out — the earliest instant
+    /// a shed client can be admitted again, and therefore the `Retry-After` a
+    /// 429 must carry. `None` when nothing is held.
+    ///
+    /// The result is rounded UP, and never below 1s: `Retry-After` is an
+    /// integer number of seconds, and rounding a sub-second remainder down
+    /// would invite the client back while the cap still refuses it, which
+    /// turns an honest retry into a second 429.
+    ///
+    /// `now` is injected for the same reason as in [`Self::try_admit`], so the
+    /// advertised wait is testable exactly instead of after a sleep.
+    fn retry_after_secs(&self, now: Instant) -> Option<u64> {
+        let admitted = self.lock();
+        let oldest = admitted.front().copied()?;
+        let remaining = self
+            .window
+            .saturating_sub(now.saturating_duration_since(oldest));
+        let rounded_up = u64::from(remaining.subsec_nanos() > 0) + remaining.as_secs();
+        Some(rounded_up.max(1))
+    }
+
     /// Slots currently held — test-only view, without pruning.
     #[cfg(test)]
     fn held(&self) -> usize {
@@ -513,12 +605,20 @@ impl SessionCap {
 /// Session admission middleware — sheds session-creating requests past the cap
 /// with 429, and charges nothing for traffic on an established session.
 ///
-/// Rejection is a bare [`StatusCode::TOO_MANY_REQUESTS`], exactly like
-/// `rate_limit_middleware`: load shedding is an HTTP-layer answer, and the
-/// repo does not answer it with a JSON-RPC envelope. The reason a client was
-/// shed therefore reaches the operator and not the agent — as the Spanish
+/// Rejection is a 429 with an EMPTY body, exactly like
+/// `rate_limit_middleware`: load shedding is an HTTP-layer answer, and the repo
+/// does not answer it with a JSON-RPC envelope. The reason a client was shed
+/// therefore reaches the operator and not the agent — as the Spanish
 /// `user_message` field of the event below (tracing field names and event
 /// messages stay English; the sentence a human hands to a user is Spanish).
+///
+/// The one thing the client IS told is WHEN to come back: a 429 without
+/// `Retry-After` tells an agent nothing, and the honest answer is computable —
+/// the cap already holds every live admission, and the oldest one is what frees
+/// the first slot ([`SessionCap::retry_after_secs`]). A body would carry the
+/// same information, so the header is the only addition: `Retry-After` is
+/// exactly the standard's answer to "shed me", and it survives clients that
+/// read headers instead of bodies.
 ///
 /// `log_scrape_error` is deliberately NOT used: its shape is an error VALUE
 /// plus a URL, a stage and a correlation id for a scrape failure, and a shed
@@ -529,9 +629,9 @@ async fn session_cap_middleware(
     State(cap): State<Arc<SessionCap>>,
     request: axum::http::Request<axum::body::Body>,
     next: middleware::Next,
-) -> Result<impl axum::response::IntoResponse, axum::http::StatusCode> {
+) -> Response {
     if !creates_session(&request) {
-        return Ok(next.run(request).await);
+        return next.run(request).await;
     }
 
     match cap.try_admit(Instant::now()) {
@@ -543,20 +643,36 @@ async fn session_cap_middleware(
                 window_secs = cap.window.as_secs(),
                 "session admitted within the admission cap"
             );
-            Ok(next.run(request).await)
+            next.run(request).await
         },
         Err(held) => {
+            let retry_after_secs = cap.retry_after_secs(Instant::now()).unwrap_or(1);
             tracing::warn!(
                 operation = SESSION_OPERATION,
                 limit = cap.max.get(),
                 admitted = held,
                 window_secs = cap.window.as_secs(),
+                retry_after_secs,
                 user_message = SESSION_CAP_USER_MESSAGE,
                 "session admission cap exceeded — rejecting the request with 429"
             );
-            Err(axum::http::StatusCode::TOO_MANY_REQUESTS)
+            shed_response(retry_after_secs)
         },
     }
+}
+
+/// The 429 itself: status, `Retry-After`, empty body.
+///
+/// A named function so the header is unit-testable without a listener, and
+/// built by hand rather than through a tuple so the body is provably empty:
+/// `StatusCode::into_response()` is an empty body, and adding a sentence to it
+/// would turn load shedding into a body an agent has to parse (or, worse, one
+/// that looks like a JSON-RPC error).
+fn shed_response(retry_after_secs: u64) -> Response {
+    let mut response = StatusCode::TOO_MANY_REQUESTS.into_response();
+    let seconds = HeaderValue::from(retry_after_secs);
+    response.headers_mut().insert(header::RETRY_AFTER, seconds);
+    response
 }
 
 /// Start the MCP server on the given address with the full middleware stack.
@@ -593,7 +709,17 @@ pub async fn start_mcp_server(
 
     let app = build_mcp_router(state.clone(), &options);
 
-    info!("MCP server starting on http://{}/mcp", addr);
+    // The admission cap is the one piece of configuration whose EFFECT is
+    // invisible until it sheds a client, hours into a run. Logging the
+    // effective values (not the flag defaults) is what lets an operator tell
+    // "the cap is off" from "the cap is on at 3 slots" from a log line alone.
+    info!(
+        addr = %addr,
+        path = MCP_ENDPOINT_PATH,
+        max_sessions = options.max_sessions.get(),
+        session_cap_window_secs = options.session_cap_window_secs.get(),
+        "MCP server starting"
+    );
 
     let listener = tokio::net::TcpListener::bind(addr).await?;
     // Capture the serve result instead of `?`: a serve error must still drain
@@ -966,11 +1092,19 @@ mod tests {
         assert_eq!(cap.try_admit(t0 + Duration::from_secs(12)), Err(2));
     }
 
-    /// The predicate is the contract with rmcp: charge the requests that make
-    /// it call `create_session`, and nothing else. Each row is a real traffic
-    /// class, so a change here changes who pays for a session.
+    /// The predicate's contract, stated exactly: charge every request that
+    /// carries no USABLE `mcp-session-id` to a POST on the endpoint, and
+    /// nothing else.
+    ///
+    /// "Usable" is rmcp's word, not a nicety — it means `to_str()` succeeds
+    /// (`tower.rs:1059-1060`), which is the condition under which rmcp skips
+    /// `create_session()`. Note what this does NOT claim: that the charged set
+    /// equals the set of requests that allocate. rmcp's own earlier gates
+    /// (DNS-rebinding check, 406, 415) answer before `create_session` is
+    /// called, so the predicate deliberately OVER-charges them. Each row below
+    /// is a real traffic class, so a change here changes who pays.
     #[test]
-    fn creates_session_matches_only_rmcps_own_allocation_trigger() {
+    fn creates_session_charges_every_request_without_a_usable_session_id() {
         let build = |method: &str, path: &str, session: bool| {
             let mut builder = axum::http::Request::builder().method(method).uri(path);
             if session {
@@ -996,17 +1130,164 @@ mod tests {
         assert!(!creates_session(&build("POST", "/other", false)));
     }
 
+    /// The regression row for the bypass this predicate shape exists to close:
+    /// a PRESENT but non-UTF-8 `mcp-session-id` is read by rmcp as "no session
+    /// id" (`to_str()` fails on obs-text), so rmcp allocates a session for it.
+    /// A `contains_key`-shaped predicate charged it nothing — unbounded
+    /// sessions, never a 429.
+    ///
+    /// obs-text bytes (0x80-0xFF) are LEGAL `HeaderValue` bytes, so this is a
+    /// request any client can send; that is exactly why it must be charged.
+    /// Built in-process: no listener, no network, no sleep.
+    #[test]
+    fn creates_session_charges_a_present_but_non_utf8_session_id() {
+        let build_with_session_bytes = |bytes: &[u8]| {
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .header(
+                    MCP_SESSION_ID_HEADER,
+                    axum::http::HeaderValue::from_bytes(bytes)
+                        .expect("obs-text is a legal HeaderValue byte"),
+                )
+                .body(axum::body::Body::empty())
+                .expect("valid request")
+        };
+
+        assert!(
+            creates_session(&build_with_session_bytes(b"\x80")),
+            "a session id rmcp cannot read as a string IS a session-creating request"
+        );
+        assert!(
+            creates_session(&build_with_session_bytes(b"\xff\xfe")),
+            "same for any other invalid-UTF-8 value"
+        );
+        assert!(
+            !creates_session(&build_with_session_bytes(b"s-1")),
+            "a readable session id still rides its session"
+        );
+    }
+
+    /// The 429 must say when to come back, and the cap already knows: the
+    /// oldest live admission is what frees the first slot. Injected clock, so
+    /// the numbers are exact rather than "about 300".
+    #[test]
+    fn retry_after_counts_down_from_the_oldest_live_admission() {
+        let cap = cap(2, 300);
+        let t0 = Instant::now();
+        assert_eq!(
+            cap.retry_after_secs(t0),
+            None,
+            "an empty cap has nothing to wait for"
+        );
+
+        assert_eq!(cap.try_admit(t0), Ok(1));
+        assert_eq!(cap.retry_after_secs(t0), Some(300));
+        assert_eq!(cap.try_admit(t0 + Duration::from_secs(1)), Ok(2));
+        // The OLDEST admission decides, not the newest: the second one still
+        // has 299s to run, but the first frees a slot in 299s.
+        assert_eq!(cap.retry_after_secs(t0 + Duration::from_secs(1)), Some(299));
+
+        // Rounds UP, never down: 0.5s of window left must not be advertised as
+        // "0", which would invite the client back into a cap that refuses it.
+        assert_eq!(
+            cap.retry_after_secs(t0 + Duration::from_millis(1_500)),
+            Some(299)
+        );
+    }
+
+    /// A sub-second remainder is still one whole second to a client, and
+    /// `Retry-After: 0` is a promise the cap cannot keep.
+    #[test]
+    fn retry_after_never_advertises_zero_seconds() {
+        let cap = cap(1, 1);
+        let t0 = Instant::now();
+        assert_eq!(cap.try_admit(t0), Ok(1));
+        assert_eq!(
+            cap.retry_after_secs(t0 + Duration::from_millis(999)),
+            Some(1)
+        );
+        assert_eq!(cap.retry_after_secs(t0 + Duration::from_secs(1)), Some(1));
+    }
+
+    /// The shed, end to end through the REAL stack: a 429 carrying
+    /// `Retry-After` in the configured window, and an empty body (the property
+    /// the bare-answer test pins from the outside).
+    ///
+    /// Driven with `oneshot` against a stub service, so it is the middleware —
+    /// not a listener, not rmcp — that is under test, and the assertions are
+    /// about the header we synthesize.
+    #[tokio::test]
+    async fn the_shed_carries_retry_after_for_the_configured_window() {
+        use tower::ServiceExt;
+
+        let app = build_mcp_router_with_service(
+            tower::service_fn(|_req: axum::http::Request<axum::body::Body>| async {
+                Ok::<_, std::convert::Infallible>(StatusCode::OK)
+            }),
+            &ServerOptions {
+                max_sessions: NonZeroUsize::new(1).expect("one is non-zero"),
+                ..Default::default()
+            },
+        );
+        let post = || {
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/mcp")
+                .body(axum::body::Body::empty())
+                .expect("valid request")
+        };
+
+        let admitted = app
+            .clone()
+            .oneshot(post())
+            .await
+            .expect("in-process response");
+        assert_eq!(admitted.status(), StatusCode::OK, "the first fits the cap");
+
+        let shed = app.oneshot(post()).await.expect("in-process response");
+        assert_eq!(shed.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        let retry_after = shed
+            .headers()
+            .get(header::RETRY_AFTER)
+            .expect("a shed must tell the client when to come back")
+            .to_str()
+            .expect("Retry-After is ASCII")
+            .parse::<u64>()
+            .expect("Retry-After is an integer number of seconds");
+        assert!(
+            (1..=DEFAULT_SESSION_CAP_WINDOW_SECS).contains(&retry_after),
+            "Retry-After must fit the configured window, got {retry_after}"
+        );
+
+        let body = axum::body::to_bytes(shed.into_body(), usize::MAX)
+            .await
+            .expect("body reads");
+        assert!(
+            body.is_empty(),
+            "the shed body stays empty; the sentence lives in the trace: {body:?}"
+        );
+    }
+
     /// The user-facing sentence is Spanish, like every other message a human
     /// reads out of this server (`panic_messages_are_spanish` pins the same
-    /// convention for the contained-panic bodies).
+    /// convention for the contained-panic bodies), and it makes no promise the
+    /// cap cannot keep: it must not claim a wait in SECONDS, because the wait
+    /// is one window — 300s by default.
     #[test]
-    fn session_cap_user_message_is_spanish() {
+    fn session_cap_user_message_is_spanish_and_promises_no_wait() {
         let has_spanish_char = SESSION_CAP_USER_MESSAGE
             .chars()
             .any(|c| matches!(c, 'ñ' | 'á' | 'é' | 'í' | 'ó' | 'ú'));
         assert!(
             SESSION_CAP_USER_MESSAGE.contains("Límite") && has_spanish_char,
             "the operator-facing sentence must be Spanish, got: {SESSION_CAP_USER_MESSAGE}"
+        );
+        assert!(
+            !SESSION_CAP_USER_MESSAGE.contains("segundos"),
+            "the wait is one admission window (300s by default), not seconds: \
+             {SESSION_CAP_USER_MESSAGE}"
         );
     }
 
