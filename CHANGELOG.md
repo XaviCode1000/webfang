@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.1] - 2026-09-29
+
+
+### 📦 Dependencies
+
+- Sync wreq/wreq-util RCs + rename boring2→btls en docs ([#1706](https://github.com/XaviCode1000/webfang/pull/1706))
+
+### 🔧 Fixed
+
+- Shed surplus initialize sessions with a bounded admission cap ([#1664](https://github.com/XaviCode1000/webfang/pull/1664))
+- Charge the session cap for unusable session ids, bound the knobs ([#1672](https://github.com/XaviCode1000/webfang/pull/1672))
+
+### 🔧 Other
+
+- Record why the test harness header stays bare and unwrapped
+- Unify redact_nondeterministic and add the <TRACE_ID> rule
 ## [2.4.0] - 2026-09-28
 
 
