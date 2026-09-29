@@ -1775,6 +1775,7 @@ mod tests {
 
     /// Hybrid + explicit path to an existing file: the check passes even
     /// with an empty PATH (paths never fall back to PATH lookup).
+    #[cfg_attr(miri, ignore)] // Command::spawn → posix_spawnattr_init unsupported by Miri (#775)
     #[test]
     fn hybrid_explicit_existing_path_ok_with_empty_path() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
