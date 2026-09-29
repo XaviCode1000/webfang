@@ -62,12 +62,21 @@ PROFILE="dev"
 TARGET=""
 EMIT=""
 VERIFY=""
+CONFIG_DIGEST_ARG=""
+RECIPE_SCHEMA=""
+WRAPPER_POLICY=""
+TOOLCHAIN_ID=""
+KEY_SCHEMA="${RECIPE_SCHEMA:-1}"
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --features) FEATURES="${2:-}"; shift 2 ;;
     --profile)  PROFILE="${2:-}";  shift 2 ;;
     --target)   TARGET="${2:-}";   shift 2 ;;
+    --config-digest) CONFIG_DIGEST_ARG="${2:-}"; shift 2 ;;
+    --recipe-schema) RECIPE_SCHEMA="${2:-}"; shift 2 ;;
+    --wrapper-policy) WRAPPER_POLICY="${2:-}"; shift 2 ;;
+    --toolchain-id)  TOOLCHAIN_ID="${2:-}"; shift 2 ;;
     --emit-manifest) EMIT="${2:-}"; shift 2 ;;
     --verify)   VERIFY="${2:-}";   shift 2 ;;
     -h|--help)  usage ;;
@@ -90,10 +99,22 @@ fi
 # build contract and must not produce two seeds.
 FEATURES_CANON="$(printf '%s' "$FEATURES" | tr ',' '\n' | sed '/^$/d' | LC_ALL=C sort | paste -sd, -)"
 
-CONFIG_DIGEST="absent"
-if [ -f "$REPO_ROOT/.cargo/config.toml" ]; then
-  CONFIG_DIGEST="sha256:$(sha256sum "$REPO_ROOT/.cargo/config.toml" | cut -d' ' -f1)"
+# The configuration surface is supplied by the recipe, not discovered here.
+#
+# This used to hash only $REPO_ROOT/.cargo/config.toml. Cargo also reads
+# $CARGO_HOME/config.toml and every .cargo/config.* from the working directory
+# up to the root, and any of them can set build.rustflags, build.incremental,
+# target or rustc-wrapper. Hashing one file meant a change elsewhere moved the
+# build and left the key alone — the silent incompatibility this whole contract
+# is supposed to make impossible. seed_recipe.sh computes a conservative digest
+# over the whole chain and passes it in.
+if [ -z "$CONFIG_DIGEST_ARG" ]; then
+  echo "seed_compat_key.sh: --config-digest is required." >&2
+  echo "  the key is a pure function of the recipe; it does not go looking for" >&2
+  echo "  config sources itself, because that is how the two sides drifted." >&2
+  exit 1
 fi
+CONFIG_DIGEST="$CONFIG_DIGEST_ARG"
 
 LOCK_DIGEST="absent"
 if [ -f "$REPO_ROOT/Cargo.lock" ]; then
@@ -122,6 +143,9 @@ incremental = "$INCREMENTAL"
 config = "$CONFIG_DIGEST"
 features = "$FEATURES_CANON"
 cargo_lock = "$LOCK_DIGEST"
+recipe_schema = "$RECIPE_SCHEMA"
+wrapper_policy = "$WRAPPER_POLICY"
+toolchain_id = "$TOOLCHAIN_ID"
 EOF
 )"
 

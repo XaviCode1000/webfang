@@ -34,44 +34,43 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${SEED_REPO_ROOT:-$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)}"
-SEEDS_ROOT="${SEED_ROOT:-$HOME/.cache/cargo-target/seeds}"
-KEY_ARGS=(--features "")
-PROFILE="dev"
-TARGET=""
-FORCE=0
+# shellcheck source=scripts/seed_recipe.sh
+. "$SCRIPT_DIR/seed_recipe.sh"
+seed_recipe_parse "$REPO_ROOT" "$@"
+SEEDS_ROOT="$SEED_RECIPE_SEEDS_ROOT"
+FORCE="$SEED_RECIPE_FORCE"
+TEST_TX_DIR="$SEED_RECIPE_TEST_TX"
+FAIL_AT="$SEED_RECIPE_FAIL_AT"
 TEST_TX=0
-TEST_TX_DIR=""
-FAIL_AT=""
-CARGO_EXTRA=()
-
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --features) KEY_ARGS=(--features "${2:-}"); shift 2 ;;
-    --profile)  PROFILE="${2:-}"; shift 2 ;;
-    --target)   TARGET="${2:-}"; shift 2 ;;
-    --seeds-root) SEEDS_ROOT="${2:-}"; shift 2 ;;
-    --force)    FORCE=1; shift ;;
-    --test-transaction)
-      # Exercise ONLY the publish transaction, against a caller-prepared staging
-      # tree, with no build. This is the same function the real path calls — not a
-      # reimplementation — so the atomicity properties can be tested in
-      # milliseconds instead of once per 2 m 43 s reference build.
-      #   --test-transaction <staging-target> [--fail-at <point>]
-      TEST_TX_DIR="${2:-}"; TEST_TX=1; shift 2
-      if [ "${1:-}" = "--fail-at" ]; then FAIL_AT="${2:-}"; shift 2; fi
-      ;;
-    --) shift; CARGO_EXTRA=("$@"); break ;;
-    *) echo "seed_publish.sh: unknown argument '$1'" >&2; exit 1 ;;
-  esac
-done
+[ -n "$SEED_RECIPE_TEST_TX" ] && TEST_TX=1
 
 command -v cargo >/dev/null || { echo "seed_publish.sh: cargo not on PATH" >&2; exit 1; }
 command -v jq    >/dev/null || { echo "seed_publish.sh: jq is required" >&2; exit 1; }
 export SEED_REPO_ROOT="$REPO_ROOT"
-if [ -n "$TARGET" ]; then KEY_ARGS+=(--target "$TARGET"); fi
 
-KEY="$(bash "$SCRIPT_DIR/seed_compat_key.sh" "${KEY_ARGS[@]}" --profile "$PROFILE")"
-DEST="$SEEDS_ROOT/$KEY"
+KEY_ARGS=(--features "$SEED_RECIPE_FEATURES_CANON"
+          --profile "$SEED_RECIPE_PROFILE"
+          --recipe-schema "$SEED_RECIPE_SCHEMA"
+          --wrapper-policy "$SEED_RECIPE_WRAPPER_POLICY"
+          --toolchain-id "$SEED_RECIPE_TOOLCHAIN"
+          --config-digest "$SEED_RECIPE_CONFIG_DIGEST")
+[ -n "$SEED_RECIPE_TARGET" ] && KEY_ARGS+=(--target "$SEED_RECIPE_TARGET")
+
+# P1: the producer carries the SAME build-dir refusal the consumer has. It did
+# not, and the gap was not cosmetic: build-dir is not in the key, so a seed
+# published under a build-dir configuration could enter the store under a key
+# that a consumer without one would accept. Shared implementation, so the two
+# sides cannot drift apart again.
+if seed_recipe_has_build_dir "$REPO_ROOT"; then
+  echo "seed_publish.sh: refusing to publish - build-dir is configured." >&2
+  echo "  the consumer refuses to seed for the same reason, so publishing here" >&2
+  echo "  would put a seed in the store that nobody is allowed to use." >&2
+  exit 2
+fi
+
+seed_recipe_compute_key "$REPO_ROOT"
+DEST="$SEEDS_ROOT/$SEED_RECIPE_KEY"
+echo "==> key $SEED_RECIPE_KEY  (profile=$SEED_RECIPE_PROFILE target=${SEED_RECIPE_TARGET:-host} features=${SEED_RECIPE_FEATURES_CANON:-none} incremental=$SEED_RECIPE_INCREMENTAL toolchain=${SEED_RECIPE_TOOLCHAIN:-ambient})"
 
 if [ -e "$DEST" ] && [ "$FORCE" -ne 1 ]; then
   echo "seed_publish.sh: a seed already exists at $DEST" >&2
@@ -88,7 +87,7 @@ fi
 #
 # Everything a consumer could ever observe happens after the single rename.
 publish_atomically() {
-  local ref="$1" dest="$2" key="$3" profile="$4"
+  local ref="$1" dest="$2" key="$3"   # profile comes from SEED_RECIPE_PROFILE
 
   [ "$FAIL_AT" = "before-manifest" ] && return 42
 
@@ -100,9 +99,9 @@ publish_atomically() {
   # window left a PERMANENT, unmanifested seed squatting the key. Every later
   # consumer then failed verification and went cold, forever, with no recovery
   # short of deleting the directory by hand.
-  bash "$SCRIPT_DIR/seed_compat_key.sh" "${KEY_ARGS[@]}" --profile "$profile" \
+  bash "$SCRIPT_DIR/seed_compat_key.sh" "${KEY_ARGS[@]}" \
     --emit-manifest "$ref" >/dev/null
-  bash "$SCRIPT_DIR/seed_compat_key.sh" "${KEY_ARGS[@]}" --profile "$profile" \
+  bash "$SCRIPT_DIR/seed_compat_key.sh" "${KEY_ARGS[@]}" \
     --verify "$ref" >/dev/null || {
       echo "seed_publish.sh: staged seed failed its own manifest check; not publishing" >&2
       return 1
@@ -173,7 +172,7 @@ if [ "$TEST_TX" -eq 1 ]; then
   # Test seam: no build, no prune, no self-check — just the transaction.
   [ -d "$TEST_TX_DIR" ] || { echo "seed_publish.sh: --test-transaction needs an existing directory" >&2; exit 1; }
   mkdir -p "$SEEDS_ROOT"
-  publish_atomically "$TEST_TX_DIR" "$DEST" "$KEY" "$PROFILE"
+  publish_atomically "$TEST_TX_DIR" "$DEST" "$SEED_RECIPE_KEY"
   exit $?
 fi
 
@@ -195,12 +194,17 @@ REF="$STAGE/target"
 # seed is a flags mismatch: A3 measured zero hits and orphaned build-script
 # outputs from exactly that.
 echo "==> building the reference (cold; includes BoringSSL's C++)..."
-( cd "$REPO_ROOT" \
-  && env -u RUSTC_WRAPPER -u RUSTUP_TOOLCHAIN -u SCCACHE_DIR -u SCCACHE_BASEDIRS \
-       CARGO_TARGET_DIR="$REF" \
-       CARGO_INCREMENTAL=0 \
-       RUSTFLAGS="${RUSTFLAGS:-}" \
-       cargo build --workspace --offline ${CARGO_EXTRA[@]+"${CARGO_EXTRA[@]}"} \
+  # The build runs the SAME RECIPE the key was computed from: same profile,
+  # same target, same features, same flags, same pinned toolchain. The key used
+  # to be derived from the caller's ambient environment while the build ran under
+  # a different one, so --profile / --target / --features could change the key
+  # without ever reaching cargo.
+  mapfile -t CARGO_ARGS < <(seed_recipe_cargo_args)
+  mapfile -t BUILD_ENV  < <(seed_recipe_build_env "$REF")
+  echo "    recipe: ${CARGO_ARGS[*]}"
+  ( cd "$REPO_ROOT" \
+    && env "${BUILD_ENV[@]}" \
+         cargo "${CARGO_ARGS[@]}" \
   ) >"$STAGE/build.log" 2>&1 \
   || { echo "seed_publish.sh: reference build failed" >&2; tail -20 "$STAGE/build.log" >&2; exit 1; }
 
@@ -293,7 +297,7 @@ if [ "$STRAY" -ne 0 ]; then
   exit 1
 fi
 
-publish_atomically "$REF" "$DEST" "$KEY" "$PROFILE"
+publish_atomically "$REF" "$DEST" "$SEED_RECIPE_KEY"
 
 echo "==> published $DEST"
 echo "    apparent: $(du -sh --apparent-size "$DEST" | cut -f1)   units kept: $(find "$DEST/debug/.fingerprint" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"

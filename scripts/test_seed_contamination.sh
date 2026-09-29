@@ -159,7 +159,30 @@ if ! SEED_REPO_ROOT="$W1" bash "$PUBLISH" --seeds-root "$SEEDS_ROOT" --features 
   exit 1
 fi
 sed -n 's/^==> \(.*\)$/INFO: publish: \1/p' "$RUN_DIR/publish.log"
-SEED="$SEEDS_ROOT/$(SEED_REPO_ROOT="$W1" bash "$SCRIPT_DIR/seed_compat_key.sh" --features '')"
+# The key is obtained through the recipe, with the REFERENCE worktree as the repo
+# root — the seed was published from there, and asking for the key of a different
+# tree would be asking about a different contract.
+# The key is obtained through the recipe, rooted at the REFERENCE worktree —
+# the seed was published from there, and asking for the key of a different tree
+# would be asking about a different contract.
+#
+# Written as a function rather than `bash -c '…'`: inside single quotes the
+# inner shell expands $1 itself, and passing the path as an argument is the only
+# way to get it there intact. The first version interpolated $W1 into a quoted
+# script, where it expanded to nothing, and the key silently came out for the
+# wrong repository.
+key_for() {  # $1=repo root -> prints that tree's seed key
+  SEED_REPO_ROOT="$1" bash -c '
+    # $1 = scripts dir, $2 = the tree to key. In `bash -c script a b`, $0 is the
+    # placeholder "a" is $1 and "b" is $2.
+    . "$1/seed_recipe.sh"
+    seed_recipe_parse "$2" --features ""
+    seed_recipe_compute_key "$2"
+    printf "%s" "$SEED_RECIPE_KEY"
+  ' _ "$SCRIPT_DIR" "$1"
+}
+PUBLISHED_KEY="$(key_for "$W1")"
+SEED="$SEEDS_ROOT/$PUBLISHED_KEY"
 [ -d "$SEED" ] || { echo "FAIL: no seed published at $SEED"; exit 1; }
 [ -f "$SEED/manifest.toml" ] || { echo "FAIL: published seed carries no manifest"; exit 1; }
 ok "seed published at ${SEED#"$SEEDS_ROOT"/}"

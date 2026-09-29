@@ -17,6 +17,16 @@ PUBLISH="$SCRIPT_DIR/seed_publish.sh"
 KEYSH="$SCRIPT_DIR/seed_compat_key.sh"
 
 export SEED_REPO_ROOT="$REPO_ROOT"
+# The key is obtained through the SAME recipe production uses, never by calling
+# seed_compat_key.sh directly with a hand-built argument list. A test that
+# assembles the key's inputs itself is a second opinion about what the key means,
+# and a second opinion is what drifted in the first place.
+# shellcheck source=scripts/seed_recipe.sh
+. "$SCRIPT_DIR/seed_recipe.sh"
+seed_recipe_parse "$REPO_ROOT" --features ''
+seed_recipe_compute_key "$REPO_ROOT"
+mapfile -t KEY_ARGS < <(seed_recipe_key_args)
+KEY="$SEED_RECIPE_KEY"
 export CARGO_INCREMENTAL=0
 unset RUSTC_WRAPPER RUSTUP_TOOLCHAIN
 
@@ -28,7 +38,6 @@ unset RUSTC_WRAPPER RUSTUP_TOOLCHAIN
 SANDBOX="${SEED_ROOT:-$HOME/.cache/cargo-target/seeds}/.test-atomicity.$$"
 SEEDS="$SANDBOX"
 trap 'chmod -R u+w "$SANDBOX" 2>/dev/null; rm -rf "$SANDBOX" 2>/dev/null' EXIT
-KEY="$(bash "$KEYSH" --features '')"
 DEST="$SEEDS/$KEY"
 
 PASS=0; FAIL=0
@@ -58,7 +67,7 @@ mkstage() {
 
 # Verify a published seed is genuinely usable, not merely present.
 seed_is_valid() {
-  bash "$KEYSH" --features '' --verify "$1" >/dev/null 2>&1
+  bash "$KEYSH" "${KEY_ARGS[@]}" --verify "$1" >/dev/null 2>&1
 }
 
 echo "seed publish atomicity (key=$KEY)"

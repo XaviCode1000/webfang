@@ -26,26 +26,47 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${SEED_REPO_ROOT:-$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)}"
-SEEDS_ROOT="${SEED_ROOT:-$HOME/.cache/cargo-target/seeds}"
-KEY_ARGS=(--features "")
-PROFILE="dev"
-TARGET=""
-TARGET_DIR="${CARGO_TARGET_DIR:-}"
-
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --features)   KEY_ARGS=(--features "${2:-}"); shift 2 ;;
-    --profile)    PROFILE="${2:-}"; shift 2 ;;
-    --target)     TARGET="${2:-}"; shift 2 ;;
-    --seeds-root) SEEDS_ROOT="${2:-}"; shift 2 ;;
-    --target-dir) TARGET_DIR="${2:-}"; shift 2 ;;
-    -h|--help)    sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 0 ;;
-    *) echo "seed_target.sh: unknown argument '$1'" >&2; exit 1 ;;
-  esac
-done
+# shellcheck source=scripts/seed_recipe.sh
+. "$SCRIPT_DIR/seed_recipe.sh"
 
 say() { printf 'seed: %s\n' "$1"; }
-cold() { say "cold  reason=$1 key=$KEY target=$TARGET_DIR"; exit 0; }
+cold() { say "cold  reason=$1 key=$SEED_RECIPE_KEY target=$TARGET_DIR"; exit 0; }
+
+# --target-dir is this script's own, not a contract field, so it is taken out
+# before the recipe parses. The recipe rejects anything it does not recognise,
+# which is correct: a contract field that quietly did nothing was one of the
+# original defects.
+TARGET_DIR="${CARGO_TARGET_DIR:-}"
+_contract_args=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --target-dir) TARGET_DIR="${2:-}"; shift 2 ;;
+    *) _contract_args+=("$1"); shift ;;
+  esac
+done
+seed_recipe_parse "$REPO_ROOT" "${_contract_args[@]+"${_contract_args[@]}"}"
+SEEDS_ROOT="$SEED_RECIPE_SEEDS_ROOT"
+
+[ -n "$TARGET_DIR" ] || { echo "seed_target.sh: no target dir (set CARGO_TARGET_DIR or pass --target-dir)" >&2; exit 1; }
+
+# D6: a seed is an immutable source, never a build output. The fast gate refuses
+# this too; refusing here as well means a direct invocation cannot bypass it.
+case "$(readlink -f "$TARGET_DIR" 2>/dev/null || echo "$TARGET_DIR")" in
+  "$(readlink -f "$SEEDS_ROOT" 2>/dev/null || echo "$SEEDS_ROOT")"/*)
+    echo "seed_target.sh: refusing to use a seed directory as a build target" >&2
+    echo "  target: $TARGET_DIR" >&2
+    echo "  seeds are read-only sources; each worktree needs its own target dir." >&2
+    exit 2 ;;
+esac
+
+seed_recipe_compute_key "$REPO_ROOT"
+export SEED_REPO_ROOT="$REPO_ROOT"
+
+# P1: the shared build-dir refusal, identical implementation to the producer's.
+# See seed_recipe.sh for why this is a refusal rather than a key field.
+if seed_recipe_has_build_dir "$REPO_ROOT"; then
+  cold "build-dir-configured"
+fi
 
 [ -n "$TARGET_DIR" ] || { echo "seed_target.sh: no target dir (set CARGO_TARGET_DIR or pass --target-dir)" >&2; exit 1; }
 
@@ -61,8 +82,6 @@ esac
 
 export SEED_REPO_ROOT="$REPO_ROOT"
 
-if [ -n "$TARGET" ]; then KEY_ARGS+=(--target "$TARGET"); fi
-KEY="$(bash "$SCRIPT_DIR/seed_compat_key.sh" "${KEY_ARGS[@]}" --profile "$PROFILE")"
 
 # NOTE: this check must stay AFTER the key is computed. `cold` interpolates
 # $KEY, and under `set -u` calling it earlier aborts the script with
@@ -109,13 +128,14 @@ while [ "$dir" != "/" ]; do
   dir="$(dirname "$dir")"
 done
 
-SEED="$SEEDS_ROOT/$KEY"
+SEED="$SEEDS_ROOT/$SEED_RECIPE_KEY"
 
 [ -d "$SEED" ] || cold "no-seed"
 
 # Defence in depth: the directory name already encodes the key, but a renamed or
 # hand-edited seed must not be trusted on that alone.
-if ! bash "$SCRIPT_DIR/seed_compat_key.sh" "${KEY_ARGS[@]}" --profile "$PROFILE" \
+mapfile -t KEY_ARGS < <(seed_recipe_key_args)
+if ! bash "$SCRIPT_DIR/seed_compat_key.sh" "${KEY_ARGS[@]}" \
       --verify "$SEED" >/dev/null 2>&1; then
   cold "incompatible-manifest"
 fi
@@ -123,7 +143,7 @@ fi
 if [ -e "$TARGET_DIR" ] && [ -n "$(ls -A "$TARGET_DIR" 2>/dev/null)" ]; then
   # Never seed over an existing target: the whole point is that each worktree owns
   # its dir exclusively, and a half-populated one belongs to a build in flight.
-  say "cold  reason=target-not-empty key=$KEY target=$TARGET_DIR"
+  say "cold  reason=target-not-empty key=$SEED_RECIPE_KEY target=$TARGET_DIR"
   exit 0
 fi
 
@@ -156,7 +176,7 @@ if ! cp -a --reflink=always --no-preserve=mode "$SEED" "$TARGET_DIR" 2>/dev/null
     # Same one-line verdict shape as every other outcome, so this state is
     # greppable the same way `seeded` and `cold` are — and so the word "cold"
     # never appears in a message that is denying it.
-    say "refused reason=unremovable-leftover key=$KEY target=$TARGET_DIR entries=$LEFT"
+    say "refused reason=unremovable-leftover key=$SEED_RECIPE_KEY target=$TARGET_DIR entries=$LEFT"
     echo "seed_target.sh: the clone failed AND its leftovers could not be removed." >&2
     echo "  not handing you a half-populated target to build over: a cold build" >&2
     echo "  assumes a clean target dir, and this one is not clean." >&2
@@ -170,5 +190,5 @@ fi
 # Apparent size, deliberately NOT a df delta: the delta is dominated by whatever
 # else is touching the filesystem in the same second and was measured coming out
 # NEGATIVE here. A number that can be negative is not a measurement.
-say "seeded reason=reflink key=$KEY target=$TARGET_DIR apparent=$(du -sh --apparent-size "$TARGET_DIR" 2>/dev/null | cut -f1)"
+say "seeded reason=reflink key=$SEED_RECIPE_KEY target=$TARGET_DIR apparent=$(du -sh --apparent-size "$TARGET_DIR" 2>/dev/null | cut -f1)"
 exit 0

@@ -26,7 +26,17 @@ REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
 SEEDER="$SCRIPT_DIR/seed_target.sh"
 KEYSH="$SCRIPT_DIR/seed_compat_key.sh"
 
-export SEED_REPO_ROOT="$REPO_ROOT" CARGO_INCREMENTAL=0
+export SEED_REPO_ROOT="$REPO_ROOT"
+# The key is obtained through the SAME recipe production uses, never by calling
+# seed_compat_key.sh directly with a hand-built argument list. A test that
+# assembles the key's inputs itself is a second opinion about what the key means,
+# and a second opinion is what drifted in the first place.
+# shellcheck source=scripts/seed_recipe.sh
+. "$SCRIPT_DIR/seed_recipe.sh"
+seed_recipe_parse "$REPO_ROOT" --features ''
+seed_recipe_compute_key "$REPO_ROOT"
+mapfile -t KEY_ARGS < <(seed_recipe_key_args)
+KEY="$SEED_RECIPE_KEY" CARGO_INCREMENTAL=0
 unset RUSTC_WRAPPER RUSTUP_TOOLCHAIN
 
 # On the real cache filesystem, not tmpfs: rename and unlink behaviour differs,
@@ -42,15 +52,14 @@ ok()  { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 bad() { FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; }
 
 # A minimal but valid seed, published by production so the key is a real one.
-KEY="$(bash "$KEYSH" --features '')"
 SEED="$SEEDS/$KEY"
 mkdir -p "$SEED/debug/.fingerprint/dep-some-crate"
 printf 'content\n' >"$SEED/debug/.fingerprint/dep-some-crate/lib-x"
 # A hand-written manifest would not verify, and the consumer would then report
 # `incompatible-manifest` and never reach the clone at all — the test would pass
 # against a branch it never exercised. The manifest is emitted by production.
-bash "$KEYSH" --features '' --emit-manifest "$SEED" >/dev/null
-bash "$KEYSH" --features '' --verify "$SEED" >/dev/null \
+bash "$KEYSH" "${KEY_ARGS[@]}" --emit-manifest "$SEED" >/dev/null
+bash "$KEYSH" "${KEY_ARGS[@]}" --verify "$SEED" >/dev/null \
   || { echo "FAIL: fixture seed does not verify; the test would measure nothing"; exit 1; }
 
 # A `cp` that does half the job and fails, leaving a directory it also makes
