@@ -2,7 +2,7 @@
 set -euo pipefail
 # Compatibility harness — Sprint 0 Gate 0
 # Loops 6 CI-required combos + 2 pairwise spot-checks (local/nightly).
-# Usage: bash scripts/check_compatibility.sh --ci-required | --all | --help
+# Usage: bash scripts/check_compatibility.sh --ci-required | --all | --self-test | --help
 # Each combo verifies: compile | start | --help | crawl | resume | failure-path
 
 MODE="ci-required"
@@ -10,7 +10,8 @@ for arg in "$@"; do
   case "$arg" in
     --ci-required) MODE="ci-required" ;;
     --all) MODE="all" ;;
-    --help|-h) echo "Usage: $0 [--ci-required|--all]"; echo "  --ci-required  6 required combos (CI)"; echo "  --all          6 + 2 pairwise (local/nightly)"; exit 0 ;;
+    --self-test) MODE="self-test" ;;
+    --help|-h) echo "Usage: $0 [--ci-required|--all|--self-test]"; echo "  --ci-required  6 required combos (CI)"; echo "  --all          6 + 2 pairwise (local/nightly)"; echo "  --self-test    unit-check the pure helpers (no cargo, no network)"; exit 0 ;;
     *) echo "Unknown arg: $arg" >&2; exit 2 ;;
   esac
 done
@@ -50,16 +51,34 @@ core_feature_args() {
   esac
 }
 
+# The single decoder for that protocol: it fills the global
+# CORE_FEATURE_ARGS, which every probe reads on its next line. The array-init
+# plus read loop used to be inlined in each of the three probes, so changing
+# the protocol meant three synchronized edits and one missed edit meant one
+# probe interpreted feature arguments differently from the others
+# (#1635 finding 4). Bash cannot return an array, hence the global.
+decode_core_feature_args() {
+  local flags="$1"
+  local w
+  CORE_FEATURE_ARGS=()
+  while IFS= read -r w; do CORE_FEATURE_ARGS+=("$w"); done < <(core_feature_args "$flags")
+}
+
 # Run a command with its output captured; on success return 0 (output
 # discarded), on failure print the last 40 lines to stderr and return the
-# failing status. Keeps CI logs small while staying fail-closed.
+# command's OWN exit status. Keeps CI logs small while staying fail-closed.
+# The status is the command's, not a hardcoded 1: callers that branch on
+# success/failure do not care, but a status-sensitive caller would otherwise
+# silently lose the real code (#1635 finding 2).
 run_logged() {
-  local out
+  local out rc
   if out=$("$@" 2>&1); then
     return 0
+  else
+    rc=$?
   fi
   printf '%s\n' "$out" | tail -40 >&2
-  return 1
+  return "$rc"
 }
 
 compile() {
@@ -104,32 +123,42 @@ crawl_check() {
   local flags="$1"
   local name="$2"
   echo "  [crawl] $name ($flags)"
-  local -a fargs=()
-  local w
-  while IFS= read -r w; do fargs+=("$w"); done < <(core_feature_args "$flags")
-  # Behavioral harness via wiremock: run the crawl-filtered behavioral suite
-  # if it is available, otherwise fallback to compile-check of core.
-  if cargo nextest run -p webfang_core --lib -- --list 2>/dev/null | grep -q "behavioral"; then
-    if ! run_logged cargo nextest run -p webfang_core "${fargs[@]}" --no-tests fail --test behavioral crawl; then
-      echo "FAIL crawl $name" >&2
-      return 1
-    fi
-  else
-    # Fallback: at least check that core lib compiles with this feature set
-    if ! run_logged cargo check -p webfang_core "${fargs[@]}" --tests; then
-      echo "FAIL crawl $name (fallback compile-check)" >&2
-      return 1
-    fi
+  decode_core_feature_args "$flags"
+  # Behavioral harness via wiremock, run as a runtime crawl assertion.
+  # Availability is probed with the SAME package, target and feature
+  # arguments the run below uses, and BOTH outcomes are fail-closed: a
+  # listing that cannot be produced, or one that contains no `crawl` test,
+  # FAILS this combo. The old branch probed `--lib` under DEFAULT features
+  # (where no test is named `behavioral` outside the chromium-gated CDP
+  # test) and degraded to a compile-only check of webfang_core, so the
+  # feature-matrix job in .github/workflows/ci.yml could report success for
+  # five of the six combos without a single crawl ever running (#1635
+  # finding 5) — the same failure shape as the CRITICAL already fixed here:
+  # a gate that reports success without exercising the thing it names.
+  local listing
+  if ! listing=$(cargo nextest list -p webfang_core "${CORE_FEATURE_ARGS[@]}" --test behavioral 2>&1); then
+    printf '%s\n' "$listing" | tail -40 >&2
+    echo "FAIL crawl $name: cannot list the behavioral suite for ($flags)" >&2
+    return 1
   fi
+  if ! grep -q "crawl" <<<"$listing"; then
+    printf '%s\n' "$listing" | tail -40 >&2
+    echo "FAIL crawl $name: the behavioral suite lists no crawl test for ($flags)" >&2
+    return 1
+  fi
+  # --no-tests fail: a zero-match selector is a failure, never a vacuous pass.
+  if ! run_logged cargo nextest run -p webfang_core "${CORE_FEATURE_ARGS[@]}" --no-tests fail --test behavioral crawl; then
+    echo "FAIL crawl $name (behavioral crawl suite did not run and pass)" >&2
+    return 1
+  fi
+  echo "  crawl ok ($name)"
 }
 
 resume_check() {
   local flags="$1"
   local name="$2"
   echo "  [resume] $name ($flags)"
-  local -a fargs=()
-  local w
-  while IFS= read -r w; do fargs+=("$w"); done < <(core_feature_args "$flags")
+  decode_core_feature_args "$flags"
   # Pre-seed StateStore and verify round-trip + corrupt degrade
   tmp=$(mktemp -d)
   trap 'rm -rf "$tmp"' RETURN
@@ -140,13 +169,13 @@ resume_check() {
 JSON
   # Load via StateStore test harness (uses same serde path as --resume)
   local rc=0
-  if ! run_logged cargo nextest run -p webfang_core "${fargs[@]}" --no-tests fail --lib test_load_or_default_keeps; then
+  if ! run_logged cargo nextest run -p webfang_core "${CORE_FEATURE_ARGS[@]}" --no-tests fail --lib test_load_or_default_keeps; then
     echo "FAIL resume $name (fresh state round-trip)" >&2
     rc=1
   fi
   # Corrupted JSON — should degrade (propagate Serialization, filter returns all URLs)
   echo "not json {{{" > "$tmp/webfang/state/example.com.json"
-  if ! run_logged cargo nextest run -p webfang_core "${fargs[@]}" --no-tests fail --lib test_load_or_default_corrupt; then
+  if ! run_logged cargo nextest run -p webfang_core "${CORE_FEATURE_ARGS[@]}" --no-tests fail --lib test_load_or_default_corrupt; then
     echo "FAIL resume $name (corrupt state degrade)" >&2
     rc=1
   fi
@@ -171,26 +200,35 @@ failure_path_check() {
   # never fatal — so that command's exit code is network-dependent, not a
   # state contract. The 69/74 I/O classes stay pinned by the error_path
   # suite, which runs against wiremock.)
-  local expected_vectors=78
-  case "$flags" in
-    ai|full|ai,persistence) expected_vectors=65 ;;
-  esac
-  local -a fargs=()
-  local w
-  while IFS= read -r w; do fargs+=("$w"); done < <(core_feature_args "$flags")
+  #
+  # The expected code is DERIVED from whether the combo enables `ai`
+  # (expected_vectors_exit below), never matched against a list of combos:
+  # an allowlist silently asserted the wrong contract for any new
+  # ai-bearing combination — `ai,persistence,chromium` selected the 78
+  # branch and the gate passed on a build that must exit 65 (#1635
+  # finding 3).
+  local expected_vectors
+  expected_vectors=$(expected_vectors_exit "$flags")
+  decode_core_feature_args "$flags"
   if [ ! -x "./target/debug/webfang" ]; then
     echo "FAIL failure-path $name: binary not built at ./target/debug/webfang" >&2
     return 1
   fi
+  local probe_out="" rc=0
   set +e
-  ./target/debug/webfang --output-vectors vectors-compat.tmp --url https://example.com >/dev/null 2>&1
+  probe_out=$(./target/debug/webfang --output-vectors vectors-compat.tmp --url https://example.com 2>&1)
   rc=$?
   set -e
   if [ "$rc" -ne "$expected_vectors" ]; then
+    # The binary's own output goes to the log BEFORE the FAIL line: "expected
+    # 78 got 64" alone cannot tell an application regression from a
+    # toolchain or environment problem, which is the whole point of a
+    # compatibility gate (#1635 finding 1).
+    printf '%s\n' "$probe_out" | tail -40 >&2
     echo "FAIL failure-path $name: --output-vectors expected $expected_vectors got $rc" >&2
     return 1
   fi
-  if ! run_logged cargo nextest run -p webfang_core "${fargs[@]}" --no-tests fail --test behavioral error_path; then
+  if ! run_logged cargo nextest run -p webfang_core "${CORE_FEATURE_ARGS[@]}" --no-tests fail --test behavioral error_path; then
     echo "FAIL failure-path $name (error_path tests)" >&2
     return 1
   fi
@@ -199,10 +237,14 @@ failure_path_check() {
 
 # --- preflight (read-only, cheap) ---
 
-# True when the combo's cargo invocation links the ONNX Runtime static library:
-# `full` passes --all-features (which includes the `ai` feature), and any
-# explicit feature list carrying the `ai` token does.
-combo_links_ort() {
+# True when the combo's cargo invocation enables the `ai` feature: `full`
+# passes --all-features (which includes `ai`), and any explicit feature list
+# carrying the `ai` token does. One predicate, two consumers: the ONNX
+# Runtime preflight below (the `ai` feature is what links ONNX Runtime) and
+# expected_vectors_exit() (the --output-vectors exit contract). Classifying a
+# combo by what it ENABLES is what keeps an unseen combination such as
+# `ai,persistence,chromium` on the right side of both (#1635 finding 3).
+combo_enables_ai() {
   local flags="$1"
   local -a tokens=()
   local token
@@ -216,6 +258,12 @@ combo_links_ort() {
     fi
   done
   return 1
+}
+
+# The exit code `--output-vectors <path>` must produce for a combo, derived
+# from the `ai` predicate. Consumed by failure_path_check() above.
+expected_vectors_exit() {
+  if combo_enables_ai "$1"; then printf '%s\n' 65; else printf '%s\n' 78; fi
 }
 
 # Directory the ort-sys build script downloads the ONNX Runtime static library
@@ -240,7 +288,7 @@ preflight_ort_native_lib() {
   local combo name flags dir
   for combo in "${COMBOS[@]}"; do
     IFS=":" read -r name flags <<<"$combo"
-    if ! combo_links_ort "$flags"; then
+    if ! combo_enables_ai "$flags"; then
       continue
     fi
     dir=$(ort_cache_dir)
@@ -289,7 +337,98 @@ preflight_ort_native_lib() {
   return 0
 }
 
+# --- self-test (--self-test) ---
+# Unit checks for the pure helpers above: the feature-argument protocol, the
+# `--output-vectors` exit contract, the `ai` predicate and run_logged's status
+# contract. No cargo, no network, no binary. Driven by
+# scripts/tests/test_check_compatibility.sh, which also exercises the probe
+# failure paths end to end with stub binaries.
+#
+# self_test_fail is global on purpose: the assert helpers below are called
+# from loops and must not abort the run under `set -e`.
+self_test_fail=0
+
+self_test_eq() {
+  local label="$1" expected="$2" actual="$3"
+  if [ "$expected" = "$actual" ]; then
+    echo "  ok   $label = $actual"
+  else
+    echo "  FAIL $label: expected '$expected', got '$actual'" >&2
+    self_test_fail=1
+  fi
+}
+
+self_test_contains() {
+  local label="$1" needle="$2" haystack="$3"
+  case "$haystack" in
+    *"$needle"*) echo "  ok   $label contains '$needle'" ;;
+    *) echo "  FAIL $label: '$needle' not found in: $haystack" >&2; self_test_fail=1 ;;
+  esac
+}
+
+self_test_yes_no() {
+  if "$@"; then printf '%s\n' true; else printf '%s\n' false; fi
+}
+
+self_test() {
+  local combo rc captured
+  echo "self-test: compatibility harness helpers"
+  self_test_fail=0
+
+  # Feature-argument protocol: one decoder, one wire format (#1635 finding 4).
+  decode_core_feature_args default
+  self_test_eq "decode default" "" "${CORE_FEATURE_ARGS[*]-}"
+  decode_core_feature_args --no-default-features
+  self_test_eq "decode --no-default-features" "--no-default-features" "${CORE_FEATURE_ARGS[*]-}"
+  decode_core_feature_args full
+  self_test_eq "decode full" "--all-features" "${CORE_FEATURE_ARGS[*]-}"
+  decode_core_feature_args ai,persistence
+  self_test_eq "decode ai,persistence" "--features ai,persistence" "${CORE_FEATURE_ARGS[*]-}"
+  decode_core_feature_args ai,persistence,chromium
+  self_test_eq "decode ai,persistence,chromium" "--features ai,persistence,chromium" "${CORE_FEATURE_ARGS[*]-}"
+
+  # `ai` predicate: a combo is classified by what it enables, not by
+  # membership in a list of combos someone remembered to add.
+  for combo in default --no-default-features chromium mcp mcp,chromium; do
+    self_test_eq "combo_enables_ai $combo" "false" "$(self_test_yes_no combo_enables_ai "$combo")"
+  done
+  for combo in ai full ai,persistence ai,persistence,chromium; do
+    self_test_eq "combo_enables_ai $combo" "true" "$(self_test_yes_no combo_enables_ai "$combo")"
+  done
+
+  # Exit contract derived from that predicate. `ai,persistence,chromium` is
+  # the combo the old allowlist got wrong (it selected 78).
+  for combo in default --no-default-features chromium mcp mcp,chromium; do
+    self_test_eq "expected_vectors_exit $combo" "78" "$(expected_vectors_exit "$combo")"
+  done
+  for combo in ai full ai,persistence ai,persistence,chromium; do
+    self_test_eq "expected_vectors_exit $combo" "65" "$(expected_vectors_exit "$combo")"
+  done
+
+  # run_logged returns the command's own status, and still tails the output.
+  rc=0; run_logged true || rc=$?
+  self_test_eq "run_logged true" "0" "$rc"
+  rc=0; run_logged false || rc=$?
+  self_test_eq "run_logged false" "1" "$rc"
+  rc=0; run_logged bash -c 'exit 42' || rc=$?
+  self_test_eq "run_logged exit 42" "42" "$rc"
+  captured=$(run_logged bash -c 'echo SELF-TEST-TAIL-MARKER >&2; exit 7' 2>&1) || true
+  self_test_contains "run_logged tail" "SELF-TEST-TAIL-MARKER" "$captured"
+
+  if [ "$self_test_fail" -ne 0 ]; then
+    echo "self-test: FAIL"
+    return 1
+  fi
+  echo "self-test: PASS"
+  return 0
+}
+
 # --- main loop ---
+if [ "$MODE" = "self-test" ]; then
+  self_test
+  exit $?
+fi
+
 echo "Compatibility harness: mode=$MODE combos=${#COMBOS[@]}"
 echo "Retention: cargo hack --each-feature (isolated) stays in ci.yml feature-matrix"
 preflight_ort_native_lib
