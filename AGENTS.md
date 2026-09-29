@@ -235,7 +235,7 @@ An agent suggesting "clean up duplicate dependencies" must be stopped. These con
 
 ### Build requirement
 
-`cmake` is mandatory — `wreq` → `boring2` → `boring-sys2` needs it for BoringSSL. The first build compiles BoringSSL from C++.
+`cmake` is mandatory — `wreq` → `btls` → `btls-sys` (formerly `boring2`/`boring-sys2`) needs it for BoringSSL. The first build compiles BoringSSL from C++.
 
 > 🔒 **`[profile.dev]` lives in `Cargo.toml`, never in `.cargo/config.toml`.** Cargo resolves
 > `config.toml` from the CWD upward, so a profile declared there changes every unit's

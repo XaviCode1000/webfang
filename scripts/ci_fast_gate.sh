@@ -258,7 +258,10 @@ lane_ci() {
   local -a script_files=()
   local -a workflow_files=()
   # mapfile returns non-zero on empty input, hence `|| true` under `set -u`.
-  mapfile -t script_files < <(grep -E '^scripts/[^/]*\.sh$' "$UNION_TMP" || true) || true
+  # scripts/ is matched at any depth: scripts/githooks/ and scripts/tests/ hold
+  # real shell that CI's repo-guards job lints, so a top-level-only glob left
+  # nested scripts unlinted locally (#1635).
+  mapfile -t script_files < <(grep -E '^scripts/.*\.sh$' "$UNION_TMP" || true) || true
   mapfile -t workflow_files < <(grep -E '^\.github/workflows/[^/]*\.ya?ml$' "$UNION_TMP" || true) || true
   if [[ ${#script_files[@]} -gt 0 ]]; then
     run_step "bash syntax (changed scripts)" bash -n "${script_files[@]}"
@@ -294,6 +297,30 @@ EOF
   else
     skip_step "ci-health close harness" "no ci-health close files changed"
   fi
+  # Compatibility-harness semantics (#1635): hermetic, cargo-free proof that
+  # the probe failure paths stay fail-closed — the binary's own output reaches
+  # the log before a FAIL, the crawl availability branch never degrades into a
+  # compile-only pass, and the --output-vectors contract is derived per combo
+  # instead of matched against a list of combos. <1s, so it never skips.
+  if grep -Eq '^(scripts/check_compatibility\.sh|scripts/tests/test_check_compatibility\.sh)$' "$UNION_TMP" 2>/dev/null; then
+    run_step "compatibility harness semantics (offline)" bash scripts/tests/test_check_compatibility.sh
+  else
+    skip_step "compatibility harness semantics" "no compatibility harness files changed"
+  fi
+  # Path-classifier regression harness (#1707; coverage for #1643): the
+  # `$(...)` NUL-dropping capture collapsed a multi-file diff into one
+  # pseudo-path, which could flip `run_code_jobs` false and cascade-skip every
+  # code lane while CI Gate stayed green. Triggered by either the classifier or
+  # its harness changing — both are `scripts/**`, so a PR touching only one of
+  # them still lands in this CI-ONLY lane. Hermetic (mktemp git trees), no
+  # cargo, <1s — cheap enough that it is never skipped once triggered.
+  # Mirrors the `repo-guards` step of the same
+  # harness in .github/workflows/ci.yml.
+  if grep -Eq '^(scripts/ci_path_classifier\.sh|scripts/ci_path_classifier_test\.sh)$' "$UNION_TMP" 2>/dev/null; then
+    run_step "path classifier harness semantics (offline)" bash scripts/ci_path_classifier_test.sh
+  else
+    skip_step "path classifier harness semantics" "no path classifier files changed"
+  fi
 }
 
 # run_pinned_lint_changed_scope: degraded local equivalent of CI's
@@ -310,7 +337,8 @@ run_pinned_lint_changed_scope() {
   local -a script_files=()
   local -a workflow_files=()
   # mapfile returns non-zero on empty input, hence `|| true` under `set -u`.
-  mapfile -t script_files < <(grep -E '^scripts/[^/]*\.sh$' "$UNION_TMP" || true) || true
+  # Any depth under scripts/, for the same reason as lane_ci (#1635).
+  mapfile -t script_files < <(grep -E '^scripts/.*\.sh$' "$UNION_TMP" || true) || true
   mapfile -t workflow_files < <(grep -E '^\.github/workflows/[^/]*\.ya?ml$' "$UNION_TMP" || true) || true
   if [[ ${#script_files[@]} -eq 0 && ${#workflow_files[@]} -eq 0 ]]; then
     skip_step "pinned lint (changed scope)" "no changed scripts/workflows"

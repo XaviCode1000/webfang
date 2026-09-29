@@ -1710,7 +1710,7 @@ async fn crawl_site_with_options_inner(
 }
 
 #[cfg(test)]
-#[cfg(not(miri))] // wiremock + wreq use boring-sys2 FFI (unsupported by Miri)
+#[cfg(not(miri))] // wiremock + wreq use btls-sys FFI (unsupported by Miri)
 mod tests {
     /// Test helper: non-zero literal for `CrawlerConfig::concurrency` (#1132).
     fn nz(n: usize) -> std::num::NonZeroUsize {

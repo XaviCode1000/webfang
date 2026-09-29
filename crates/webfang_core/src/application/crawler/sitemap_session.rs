@@ -127,7 +127,7 @@ async fn crawl_with_sitemap_session_inner(
 }
 
 #[cfg(test)]
-#[cfg(not(miri))] // wiremock + wreq use boring-sys2 FFI (unsupported by Miri)
+#[cfg(not(miri))] // wiremock + wreq use btls-sys FFI (unsupported by Miri)
 mod tests {
     use super::*;
     use url::Url;

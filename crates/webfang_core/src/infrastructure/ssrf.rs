@@ -465,7 +465,7 @@ mod tests {
         // that construction reads `DISABLE_VALIDATING_RESOLVER_ENV`; each
         // proof therefore holds [`ENV_LOCK`] for its whole body so sibling
         // threads cannot race the env mutation (issue #926).
-        #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+        #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
         #[tokio::test]
         async fn wired_client_rejects_hostname_resolving_to_loopback() {
             let _guard = webfang_test_utils::EnvGuard::clean(&[DISABLE_VALIDATING_RESOLVER_ENV]);
@@ -485,7 +485,7 @@ mod tests {
             );
         }
 
-        #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+        #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
         #[tokio::test]
         async fn wired_client_reaches_connect_when_validation_disabled() {
             let _guard =
@@ -502,7 +502,7 @@ mod tests {
         // object (the shape production consumers hold), ONE choke-point call
         // applies the resolver layer — observable at connect time. The
         // redirect-policy layer shares the same impl body.
-        #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+        #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
         #[tokio::test]
         async fn secure_client_applies_resolver_through_trait_object() {
             let _guard = webfang_test_utils::EnvGuard::clean(&[DISABLE_VALIDATING_RESOLVER_ENV]);
@@ -528,7 +528,7 @@ mod tests {
         // trait object — a loopback dial succeeds past resolution (and fails
         // later at CONNECT, never with an SSRF rejection), with no env hatch
         // and no registry mutation.
-        #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+        #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
         #[tokio::test]
         async fn secure_client_with_loopback_permits_loopback_dial() {
             let _guard = webfang_test_utils::EnvGuard::clean(&[DISABLE_VALIDATING_RESOLVER_ENV]);
@@ -548,7 +548,7 @@ mod tests {
         // with the flag on the chain is followed to the loopback target (200).
         // IP literals bypass the custom resolver (wreq dials them directly),
         // so this needs no env hatch — the policy alone decides.
-        #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+        #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
         #[tokio::test]
         async fn redirect_policy_with_loopback_gates_wiremock_chain() {
             use wiremock::matchers::method;
