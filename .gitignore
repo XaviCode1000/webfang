@@ -30,7 +30,6 @@ fuzz/coverage/
 # AI AGENTS
 # ═══════════════════════════════════════════════════════════
 # SDD / Agent working directories
-.pi/
 .sdd/
 .sdd
 .atl/
@@ -71,6 +70,8 @@ STATE.md
 .agent/
 skills/
 .opencode/
+.pi/
+.zcode/
 
 # Engram memory cache (local server state, not project source)
 # See AGENTS.md "Engram Persistent Memory" — observations live in the
