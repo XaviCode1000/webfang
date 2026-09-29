@@ -18,8 +18,19 @@ alongside this book under `/api/<crate>/` (e.g. `/api/webfang_core/`).
 | `webfang_cli` | CLI binary (`webfang`) |
 | `webfang_test_utils` | Shared test helpers |
 
+## Installing
+
+WebFang ships **binaries only** — nothing is published to crates.io, so
+`cargo install webfang` cannot work. Every release publishes four archives
+(Linux x86_64/ARM64, macOS Apple Silicon, Windows x86_64) plus a
+`SHA256SUMS.txt`. Intel macOS has no artifact by design. Start here:
+**[Installation & Uninstall](installation.md)**.
+
 ## Chapters
 
+- **[Installation & Uninstall](installation.md)** — verified download and
+  checksum commands per platform, platform floors, and every on-disk root a
+  release leaves behind.
 - **[Debugging & Observability](debugging.md)** — built-in tracing, correlation
   IDs, and the `jq` query cookbook for `debug.jsonl`.
 - **[Testing](testing.md)** — E2E integration tests, snapshot strategy, and
