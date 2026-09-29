@@ -80,6 +80,86 @@ done
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$SCRIPT_DIR/..")"
 cd "$ROOT" || exit 1
 
+# --- build-cache policy guard --------------------------------------------------
+# AGENTS.md § worktree bootstrap: every tree builds with CARGO_TARGET_DIR
+# provided by direnv (shared cache on main, isolated dir per worktree).
+# Without it cargo silently falls back to ./target (or crates/*/target),
+# duplicating the whole workspace compile into paths no cleanup step knows
+# about (in-repo audit 2026-09-29: six such dirs, 39G logical). No dry-run
+# carve-out: a lane decision reported from an env that cannot build is
+# itself misleading. Fail-closed.
+if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
+  echo "error: CARGO_TARGET_DIR is not set — direnv is not loaded for this tree." >&2
+  echo "  fix: run 'direnv allow' once per worktree (see AGENTS.md § worktree bootstrap)," >&2
+  echo "  then re-run this gate from a direnv-loaded shell." >&2
+  exit 2
+fi
+
+# A defined CARGO_TARGET_DIR is not sufficient. A worktree created without a
+# .envrc INHERITS main's value from the shell that launched it, so the check
+# above passes and this tree compiles straight into the shared cache: the
+# #1267 hazard (two trees, same output filenames, last writer wins, E2E runs
+# silently execute the other tree's binary). Measured 2026-09-29 on main's
+# shared target: 46 dead worktrees referenced by live fingerprints, plus one
+# still-running worktree (1613-mcp-error-table) building into it.
+#
+# The comparison is by IDENTITY, not by name. Canonicalising both sides first
+# is load-bearing in both directions:
+#   - basename matching would REJECT a legitimate ~/.cache/cargo-target/x/webfang
+#     that has nothing to do with main;
+#   - basename matching would ACCEPT a symlink pointing at main's cache, which
+#     is the exact failure we are closing.
+# readlink -f resolves a not-yet-existing path too, so a fresh worktree is
+# checked before its target dir is created.
+#
+# Main's shared target comes from main's own .envrc, which is the declared
+# policy for the main tree on this machine. When it cannot be read, this gate
+# CANNOT prove the worktree's target is isolated, so it refuses. Fail-closed is
+# the point: "worktree implies isolated target" has to be an invariant, not a
+# heuristic that silently degrades to a warning depending on whether someone
+# ran the bootstrap first. Blocking worktrees on a machine whose main checkout
+# is not bootstrapped is the correct, actionable failure — and the seeding
+# bootstrap added later will need this same shape for seeds/<key>.
+MAIN_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+if [[ "$ROOT" != "$MAIN_ROOT" ]]; then
+  MAIN_ENVRC="$MAIN_ROOT/.envrc"
+  MAIN_TARGET=""
+  if [[ -f "$MAIN_ENVRC" ]]; then
+    MAIN_TARGET="$(sed -n 's/^export CARGO_TARGET_DIR=//p' "$MAIN_ENVRC" 2>/dev/null | tail -1)"
+  fi
+  if [[ -z "$MAIN_TARGET" ]]; then
+    if [[ -f "$MAIN_ENVRC" ]]; then
+      WHY="$MAIN_ENVRC exists but declares no CARGO_TARGET_DIR"
+    else
+      WHY="$MAIN_ENVRC is missing"
+    fi
+    echo "error: worktree build isolation cannot be verified." >&2
+    echo "  main checkout is not bootstrapped: $WHY." >&2
+    echo "  without it this gate cannot prove that" >&2
+    echo "    $(readlink -f "${CARGO_TARGET_DIR%/}")" >&2
+    echo "  is not main's shared cache, so it refuses rather than assume." >&2
+    echo "  Cargo itself is fine here; this is a precondition of the workflow." >&2
+    echo "  fix: bootstrap the main checkout, then re-run:" >&2
+    echo "        cd $MAIN_ROOT" >&2
+    echo "        # create .envrc per AGENTS.md § worktree bootstrap, then:" >&2
+    echo "        direnv allow" >&2
+    exit 2
+  elif [[ "$(readlink -f "${CARGO_TARGET_DIR%/}")" == "$(readlink -f "$MAIN_TARGET")" ]]; then
+    echo "error: this worktree's CARGO_TARGET_DIR resolves to main's shared cache" >&2
+    echo "  tree:            $ROOT" >&2
+    echo "  CARGO_TARGET_DIR $(readlink -f "${CARGO_TARGET_DIR%/}")" >&2
+    echo "  main's target:   $(readlink -f "$MAIN_TARGET")" >&2
+    echo "  this would compile this tree into another tree's target dir (#1267)." >&2
+    echo "  fix: give this worktree its own target dir and re-run:" >&2
+    echo "        cd $ROOT" >&2
+    echo "        sed -e 's#cargo-target/$(basename "$MAIN_TARGET")#cargo-target/$(basename "$ROOT")#' \\" >&2
+    echo "            -e 's#^export CARGO_INCREMENTAL=1#export CARGO_INCREMENTAL=0#' \\" >&2
+    echo "            '$MAIN_ROOT/.envrc' > .envrc" >&2
+    echo "        direnv allow" >&2
+    exit 2
+  fi
+fi
+
 # --- step runner (no `set -e`: collect failures, report a summary) ------------
 PASS=0
 FAIL=0

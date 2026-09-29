@@ -168,8 +168,12 @@ unsafe_code = "deny"
 
 [profile.dev]
 opt-level = 0
-# debug level is governed by .cargo/config.toml (line-tables-only);
-# full debuginfo per-invocation: CARGO_PROFILE_DEV_DEBUG=true cargo build
+# Keep backtraces with file:line while dropping full variable-level debuginfo.
+# Lives here, not in .cargo/config.toml: cargo reads config.toml from the CWD
+# upward, so a [profile.dev] declared there changes the unit identity — and
+# therefore every artifact hash — for any invocation run outside the repo.
+# Full debuginfo per-invocation: CARGO_PROFILE_DEV_DEBUG=true cargo build
+debug = "line-tables-only"
 
 [profile.dev.package."*"]
 opt-level = 3
