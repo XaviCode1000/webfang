@@ -2,9 +2,38 @@
 
 Common problems and how to diagnose them with WebFang's built-in tracing.
 
+> Install and uninstall paths live in
+> [installation.md](installation.md). If the binary never started, that page
+> is the first place to look.
+
 > Generate a trace first: `webfang --url <URL> --trace-file debug.jsonl -vvv`,
 > then query it with `scripts/analyze-trace.sh` or `jq`. See
 > [debugging.md](debugging.md) for the full query cookbook.
+
+---
+
+## The downloaded binary won't run
+
+These are install-time failures — they happen before any tracing exists, so
+none of the trace workflow below applies yet. Each symptom names its cause
+and its one-line fix; the full verified commands are in
+[installation.md](installation.md).
+
+| Symptom | Cause | Fix |
+| :--- | :--- | :--- |
+| `GLIBC_2.xx not found` (Linux) | Distro older than the `ubuntu-latest` builder (glibc 2.39); there is no musl artifact | Build from source, or use a newer distro |
+| `command not found: webfang` | Extracted but never made executable, or not on `PATH` | `chmod +x webfang`, then `sudo install -m 0755 webfang /usr/local/bin/webfang` |
+| `cannot be opened because the developer cannot be verified` (macOS) | `com.apple.quarantine` xattr on the downloaded archive's contents | `xattr -d com.apple.quarantine webfang`, then re-run |
+| `VCRUNTIME140.dll was not found` (Windows) | MSVC dynamic CRT / Visual C++ Redistributable absent | Install the VC++ Redistributable 2015-2022 (x64) |
+| `sha256sum: command not found` (macOS) | `sha256sum` is GNU coreutils; stock macOS ships `shasum` | `shasum -a 256 <archive>` and compare with the `SHA256SUMS.txt` line |
+| A hash does not match `SHA256SUMS.txt` | Truncated/partial download, or the file is not from this release | Re-download the archive; do not run the binary |
+| No binary for your platform (Intel Mac) | `x86_64-apple-darwin` is not built — ONNX Runtime dropped x64 macOS | Nothing to download; see [Intel macOS](installation.md#intel-macos-unsupported) |
+| `--js-strategy full` or SQLite resume absent | `chromium` / `persistence` are not in the release build | Expected; see [what is not in the release binary](installation.md#what-is-not-in-the-release-binary) |
+| No `webfang-mcp` binary | MCP lives in a separate crate the release never compiles | Run it from source; see the [MCP section](https://github.com/XaviCode1000/webfang#-mcp-server) |
+
+If a binary fails with something *not* in this table, verify the checksum
+first — it separates "my download is damaged" from "this is a real bug"
+before you file anything.
 
 ---
 
