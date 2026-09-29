@@ -118,8 +118,8 @@ fi
 # the point: "worktree implies isolated target" has to be an invariant, not a
 # heuristic that silently degrades to a warning depending on whether someone
 # ran the bootstrap first. Blocking worktrees on a machine whose main checkout
-# is not bootstrapped is the correct, actionable failure — and the seeding
-# bootstrap added later will need this same shape for seeds/<key>.
+# is not bootstrapped is the correct, actionable failure. The seed store is
+# refused below with the same shape.
 MAIN_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
 if [[ "$ROOT" != "$MAIN_ROOT" ]]; then
   MAIN_ENVRC="$MAIN_ROOT/.envrc"
@@ -158,6 +158,50 @@ if [[ "$ROOT" != "$MAIN_ROOT" ]]; then
     echo "        direnv allow" >&2
     exit 2
   fi
+fi
+
+# --- seed store guard ---------------------------------------------------------
+# Seeds are read-only REFERENCES, never build outputs. Building into one writes
+# this worktree's workspace units into the very tree every future worktree seeds
+# from — the contamination the seed mechanism exists to prevent, arrived at by
+# the front door instead of by accident.
+#
+# The decision depends on PATH IDENTITY ONLY. Whether the seed is healthy, stale,
+# corrupt, half-written or not a seed at all is deliberately NOT consulted: a
+# rule that inspected the contents could be satisfied by an empty directory, and
+# would need re-arguing every time the store changed. Identity is cheap, total,
+# and cannot be argued with.
+#
+# Canonical identity, never a substring test. Both of these would defeat a
+# textual comparison, and both are rejected:
+#     seeds/../seeds/<key>              normalises to under the store
+#     a symlink pointing at seeds/<key> resolves to under the store
+# while a legitimate ~/.cache/cargo-target/seeds-webfang merely SHARES A PREFIX
+# and is allowed. A custom target directory named "webfang" under an unrelated
+# parent is likewise allowed — the same identity-vs-name rule as the check above.
+#
+# `realpath -m` rather than the `readlink -f` used above, for one reason: it never
+# falls back to returning the input unchanged. `readlink -f` needs all but the
+# last component to exist, and on failure the guard would then compare a raw
+# string against a canonical root — two different kinds of string, which is how a
+# relative path or a `..` sequence slips past. It was not observed failing here:
+# this coreutils resolves every case the suite exercises either way, and an
+# attempt to write a case that separates the two produced none. Kept for the
+# invariant, not on the strength of a demonstrated bug.
+SEEDS_ROOT="${WEBFANG_SEEDS_ROOT:-$HOME/.cache/cargo-target/seeds}"
+_canon() { realpath -m -- "$1" 2>/dev/null || printf '%s' "$1"; }
+TGT_CANON="$(_canon "${CARGO_TARGET_DIR%/}")"
+SEEDS_CANON="$(_canon "$SEEDS_ROOT")"
+if [[ "$TGT_CANON" == "$SEEDS_CANON" || "$TGT_CANON" == "$SEEDS_CANON"/* ]]; then
+  echo "error: CARGO_TARGET_DIR points into the seed store" >&2
+  echo "  CARGO_TARGET_DIR $TGT_CANON" >&2
+  echo "  seed store       $SEEDS_CANON" >&2
+  echo "  a seed is a read-only reference; cargo must never be allowed to" >&2
+  echo "  write into one, or this worktree's units become every future" >&2
+  echo "  worktree's seed." >&2
+  echo "  fix: give this worktree its own target dir, e.g." >&2
+  echo "        $HOME/.cache/cargo-target/$(basename "$ROOT")" >&2
+  exit 2
 fi
 
 # --- step runner (no `set -e`: collect failures, report a summary) ------------
