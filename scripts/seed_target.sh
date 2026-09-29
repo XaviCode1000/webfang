@@ -64,6 +64,10 @@ export SEED_REPO_ROOT="$REPO_ROOT"
 
 # P1: the shared build-dir refusal, identical implementation to the producer's.
 # See seed_recipe.sh for why this is a refusal rather than a key field.
+if seed_recipe_has_config_include "$REPO_ROOT"; then
+  cold "config-include-unsupported"
+fi
+
 if seed_recipe_has_build_dir "$REPO_ROOT"; then
   cold "build-dir-configured"
 fi

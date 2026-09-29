@@ -28,7 +28,12 @@ set -euo pipefail
 #
 # Usage:
 #   seed_publish.sh [--features <list>] [--profile <name>] [--target <triple>]
-#                   [--seeds-root <dir>] [--force] [-- <extra cargo args>]
+#                   [--seeds-root <dir>] [--force]
+#
+# Arbitrary cargo arguments after `--` are REFUSED, not passed through. An
+# argument that changes which units get compiled has to be part of the recipe,
+# or it changes the build without changing the SeedCompatibilityKey that is
+# supposed to describe it. See scripts/seed_recipe.sh.
 #
 # Exit: 0 published · 1 usage/build error · 2 refused (seed exists, use --force)
 
@@ -37,6 +42,11 @@ REPO_ROOT="${SEED_REPO_ROOT:-$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)}"
 # shellcheck source=scripts/seed_recipe.sh
 . "$SCRIPT_DIR/seed_recipe.sh"
 seed_recipe_parse "$REPO_ROOT" "$@"
+# The key's arguments come from the recipe, through the same helper the consumer
+# and the tests use. Assembling them here as well was a second, hand-maintained
+# list of what the key means — and it had already drifted once, publishing a
+# manifest with an empty workspace_contract.
+mapfile -t KEY_ARGS < <(seed_recipe_key_args)
 SEEDS_ROOT="$SEED_RECIPE_SEEDS_ROOT"
 FORCE="$SEED_RECIPE_FORCE"
 TEST_TX_DIR="$SEED_RECIPE_TEST_TX"
@@ -48,19 +58,20 @@ command -v cargo >/dev/null || { echo "seed_publish.sh: cargo not on PATH" >&2; 
 command -v jq    >/dev/null || { echo "seed_publish.sh: jq is required" >&2; exit 1; }
 export SEED_REPO_ROOT="$REPO_ROOT"
 
-KEY_ARGS=(--features "$SEED_RECIPE_FEATURES_CANON"
-          --profile "$SEED_RECIPE_PROFILE"
-          --recipe-schema "$SEED_RECIPE_SCHEMA"
-          --wrapper-policy "$SEED_RECIPE_WRAPPER_POLICY"
-          --toolchain-id "$SEED_RECIPE_TOOLCHAIN"
-          --config-digest "$SEED_RECIPE_CONFIG_DIGEST")
-[ -n "$SEED_RECIPE_TARGET" ] && KEY_ARGS+=(--target "$SEED_RECIPE_TARGET")
 
 # P1: the producer carries the SAME build-dir refusal the consumer has. It did
 # not, and the gap was not cosmetic: build-dir is not in the key, so a seed
 # published under a build-dir configuration could enter the store under a key
 # that a consumer without one would accept. Shared implementation, so the two
 # sides cannot drift apart again.
+if seed_recipe_has_config_include "$REPO_ROOT"; then
+  echo "seed_publish.sh: refusing to publish - a cargo config uses \`include\`." >&2
+  echo "  the digest covers the config files cargo reads, not the files they" >&2
+  echo "  pull in, so an included file could change the build without changing" >&2
+  echo "  the key. Refused rather than guessed at." >&2
+  exit 2
+fi
+
 if seed_recipe_has_build_dir "$REPO_ROOT"; then
   echo "seed_publish.sh: refusing to publish - build-dir is configured." >&2
   echo "  the consumer refuses to seed for the same reason, so publishing here" >&2

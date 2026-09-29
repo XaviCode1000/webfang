@@ -35,6 +35,11 @@
 # under this one.
 SEED_RECIPE_SCHEMA=1
 
+# The module's own directory. It cannot borrow a SCRIPT_DIR from whichever
+# script sourced it — that is undefined here, and a helper that silently fails
+# because of it produced an empty digest for every tree.
+SEED_RECIPE_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Environment variables that are deliberately NOT part of the build, removed on
 # both sides. This is a POLICY, and it is hashed into the key as one, so that
 # changing the policy re-keys every seed instead of silently producing artifacts
@@ -143,6 +148,136 @@ seed_recipe_has_build_dir() {
   return 1
 }
 
+# The WORKSPACE BUILD CONTRACT: the parts of the manifests that decide what gets
+# compiled, as distinct from Cargo.lock's resolved graph.
+#
+# Cargo.lock is necessary and not sufficient. Two changes move the artifacts while
+# leaving the lock byte-identical, both verified:
+#
+#     [profile.dev] opt-level / lto changed in the root Cargo.toml
+#     a dependency's features, optionality or target condition changed
+#
+# In both cases the key was identical, so a seed built under one profile was
+# offered to a consumer compiling under another. Dependency features are resolved
+# from the MANIFESTS: the lock records which versions were chosen, not which
+# features they were built with.
+#
+# Deliberately NOT a hash of Cargo.toml. That would re-key on every commit that
+# touches a comment, a version string or a dev-dependency, destroying reuse across
+# the whole point of the seed. This digests only the declarative inputs that can
+# change a reusable artifact.
+#
+# Two sources, because neither is complete:
+#   - `cargo metadata --no-deps` for the dependency graph, features, optional and
+#     target-conditional edges, the workspace members and the resolver. Fields
+#     that are not part of the declaration are dropped: the format is versioned,
+#     and some of its internal representations are explicitly not a stable API.
+#   - the root Cargo.toml's own tables (profile.*, profile.*.package.*,
+#     build-override, workspace.resolver), read with a real TOML parser, because
+#     cargo metadata exposes no profiles at all.
+seed_recipe_workspace_contract() {
+  local repo="$1" meta out
+  # NOTE: these return, they do not exit. This function is called inside a
+  # command substitution, and `exit` there terminates only the subshell — the
+  # caller carries on with an EMPTY digest and every tree looks compatible with
+  # every other. That was the first version, and it failed open while claiming to
+  # fail loud, which is worse than not checking at all.
+  meta="$( cd "$repo" && cargo metadata --format-version 1 --no-deps --offline 2>/dev/null )" \
+    || { echo "seed_recipe: cargo metadata failed for $repo — cannot compute the" >&2
+         echo "  workspace build contract, and hashing an EMPTY one would make every" >&2
+         echo "  tree look compatible with every other." >&2
+         return 1; }
+  printf '%s' "$meta" | jq -e -S -c '{
+            # By NAME, not by package id. `workspace_members` is a list of id
+            # strings, and for a path dependency the id IS the absolute path —
+            # "path+file:///…/crates/webfang_core#2.4.1". Hashing it made the key
+            # depend on where the checkout is, which is the same location
+            # dependence that had to be removed from the config digest, arriving
+            # through a completely different field. An id is bookkeeping for
+            # cargo; a name is the thing a human reasons about.
+            workspace_members: [ .workspace_members[] as $id
+                                 | .packages[] | select(.id == $id) | .name ] | sort,
+            workspace_default_members: [ (.workspace_default_members // [])[] as $id
+                                 | .packages[] | select(.id == $id) | .name ] | sort,
+            packages: [ .packages[] | {
+              name,
+              dependencies: [ .dependencies[] | {
+                name, req, kind, optional,
+                features: (.features | sort),
+                target, rename, registry
+              } ] | sort_by(.name, .kind, .target // ""),
+              features: (.features | to_entries | map({ (.key): (.value | sort) }) | add // {})
+            } ] | sort_by(.name)
+          }' >/dev/null 2>&1 \
+    || { echo "seed_recipe: could not normalise cargo metadata for $repo" >&2; return 1; }
+
+  out="$(python3 "$SEED_RECIPE_SELF_DIR/seed_workspace_contract.py" "$repo/Cargo.toml")" \
+    || { echo "seed_recipe: could not read the profile tables of $repo/Cargo.toml" >&2; return 1; }
+  case "$out" in
+    *unreadable*|*unavailable*|*absent*)
+      echo "seed_recipe: $repo/Cargo.toml is $out — refusing to publish or consume" >&2
+      echo "  a seed whose profile contract is unknown is not a seed." >&2
+      return 1 ;;
+  esac
+
+  {
+    printf '%s' "$meta" | jq -S -c '{
+            # By NAME, not by package id. `workspace_members` is a list of id
+            # strings, and for a path dependency the id IS the absolute path —
+            # "path+file:///…/crates/webfang_core#2.4.1". Hashing it made the key
+            # depend on where the checkout is, which is the same location
+            # dependence that had to be removed from the config digest, arriving
+            # through a completely different field. An id is bookkeeping for
+            # cargo; a name is the thing a human reasons about.
+            workspace_members: [ .workspace_members[] as $id
+                                 | .packages[] | select(.id == $id) | .name ] | sort,
+            workspace_default_members: [ (.workspace_default_members // [])[] as $id
+                                 | .packages[] | select(.id == $id) | .name ] | sort,
+            packages: [ .packages[] | {
+              name,
+              dependencies: [ .dependencies[] | {
+                name, req, kind, optional,
+                features: (.features | sort),
+                target, rename, registry
+              } ] | sort_by(.name, .kind, .target // ""),
+              features: (.features | to_entries | map({ (.key): (.value | sort) }) | add // {})
+            } ] | sort_by(.name)
+          }'
+    printf '\n--- profiles ---\n%s\n' "$out"
+  } | sha256sum | cut -d' ' -f1 | sed 's/^/sha256:/'
+}
+
+# config `include` refusal.
+#
+# The digest reads the files cargo reads, but cargo can be told to read MORE of
+# them: an `include` in a config file pulls in another file whose content is not
+# in this digest. Changing the included file changes the effective configuration
+# and leaves every hash here untouched.
+#
+#     .cargo/config.toml      include = "../shared/cargo-policy.toml"
+#     shared/cargo-policy.toml [profile.dev] …
+#
+# `include` was stabilised in Cargo 1.93, so on the 1.88 this repository builds
+# with today it cannot bite. Refusing anyway, for the same reason build-dir is
+# refused: the policy has to survive the next toolchain bump, and a config key
+# whose meaning changes with the channel is not something to leave in place to be
+# discovered later. The alternative — resolving includes recursively — needs a real
+# config parser with cargo's exact precedence, and a wrong answer here is silent.
+seed_recipe_has_config_include() {
+  local repo="$1" home="${CARGO_HOME:-$HOME/.cargo}" f dir
+  for f in "$repo/.cargo/config.toml" "$repo/.cargo/config" "$home/config.toml" "$home/config"; do
+    if [ -f "$f" ] && grep -qE '^[[:space:]]*include[[:space:]]*=' "$f" 2>/dev/null; then return 0; fi
+  done
+  dir="$repo"
+  while [ "$dir" != "/" ] && [ -n "$dir" ]; do
+    for f in "$dir/.cargo/config.toml" "$dir/.cargo/config"; do
+      if [ -f "$f" ] && grep -qE '^[[:space:]]*include[[:space:]]*=' "$f" 2>/dev/null; then return 0; fi
+    done
+    dir="$(dirname "$dir")"
+  done
+  return 1
+}
+
 # --- the recipe -------------------------------------------------------------
 #
 # Populated by seed_recipe_parse(). Every field is resolved once, from an
@@ -194,6 +329,9 @@ seed_recipe_parse() {
 
   seed_recipe_resolve_toolchain "$repo"
   SEED_RECIPE_CONFIG_DIGEST="$(seed_recipe_config_digest "$repo")"
+  SEED_RECIPE_WORKSPACE_DIGEST="$(seed_recipe_workspace_contract "$repo")" \
+    || { echo "seed_recipe: refusing to proceed without a workspace build contract" >&2; exit 1; }
+  SEED_RECIPE_CARGO_HOME="${CARGO_HOME:-$HOME/.cargo}"
   # Canonicalise the feature list once, so "ai,mcp" and "mcp,ai" cannot become
   # two seeds, and so the string handed to cargo is the same one that was keyed.
   SEED_RECIPE_FEATURES_CANON="$(
@@ -215,7 +353,8 @@ seed_recipe_key_args() {
     --recipe-schema "$SEED_RECIPE_SCHEMA" \
     --wrapper-policy "$SEED_RECIPE_WRAPPER_POLICY" \
     --toolchain-id "$SEED_RECIPE_TOOLCHAIN" \
-    --config-digest "$SEED_RECIPE_CONFIG_DIGEST"
+    --config-digest "$SEED_RECIPE_CONFIG_DIGEST" \
+    --workspace-digest "$SEED_RECIPE_WORKSPACE_DIGEST"
   [ -n "$SEED_RECIPE_TARGET" ] && printf -- '--target\n%s\n' "$SEED_RECIPE_TARGET"
   return 0
 }
@@ -228,7 +367,7 @@ seed_recipe_compute_key() {
     RUSTUP_TOOLCHAIN="$SEED_RECIPE_TOOLCHAIN" \
     RUSTFLAGS="$SEED_RECIPE_RUSTFLAGS" \
     CARGO_INCREMENTAL="$SEED_RECIPE_INCREMENTAL" \
-    bash "${BASH_SOURCE[0]%/*}/seed_compat_key.sh" "${args[@]}"
+    bash "$SEED_RECIPE_SELF_DIR/seed_compat_key.sh" "${args[@]}"
   )"
 }
 
@@ -245,19 +384,48 @@ seed_recipe_cargo_args() {
     ${SEED_RECIPE_FEATURES_CANON:+--features "$SEED_RECIPE_FEATURES_CANON"}
 }
 
-# The environment the build runs under. Assembled from the recipe, not inherited
-# and then patched: stripping is explicit, and the values that matter are set
-# explicitly to what the key was computed from.
+# The environment the build runs under.
+#
+# A CLOSED policy, not an allowlist that grows over time. An allowlist is a list
+# of the variables somebody thought of; cargo has a whole namespace of them, and
+# its config variables take precedence over the TOML files, so anything inherited
+# silently outranks the configuration the key was computed from. Measured with
+# seven of them set, and the key unchanged in every case:
+#
+#     CARGO_BUILD_RUSTC=/opt/otro/rustc        key: unchanged
+#     CARGO_BUILD_RUSTFLAGS=-C debuginfo=0     key: unchanged
+#     CARGO_BUILD_TARGET=aarch64-...           key: unchanged
+#     CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER=/w  key: unchanged
+#     CARGO_PROFILE_DEV_OPT_LEVEL=3            key: unchanged
+#     CARGO_PROFILE_DEV_DEBUG=1                key: unchanged
+#     CARGO_PROFILE_DEV_LTO=thin               key: unchanged
+#
+# Every one of those reached cargo while the key said the same thing, which is the
+# whole failure this mechanism exists to prevent, arriving through a variable
+# nobody named.
+#
+# So: every CARGO_* and RUST* in the ambient environment is removed, and the
+# recipe then sets exactly what it means to set. CARGO_HOME is resolved once and
+# pinned, because it decides where cargo reads configuration from and is part of
+# the config surface the key digests.
 seed_recipe_build_env() {
   local target_dir="$1"
   local -a env_args=()
-  local v
-  for v in $SEED_RECIPE_STRIPPED_ENV; do env_args+=(-u "$v"); done
+  local name
+  while IFS= read -r name; do
+    case "$name" in
+      CARGO_HOME) continue ;;   # pinned explicitly below, not simply dropped
+    esac
+    env_args+=(-u "$name")
+  done < <(compgen -v | grep -E '^(CARGO_|RUST)')
+
   env_args+=(
+    CARGO_HOME="$SEED_RECIPE_CARGO_HOME"
     CARGO_TARGET_DIR="$target_dir"
     CARGO_INCREMENTAL="$SEED_RECIPE_INCREMENTAL"
     RUSTFLAGS="$SEED_RECIPE_RUSTFLAGS"
   )
   [ -n "$SEED_RECIPE_TOOLCHAIN" ] && env_args+=(RUSTUP_TOOLCHAIN="$SEED_RECIPE_TOOLCHAIN")
+  [ -n "${RUSTUP_HOME:-}" ]      && env_args+=(RUSTUP_HOME="$RUSTUP_HOME")
   printf '%s\n' "${env_args[@]}"
 }

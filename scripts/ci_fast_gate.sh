@@ -189,7 +189,23 @@ fi
 # attempt to write a case that separates the two produced none. Kept for the
 # invariant, not on the strength of a demonstrated bug.
 SEEDS_ROOT="${WEBFANG_SEEDS_ROOT:-$HOME/.cache/cargo-target/seeds}"
-_canon() { realpath -m -- "$1" 2>/dev/null || printf '%s' "$1"; }
+# FAIL-CLOSED, not fail-open. The previous version fell back to the raw input when
+# realpath failed, which meant a path that could not be canonicalised was then
+# compared as a plain string against a canonical root — and a path that cannot be
+# classified is precisely the case this guard exists to stop. A guard that
+# degrades to "probably fine" on the one input it cannot understand is not a
+# guard. So: if the identity cannot be established, refuse.
+_canon() {
+  local out
+  if ! out="$(realpath -m -- "$1" 2>/dev/null)" || [ -z "$out" ]; then
+    echo "error: could not canonicalise a path, so isolation cannot be proven." >&2
+    echo "  path:   $1" >&2
+    echo "  refusing rather than comparing an unresolved path against" >&2
+    echo "  the seed store with a string match." >&2
+    exit 2
+  fi
+  printf '%s' "$out"
+}
 TGT_CANON="$(_canon "${CARGO_TARGET_DIR%/}")"
 SEEDS_CANON="$(_canon "$SEEDS_ROOT")"
 if [[ "$TGT_CANON" == "$SEEDS_CANON" || "$TGT_CANON" == "$SEEDS_CANON"/* ]]; then

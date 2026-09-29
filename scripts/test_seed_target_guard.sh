@@ -121,6 +121,38 @@ echo
 echo "allow:"
 expect_allow "7. target = seeds-webfang (prefix only)" "$SANDBOX/seeds-webfang"
 expect_allow "8. custom target named webfang elsewhere" "$SANDBOX/elsewhere/webfang"
+# --- 10. a path that cannot be canonicalised is refused, not guessed ---------
+# The guard's previous canonicalisation fell back to the raw input when realpath
+# failed, so a path it could not classify was compared as a plain string against
+# a canonical root — a fail-OPEN guard on exactly the input it could not
+# understand. Forcing realpath to fail is the only way to reach that branch.
+cat >"$SANDBOX/bin/realpath" <<'STUB'
+#!/usr/bin/env bash
+exit 1          # canonicalisation is impossible in this scenario
+STUB
+chmod +x "$SANDBOX/bin/realpath"
+: >"$MARKER"
+out="$(cd "$REPO_ROOT" && env \
+    PATH="$SANDBOX/bin:$PATH" \
+    CARGO_TARGET_DIR="$SANDBOX/elsewhere/webfang" \
+    WEBFANG_SEEDS_ROOT="$STORES" \
+    bash "$GATE" 2>&1)"; rc=$?
+if [ "$rc" -eq 2 ]; then
+  ok "10. unresolvable path → exit 2 (fail-closed, not fail-open)"
+else
+  bad "10. unresolvable path → exit $rc; it must be 2"
+fi
+case "$out" in
+  *"could not canonicalise"*) ok "10. it says why: identity could not be established" ;;
+  *) bad "10. no explanation: $(printf '%s' "$out" | head -1)" ;;
+esac
+if [ -s "$MARKER" ]; then
+  bad "10. Cargo ran despite the unresolvable path"
+else
+  ok "10. Cargo never invoked"
+fi
+rm -f "$SANDBOX/bin/realpath"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

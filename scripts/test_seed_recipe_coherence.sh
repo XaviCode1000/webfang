@@ -38,10 +38,20 @@ REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
 SANDBOX="$(mktemp -d)"
 trap 'rm -rf "$SANDBOX"' EXIT
 mkdir -p "$SANDBOX/bin" "$SANDBOX/seeds"
-export CARGO_LOG="$SANDBOX/cargo.log" SEED_REPO_ROOT="$REPO_ROOT"
+# NOT named CARGO_*: the recipe deliberately unsets every CARGO_* for the build,
+# and this test had its log file wiped by that policy — the policy was right
+# and the name was wrong.
+export SEED_TEST_LOG="$SANDBOX/cargo.log" SEED_REPO_ROOT="$REPO_ROOT"
 
 cat >"$SANDBOX/bin/cargo" <<'STUB'
 #!/usr/bin/env bash
+# The recipe now calls `cargo metadata` to compute the workspace build contract,
+# so the stub has to answer it — and must NOT log it as a build invocation, or
+# every argv assertion below would read the metadata call instead.
+if [ "${1:-}" = "metadata" ]; then
+  printf '{"workspace_members":["webfang_core 0.1.0 (path+file:///repo/crates/webfang_core)"],"workspace_default_members":["webfang_core 0.1.0 (path+file:///repo/crates/webfang_core)"],"packages":[{"name":"webfang_core","id":"webfang_core 0.1.0 (path+file:///repo/crates/webfang_core)","dependencies":[],"features":{}}]}\n'
+  exit 0
+fi
 {
   printf 'ARGV\t%s\n' "$*"
   printf 'RUSTFLAGS\t%s\n' "${RUSTFLAGS-<unset>}"
@@ -49,7 +59,7 @@ cat >"$SANDBOX/bin/cargo" <<'STUB'
   printf 'RUSTUP_TOOLCHAIN\t%s\n' "${RUSTUP_TOOLCHAIN-<unset>}"
   printf 'CARGO_TARGET_DIR\t%s\n' "${CARGO_TARGET_DIR-<unset>}"
   printf 'RUSTC_WRAPPER\t%s\n' "${RUSTC_WRAPPER-<unset>}"
-} >> "$CARGO_LOG"
+} >> "$SEED_TEST_LOG"
 [ -n "${CARGO_METADATA:-}" ] && printf '{"packages":[{"name":"webfang_core","targets":[{"name":"webfang_core"}]}]}\n'
 exit 0
 STUB
@@ -60,11 +70,11 @@ ok()  { PASS=$((PASS+1)); printf '  ok   %s\n' "$1"; }
 bad() { FAIL=$((FAIL+1)); printf '  FAIL %s\n' "$1"; }
 
 # publish with a stub cargo; leaves the key on stdout and the invocation in $CARGO_LOG
-pub() { : >"$CARGO_LOG"
+pub() { : >"$SEED_TEST_LOG"
         PATH="$SANDBOX/bin:$PATH" bash "$SCRIPT_DIR/seed_publish.sh" \
           --seeds-root "$SANDBOX/seeds" "$@" 2>"$SANDBOX/err" \
           | sed -n 's/^==> key \(v[0-9]-[0-9a-f]*\).*/\1/p' | head -1; }
-cargo_field() { sed -n "s/^$1\t//p" "$CARGO_LOG" | head -1; }
+cargo_field() { sed -n "s/^$1\t//p" "$SEED_TEST_LOG" | head -1; }
 manifest_field() {  # $1=field -> the value the key recorded
   local d="$SANDBOX/mf"; mkdir -p "$d"
   bash "$SCRIPT_DIR/seed_compat_key.sh" --features "" --profile dev \
@@ -191,6 +201,102 @@ if [ -d "$CK1" ] && [ -d "$CK2" ]; then
   git -C "$REPO_ROOT" worktree prune >/dev/null 2>&1
 else
   bad "could not create the two checkouts; the location-independence case did not run"
+fi
+
+# --- 8. the ambient CARGO_* namespace must not reach the build ---------------
+# A closed policy, checked by poisoning the whole family. Each of these was
+# measured reaching cargo while the key stayed identical.
+: >"$SEED_TEST_LOG"
+export CARGO_BUILD_RUSTC=/opt/otro/rustc CARGO_BUILD_RUSTFLAGS="-C debuginfo=0" \
+       CARGO_BUILD_TARGET=aarch64-unknown-linux-gnu \
+       CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER=/wrapper \
+       CARGO_PROFILE_DEV_OPT_LEVEL=3 CARGO_PROFILE_DEV_DEBUG=1 \
+       CARGO_PROFILE_DEV_LTO=thin CARGO_PROFILE_RELEASE_LTO=true
+pub >/dev/null 2>&1
+unset CARGO_BUILD_RUSTC CARGO_BUILD_RUSTFLAGS CARGO_BUILD_TARGET \
+      CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER CARGO_PROFILE_DEV_OPT_LEVEL \
+      CARGO_PROFILE_DEV_DEBUG CARGO_PROFILE_DEV_LTO CARGO_PROFILE_RELEASE_LTO
+# The build must actually have run, or "no variable leaked" is vacuous: an empty
+# log reads as "nothing recorded", which the old version of this assertion
+# counted as a leak and reported as one.
+if [ -z "$(cargo_field ARGV)" ]; then
+  bad "the build did not run, so a leak check would be vacuous: $(head -1 "$SANDBOX/err")"
+else
+  ok "the build ran under the poisoned environment"
+fi
+LEAKED=""
+for v in CARGO_BUILD_RUSTC CARGO_BUILD_RUSTFLAGS CARGO_BUILD_TARGET \
+         CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER CARGO_PROFILE_DEV_OPT_LEVEL \
+         CARGO_PROFILE_DEV_DEBUG CARGO_PROFILE_DEV_LTO; do
+  val="$(cargo_field "$v")"
+  if [ -n "$val" ] && [ "$val" != "<unset>" ]; then LEAKED="$LEAKED $v=$val"; fi
+done
+if [ -z "$LEAKED" ]; then
+  ok "no ambient CARGO_*/RUST* variable reaches the build (poisoned all of them)"
+else
+  bad "these contractual variables still reached the build:$LEAKED"
+fi
+
+# --- 9. the workspace build contract, and what must NOT be in it ------------
+# A profile table or a dependency feature changes the artifacts while leaving
+# Cargo.lock byte-identical. A comment changes nothing at all.
+WD="$SANDBOX/contract"
+mk_tree() { mkdir -p "$1"; cp -r "$REPO_ROOT/.cargo" "$REPO_ROOT/Cargo.toml" \
+    "$REPO_ROOT/Cargo.lock" "$REPO_ROOT/crates" "$1/"; }
+tree_key() { SEED_REPO_ROOT="$1" bash -c '. "$2/seed_recipe.sh"
+    seed_recipe_parse "$1" --features ""; seed_recipe_compute_key "$1"
+    printf "%s" "$SEED_RECIPE_KEY"' _ "$1" "$SCRIPT_DIR" 2>/dev/null; }
+mk_tree "$WD/base"; mk_tree "$WD/prof"; mk_tree "$WD/dep"; mk_tree "$WD/cosmetic"
+python3 - "$WD/prof" <<'PY2'
+import pathlib, re, sys
+p = pathlib.Path(sys.argv[1]) / "Cargo.toml"
+p.write_text(re.sub(r"(?m)^opt-level = .*$", "opt-level = 3", p.read_text(), count=1))
+PY2
+python3 - "$WD/dep" <<'PY2'
+import pathlib, re, sys
+p = pathlib.Path(sys.argv[1]) / "crates/webfang_core/Cargo.toml"
+s = p.read_text()
+m = re.search(r"^(\w[\w-]* = \{ version = \"[^\"]+\", features = \[)([^\]]*)(\])", s, re.M)
+if m:
+    s = s[:m.start()] + m.group(1) + m.group(2).rstrip() + ', "coherence-probe"' + m.group(3) + s[m.end():]
+    p.write_text(s)
+PY2
+printf '\n# a harmless comment\n' >> "$WD/cosmetic/Cargo.toml"
+KB="$(tree_key "$WD/base")"; KP="$(tree_key "$WD/prof")"
+KD="$(tree_key "$WD/dep")";   KC="$(tree_key "$WD/cosmetic")"
+if [ -n "$KP" ] && [ "$KB" != "$KP" ]; then
+  ok "a [profile.*] change moves the key, with Cargo.lock untouched"
+else bad "a profile change did not move the key (KP=$KP)"; fi
+if [ -n "$KD" ] && [ "$KB" != "$KD" ]; then
+  ok "a dependency-feature change moves the key, with Cargo.lock untouched"
+else bad "a dependency feature change did not move the key (KD=$KD)"; fi
+if [ -n "$KC" ] && [ "$KB" = "$KC" ]; then
+  ok "a comment in Cargo.toml does NOT move the key (reuse across commits survives)"
+else bad "the workspace digest is too coarse: a comment re-keys it"; fi
+
+# --- 10. config `include` is refused, not guessed at -------------------------
+# A real copy of the project with an `include` in its own config, because the
+# refusal has to be seen on the real path — pointing at a directory that is not a
+# cargo project at all just fails for the wrong reason.
+IC="$SANDBOX/inc"; mkdir -p "$IC/shared"
+cp -r "$REPO_ROOT/.cargo" "$REPO_ROOT/Cargo.toml" "$REPO_ROOT/Cargo.lock" \
+      "$REPO_ROOT/crates" "$IC/" 2>/dev/null
+printf '[profile.dev]\nopt-level = 1\n' > "$IC/shared/policy.toml"
+printf '[build]\ninclude = "../shared/policy.toml"\n' >> "$IC/.cargo/config.toml"
+if SEED_REPO_ROOT="$IC" bash -c '. "$1/seed_recipe.sh"
+  seed_recipe_parse "$2" --features ""
+  seed_recipe_has_config_include "$2"' _ "$SCRIPT_DIR" "$IC" >/dev/null 2>&1; then
+  ok "a config with \`include\` is detected"
+else
+  bad "a config with include was not detected"
+fi
+SEED_REPO_ROOT="$IC" PATH="$SANDBOX/bin:$PATH" CARGO_TARGET_DIR="$SANDBOX/tgt" \
+  bash "$SCRIPT_DIR/seed_publish.sh" --seeds-root "$SANDBOX/seeds" --features "" \
+  >/dev/null 2>"$SANDBOX/err2"
+if grep -q 'include' "$SANDBOX/err2"; then
+  ok "the producer refuses it, naming include as the reason"
+else
+  bad "producer did not refuse on include grounds: $(head -1 "$SANDBOX/err2")"
 fi
 
 echo
