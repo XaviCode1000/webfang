@@ -573,6 +573,28 @@ Commit after every completed step. Uncommitted work in a worktree can be lost si
 | Tests pass | ✅ Or amend previous WIP |
 | Clippy + fmt clean | ✅ Final commit |
 
+### Pushed history is immutable — corrections land on top
+
+Once a commit exists on `origin/<branch>`, its SHA is public and any other worktree or CI
+run may hold it. Rewriting it (`git reset` to an earlier point, then recommitting)
+desynchronizes local from remote, and the only way back is a force-push — which the harness
+hard-denies with no approval path (see "Hard-deny shell policy" below). Land the correction
+as a new commit on top instead.
+
+| Situation | Wrong | Right |
+| :--- | :--- | :--- |
+| Pushed commit found defective | `git reset HEAD~N` + recommit | new commit on top describing the fix |
+| Pushed commit needs a better message | `git commit --amend` on pushed history | new commit, or amend only unpushed history |
+| Unpushed commit needs fixing | `git commit --amend` ✅ | ✅ |
+
+> ⚠️ **The gate is asymmetric: easy to rewrite pushed history, impossible to undo it.**
+> `git reset --hard` is hard-denied, but a plain `git reset HEAD~N` is not gated at all. An
+> agent can therefore walk into a rewrite freely and then discover the exit is blocked.
+> Observed 2026-09-28 on `fix/crossplatform-portability` (PR #1651): two pushed commits were
+> reset and recommitted after a verifier caught the `WEBFANG_CONFIG` override landing in the
+> CLI's private resolver twin instead of the canonical one. The rewrite was correct, the
+> method forced a force-push, and the normal push was correctly rejected.
+
 ### Contamination protocol
 
 If you detect you operated outside your assigned worktree, or `git stash pop` applied unexpected changes:
@@ -734,6 +756,29 @@ The repository currently does not use GitHub Merge Queue; `merge-when-green.sh` 
 - Access sibling worktrees via relative paths (`../feat-auth/...`).
 - Commit in a branch/directory-mismatched worktree without satisfying the identity-exception protocol.
 - Use `repo:"webfang"` (bare name) for intelligence tools in worktrees — always absolute path (#360).
+- Rewrite pushed history (`git reset` / `rebase` over commits that exist on `origin/<branch>`) — see "Pushed history is immutable".
+
+### Hard-deny shell policy (no approval path)
+
+The harness classifies every `bash` command before running it. Some classes open an
+interactive confirmation the human approves; others are **hard-deny** and never prompt at all
+(`gentle-pi/extensions/gentle-ai.ts` → `DENIED_BASH_PATTERNS`, evaluated before any config and
+before the UI layer). Conversational authorization from the user cannot change a hard-deny
+decision, because no dialog is ever shown.
+
+| Class | Examples | Human sees |
+| :--- | :--- | :--- |
+| **Confirm** | `git push`, `git rebase`, forced `git branch -D`, `npm publish`, `pi remove` | dialog → approve → runs |
+| **Hard-deny** | force-push (`--force`, `--force-with-lease`, `-f`), `git reset --hard`, `git clean -f -d`, `rm -rf /` or `~`, `chmod -R 777`, `chown -R` | nothing — structurally unapprovable |
+
+What an agent must do when a hard-deny block lands:
+
+1. **Do not re-ask for permission in conversation.** It is structurally useless — there is no
+   prompt to press — and repeating it burns a turn on a decision that cannot change.
+2. **Do not route around the pattern** by splitting the command, reordering flags, or wrapping
+   it in a script. The list is deliberately non-configurable; evasion defeats its purpose.
+3. **Report the block once**, with the exact command for the human to run, plus a
+   non-destructive equivalent the agent *can* execute. Then let the human choose.
 
 ---
 

@@ -238,6 +238,22 @@ async fn test_single_page_custom_timeout_is_used_by_scrape_client() {
         .expect("run binary");
     assert_eq!(output.status.code(), Some(69), "expected exit code 69");
     let stderr = String::from_utf8_lossy(&output.stderr);
+    // The custom timeout value is this test's whole premise, and the exact
+    // value is the one thing `redact_nondeterministic` can no longer show:
+    // #1631 collapses the network-failure surface to a single `<NET_ERR>` token,
+    // because an unreachable host refuses on Unix but times out on Windows and
+    // one snapshot cannot hold both. What survives without this line: exit 69
+    // plus the 4-request `expect` above prove a timeout under the mock's 2s
+    // delay fired and was retried 3 times. What it cannot prove is WHICH value
+    // — `timeout_secs` is a `u64`, so 0 and 1 both time out at 0s and 1s and
+    // both yield exit 69. Only the message separates them, so pin it here on
+    // the un-redacted stderr. Stable across platforms by construction:
+    // `request timed out after {0}s` is webfang's own `DownloadError::Timeout`
+    // variant (`domain/downloader_port.rs:99`), not a std or OS string.
+    assert!(
+        stderr.contains("request timed out after 1s"),
+        "the --timeout-secs 1 value must reach the scrape client; stderr was: {stderr}"
+    );
     insta::assert_snapshot!(
         "test_single_page_custom_timeout_is_used_by_scrape_client",
         redact_nondeterministic(output_dir.path(), &stderr)

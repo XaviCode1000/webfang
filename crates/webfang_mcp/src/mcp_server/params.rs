@@ -371,11 +371,42 @@ pub const CONCURRENCY_MIN: usize = 1;
 /// and only competes for the category semaphore.
 pub const CONCURRENCY_MAX: usize = 64;
 
+/// Upper bound of `urls` in ONE `scrape_batch` call (#1611 F7).
+///
+/// F7 of the admission-control audit: `validate()` rejected only an EMPTY
+/// array, so one call could carry an unbounded list. The whole array is
+/// deserialized before any check runs (every element is already a parsed,
+/// hardened [`McpUrl`], #1116) and the handler then hands it to
+/// `scrape_multiple_with_limit_paced` in a single call, so one request claims
+/// the shared category semaphore, the pre-fetch pacing budget, and a response
+/// holding EVERY page's content.
+///
+/// 100 is picked so a legitimate frame can never be refused by the transport:
+/// 100 × [`MAX_URL_LEN`] (8 KiB) = 800 KiB stays under the stdio
+/// per-line cap of the binary (`MAX_STDIN_LINE_BYTES`, 1 MiB — F7's other
+/// half), so the two caps cannot disagree about a valid batch. It is also the
+/// point where a batch's RESPONSE, not its request, becomes the dominant
+/// memory term: each page contributes up to `MAX_BLOB_LEN` (1 MiB) of content
+/// to a single JSON-RPC result.
+///
+/// Larger sets are what `crawl_site` / `crawl_with_sitemap` exist for
+/// (`max_pages` up to 100_000, #780); a client that needs more splits the
+/// call, which the rejection message says out loud.
+pub const URLS_MAX: usize = 100;
+
 /// Parameters for the `scrape_batch` tool.
 #[derive(Deserialize, JsonSchema, Debug)]
 #[serde(deny_unknown_fields)]
 pub struct ScrapeBatchParams {
-    /// List of URLs to scrape — each parsed+hardened at the boundary (#1116)
+    /// List of URLs to scrape — each parsed+hardened at the boundary (#1116).
+    ///
+    /// Bounded by the advertised `maxItems` (#1611 F7): that machine-readable
+    /// keyword, rendered from [`URLS_MAX`] by the derive below, is the single
+    /// source for the bound — validator and schema read the same constant, and
+    /// this sentence states no number of its own, exactly like `concurrency`
+    /// and its `default` (#1294 NS-04). Oversize batches are split across
+    /// calls, or served by `crawl_site`.
+    #[schemars(extend("maxItems" = URLS_MAX))]
     pub urls: Vec<McpUrl>,
     /// Concurrency limit. When omitted the tool applies the advertised `default`
     /// (#1294 NS-04: the number used to live only in this sentence, and it was
@@ -410,8 +441,9 @@ pub struct ScrapeBatchParams {
 
 impl ScrapeBatchParams {
     /// # Errors
-    /// Returns `McpError::invalid_params` if `urls` is empty, any URL is not
-    /// http(s), or `concurrency` is outside [`CONCURRENCY_MIN`]..=[`CONCURRENCY_MAX`].
+    /// Returns `McpError::invalid_params` if `urls` is empty or longer than
+    /// [`URLS_MAX`], any URL is not http(s), or `concurrency` is outside
+    /// [`CONCURRENCY_MIN`]..=[`CONCURRENCY_MAX`].
     pub fn validate(&self) -> Result<(), McpError> {
         if self.urls.is_empty() {
             return Err(McpError::invalid_params(
@@ -419,6 +451,12 @@ impl ScrapeBatchParams {
                 Some(Value::String("urls".to_string())),
             ));
         }
+        // #1611 F7: the count check lives HERE, beside the emptiness check, and
+        // not in `validation.rs` — `require_max_len` is `&str`-only (bytes, not
+        // elements), so the reuse that fits is `require_max_value_u64`, which
+        // emits the identical `invalid_params("urls", …)` envelope as the check
+        // above instead of a second, divergent one.
+        require_max_value_u64("urls", self.urls.len() as u64, URLS_MAX as u64)?;
         // Each element is already a parsed `McpUrl` (#1116) — the per-url
         // `require_http_url("urls[]", u)` loop is gone.
         if let Some(c) = self.concurrency {

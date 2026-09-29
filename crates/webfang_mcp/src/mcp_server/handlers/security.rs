@@ -234,6 +234,35 @@ mod tests {
         });
     }
 
+    /// Installs a process-global sink subscriber so no callsite in this module
+    /// can be poisoned with `Interest::never()` (issue #1638).
+    ///
+    /// `tracing` caches per-callsite `Interest` process-wide through a one-time
+    /// compare-exchange. A test that reaches a callsite with no subscriber —
+    /// e.g. `verify_waf_integrity_handler_blocks_with_status`, which drives the
+    /// same blocked path with no capture — makes `Dispatch::none()` register
+    /// `Interest::never()`, permanently disabling that callsite for every other
+    /// thread. Under libtest (one process, many threads) the capture test then
+    /// observes an empty buffer; under nextest every test is its own process,
+    /// which is why the flake only ever appears in the Coverage lane.
+    ///
+    /// Setting a *global* default rebuilds the cached interest for every
+    /// already-registered callsite, so the `Once` in the capture test is enough
+    /// to undo a poison that already happened. Output goes to `io::sink`: this
+    /// subscriber exists only to make the dispatch non-none, never to be read.
+    /// Same pattern as `ensure_global_subscriber` in
+    /// `application/pipeline/executor.rs` (issues #417, #664).
+    fn ensure_global_subscriber() {
+        static GLOBAL_SUBSCRIBER_INIT: Once = Once::new();
+        GLOBAL_SUBSCRIBER_INIT.call_once(|| {
+            let _ = tracing::subscriber::set_global_default(
+                tracing_subscriber::fmt()
+                    .with_writer(std::io::sink)
+                    .finish(),
+            );
+        });
+    }
+
     // ========================================================================
     // TASK-12 — detect_waf degraded mode (REQ-WAF-09)
     // ========================================================================
@@ -655,30 +684,44 @@ mod tests {
     /// M4 (#1601): on a blocked verdict the MCP response keeps provider +
     /// tier; the exact matched-pattern name moves to a structured tracing
     /// event (`pattern` field) and never reaches the agent-facing channel.
-    #[tokio::test]
-    async fn verify_waf_integrity_blocked_keeps_pattern_in_tracing_not_in_response() {
+    #[test]
+    fn verify_waf_integrity_blocked_keeps_pattern_in_tracing_not_in_response() {
+        // Must run before the capture subscriber exists: it repairs any
+        // `Interest::never()` a concurrent test already cached for the
+        // `waf evidence matched pattern` callsite (#1638).
+        ensure_global_subscriber();
+
         let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
         let subscriber = {
             let sink = std::sync::Arc::clone(&captured);
             tracing_subscriber::fmt()
                 .with_writer(move || SharedBufWriter(std::sync::Arc::clone(&sink)))
                 .with_ansi(false)
-                .with_max_level(tracing::Level::INFO)
                 .finish()
         };
-        let _guard = tracing::subscriber::set_default(subscriber);
 
-        let (_tmp, container) = super_test_container().await;
-        let handler = McpHandler::new(McpState::new(container));
-        let res = handler
-            .verify_waf_integrity(Parameters(VerifyWafIntegrityParams {
-                html: Some("<html>blocked by akamai</html>".to_string()),
-                headers: None,
-                status: Some(403),
-                content_type: Some("text/html".to_string()),
-            }))
-            .await
-            .expect("verify_waf_integrity returns Ok");
+        // `with_default` is closure-scoped, so the handler runs inside the
+        // captured dispatch instead of holding a thread-local guard across an
+        // await point on a runtime that may move the future between threads.
+        let res = tracing::subscriber::with_default(subscriber, || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime");
+            rt.block_on(async {
+                let (_tmp, container) = super_test_container().await;
+                let handler = McpHandler::new(McpState::new(container));
+                handler
+                    .verify_waf_integrity(Parameters(VerifyWafIntegrityParams {
+                        html: Some("<html>blocked by akamai</html>".to_string()),
+                        headers: None,
+                        status: Some(403),
+                        content_type: Some("text/html".to_string()),
+                    }))
+                    .await
+                    .expect("verify_waf_integrity returns Ok")
+            })
+        });
 
         let raw = result_text(&res);
         let payload = crate::mcp_server::provenance::payload_of(&raw)

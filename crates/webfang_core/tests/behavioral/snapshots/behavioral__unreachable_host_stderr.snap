@@ -6,9 +6,9 @@ expression: redacted
   <TIMESTAMP>  WARN <MODULE>: robots.txt fetch failed; failing open as all-allowed, domain: 127.0.0.1, error: error sending request for uri (http://127.0.0.1:<PORT>/robots.txt): client error (Connect)
     at <FILE>.rs:<LINE>
 
-  <TIMESTAMP> ERROR <MODULE>: page scrape failed, error: error de red: I/O error: Connection refused (os error 111), url: http://127.0.0.1:<PORT>/, stage: scrape, trace_id: "<TRACE_ID>"
+  <TIMESTAMP> ERROR <MODULE>: page scrape failed, error: error de red: <NET_ERR>, url: http://127.0.0.1:<PORT>/, stage: scrape, trace_id: "<TRACE_ID>"
     at <FILE>.rs:<LINE>
 
-Failed to scrape http://127.0.0.1:<PORT>/: error de red: I/O error: Connection refused (os error 111)
+Failed to scrape http://127.0.0.1:<PORT>/: error de red: <NET_ERR>
 No pages were successfully scraped
 Error: No pages were successfully scraped
