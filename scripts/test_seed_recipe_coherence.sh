@@ -357,6 +357,60 @@ case "$REL" in
   *)        bad "a relative CARGO_HOME was carried through as '$REL'" ;;
 esac
 
+# --- 13. the installation path is not the artifact identity -------------------
+# The design promises: the same compiler installed in two places is the same
+# compiler, so the key must NOT move when only the installation path moves. That
+# promise was documented but never proven — the coverage so far proved absolute
+# paths and CARGO_HOME, not two distinct rustup homes exposing one toolchain.
+#
+# Tested at the layer the claim lives on. Driving it through a fake RUSTUP_HOME
+# would be useless: `cargo` is a rustup shim, so pointing RUSTUP_HOME at a
+# directory with no installation stops cargo itself from running, and the run
+# would fail for a reason that has nothing to do with the key.
+for n in one two; do
+  T="$SANDBOX/rustup-$n/toolchains/1.88.0-x86_64-unknown-linux-gnu/bin"
+  mkdir -p "$T"
+  cat > "$T/rustc" <<'RSH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  -V)  echo "rustc 1.88.0 (03f2f8c7e 2025-04-28)" ;;
+  -vV) printf 'rustc 1.88.0 (03f2f8c7e 2025-04-28)\nbinary: rustc\nhost: x86_64-unknown-linux-gnu\nrelease: 1.88.0\n' ;;
+  *)   exit 0 ;;
+esac
+RSH
+  chmod +x "$T/rustc"
+done
+key_at() { SEED_REPO_ROOT="$REPO_ROOT" bash "$SCRIPT_DIR/seed_compat_key.sh" \
+             --features "" --profile dev --target "" \
+             --config-digest "fixed" --workspace-digest "fixed" \
+             --recipe-schema 3 --wrapper-policy none --toolchain-id "1.88.0" \
+             --rustc-bin "$SANDBOX/rustup-$1/toolchains/1.88.0-x86_64-unknown-linux-gnu/bin/rustc" \
+             2>/dev/null | tail -1; }
+K1="$(key_at one)"; K2="$(key_at two)"
+if [ -n "$K1" ] && [ "$K1" = "$K2" ]; then
+  ok "two installations of the same toolchain produce the same key"
+else
+  bad "the key moved with the installation path (one='$K1' two='$K2'); the promise"
+  echo "       that an installation path is not an artifact identity does not hold"
+fi
+# and the converse still holds: a DIFFERENT compiler must move it, or the case
+# above would pass for the degenerate reason that nothing reaches the key.
+cat > "$SANDBOX/rustup-two/toolchains/1.88.0-x86_64-unknown-linux-gnu/bin/rustc" <<'RSH'
+#!/usr/bin/env bash
+case "${1:-}" in
+  -V)  echo "rustc 1.88.0 (deadbeefff 2026-01-01)" ;;
+  -vV) printf 'rustc 1.88.0 (deadbeefff 2026-01-01)\nbinary: rustc\nhost: x86_64-unknown-linux-gnu\nrelease: 1.88.0\n' ;;
+  *)   exit 0 ;;
+esac
+RSH
+chmod +x "$SANDBOX/rustup-two/toolchains/1.88.0-x86_64-unknown-linux-gnu/bin/rustc"
+K3="$(key_at two)"
+if [ -n "$K3" ] && [ "$K3" != "$K1" ]; then
+  ok "a different compiler does move the key, so the case above is not vacuous"
+else
+  bad "a different rustc did not move the key; the equality above proves nothing"
+fi
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
