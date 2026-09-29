@@ -8,6 +8,11 @@
 //!
 //! Backpressure: Each category has its own tokio::sync::Semaphore
 //! to prevent resource exhaustion on constrained hardware.
+//!
+//! Error channels: which failure takes which of the three channels (JSON-RPC
+//! protocol error, `isError: true` tool result, success-shaped diagnostic) is
+//! published in `docs/src/mcp-error-contract.md` (#1613, EC-01). That table is
+//! the contract — read it before adding a new error return here.
 
 #[macro_use]
 pub mod macros;
