@@ -60,6 +60,29 @@ case "$(readlink -f "$TARGET_DIR" 2>/dev/null || echo "$TARGET_DIR")" in
 esac
 
 export SEED_REPO_ROOT="$REPO_ROOT"
+
+# build-dir refusal. Cargo separates target-dir (final artifacts) from build-dir
+# (intermediate artifacts, INCLUDING build-script outputs), and BoringSSL's
+# output — the single biggest thing this seed is for — is build-script output.
+# If build-dir is relocated, the tree seed_publish.sh prunes and measures
+# (`<target>/debug/build/`) is not the tree that gets populated, so the pruning
+# assumptions are void and we cannot reason about the result. Hashing build-dir
+# into the key would paper over that: it would claim compatibility we have not
+# established.
+#
+# Today this is latent rather than live: on Rust 1.88 stable `-Zbuild-dir` is
+# nightly-only, so the setting is ignored. It is refused anyway, because a config
+# key whose MEANING silently changes with the toolchain channel is exactly the
+# kind of thing that must not be left in place to be discovered later. Refuse,
+# and go cold.
+if [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then
+  cold "build-dir-configured"
+fi
+if grep -rqE '^\s*build-dir\s*=' "$REPO_ROOT/.cargo/config.toml" 2>/dev/null \
+   || grep -rqE '^\s*build-dir\s*=' "$REPO_ROOT/.cargo/config" 2>/dev/null; then
+  cold "build-dir-configured"
+fi
+
 if [ -n "$TARGET" ]; then KEY_ARGS+=(--target "$TARGET"); fi
 KEY="$(bash "$SCRIPT_DIR/seed_compat_key.sh" "${KEY_ARGS[@]}" --profile "$PROFILE")"
 SEED="$SEEDS_ROOT/$KEY"

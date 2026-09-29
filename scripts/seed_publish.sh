@@ -39,6 +39,9 @@ KEY_ARGS=(--features "")
 PROFILE="dev"
 TARGET=""
 FORCE=0
+TEST_TX=0
+TEST_TX_DIR=""
+FAIL_AT=""
 CARGO_EXTRA=()
 
 while [ $# -gt 0 ]; do
@@ -48,6 +51,15 @@ while [ $# -gt 0 ]; do
     --target)   TARGET="${2:-}"; shift 2 ;;
     --seeds-root) SEEDS_ROOT="${2:-}"; shift 2 ;;
     --force)    FORCE=1; shift ;;
+    --test-transaction)
+      # Exercise ONLY the publish transaction, against a caller-prepared staging
+      # tree, with no build. This is the same function the real path calls — not a
+      # reimplementation — so the atomicity properties can be tested in
+      # milliseconds instead of once per 2 m 43 s reference build.
+      #   --test-transaction <staging-target> [--fail-at <point>]
+      TEST_TX_DIR="${2:-}"; TEST_TX=1; shift 2
+      if [ "${1:-}" = "--fail-at" ]; then FAIL_AT="${2:-}"; shift 2; fi
+      ;;
     --) shift; CARGO_EXTRA=("$@"); break ;;
     *) echo "seed_publish.sh: unknown argument '$1'" >&2; exit 1 ;;
   esac
@@ -67,12 +79,102 @@ if [ -e "$DEST" ] && [ "$FORCE" -ne 1 ]; then
   exit 2
 fi
 
+# --- publish_atomically ------------------------------------------------------
+# The whole publish transaction, as one unit. The seed must be atomic FROM THE
+# CONSUMER'S POINT OF VIEW: a consumer resolves seeds/<key> and must find either
+# nothing or a complete, self-describing, immutable seed. Never a partial one.
+#
+#   write manifest → validate manifest → mark read-only → rename (LAST)
+#
+# Everything a consumer could ever observe happens after the single rename.
+publish_atomically() {
+  local ref="$1" dest="$2" key="$3" profile="$4"
+
+  [ "$FAIL_AT" = "before-manifest" ] && return 42
+
+  # The manifest is part of the published OBJECT, so it is written and validated
+  # while the seed is still invisible under .staging.*.
+  #
+  # Publishing first and writing the manifest afterwards was a real defect: the
+  # seed became visible with no manifest inside it, and a process death in that
+  # window left a PERMANENT, unmanifested seed squatting the key. Every later
+  # consumer then failed verification and went cold, forever, with no recovery
+  # short of deleting the directory by hand.
+  bash "$SCRIPT_DIR/seed_compat_key.sh" "${KEY_ARGS[@]}" --profile "$profile" \
+    --emit-manifest "$ref" >/dev/null
+  bash "$SCRIPT_DIR/seed_compat_key.sh" "${KEY_ARGS[@]}" --profile "$profile" \
+    --verify "$ref" >/dev/null || {
+      echo "seed_publish.sh: staged seed failed its own manifest check; not publishing" >&2
+      return 1
+    }
+
+  [ "$FAIL_AT" = "after-manifest" ] && return 42
+
+  # Read-only BEFORE the rename, so the published reference has no observable
+  # window in which it is mutable. This is the WEAK defence — the agent runs as
+  # the same user and can chmod it back. The real control is the ci_fast_gate.sh
+  # rule refusing any CARGO_TARGET_DIR under the seeds root (D6). This only makes
+  # an accidental write fail loudly instead of silently poisoning the reference.
+  #
+  # `chmod u+w` on the top directory alone is REQUIRED, and the reason is
+  # filesystem behaviour rather than principle: renaming a directory whose own
+  # mode is a-w to a new name fails with EACCES on the real cache filesystem.
+  # Measured on an orphaned 2.2 G staging tree: 555 → EACCES, 755 → renamed.
+  # Every path INSIDE stays a-w, which is what the immutability claim is about;
+  # the top entry is the one the kernel/copier needs in order to move the tree at
+  # all, and cargo needs it writable in the clone regardless (seed_target.sh
+  # passes --no-preserve=mode for exactly that).
+  chmod -R a-w "$ref" 2>/dev/null || echo "seed_publish.sh: warning: could not mark the seed read-only" >&2
+  chmod u+w "$ref"
+
+  [ "$FAIL_AT" = "before-rename" ] && return 42
+
+  # The new seed is complete and validated above, so the old one is only now
+  # disturbed. `mv SRC DEST` where DEST is an existing non-empty directory would
+  # move SRC *inside* it, so the old seed is renamed aside first — into the same
+  # SEEDS_ROOT, hence the same filesystem, hence a rename and not a copy.
+  #
+  # `--force` leaves a sub-millisecond no-seed window between the two renames.
+  # That is accepted deliberately: it exists only under an explicit --force, the
+  # replacement is already durable at that point, and the alternative — deleting
+  # the only valid seed before building its successor — is what this ordering
+  # exists to prevent.
+  if [ -e "$dest" ]; then
+    local retired="$SEEDS_ROOT/.retired.$$"
+    # Published seeds are read-only, and unlinking needs write permission on the
+    # CONTAINING directory; chmod -R is belt-and-braces for manual cleanup.
+    chmod -R u+w "$dest" 2>/dev/null || true
+    mv "$dest" "$retired"
+    if ! mv "$ref" "$dest"; then
+      mv "$retired" "$dest" 2>/dev/null || true   # put the valid seed back
+      echo "seed_publish.sh: publish failed; previous seed restored" >&2
+      return 1
+    fi
+    rm -rf "$retired" 2>/dev/null || true
+  else
+    mv "$ref" "$dest"
+  fi
+}
+
+if [ "$TEST_TX" -eq 1 ]; then
+  # Test seam: no build, no prune, no self-check — just the transaction.
+  [ -d "$TEST_TX_DIR" ] || { echo "seed_publish.sh: --test-transaction needs an existing directory" >&2; exit 1; }
+  mkdir -p "$SEEDS_ROOT"
+  publish_atomically "$TEST_TX_DIR" "$DEST" "$KEY" "$PROFILE"
+  exit $?
+fi
+
+
 # Stage on the SAME filesystem as the destination. Staging in /tmp would put a
 # full workspace target (3+ G, BoringSSL included) on a 16 G tmpfs, and the
 # final move would degrade from an atomic rename to a 3+ G cross-device copy.
 mkdir -p "$SEEDS_ROOT"
 STAGE="$(mktemp -d "$SEEDS_ROOT/.staging.XXXXXX")"
-cleanup() { rm -rf "$STAGE"; }
+# The staged tree is marked read-only before publication, so a plain `rm` cannot
+# unlink it: it needs write permission on every entry. Without this, a failed run
+# leaves a ~2.2 G read-only orphan under the seeds root — which is exactly what
+# happened the first time this transaction was reordered.
+cleanup() { chmod -R u+w "$STAGE" 2>/dev/null || true; rm -rf "$STAGE" 2>/dev/null || true; }
 trap cleanup EXIT
 
 REF="$STAGE/target"
@@ -178,23 +280,7 @@ if [ "$STRAY" -ne 0 ]; then
   exit 1
 fi
 
-# --- publish ----------------------------------------------------------------
-if [ -e "$DEST" ]; then
-  # Published seeds are marked read-only, and `rm` needs write permission on
-  # the CONTAINING directory to unlink. Without this, --force (and any manual
-  # cleanup) fails with a wall of "Permission denied" on a 3 G tree.
-  chmod -R u+w "$DEST" 2>/dev/null || true
-  rm -rf "$DEST"
-fi
-mv "$REF" "$DEST"
-bash "$SCRIPT_DIR/seed_compat_key.sh" "${KEY_ARGS[@]}" --profile "$PROFILE" \
-  --emit-manifest "$DEST" >/dev/null
-
-# Read-only is the WEAK defence: the agent runs as the same user and can chmod
-# it back. The real control is the ci_fast_gate.sh rule that refuses any
-# CARGO_TARGET_DIR under the seeds root (D6). This only makes an accidental
-# write fail loudly instead of silently poisoning the reference.
-chmod -R a-w "$DEST" 2>/dev/null || echo "seed_publish.sh: warning: could not mark the seed read-only" >&2
+publish_atomically "$REF" "$DEST" "$KEY" "$PROFILE"
 
 echo "==> published $DEST"
 echo "    apparent: $(du -sh --apparent-size "$DEST" | cut -f1)   units kept: $(find "$DEST/debug/.fingerprint" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
