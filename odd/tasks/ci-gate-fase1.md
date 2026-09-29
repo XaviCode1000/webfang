@@ -58,7 +58,8 @@ Lectura + `gh api` GET únicamente. Ningún cambio en `.github/`, `crates/`, ni 
 - 2026-09-29: T2 DONE — 16 PR runs escaneados, 15 ejecuciones reales 15/15 success, 1 skipped (docs-only, por arrastre de `clippy` sin `if:` propio).
 - 2026-09-29: T3 DONE — 0 failures en ambas muestras: nada que clasificar (ni deuda ni flakiness observados).
 - 2026-09-29: T4 DONE — creado `docs/break-glass-enforce-admins.md` (solo GET verificado; DELETE/POST documentados sin ejecutar).
-- Commits: (ninguno — Fase 1 solo agrega el doc T4, pendiente de commit en el próximo work-unit).
+- 2026-09-29: T5 CLOSED — code-quality promoted via PR #1693 (1909f5c9): 38/38 green (23 main p95 0.6min + 15 PR), 3 disposable probes vs PR-B branch (#1694 skipped/green narrow, #1695 success/green full, #1696 machete-step failure → gate red). machete pinned 0.9.2 (crates.io max; CI --quiet log records no version). Rollback = revert #1693, no protection change. Next window: re-check code-quality in 20 runs; flakiness → revert.
+- Commits: PR #1691 (break-glass doc, 3de6ffdc), PR #1693 (gate promotion, 1909f5c9).
 
 ## Next step
 
