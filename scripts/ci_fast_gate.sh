@@ -80,6 +80,21 @@ done
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$SCRIPT_DIR/..")"
 cd "$ROOT" || exit 1
 
+# --- build-cache policy guard --------------------------------------------------
+# AGENTS.md § worktree bootstrap: every tree builds with CARGO_TARGET_DIR
+# provided by direnv (shared cache on main, isolated dir per worktree).
+# Without it cargo silently falls back to ./target (or crates/*/target),
+# duplicating the whole workspace compile into paths no cleanup step knows
+# about (in-repo audit 2026-09-29: six such dirs, 39G logical). No dry-run
+# carve-out: a lane decision reported from an env that cannot build is
+# itself misleading. Fail-closed.
+if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
+  echo "error: CARGO_TARGET_DIR is not set — direnv is not loaded for this tree." >&2
+  echo "  fix: run 'direnv allow' once per worktree (see AGENTS.md § worktree bootstrap)," >&2
+  echo "  then re-run this gate from a direnv-loaded shell." >&2
+  exit 2
+fi
+
 # --- step runner (no `set -e`: collect failures, report a summary) ------------
 PASS=0
 FAIL=0

@@ -237,6 +237,17 @@ An agent suggesting "clean up duplicate dependencies" must be stopped. These con
 
 `cmake` is mandatory — `wreq` → `boring2` → `boring-sys2` needs it for BoringSSL. The first build compiles BoringSSL from C++.
 
+> 🔒 **`[profile.dev]` lives in `Cargo.toml`, never in `.cargo/config.toml`.** Cargo resolves
+> `config.toml` from the CWD upward, so a profile declared there changes every unit's
+> `-C metadata` hash for any invocation whose CWD is outside the repo (cron, IDE,
+> `mise exec`, `--manifest-path`) — silently recompiling the whole graph into the target
+> dir. Verified 2026-09-29: after the move, `cargo check --workspace` is a 0.27 s no-op
+> in-repo and 0.25 s from `/tmp`. Because `boring-sys2` sits at the bottom of the graph, each
+> such rehash is amplified into a full 639-object BoringSSL rebuild — the shared target dir
+> on `main` had accumulated 202 of them. Do not "tidy" this key back into
+> `.cargo/config.toml`. One-off full debuginfo stays per-invocation:
+> `CARGO_PROFILE_DEV_DEBUG=true cargo build`.
+
 > ⏱️ **Measured cost, do not inflate it (2026-09-16, 16-core workstation, ccache active via
 > `/usr/lib64/ccache/cc`, warm registry, `--offline`, dev profile with
 > `debug = "line-tables-only"`):** a cold `cargo build -p webfang_core` in a virgin target
@@ -400,6 +411,9 @@ export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:?}"
 #   CARGO_INCREMENTAL=0 and the sccache wrapper UNSET. main instead keeps the
 #   shared target with CARGO_INCREMENTAL=1, also without the wrapper. Both trees
 #   drop sccache, for two different measured reasons - see the #1267 note below.
+#   The snippet above is documentation, not enforcement: scripts/ci_fast_gate.sh
+#   is the check that actually runs, and it fails closed when CARGO_TARGET_DIR
+#   is unset in any tree.
 
 cp ~/Projects/Rust/webfang/.env .                       # .env is gitignored
 codegraph init                                     # CodeGraph: source exploration index
@@ -409,7 +423,9 @@ codedb reindex && codedb status                    # CodeDB: root MUST be $PWD, 
 cargo build                                        # cold on an isolated target (#1267): measured 2m23s for --workspace, not a blocker
 ```
 
-> ⚠️ **`.envrc` + `direnv allow` is mandatory per worktree.** In a **worktree** it points `CARGO_TARGET_DIR` at a per-tree isolated dir (`~/.cache/cargo-target/<tree-name>`), which is what #1267 requires; the cost is that BoringSSL and every dependency compile again per worktree — measured at 2 m 23 s for `cargo build --workspace`, which is cheap enough that it must never be used as an argument to share a target dir between concurrent builds (#1267). Only `main` uses the shared cache, because there it is a single live tree and therefore sequential by construction. Without `.envrc` a tree silently builds into its own in-repo `target/`, which no cleanup step knows about.
+> ⚠️ **`.envrc` + `direnv allow` is mandatory per worktree, and is now ENFORCED.** In a **worktree** it points `CARGO_TARGET_DIR` at a per-tree isolated dir (`~/.cache/cargo-target/<tree-name>`), which is what #1267 requires; the cost is that BoringSSL and every dependency compile again per worktree — measured at 2 m 23 s for `cargo build --workspace`, which is cheap enough that it must never be used as an argument to share a target dir between concurrent builds (#1267). Only `main` uses the shared cache, because there it is a single live tree and therefore sequential by construction.
+>
+> Without `.envrc`, cargo falls back to an in-repo `target/`. This is no longer silent: `scripts/ci_fast_gate.sh` fails closed with exit 2 when `CARGO_TARGET_DIR` is unset, and names `direnv allow` as the fix. That guard exists because the in-repo fallback is invisible by construction — `.gitignore` has `target`, so a leaked 33 G in-repo target dir leaves `git status` clean and no cleanup step can attribute it. Measured 2026-09-29 on `main`: six such dirs, 39 G logical / 18 G physical on btrfs+zstd.
 >
 > ⚠️ **Concurrent agent builds must NOT share that cache (#1267).** Two worktrees building the same binary profile concurrently overwrite each other's `debug/webfang` (same `-C metadata` hash ⇒ same output filename), so E2E runs silently execute the other tree's binary — stale links report as fresh, failures misattribute. The shared cache is for SEQUENTIAL human builds only. Isolated-build recipe (verified 2026-09-09 after 8 opaque worker deaths): `export CARGO_TARGET_DIR=~/.cache/cargo-target/<worktree>` (home disk — `/tmp` tmpfs is only 16 GB and a full workspace target dir starves both the build and sccache), `env -u RUSTC_WRAPPER -u RUSTUP_TOOLCHAIN` (sccache's Rust cache key embeds the target-dir path, so an identical source in a new isolated dir scores ZERO hits - verified with a private cache and a positive control: same dir hits, different dir misses, leaving duplicate objects for one unit. Raising `SCCACHE_CACHE_SIZE` cannot fix that, it only fits the duplicates; the wrapper also breaks `--json` parsing on isolated dirs; an exported stable toolchain shadows `rust-toolchain.toml` and its rust-lld rejects the BFD-only link flags below — F-52 evidence), `CARGO_BUILD_JOBS=2` plus `RUSTFLAGS="-C link-arg=-Wl,--no-keep-memory -C link-arg=-Wl,--reduce-memory-overheads"` (test-binary links OOM-die otherwise). The orchestrator assigns the isolated path per gate; workers never invent their own. Step 6 of the post-merge runbook deletes them - measured cost of NOT doing it: 52 GB of dead build state from three already-merged trees, invisible to `git status` and to `git worktree prune`.
 
@@ -473,8 +489,8 @@ restore the description here with its actual scope.
 | `.git/` object store | ✅ Shared | Automatic |
 | Git config, hooks | ✅ Shared | Automatic |
 | `Cargo.lock` | ✅ Shared | Via Git |
-| `target/` | ✅ Shared (via direnv) | `.envrc` + `direnv allow` per worktree |
-| `.envrc` | ❌ Per-worktree | `cp` from main + `direnv allow` |
+| `target/` | ✅ Shared (via direnv) | `.envrc` + `direnv allow` per worktree; enforced by `ci_fast_gate.sh` |
+| `.envrc` | ❌ Per-worktree | `cp` from main + `direnv allow`; gitignored by the repo (`.gitignore:125`), not only by a personal global ignore |
 | `.env` | ❌ Per-worktree | Manual `cp` from main |
 | `.codegraph/` index | ❌ Per-worktree | `codegraph init` |
 | `codedb.snapshot` + `~/.codedb/projects/<hash>/` | ❌ Per-worktree | `codedb reindex` inside the worktree |
