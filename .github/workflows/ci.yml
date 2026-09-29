@@ -934,14 +934,40 @@ jobs:
           # mode: it leaves a cached fingerprint but no ort_sys rlib, so this
           # job's cached target/ can restore a fingerprint whose native library
           # was never downloaded. The harness then rebuilds the rlib, finds the
-          # build script unit fresh, skips it, and fails to link. Dropping the
-          # stale ort-sys build state forces the build script to re-run and
-          # re-download.
+          # build script unit fresh, skips it, and fails to link.
           #
-          # ~20 files / 101.5 MiB. The co-located ORT_CACHE_DIR is not a
-          # package artifact, so an already-downloaded library survives this and
-          # no re-download is triggered on a self-consistent cache.
+          # `cargo clean -p ort-sys` ALONE IS NOT ENOUGH, and was the reason
+          # this lane stayed red after #1642: the download is gated on
+          # `!bin_extract_dir.exists()` in ort-sys build/download/mod.rs, and
+          # clean does not touch $ORT_CACHE_DIR. A restore that brings the
+          # extract dir back without the .a inside it therefore keeps the gate
+          # closed, and the clean just rebuilds a Fresh fingerprint around the
+          # same missing library. Verified locally: clean+build reproduces the
+          # exact "could not find native static library" and downloads nothing;
+          # clearing the extract dir first makes the same build download and
+          # link cleanly.
+          #
+          # ~20 files / 101.5 MiB for the package artifacts. The co-located
+          # ORT_CACHE_DIR is not a package artifact, so an already-downloaded
+          # library survives the clean and no re-download is triggered on a
+          # self-consistent cache.
           cargo clean -p ort-sys
+          # Clear a half-restored extract dir so the download gate re-opens.
+          # No-op on a cold or self-consistent cache.
+          if [ -n "${ORT_CACHE_DIR:-}" ] && [ -d "${ORT_CACHE_DIR:-}" ]; then
+            find "${ORT_CACHE_DIR}" -mindepth 1 -maxdepth 1 -type d -name 'dfbin' \
+              -exec rm -rf {} + 2>/dev/null || true
+          fi
+      - name: Warm the ONNX Runtime native library
+        run: |
+          # The harness's per-combo [compile] phase is `cargo check`, which does
+          # not fetch the native library. Force one real build of the ort-linking
+          # feature set so the library is present before the combos run, and so a
+          # genuine download failure is reported here with this job's name
+          # instead of surfacing as a confusing link error twice inside the
+          # harness (ai and full).
+          set -euo pipefail
+          cargo build -p webfang_cli --features ai
       # Per-combo runtime probes: build + behavioral crawl + resume round-trip +
       # exit-contract gates (65/78) for default, no-default, ai, chromium, mcp and
       # full feature sets. Advisory only (not in `gate` needs). The script

@@ -247,6 +247,25 @@ preflight_ort_native_lib() {
     if [ -n "$(find "$dir" -type f -name libonnxruntime.a -print -quit 2>/dev/null)" ]; then
       return 0
     fi
+    # Self-heal the half-restored cache. The download is gated on
+    # `!bin_extract_dir.exists()` (ort-sys build/download/mod.rs), so a
+    # restored-but-incomplete cache — extract dir present, library absent —
+    # makes the build script skip the download and the link die. The
+    # fingerprint is then Fresh, so nothing retries it.
+    #
+    # `cargo clean -p ort-sys` alone is NOT the remedy and must not be
+    # presented as one: it drops the build-script unit but leaves
+    # $ORT_CACHE_DIR untouched, so the gate above still sees the directory
+    # and still skips. Verified on this repo: with the extract dir present
+    # and the .a removed, clean+build fails with the same
+    # "could not find native static library" and downloads nothing; clearing
+    # the extract dir makes the next build download and link cleanly.
+    echo "  [preflight] ONNX Runtime library missing with the extract dir present"
+    echo "  [preflight]   clearing $dir so the ort-sys build script re-downloads"
+    if [ -n "$dir" ] && [ -d "$dir" ]; then
+      find "$dir" -mindepth 1 -maxdepth 1 -type d -name 'dfbin' -exec rm -rf {} + 2>/dev/null || true
+    fi
+    cargo clean -p ort-sys >/dev/null 2>&1 || true
     {
       echo "  [preflight] ONNX Runtime native library not found, but combo '$name' links it"
       echo "  [preflight]   missing file : libonnxruntime.a (host target)"
@@ -260,9 +279,10 @@ preflight_ort_native_lib() {
       echo "  [preflight]   library itself. The link then fails with"
       echo "  [preflight]   \"error: could not find native static library \`onnxruntime\`\"."
       echo "  [preflight]   Expected on a cold cache (the first build downloads it)."
-      echo "  [preflight]   If a link error follows anyway, drop the stale ort-sys"
-      echo "  [preflight]   build state with 'cargo clean -p ort-sys' so the build"
-      echo "  [preflight]   script re-runs."
+      echo "  [preflight]   The extract dir above has been cleared, so the next"
+      echo "  [preflight]   ort-sys build re-downloads. If a link error still"
+      echo "  [preflight]   follows, the cache restore is dropping the library"
+      echo "  [preflight]   itself — see #1639."
     } >&2
     return 0
   done

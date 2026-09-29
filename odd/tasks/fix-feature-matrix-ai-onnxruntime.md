@@ -93,15 +93,55 @@ Explicitly out of scope (and why):
 - [x] T1 Establish the root cause and reproduce it locally — **done** before this
       document; see "Why" and the verification evidence below.
 - [x] T2 Create the feature document (this file) before the first source write.
-- [ ] T3 Co-locate `ORT_CACHE_DIR` inside `target/` in the `feature-matrix` job
+- [x] T3 Co-locate `ORT_CACHE_DIR` inside `target/` in the `feature-matrix` job
       and add the `cargo clean -p ort-sys` pre-harness step, with an invariant
-      comment.
-- [ ] T4 Add a harness preflight that reports the missing native library
-      explicitly, so a recurrence is readable from the job log.
+      comment. — **done in #1642** (`d38970b5`), but the `cargo clean -p ort-sys`
+      half of it was **insufficient on its own**; see the correction below.
+- [x] T4 Add a harness preflight that reports the missing native library
+      explicitly, so a recurrence is readable from the job log. — **done in
+      #1642** (`preflight_ort_native_lib`).
 - [ ] T5 Verify: `actionlint` + `zizmor` clean, `bash scripts/ci_fast_gate.sh`
       green, and the harness's shell syntax checked.
 - [ ] T6 Post the diagnosis into #1639 (AC #1) and open the PR against the
       approved issue.
+
+## Correction (2026-09-29): T3 shipped, and the lane stayed red anyway
+
+#1642 landed both the co-located `ORT_CACHE_DIR` and the
+`cargo clean -p ort-sys` step, and the `Feature matrix` lane **kept failing** on
+every run afterwards. The step was the wrong remedy, and the preflight shipped
+with it advertised that wrong remedy to whoever hit the next recurrence.
+
+**Mechanism.** The download is gated on `!bin_extract_dir.exists()` in
+`ort-sys` `build/download/mod.rs:102`. A cache restore that brings the extract
+directory back *without* the `libonnxruntime.a` inside it therefore closes the
+gate: the build script skips the download, and nothing retries it because the
+fingerprint is then `Fresh`. `cargo clean -p ort-sys` drops the build-script
+unit but does not touch `$ORT_CACHE_DIR`, so it re-establishes a `Fresh`
+fingerprint around the same missing library.
+
+**Verified locally**, from the exact broken state (`.a` absent, extract dir
+present):
+
+| Sequence | Result |
+| --- | --- |
+| `cargo clean -p ort-sys` + `cargo build` | `EXIT=101`, *could not find native static library `onnxruntime`*, nothing downloaded |
+| clear the extract dir + `cargo clean -p ort-sys` + `cargo build` | `EXIT=0`, `libonnxruntime.a` downloaded |
+
+The first row is exactly what #1642 shipped, and it is the row that has been
+failing.
+
+**The fix** clears the half-restored `dfbin/` extract dir so the download gate
+re-opens, in both the CI step and the harness preflight, and adds one real
+`cargo build -p webfang_cli --features ai` so the library is present before the
+combos run and a genuine download failure is reported under this job's name
+instead of surfacing as a link error twice inside the harness.
+
+**What this does NOT establish.** The end-to-end harness run could not complete
+locally: `help_check` hardcodes `./target/debug/webfang`, and #1267 forbids
+pointing the run at the shared target dir, so `--help` exits 127 on a missing
+relative path. The core mechanism is proven directly (table above); the
+`6/6` result is CI's to confirm.
 
 ## Authorized scope
 
