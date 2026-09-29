@@ -303,8 +303,8 @@ that matters is the `webfang_mcp` *crate*, which is not in the release.
 > downloads and compiles every dependency, BoringSSL included.
 
 **Prerequisites: Rust 1.88 (`rust-toolchain.toml` pins it), a C/C++ compiler,
-`git`, and `cmake`.** `cmake` is mandatory: the HTTP client `wreq` → `boring2`
-→ `boring-sys2` compiles BoringSSL from C++ source on first build, and
+`git`, and `cmake`.** `cmake` is mandatory: the HTTP client `wreq` → `btls`
+→ `btls-sys` (formerly `boring2`/`boring-sys2`) compiles BoringSSL from C++ source on first build, and
 without `cmake` the failure surfaces deep inside a build script with an error
 that says nothing about the real cause.
 

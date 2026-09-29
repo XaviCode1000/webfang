@@ -292,6 +292,20 @@ EOF
   else
     skip_step "compatibility harness semantics" "no compatibility harness files changed"
   fi
+  # Path-classifier regression harness (#1707; coverage for #1643): the
+  # `$(...)` NUL-dropping capture collapsed a multi-file diff into one
+  # pseudo-path, which could flip `run_code_jobs` false and cascade-skip every
+  # code lane while CI Gate stayed green. Triggered by either the classifier or
+  # its harness changing — both are `scripts/**`, so a PR touching only one of
+  # them still lands in this CI-ONLY lane. Hermetic (mktemp git trees), no
+  # cargo, <1s — cheap enough that it is never skipped once triggered.
+  # Mirrors the `repo-guards` step of the same
+  # harness in .github/workflows/ci.yml.
+  if grep -Eq '^(scripts/ci_path_classifier\.sh|scripts/ci_path_classifier_test\.sh)$' "$UNION_TMP" 2>/dev/null; then
+    run_step "path classifier harness semantics (offline)" bash scripts/ci_path_classifier_test.sh
+  else
+    skip_step "path classifier harness semantics" "no path classifier files changed"
+  fi
 }
 
 # run_pinned_lint_changed_scope: degraded local equivalent of CI's

@@ -2320,7 +2320,7 @@ mod tests {
 
     #[cfg_attr(
         miri,
-        ignore = "Container::new creates HttpClient with boring-sys2 FFI (unsupported by Miri)"
+        ignore = "Container::new creates HttpClient with btls-sys FFI (unsupported by Miri)"
     )]
     #[tokio::test]
     async fn build_elastic_ingestion_none_when_no_options() {
@@ -2339,7 +2339,7 @@ mod tests {
 
     #[cfg_attr(
         miri,
-        ignore = "Container::new creates HttpClient with boring-sys2 FFI (unsupported by Miri)"
+        ignore = "Container::new creates HttpClient with btls-sys FFI (unsupported by Miri)"
     )]
     #[tokio::test]
     async fn build_elastic_ingestion_some_when_output_vectors() {
@@ -2355,7 +2355,7 @@ mod tests {
 
     #[cfg_attr(
         miri,
-        ignore = "Container::new creates HttpClient with boring-sys2 FFI (unsupported by Miri)"
+        ignore = "Container::new creates HttpClient with btls-sys FFI (unsupported by Miri)"
     )]
     #[tokio::test]
     async fn build_elastic_ingestion_some_when_elastic_enabled() {
@@ -2372,7 +2372,7 @@ mod tests {
 
     #[cfg_attr(
         miri,
-        ignore = "Container::new creates HttpClient with boring-sys2 FFI (unsupported by Miri)"
+        ignore = "Container::new creates HttpClient with btls-sys FFI (unsupported by Miri)"
     )]
     #[tokio::test]
     async fn build_elastic_ingestion_wires_both_sinks_not_exclusive() {

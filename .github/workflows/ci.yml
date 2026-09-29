@@ -270,6 +270,22 @@ jobs:
       # close implementation. Offline, no real issues touched.
       - name: CI health close semantics harness
         run: bash scripts/test_ci_health_close.sh
+      # Semantics harness for the change-scope classifier (#1707; regression
+      # coverage for #1643). The classifier once captured `git diff --name-only
+      # -z` through `$(...)`, which drops NUL bytes and collapsed a multi-file
+      # PR into ONE concatenated pseudo-path. When that pseudo-path matched a
+      # narrow category (a leading `.github/...` does — ci_only), the
+      # unknown-surface widening never fired, `run_code_jobs` went false, and
+      # every job behind `needs: [clippy]` was skipped in cascade while
+      # `CI Gate` stayed green — invisible by construction. The fix (#1680)
+      # shipped these 49 assertions but no lane ever ran them, so the fix was
+      # revertible in silence. Here, in the job that is already a `needs:` of
+      # `gate`: a regression reds CI Gate and blocks the merge, which a
+      # non-required lane (e.g. `Tests (windows-latest)`, #1697) does not.
+      # Pure bash over throwaway mktemp git trees: no cargo, no network, and it
+      # never reads or writes this repository.
+      - name: Path classifier semantics harness
+        run: bash scripts/ci_path_classifier_test.sh
       # Regression guard for #836: block-scalar nesting bugs in workflow YAML
       # (steps swallowed into a `run: |` block) stay valid YAML and only fail
       # at runtime post-merge (#833→#835). actionlint + shellcheck catch them
@@ -1087,7 +1103,7 @@ jobs:
   # SCHEDULED: Miri (UB detection on nightly)
   #
   # Design (three-layer defence):
-  #   1. Code level: tests that depend on boring-sys2 FFI (boring2/wreq) or
+  #   1. Code level: tests that depend on btls-sys FFI (btls/wreq) or
   #      onig-sys (syntect) use #[cfg_attr(miri, ignore)] or live in
   #      #[cfg(not(miri))] modules. Miri cannot execute C FFI nor inline
   #      assembly (raw-cpuid via quanta/governor).
@@ -1207,7 +1223,7 @@ jobs:
     timeout-minutes: 120
     # #1510/#1633: advisory, same contract and same structural rationale as
     # the `miri` matrix job above — Miri cannot execute BoringSSL FFI
-    # (TLS_method via boring2/wreq), inline assembly (raw-cpuid via
+    # (TLS_method via btls/wreq), inline assembly (raw-cpuid via
     # quanta/governor) or recent syscalls, so this job's redness is a property
     # of the interpreter, not of the tree. continue-on-error keeps the UB sweep
     # running and keeps its failures visible PER-JOB while removing its power

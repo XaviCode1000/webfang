@@ -330,7 +330,7 @@ jobs:
             echo ""
             echo "### From source"
             echo ""
-            echo "Requires Rust 1.88, a C/C++ compiler, and **\`cmake\`**. The HTTP client \`wreq\` → \`boring2\` → \`boring-sys2\` compiles BoringSSL from C++ on first build, and without \`cmake\` the failure surfaces deep inside a build script with an error that never mentions the real cause."
+            echo "Requires Rust 1.88, a C/C++ compiler, and **\`cmake\`**. The HTTP client \`wreq\` → \`btls\` → \`btls-sys\` (formerly \`boring2\`/\`boring-sys2\`) compiles BoringSSL from C++ on first build, and without \`cmake\` the failure surfaces deep inside a build script with an error that never mentions the real cause."
             echo ""
             echo '```bash'
             echo "git clone https://github.com/XaviCode1000/webfang"
