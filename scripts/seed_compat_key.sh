@@ -130,12 +130,21 @@ if [ -f "$REPO_ROOT/Cargo.lock" ]; then
   LOCK_DIGEST="sha256:$(sha256sum "$REPO_ROOT/Cargo.lock" | cut -d' ' -f1)"
 fi
 
-# CARGO_INCREMENTAL as a canonical yes/no: "1" and "true" mean the same thing
-# to cargo, so they must not produce two keys.
-case "${CARGO_INCREMENTAL:-0}" in
-  1|true|TRUE|True) INCREMENTAL="on" ;;
-  *)               INCREMENTAL="off" ;;
-esac
+# CARGO_INCREMENTAL is deliberately NOT a key input.
+#
+# It was, and that broke the primary workflow. main's .envrc sets 1 and every
+# worktree's sets 0, so a seed published from main hashed to a different key than
+# any worktree computed — a worktree created moments after main published reported
+# `seed: cold reason=incompatible-manifest` against a seed sitting right there
+# under a matching name. Measured: 0 -> v1-b76756ec52d50dfc, 1 -> v1-9b05a6c0d0ea3b94.
+#
+# The fork bought nothing. The recipe pins CARGO_INCREMENTAL=0 for every build it
+# runs, so the setting is a CONSTANT of this contract, and a constant must not be
+# able to fork the key. Reuse across the two settings is also sound: toggling it
+# costs one workspace rebuild (measured 20 s) and then nothing, and the 669
+# BoringSSL objects survive either way. Reading it from the ambient at all was the
+# bug — the same class of leak as the CARGO_BUILD_* ambient that #1721 closed,
+# and it is why the regression now compares keys across differing ambients.
 
 # Canonical serialisation. Field order is fixed and every value is on its own
 # line; a change to this layout is a key_schema bump, not a silent re-key.
@@ -148,7 +157,7 @@ rustc = "$RUSTC_V"
 target = "$TARGET_TRIPLE"
 profile = "$PROFILE"
 rustflags = "${RUSTFLAGS:-}"
-incremental = "$INCREMENTAL"
+incremental_not_a_key_input = "see comment above"
 config = "$CONFIG_DIGEST"
 workspace_contract = "$WORKSPACE_DIGEST_ARG"
 features = "$FEATURES_CANON"
