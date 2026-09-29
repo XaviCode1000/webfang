@@ -390,7 +390,12 @@ pub fn redact_temp_path(dir: &Path, text: &str) -> String {
 
 /// Redact common non-deterministic output so snapshots are stable run-to-run:
 /// the temp dir, ISO-8601 log timestamps, dynamic wiremock ports, ANSI color
-/// escape sequences, and source line numbers in tracing spans.
+/// escape sequences, source line numbers, tracing module and file paths,
+/// trace/correlation UUIDs, and the OS-dependent network-failure surface.
+///
+/// This is THE chain: `webfang_core`'s test harness re-exports it rather
+/// than keeping a second copy (#1649 — the copies drifted, and only this
+/// side had the `#688` `<TRACE_ID>` rule).
 ///
 /// # Panics
 ///
@@ -407,6 +412,10 @@ pub fn redact_nondeterministic(dir: &Path, text: &str) -> String {
     let text = ts.replace_all(&text, "<TIMESTAMP>").into_owned();
     let port = Regex::new(r"127\.0\.0\.1:\d+").expect("valid port regex");
     let text = port.replace_all(&text, "127.0.0.1:<PORT>").into_owned();
+    // Normalize source line numbers in tracing spans (e.g. "scrape_flow.rs:193").
+    // These shift with `#[cfg(feature = "...")]` blocks and differ across
+    // feature sets, so a snapshot that baked one in would pass locally and
+    // fail in a differently-featured CI job.
     let line_no = Regex::new(r"(\.rs:)\d+").expect("valid line number regex");
     let text = line_no.replace_all(&text, "$1<LINE>").into_owned();
     // Normalize tracing module paths (e.g. "WARN webfang_core::cli::orchestrator:")
@@ -414,6 +423,14 @@ pub fn redact_nondeterministic(dir: &Path, text: &str) -> String {
     let module = Regex::new(r"((?:WARN|INFO|ERROR|DEBUG|TRACE)\s+)\w+(?:::\w+)+")
         .expect("valid module regex");
     let text = module.replace_all(&text, "$1<MODULE>").into_owned();
+    // Normalize trace/correlation UUIDs emitted by log_scrape_error's trace_id
+    // field (#688) so trace snapshots stay deterministic run-to-run. Moved
+    // here from webfang_core's private harness copy in #1649: this is the
+    // chain every consumer shares, so the rule cannot be half-applied again.
+    let trace_id =
+        Regex::new(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
+            .expect("valid trace id regex");
+    let text = trace_id.replace_all(&text, "<TRACE_ID>").into_owned();
     // Normalize tracing source file paths (e.g. "at crates/.../orchestrator.rs:<LINE>")
     // so moving a function between files does not break snapshots (#462).
     let file_path = Regex::new(r"(at\s+)\S+\.rs").expect("valid file path regex");
@@ -884,6 +901,24 @@ mod tests {
             "  2024-03-15T10:30:00+01:00  WARN webfang_core::cli::orchestrator: Unknown profile";
         let result = redact_nondeterministic(dir, input);
         assert_eq!(result, "  <TIMESTAMP>  WARN <MODULE>: Unknown profile");
+    }
+
+    /// #688 pin: `log_scrape_error` stamps a `trace_id` UUID on every error
+    /// event, so any snapshot of stderr would bake a fresh UUID per run
+    /// without this rule. The rule lives here (the shared chain) since
+    /// #1649, so EVERY consumer redacts it — previously only
+    /// `webfang_core`'s private harness copy had it, and this distributed
+    /// copy did not.
+    #[test]
+    fn redact_nondeterministic_normalizes_trace_ids() {
+        let dir = Path::new("/tmp/test");
+        let input =
+            "error de red: failed trace_id=3f2504e0-4f89-11d3-9a0c-0305e82c3301 correlation=ABCDEF01-2345-6789-ABCD-EF0123456789";
+        let result = redact_nondeterministic(dir, input);
+        assert_eq!(
+            result,
+            "error de red: failed trace_id=<TRACE_ID> correlation=<TRACE_ID>"
+        );
     }
 
     #[test]
