@@ -406,7 +406,7 @@ jobs:
       - name: Install jscpd-rs (MSRV 1.93, via stable)
         run: RUSTUP_TOOLCHAIN=stable cargo install jscpd-rs --version 0.1.12 --locked --quiet
       - name: Install cargo-machete
-        run: cargo install cargo-machete --locked --quiet
+        run: cargo install cargo-machete --version 0.9.2 --locked --quiet
       - name: Dead dependency gate (cargo-machete)
         run: cargo machete
       - name: Duplication ratchet (jscpd-rs)
@@ -760,7 +760,7 @@ jobs:
   # ============================================================================
   gate:
     name: CI Gate
-    needs: [change-scope, toolchain, repo-guards, fmt, clippy, test-core, test-full, test-release-provenance, security, doc-quality]
+    needs: [change-scope, toolchain, repo-guards, fmt, clippy, code-quality, test-core, test-full, test-release-provenance, security, doc-quality]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -775,7 +775,8 @@ jobs:
           # succeed; narrow scope (run_code_jobs=false) requires only the
           # always-applicable producers (change-scope, toolchain, repo-guards,
           # security, doc-quality) to succeed while the skipped code producers
-          # (fmt, clippy, test-core, test-full) must be `skipped` — skipped
+          # (fmt, clippy, code-quality, test-core, test-full,
+          # test-release-provenance) must be `skipped` — skipped
           # non-applicable producers are explicitly allowed only from
           # change-scope, and any failure/cancelled result still fails.
           echo "$RESULTS"
@@ -798,7 +799,7 @@ jobs:
                 exit 1
               fi
             done
-            for job in fmt clippy test-core test-full test-release-provenance; do
+            for job in fmt clippy code-quality test-core test-full test-release-provenance; do
               r="$(echo "$RESULTS" | jq -r --arg j "$job" '.[$j].result')"
               if [ "$r" != "skipped" ]; then
                 echo "::error::Non-applicable code producer '$job' must be skipped in narrow scope (result=$r)."
