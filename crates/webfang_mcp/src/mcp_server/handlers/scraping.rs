@@ -2000,7 +2000,7 @@ mod tests {
     /// subsequent export serves the sitemap run, not a previous run's.
     /// Wiremock sitemap fixture: two pages listed, all served with
     /// article HTML. Fails today (discovery-only: nothing stored).
-    #[cfg_attr(miri, ignore)] // wiremock + wreq use boring-sys2 FFI (unsupported by Miri)
+    #[cfg_attr(miri, ignore)] // wiremock + wreq use btls-sys FFI (unsupported by Miri)
     #[tokio::test]
     #[serial]
     async fn crawl_with_sitemap_stores_sitemap_run_in_session_results() {

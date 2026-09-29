@@ -545,7 +545,7 @@ mod tests {
     // wreq/HTTP-dependent orchestrator tests
     //
     // Miri interpreta MIR y no puede ejecutar C FFI. make_orchestrator()
-    // construye un wreq::Client que depende de boring-sys2 (BoringSSL →
+    // construye un wreq::Client que depende de btls-sys (BoringSSL →
     // TLS_method FFI). Aislar estos tests en un solo bloque #[cfg(not(miri))]
     // evita parchear test por test y mantiene Miri enfocado en detectar UB
     // en la lógica Rust pura.

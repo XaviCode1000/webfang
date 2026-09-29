@@ -45,7 +45,7 @@ jobs:
       - name: Install nightly toolchain
         uses: dtolnay/rust-toolchain@be39649afda95dbf70f87cce95f68b8d5797b296
 
-      # wreq → boring2 → boring-sys2 needs cmake to build BoringSSL.
+      # wreq → btls → btls-sys needs cmake to build BoringSSL.
       - name: Install cmake
         run: sudo apt-get install -y cmake
 
