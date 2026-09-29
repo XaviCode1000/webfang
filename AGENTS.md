@@ -235,7 +235,7 @@ An agent suggesting "clean up duplicate dependencies" must be stopped. These con
 
 ### Build requirement
 
-`cmake` is mandatory — `wreq` → `boring2` → `boring-sys2` needs it for BoringSSL. The first build compiles BoringSSL from C++.
+`cmake` is mandatory — `wreq` → `btls` → `btls-sys` (formerly `boring2`/`boring-sys2`) needs it for BoringSSL. The first build compiles BoringSSL from C++.
 
 > ⏱️ **Measured cost, do not inflate it (2026-09-16, 16-core workstation, ccache active via
 > `/usr/lib64/ccache/cc`, warm registry, `--offline`, dev profile with
