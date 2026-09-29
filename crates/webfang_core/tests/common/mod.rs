@@ -156,10 +156,19 @@ impl MockVault {
         std::fs::write(obsidian_dir.join("workspace.json"), "{}")
             .expect("failed to create workspace.json");
 
-        let vault_fs_path = vault_path.to_string_lossy();
-        let obsidian_json = format!(
-            r#"{{"vault":{{"fsPath":"{vault_fs_path}","id":"test-vault-id","name":"TestVault"}}}}"#
-        );
+        let vault_fs_path = vault_path.to_string_lossy().to_string();
+        // Serialize instead of splicing a path into a raw `format!` string:
+        // a Windows path's `\` is not a valid JSON escape, so the literal
+        // produced `\U`, `\A` and `\.` inside `fsPath` and wrote a fixture
+        // no JSON parser can read. Escaping is the serializer's job (#1631).
+        let obsidian_json = serde_json::json!({
+            "vault": {
+                "fsPath": vault_fs_path,
+                "id": "test-vault-id",
+                "name": "TestVault",
+            }
+        })
+        .to_string();
         std::fs::write(obsidian_dir.join("obsidian.json"), &obsidian_json)
             .expect("failed to create obsidian.json");
 
