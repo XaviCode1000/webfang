@@ -157,3 +157,5 @@ pub fn version_string() -> String {
         build
     )
 }
+
+// probe-code-touch: no-op comment to force full-scope CI (discard with branch).
