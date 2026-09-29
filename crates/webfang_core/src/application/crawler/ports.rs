@@ -389,7 +389,7 @@ mod tests {
     /// would surface here as a status or cookie mismatch.
     #[cfg_attr(
         miri,
-        ignore = "fallback fetch builds a wreq client (boring-sys2 TLS_method FFI) against a real TCP MockServer; both unsupported by Miri (run 35896922208)"
+        ignore = "fallback fetch builds a wreq client (btls-sys TLS_method FFI) against a real TCP MockServer; both unsupported by Miri (run 35896922208)"
     )]
     #[tokio::test]
     async fn fallback_branch_propagates_status_and_cookies() {
@@ -437,7 +437,7 @@ mod tests {
     /// fabrication would surface here as `with_router.status != without_router.status`.
     #[cfg_attr(
         miri,
-        ignore = "fallback fetch builds a wreq client (boring-sys2 TLS_method FFI) against a real TCP MockServer; both unsupported by Miri (run 35896922208)"
+        ignore = "fallback fetch builds a wreq client (btls-sys TLS_method FFI) against a real TCP MockServer; both unsupported by Miri (run 35896922208)"
     )]
     #[tokio::test]
     async fn branches_agree_on_status_after_fix() {
@@ -495,7 +495,7 @@ mod tests {
     /// `WreqDownloader::test_fetch_returns_final_url`.
     #[cfg_attr(
         miri,
-        ignore = "fallback fetch builds a wreq client (boring-sys2 TLS_method FFI) against a real TCP MockServer; both unsupported by Miri (run 35896922208)"
+        ignore = "fallback fetch builds a wreq client (btls-sys TLS_method FFI) against a real TCP MockServer; both unsupported by Miri (run 35896922208)"
     )]
     #[tokio::test]
     async fn fallback_branch_propagates_final_url_after_redirect() {

@@ -819,7 +819,7 @@ mod test_support {
 }
 
 #[cfg(test)]
-#[cfg(not(miri))] // wreq uses boring-sys2 FFI (unsupported by Miri)
+#[cfg(not(miri))] // wreq uses btls-sys FFI (unsupported by Miri)
 mod tests {
     use super::*;
 

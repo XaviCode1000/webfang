@@ -1132,7 +1132,7 @@ mod tests {
     /// #1215, it scrapes the seed ONLY: the base config's `max_depth 1` /
     /// `max_pages 10` must NOT expand into the 5 discovered leaves, even
     /// though the same gauge topology would expose such an expansion.
-    #[cfg(not(miri))] // wiremock + wreq use boring-sys2 FFI (unsupported by Miri)
+    #[cfg(not(miri))] // wiremock + wreq use btls-sys FFI (unsupported by Miri)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn batch_mode_scrapes_seed_only_with_concurrency_override() {
         use crate::domain::budget::{

@@ -270,6 +270,22 @@ jobs:
       # close implementation. Offline, no real issues touched.
       - name: CI health close semantics harness
         run: bash scripts/test_ci_health_close.sh
+      # Semantics harness for the change-scope classifier (#1707; regression
+      # coverage for #1643). The classifier once captured `git diff --name-only
+      # -z` through `$(...)`, which drops NUL bytes and collapsed a multi-file
+      # PR into ONE concatenated pseudo-path. When that pseudo-path matched a
+      # narrow category (a leading `.github/...` does — ci_only), the
+      # unknown-surface widening never fired, `run_code_jobs` went false, and
+      # every job behind `needs: [clippy]` was skipped in cascade while
+      # `CI Gate` stayed green — invisible by construction. The fix (#1680)
+      # shipped these 49 assertions but no lane ever ran them, so the fix was
+      # revertible in silence. Here, in the job that is already a `needs:` of
+      # `gate`: a regression reds CI Gate and blocks the merge, which a
+      # non-required lane (e.g. `Tests (windows-latest)`, #1697) does not.
+      # Pure bash over throwaway mktemp git trees: no cargo, no network, and it
+      # never reads or writes this repository.
+      - name: Path classifier semantics harness
+        run: bash scripts/ci_path_classifier_test.sh
       # Regression guard for #836: block-scalar nesting bugs in workflow YAML
       # (steps swallowed into a `run: |` block) stay valid YAML and only fail
       # at runtime post-merge (#833→#835). actionlint + shellcheck catch them
@@ -406,7 +422,7 @@ jobs:
       - name: Install jscpd-rs (MSRV 1.93, via stable)
         run: RUSTUP_TOOLCHAIN=stable cargo install jscpd-rs --version 0.1.12 --locked --quiet
       - name: Install cargo-machete
-        run: cargo install cargo-machete --locked --quiet
+        run: cargo install cargo-machete --version 0.9.2 --locked --quiet
       - name: Dead dependency gate (cargo-machete)
         run: cargo machete
       - name: Duplication ratchet (jscpd-rs)
@@ -485,6 +501,21 @@ jobs:
   # anything — cmake/NASM are preinstalled on GitHub runners.
   # No rust-cache (#1171): non-gate job, compiles cold — cache pool budget,
   # tokio-console-smoke/test-ai precedent.
+  #
+  # DECISION (#1633): this lane STAYS GATING — deliberately NOT shielded, and
+  # the recorded reason is not "we forgot", it is the trade:
+  #   - it is absent from `gate`'s needs and from `notify`'s needs, so it never
+  #     blocks a merge through CI Gate; the only cost of its redness is the
+  #     red RUN conclusion on push/PR, and
+  #   - it never runs on `schedule` (change-scope-gated, push/PR only), so it
+  #     is not part of the Monday-red problem #1633 exists to fix, and
+  #   - shielding it would buy silence, not green: the CI Health Observer
+  #     branches on the RUN conclusion, not on the jobs, so `continue-on-error`
+  #     removes the false alarm AND the only mechanism reporting its red jobs.
+  # The middle ground the issue names (shield + register as a known-RED-by-
+  # design lane with the `known-false-positive` label, W-03 style) lives in
+  # ci-health.yml, not here. Revisit with #1631 (the inventory of the real
+  # Windows/macOS failures) in the same transaction.
   # ============================================================================
   test-crossplatform:
     name: Tests (${{ matrix.os }})
@@ -745,7 +776,7 @@ jobs:
   # ============================================================================
   gate:
     name: CI Gate
-    needs: [change-scope, toolchain, repo-guards, fmt, clippy, test-core, test-full, test-release-provenance, security, doc-quality]
+    needs: [change-scope, toolchain, repo-guards, fmt, clippy, code-quality, test-core, test-full, test-release-provenance, security, doc-quality]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -760,7 +791,8 @@ jobs:
           # succeed; narrow scope (run_code_jobs=false) requires only the
           # always-applicable producers (change-scope, toolchain, repo-guards,
           # security, doc-quality) to succeed while the skipped code producers
-          # (fmt, clippy, test-core, test-full) must be `skipped` — skipped
+          # (fmt, clippy, code-quality, test-core, test-full,
+          # test-release-provenance) must be `skipped` — skipped
           # non-applicable producers are explicitly allowed only from
           # change-scope, and any failure/cancelled result still fails.
           echo "$RESULTS"
@@ -783,7 +815,7 @@ jobs:
                 exit 1
               fi
             done
-            for job in fmt clippy test-core test-full test-release-provenance; do
+            for job in fmt clippy code-quality test-core test-full test-release-provenance; do
               r="$(echo "$RESULTS" | jq -r --arg j "$job" '.[$j].result')"
               if [ "$r" != "skipped" ]; then
                 echo "::error::Non-applicable code producer '$job' must be skipped in narrow scope (result=$r)."
@@ -818,6 +850,18 @@ jobs:
     # and intentionally absent from this needs list.
     if: ${{ !cancelled() && github.event_name == 'schedule' }}
     permissions:
+      # #1633: `actions: read` is REQUIRED by the `miri-report` step below, not
+      # optional hardening. It calls
+      # GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs to read the REAL
+      # per-job conclusion of the shielded Miri jobs. Every scope not listed
+      # here is `none` (the top-level default is only `contents: read`), so
+      # without this line the call 403s, the step dies under `bash -e`, and
+      # this job — which is in nobody's `needs` — turns the scheduled run red
+      # with no tracking issue written: the exact silent-failure the shield was
+      # supposed to prevent. Same scope, same call, same reason as
+      # ci-health.yml's top-level `actions: read` ("listar runs y jobs de los
+      # workflows observados").
+      actions: read
       issues: write
       contents: read
     env:
@@ -1059,7 +1103,7 @@ jobs:
   # SCHEDULED: Miri (UB detection on nightly)
   #
   # Design (three-layer defence):
-  #   1. Code level: tests that depend on boring-sys2 FFI (boring2/wreq) or
+  #   1. Code level: tests that depend on btls-sys FFI (btls/wreq) or
   #      onig-sys (syntect) use #[cfg_attr(miri, ignore)] or live in
   #      #[cfg(not(miri))] modules. Miri cannot execute C FFI nor inline
   #      assembly (raw-cpuid via quanta/governor).
@@ -1177,6 +1221,21 @@ jobs:
     runs-on: ubuntu-latest
     # #1512: see the `miri` job rationale — a job timeout cancels the run.
     timeout-minutes: 120
+    # #1510/#1633: advisory, same contract and same structural rationale as
+    # the `miri` matrix job above — Miri cannot execute BoringSSL FFI
+    # (TLS_method via btls/wreq), inline assembly (raw-cpuid via
+    # quanta/governor) or recent syscalls, so this job's redness is a property
+    # of the interpreter, not of the tree. continue-on-error keeps the UB sweep
+    # running and keeps its failures visible PER-JOB while removing its power
+    # over the run conclusion; the `notify` job's `miri-report` step mirrors a
+    # red Miri job into the tracking issue (it holds `actions: read` for
+    # exactly that API call), so nothing is traded away but the block.
+    # CAVEAT (unchanged from #1512, and the reason the 120 min budget stays
+    # load-bearing): continue-on-error absorbs a `failure`, NOT a `cancelled`.
+    # If this job is killed by its own `timeout-minutes` the run still goes
+    # red — see the 2026-09-21 scheduled run, where `Miri (infra-slow)` was
+    # cancelled at the cap. Budget measured at ~20 min (run 36053344407).
+    continue-on-error: true
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
@@ -1231,7 +1290,19 @@ jobs:
     name: Miri (infra-slow)
     runs-on: ubuntu-latest
     # #1512: see the `miri` job rationale — a job timeout cancels the run.
+    # Kept at 120 min by #1633 (NOT raised to the matrix job's 240): run
+    # 36053344407 measured this job at 50 min, so the #1513 raise still holds
+    # with ~70 min of headroom. That budget is what actually protects the
+    # scheduled run, because continue-on-error does not absorb a cancellation.
     timeout-minutes: 120
+    # #1510/#1633: advisory, identical contract to the `miri` matrix job and to
+    # `miri-infra-fast`: the same structural Miri limits (BoringSSL FFI, inline
+    # asm, recent syscalls — the 2026-09-14 run died on `unsupported syscall
+    # number 326`) make this job red independently of the tree's health, and
+    # the scheduled run's conclusion is a pure function of the Miri jobs. This
+    # job was ALSO the `cancelled` one on 2026-09-21 (killed by the then-cap),
+    # which is why the budget above matters as much as the flag below.
+    continue-on-error: true
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read

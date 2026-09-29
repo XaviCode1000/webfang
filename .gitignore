@@ -119,6 +119,10 @@ zed-settings.json
 .env
 .env.local
 .env.*.local
+# direnv per-tree config (carries the per-machine CARGO_TARGET_DIR absolute
+# path; never versionable — the global git ignore is the primary cover,
+# this is belt-and-braces for fresh clones whose bootstrap creates it).
+.envrc
 
 # Logs
 *.log

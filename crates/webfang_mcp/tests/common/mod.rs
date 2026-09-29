@@ -9,6 +9,28 @@
 //! are intentionally `pub` but only a subset is used by any given binary, so the
 //! module carries `#![allow(dead_code)]`.
 //!
+//! **Declare it bare — no `#[path]`.** `mod common;` already resolves to this
+//! exact file (`tests/common/mod.rs`), so `#[path = "common/mod.rs"]` would be a
+//! no-op that restates the compiler's own resolution. This crate settled the
+//! bare form deliberately when #1598 migrated the last three stragglers off
+//! their local harness copies: all 15 test targets here declare a bare
+//! `mod common;`, none spells out `#[path]`, and the three that previously
+//! carried one were the minority, not the convention. Note this is the
+//! *webfang_mcp* convention — `webfang_core`'s `tests/common/mod.rs` is reached
+//! as `common::cli_harness::{...}` (a nested submodule) and 20 of its 24
+//! targets do spell out `#[path]`; the two crates' harnesses are not
+//! interchangeable, so do not copy one crate's header shape into the other.
+//!
+//! **Leave the `use common::{...}` line on one line.** `rustfmt.toml` sets
+//! `max_width = 100` and no `imports_width`/`imports_layout` override, so
+//! rustfmt's `Mixed` layout keeps a nested import list on a single line
+//! whenever it fits in `max_width` — and it *rewrites* a hand-wrap back.
+//! The longest such line here (`start_test_server_ssrf_enabled` in
+//! security_tools_test.rs / obsidian_tools_test.rs) measures 96 chars. Only
+//! past 100 does the wrap become mandatory, as in
+//! sitemap_crawl_run_staleness_test.rs:40, whose single-line form would be
+//! 102 chars.
+//!
 //! Page fixtures live here too: [`mount_page_200`] is the ONE canonical way an
 //! MCP test mounts an HTML page (#1371) — do not hand-roll a second one.
 //!

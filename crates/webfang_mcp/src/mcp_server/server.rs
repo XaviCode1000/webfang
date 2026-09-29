@@ -822,7 +822,7 @@ mod tests {
 
     #[cfg_attr(
         miri,
-        ignore = "Container::new creates HttpClient with boring-sys2 FFI (unsupported by Miri)"
+        ignore = "Container::new creates HttpClient with btls-sys FFI (unsupported by Miri)"
     )]
     #[tokio::test]
     async fn test_handler_builds_with_all_tools() {
