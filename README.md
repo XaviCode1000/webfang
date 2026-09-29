@@ -8,19 +8,73 @@
 [![Tests](https://img.shields.io/badge/tests-1%2C337+-green)](#testing)
 [![Miri](https://img.shields.io/badge/Miri-domain%2Bcore-passing-blue)](#memory-safety)
 
-[Quick Start](#-quick-start) · [Architecture](#-architecture) · [Features](#-features) · [CLI Reference](#cli-reference) · [MCP Server](#mcp-server) · [Developer Guide](#developer-guide)
+[Installation](#installation) · [Quick Start](#-quick-start) · [Uninstall](#uninstall) · [Architecture](#-architecture) · [Features](#-features) · [CLI Reference](#cli-reference) · [MCP Server](#mcp-server) · [Developer Guide](#developer-guide)
+
+---
+
+## Installation
+
+WebFang is a **binaries-only** distribution. Nothing is published to crates.io,
+so `cargo install webfang` cannot work. Every release publishes four archives
+plus a checksum manifest, on [GitHub Releases](https://github.com/XaviCode1000/webfang/releases/latest):
+
+| Platform | Asset | Format |
+| :--- | :--- | :--- |
+| Linux x86_64 | `webfang-x86_64-unknown-linux-gnu.tar.gz` | `.tar.gz` |
+| Linux ARM64 | `webfang-aarch64-unknown-linux-gnu.tar.gz` | `.tar.gz` |
+| macOS Apple Silicon | `webfang-aarch64-apple-darwin.tar.gz` | `.tar.gz` |
+| Windows x86_64 | `webfang-x86_64-pc-windows-msvc.zip` | `.zip` |
+| Any | `SHA256SUMS.txt` | checksums |
+
+**There is no Intel macOS artifact** — ONNX Runtime dropped x64 macOS, so the
+`ai` feature cannot link there. Each archive holds a bare binary: verify the
+checksum, then `chmod +x` and put it on your `PATH`.
+
+<details>
+<summary>Linux, end to end</summary>
+
+```bash
+VERSION=v2.4.0   # ← the tag from the releases page
+curl -fLO "https://github.com/XaviCode1000/webfang/releases/download/${VERSION}/webfang-x86_64-unknown-linux-gnu.tar.gz"
+curl -fLO "https://github.com/XaviCode1000/webfang/releases/download/${VERSION}/SHA256SUMS.txt"
+sha256sum -c SHA256SUMS.txt --ignore-missing   # verify BEFORE extracting
+tar xzf webfang-x86_64-unknown-linux-gnu.tar.gz
+sudo install -m 0755 webfang /usr/local/bin/webfang
+webfang --version
+```
+
+</details>
+
+**Full verified commands for all four platforms, per-shell checksum commands
+(`sha256sum` does not exist on stock macOS or in PowerShell), platform
+requirements (glibc floor, no musl, Windows VC++ runtime, macOS Gatekeeper),
+and every on-disk root an install leaves behind:
+[docs/src/installation.md](docs/src/installation.md).**
+
+<details>
+<summary>Install from source (contributors, not an end-user route)</summary>
+
+Requires Rust 1.88, a C/C++ compiler, and **`cmake`** — `wreq` → `boring2` →
+`boring-sys2` compiles BoringSSL from C++ on first build, and without
+`cmake` the failure surfaces deep in a build script with an error that says
+nothing about the real cause.
+
+```bash
+git clone https://github.com/XaviCode1000/webfang.git
+cd webfang
+cmake --version
+cargo build --release --locked --features "ai mcp" -p webfang_cli
+./target/release/webfang --version
+```
+
+</details>
 
 ---
 
 ## Quick Start
 
 ```bash
-# Install
-git clone https://github.com/XaviCode1000/webfang.git
-cd webfang
-cargo install --path crates/webfang_cli
-
-# Scrape a single page
+# Scrape a single page (after the Installation step above)
 webfang --url https://example.com
 
 # Crawl an entire site
@@ -251,13 +305,49 @@ CLI arguments override config file values.
 
 ## Build Features
 
-| Feature | Activates | Install |
-|---------|-----------|---------|
-| `default` | images + documents | `cargo install --path crates/webfang_cli` |
-| `ai` | Semantic cleaning with ONNX (~390MB model) | `--features ai` |
-| `mcp` | MCP server for AI agents | `--features mcp` |
-| `persistence` | SQLite checkpoint store | `--features persistence` |
-| `console` | Tokio console (debugging) | `--features console` |
+Features are compiled in at **build** time. A release binary is built with
+`--features "ai mcp"`, so only `default`, `ai`, and `mcp` are present in it —
+everything else needs a [source build](#installation).
+
+| Feature | Activates | In the release binary? |
+|---------|-----------|--------|
+| `default` (`images` + `documents`) | Image and document extraction | ✅ Yes |
+| `ai` | Semantic cleaning with ONNX (~390 MB model) | ✅ Yes |
+| `mcp` | The `webfang_mcp` crate's MCP server | ⚠️ The CLI's `mcp` feature gates no shipped code — the crate itself is not in the release. See [MCP Server](#-mcp-server) |
+| `persistence` | SQLite checkpoint store | ❌ No — `--features persistence` from source |
+| `chromium` | Headless Chrome for `--js-strategy full` (rejected at preflight without it) | ❌ No — `--features chromium` from source |
+| `adaptive-selectors` | Adaptive selector learning | ❌ No — from source |
+| `console` | Tokio console (debugging) | ❌ No — `--features console` from source |
+
+---
+
+## Uninstall
+
+WebFang removes nothing for you. The binary is one file; everything else it
+touched is yours to delete.
+
+```bash
+# 1. The binary
+sudo rm /usr/local/bin/webfang            # or ~/.local/bin/webfang
+
+# 2. Cache + state + user-agent cache (NOT the model cache)
+rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/webfang"
+
+# 3. The ONNX model cache (~372 MB default) — check you did not relocate it
+rm -rf "${HF_HOME:-$HOME/.cache/huggingface}"
+
+# 4. Your own output — NOT deleted by webfang, and not backed up
+ls output/
+```
+
+`webfang/state/<domain>.json.lock` is a **permanent sentinel**; its survival
+after an uninstall is correct behaviour, not a failed removal.
+
+> **The model cache is not relocatable by any `WEBFANG_*` variable** — it is
+> HuggingFace's `HF_HOME`. Check it before deleting, or you will delete the
+> wrong directory and recover nothing. Windows/macOS paths, the full table of
+> what each run creates, and the per-platform commands:
+> [docs/src/installation.md#uninstall](docs/src/installation.md#uninstall).
 
 ---
 
@@ -332,6 +422,7 @@ codedb index .
 | Resource | Covers |
 |----------|--------|
 | [AGENTS.md](AGENTS.md) | AI agent instructions, code intelligence integration |
+| [docs/src/installation.md](docs/src/installation.md) | Verified install + uninstall for the binaries-only release: asset names, per-shell checksums, platform floors |
 | [docs/src/debugging.md](docs/src/debugging.md) | Tracing, correlation IDs, `jq` query cookbook (`scripts/analyze-trace.sh`) |
 | [docs/src/troubleshooting.md](docs/src/troubleshooting.md) | Common failures: slow crawls, silent errors, WAF blocks, local/internal targets refused by the SSRF guard |
 | [docs/ssrf-layers.md](docs/ssrf-layers.md) | Which SSRF layer blocks what, and which `WEBFANG_*` variable lifts which layer |
