@@ -118,14 +118,14 @@ git worktree add -b "$branch" "$target" "$base"
 # `git worktree add` does NOT materialise .envrc: the file is gitignored, so the
 # new tree starts without one. That is worse than a missing convenience — the
 # tree then inherits CARGO_TARGET_DIR from the invoking shell, which is main's
-# shared cache, and builds a batch worktree straight into it: the exact #1267
+# target dir, and builds a batch worktree straight into it: the exact #1267
 # hazard. From this PR the fast gate also fails closed (exit 2). Bootstrap it
 # here, while we still know the path.
 main_repo="$(dirname "$(git -C "$target" rev-parse --path-format=absolute --git-common-dir)")"
 if [[ ! -f "$target/.envrc" ]]; then
   if [[ -f "$main_repo/.envrc" ]]; then
     echo "==> NOTE: $target/.envrc is absent (gitignored, never copied by 'git worktree add')."
-    echo "    Bootstrap it before the fast gate, or this tree inherits main's shared target dir:"
+    echo "    Bootstrap it before the fast gate, or this tree inherits main's target dir:"
     echo "      cd $target"
     echo "      sed -e 's#cargo-target/webfang#cargo-target/${dir}#' \\"
     echo "          -e 's#^export CARGO_INCREMENTAL=1#export CARGO_INCREMENTAL=0#' \\"

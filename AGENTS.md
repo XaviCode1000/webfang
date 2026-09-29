@@ -243,8 +243,8 @@ An agent suggesting "clean up duplicate dependencies" must be stopped. These con
 > `mise exec`, `--manifest-path`) — silently recompiling the whole graph into the target
 > dir. Verified 2026-09-29: after the move, `cargo check --workspace` is a 0.27 s no-op
 > in-repo and 0.25 s from `/tmp`. Because `boring-sys2` sits at the bottom of the graph, each
-> such rehash is amplified into a full 639-object BoringSSL rebuild — the shared target dir
-> on `main` had accumulated 202 of them. Do not "tidy" this key back into
+> such rehash is amplified into a full 639-object BoringSSL rebuild — `main`'s target dir
+> had accumulated 202 of them before it moved to a seeded target of its own. Do not "tidy" this key back into
 > `.cargo/config.toml`. One-off full debuginfo stays per-invocation:
 > `CARGO_PROFILE_DEV_DEBUG=true cargo build`.
 
@@ -393,28 +393,38 @@ git worktree add ~/Projects/Rust/webfang-worktrees/feat-auth -b feat/auth
 cd ~/Projects/Rust/webfang-worktrees/feat-auth
 
 # Per-worktree bootstrap (NONE of these are shared), run INSIDE the worktree:
-# worktree .envrc = main's file with the two per-tree values overridden
-# (a byte-identical cp would inherit main's shared CARGO_TARGET_DIR +
-# CARGO_INCREMENTAL=1, violating the #1267 isolated-cache policy below)
-sed -e "s#cargo-target/webfang#cargo-target/$(basename "$PWD")#" \
-    -e 's#^export CARGO_INCREMENTAL=1#export CARGO_INCREMENTAL=0#' \
-    ~/Projects/Rust/webfang/.envrc > .envrc
+# The worktree's .envrc is WRITTEN FROM ITS OWN NAME, never derived by rewriting
+# main's. That used to be a `sed` over main's file, which made main's target name
+# a load-bearing input to every future worktree: once main moved off
+# `cargo-target/webfang`, the sed stopped matching and emitted a perfectly VALID
+# CARGO_TARGET_DIR pointing at MAIN's target. Silent, and only caught later by
+# ci_fast_gate.sh refusing the build. A bootstrap that fails quietly into a
+# broken isolation policy is worse than one that fails loudly, so the coupling
+# is gone rather than updated.
+TREE="$(basename "$PWD")"
+cat > .envrc <<EOF
+export CARGO_TARGET_DIR=$HOME/.cache/cargo-target/$TREE
+export CARGO_INCREMENTAL=0
+unset RUSTC_WRAPPER
+export CARGO_LLVM_COV_TARGET_DIR=$HOME/.cache/cargo-target/$TREE-llvm-cov
+EOF
 direnv allow     # gitignored; carries the per-tree cache policy
 
 # fail loudly instead of silently sharing a target dir
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:?}"
-[ "$CARGO_TARGET_DIR" != "$HOME/.cache/cargo-target/webfang" ] \
-  || { echo "REFUSING: shared target dir in a worktree (#1267)"; exit 1; }
+# A worktree's target dir must be NAMED after that worktree. This test does not
+# mention main at all, so it cannot be invalidated by anything main does.
+[ "$(basename "$(readlink -f "$CARGO_TARGET_DIR")")" = "$TREE" ] \
+  || { echo "REFUSING: target dir is not this worktree's own (#1267)"; exit 1; }
 #   .envrc is the ONLY place this policy can live: mise.toml is byte-identical in
-#   every tree, so it cannot tell main from a worktree. A fresh worktree needs
-#   CARGO_TARGET_DIR=~/.cache/cargo-target/$(basename "$PWD") (isolated, #1267),
-#   CARGO_INCREMENTAL=0 and the sccache wrapper UNSET. main instead keeps the
-#   shared target with CARGO_INCREMENTAL=1, also without the wrapper. Both trees
-#   drop sccache, for two different measured reasons - see the #1267 note below.
+#   every tree, so it cannot tell main from a worktree. Every tree - main
+#   included - gets CARGO_TARGET_DIR=~/.cache/cargo-target/<tree-name>,
+#   CARGO_INCREMENTAL=0 and the sccache wrapper UNSET. main uses its own too:
+#   there is no longer a "shared" target dir in this repo.
 #   The snippet above is documentation, not enforcement: scripts/ci_fast_gate.sh
 #   is the check that actually runs, and it fails closed when CARGO_TARGET_DIR
 #   is unset in any tree, or when a worktree's CARGO_TARGET_DIR points at main's
-#   shared cache.
+#   target.
 
 cp ~/Projects/Rust/webfang/.env .                       # .env is gitignored
 codegraph init                                     # CodeGraph: source exploration index
@@ -431,13 +441,15 @@ bash scripts/seed_target.sh
 cargo build                                        # cold or seeded; both are correct, and the script says which
 ```
 
-> ⚠️ **`.envrc` + `direnv allow` is mandatory per worktree, and is now ENFORCED.** In a **worktree** it points `CARGO_TARGET_DIR` at a per-tree isolated dir (`~/.cache/cargo-target/<tree-name>`), which is what #1267 requires; the cost is that BoringSSL and every dependency compile again per worktree — measured at 2 m 23 s for `cargo build --workspace`, which is cheap enough that it must never be used as an argument to share a target dir between concurrent builds (#1267). Only `main` uses the shared cache, because there it is a single live tree and therefore sequential by construction.
+> ⚠️ **`.envrc` + `direnv allow` is mandatory per worktree, and is now ENFORCED.** In a **worktree** it points `CARGO_TARGET_DIR` at a per-tree isolated dir (`~/.cache/cargo-target/<tree-name>`), which is what #1267 requires; the cost is that BoringSSL and every dependency compile again per worktree — measured at 2 m 23 s for `cargo build --workspace`, which is cheap enough that it must never be used as an argument to share a target dir between concurrent builds (#1267). **There is no shared target dir in this repo any more.** `main` used to keep one, and that single exception is what let 46 dead worktrees accumulate in a 478 G target dir that Cargo cannot attribute by ownership. `main` now has its own `~/.cache/cargo-target/main`, seeded like any other tree.
+>
+> `main` is the one tree that keeps `CARGO_INCREMENTAL=1` while the seed contract pins `0`. Measured cost: the first build over a freshly seeded target spends one extra workspace rebuild (20 s) because the incremental flag changes the fingerprints; every build after that is unaffected, and the 669 BoringSSL C++ objects are reused under either setting. The seed contract deliberately does NOT hash the installation paths, so the same compiler in two places stays the same seed.
 >
 > Without `.envrc`, cargo falls back to an in-repo `target/`. This is no longer silent: `scripts/ci_fast_gate.sh` fails closed with exit 2 when `CARGO_TARGET_DIR` is unset, and names `direnv allow` as the fix. That guard exists because the in-repo fallback is invisible by construction — `.gitignore` has `target`, so a leaked 33 G in-repo target dir leaves `git status` clean and no cleanup step can attribute it. Measured 2026-09-29 on `main`: six such dirs, 39 G logical / 18 G physical on btrfs+zstd.
 >
-> ⚠️ **A defined `CARGO_TARGET_DIR` is not enough — the gate also rejects main's shared cache inside a worktree.** A worktree created without `.envrc` *inherits* main's value from the shell that launched it, so the "is it set?" check passes and the tree compiles straight into the shared cache. That is #1267 exactly. The same gate now rejects that case **by directory identity, not by name**: it canonicalises both sides (`readlink -f`) and compares them against the target declared in main's `.envrc`. Both halves matter — matching on `basename` would reject a legitimate `~/.cache/cargo-target/x/webfang` and would *accept* a symlink pointing at main's cache, which is the failure being closed. If main's `.envrc` is missing or declares no target, the gate **refuses** rather than assuming: a gate that cannot prove isolation must not say "probably fine". Bootstrapping the main checkout is therefore a precondition for using agent worktrees, not an optional convenience. Audited 2026-09-29 in `main`'s shared target: **46 dead worktrees** referenced by live fingerprints plus one still-running worktree, which is the leak this closes. The guard prevents NEW contamination only; it does not clean what is already there.
+> ⚠️ **A defined `CARGO_TARGET_DIR` is not enough — the gate also rejects main's target inside a worktree.** A worktree created without `.envrc` *inherits* main's value from the shell that launched it, so the "is it set?" check passes and the tree compiles straight into main's target. That is #1267 exactly. The same gate now rejects that case **by directory identity, not by name**: it canonicalises both sides (`readlink -f`) and compares them against the target declared in main's `.envrc`. Both halves matter — matching on `basename` would reject a legitimate `~/.cache/cargo-target/x/webfang` and would *accept* a symlink pointing at main's cache, which is the failure being closed. If main's `.envrc` is missing or declares no target, the gate **refuses** rather than assuming: a gate that cannot prove isolation must not say "probably fine". Bootstrapping the main checkout is therefore a precondition for using agent worktrees, not an optional convenience. Audited 2026-09-29 in what used to be `main`'s shared target: **46 dead worktrees** referenced by live fingerprints plus one still-running worktree, which is the leak this closes. The guard prevents NEW contamination only; it does not clean what is already there — `main` migrating to its own seeded target is what makes that historical state reclaimable.
 >
-> ⚠️ **Concurrent agent builds must NOT share that cache (#1267).** Two worktrees building the same binary profile concurrently overwrite each other's `debug/webfang` (same `-C metadata` hash ⇒ same output filename), so E2E runs silently execute the other tree's binary — stale links report as fresh, failures misattribute. The shared cache is for SEQUENTIAL human builds only. Isolated-build recipe (verified 2026-09-09 after 8 opaque worker deaths): `export CARGO_TARGET_DIR=~/.cache/cargo-target/<worktree>` (home disk — `/tmp` tmpfs is only 16 GB and a full workspace target dir starves both the build and sccache), `env -u RUSTC_WRAPPER -u RUSTUP_TOOLCHAIN` (sccache's Rust cache key embeds the target-dir path, so an identical source in a new isolated dir scores ZERO hits - verified with a private cache and a positive control: same dir hits, different dir misses, leaving duplicate objects for one unit. Raising `SCCACHE_CACHE_SIZE` cannot fix that, it only fits the duplicates; the wrapper also breaks `--json` parsing on isolated dirs; an exported stable toolchain shadows `rust-toolchain.toml` and its rust-lld rejects the BFD-only link flags below — F-52 evidence), `CARGO_BUILD_JOBS=2` plus `RUSTFLAGS="-C link-arg=-Wl,--no-keep-memory -C link-arg=-Wl,--reduce-memory-overheads"` (test-binary links OOM-die otherwise). The orchestrator assigns the isolated path per gate; workers never invent their own. Step 6 of the post-merge runbook deletes them - measured cost of NOT doing it: 52 GB of dead build state from three already-merged trees, invisible to `git status` and to `git worktree prune`.
+> ⚠️ **Concurrent agent builds must NOT share a target dir (#1267).** Two worktrees building the same binary profile into one target dir concurrently overwrite each other's `debug/webfang` (same `-C metadata` hash ⇒ same output filename), so E2E runs silently execute the other tree's binary — stale links report as fresh, failures misattribute. Every tree builds into its own target dir. Isolated-build recipe (verified 2026-09-09 after 8 opaque worker deaths): `export CARGO_TARGET_DIR=~/.cache/cargo-target/<worktree>` (home disk — `/tmp` tmpfs is only 16 GB and a full workspace target dir starves both the build and sccache), `env -u RUSTC_WRAPPER -u RUSTUP_TOOLCHAIN` (sccache's Rust cache key embeds the target-dir path, so an identical source in a new isolated dir scores ZERO hits - verified with a private cache and a positive control: same dir hits, different dir misses, leaving duplicate objects for one unit. Raising `SCCACHE_CACHE_SIZE` cannot fix that, it only fits the duplicates; the wrapper also breaks `--json` parsing on isolated dirs; an exported stable toolchain shadows `rust-toolchain.toml` and its rust-lld rejects the BFD-only link flags below — F-52 evidence), `CARGO_BUILD_JOBS=2` plus `RUSTFLAGS="-C link-arg=-Wl,--no-keep-memory -C link-arg=-Wl,--reduce-memory-overheads"` (test-binary links OOM-die otherwise). The orchestrator assigns the isolated path per gate; workers never invent their own. Step 6 of the post-merge runbook deletes them - measured cost of NOT doing it: 52 GB of dead build state from three already-merged trees, invisible to `git status` and to `git worktree prune`.
 
 > ⚠️ **Without both indexes, the agent is BLIND in the worktree.** Intelligence tools silently resolve to the main checkout or return empty results. Check that `.codegraph/` and `codedb.snapshot` exist.
 
