@@ -485,6 +485,21 @@ jobs:
   # anything — cmake/NASM are preinstalled on GitHub runners.
   # No rust-cache (#1171): non-gate job, compiles cold — cache pool budget,
   # tokio-console-smoke/test-ai precedent.
+  #
+  # DECISION (#1633): this lane STAYS GATING — deliberately NOT shielded, and
+  # the recorded reason is not "we forgot", it is the trade:
+  #   - it is absent from `gate`'s needs and from `notify`'s needs, so it never
+  #     blocks a merge through CI Gate; the only cost of its redness is the
+  #     red RUN conclusion on push/PR, and
+  #   - it never runs on `schedule` (change-scope-gated, push/PR only), so it
+  #     is not part of the Monday-red problem #1633 exists to fix, and
+  #   - shielding it would buy silence, not green: the CI Health Observer
+  #     branches on the RUN conclusion, not on the jobs, so `continue-on-error`
+  #     removes the false alarm AND the only mechanism reporting its red jobs.
+  # The middle ground the issue names (shield + register as a known-RED-by-
+  # design lane with the `known-false-positive` label, W-03 style) lives in
+  # ci-health.yml, not here. Revisit with #1631 (the inventory of the real
+  # Windows/macOS failures) in the same transaction.
   # ============================================================================
   test-crossplatform:
     name: Tests (${{ matrix.os }})
@@ -818,6 +833,18 @@ jobs:
     # and intentionally absent from this needs list.
     if: ${{ !cancelled() && github.event_name == 'schedule' }}
     permissions:
+      # #1633: `actions: read` is REQUIRED by the `miri-report` step below, not
+      # optional hardening. It calls
+      # GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs to read the REAL
+      # per-job conclusion of the shielded Miri jobs. Every scope not listed
+      # here is `none` (the top-level default is only `contents: read`), so
+      # without this line the call 403s, the step dies under `bash -e`, and
+      # this job — which is in nobody's `needs` — turns the scheduled run red
+      # with no tracking issue written: the exact silent-failure the shield was
+      # supposed to prevent. Same scope, same call, same reason as
+      # ci-health.yml's top-level `actions: read` ("listar runs y jobs de los
+      # workflows observados").
+      actions: read
       issues: write
       contents: read
     env:
@@ -1177,6 +1204,21 @@ jobs:
     runs-on: ubuntu-latest
     # #1512: see the `miri` job rationale — a job timeout cancels the run.
     timeout-minutes: 120
+    # #1510/#1633: advisory, same contract and same structural rationale as
+    # the `miri` matrix job above — Miri cannot execute BoringSSL FFI
+    # (TLS_method via boring2/wreq), inline assembly (raw-cpuid via
+    # quanta/governor) or recent syscalls, so this job's redness is a property
+    # of the interpreter, not of the tree. continue-on-error keeps the UB sweep
+    # running and keeps its failures visible PER-JOB while removing its power
+    # over the run conclusion; the `notify` job's `miri-report` step mirrors a
+    # red Miri job into the tracking issue (it holds `actions: read` for
+    # exactly that API call), so nothing is traded away but the block.
+    # CAVEAT (unchanged from #1512, and the reason the 120 min budget stays
+    # load-bearing): continue-on-error absorbs a `failure`, NOT a `cancelled`.
+    # If this job is killed by its own `timeout-minutes` the run still goes
+    # red — see the 2026-09-21 scheduled run, where `Miri (infra-slow)` was
+    # cancelled at the cap. Budget measured at ~20 min (run 36053344407).
+    continue-on-error: true
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
@@ -1231,7 +1273,19 @@ jobs:
     name: Miri (infra-slow)
     runs-on: ubuntu-latest
     # #1512: see the `miri` job rationale — a job timeout cancels the run.
+    # Kept at 120 min by #1633 (NOT raised to the matrix job's 240): run
+    # 36053344407 measured this job at 50 min, so the #1513 raise still holds
+    # with ~70 min of headroom. That budget is what actually protects the
+    # scheduled run, because continue-on-error does not absorb a cancellation.
     timeout-minutes: 120
+    # #1510/#1633: advisory, identical contract to the `miri` matrix job and to
+    # `miri-infra-fast`: the same structural Miri limits (BoringSSL FFI, inline
+    # asm, recent syscalls — the 2026-09-14 run died on `unsupported syscall
+    # number 326`) make this job red independently of the tree's health, and
+    # the scheduled run's conclusion is a pure function of the Miri jobs. This
+    # job was ALSO the `cancelled` one on 2026-09-21 (killed by the then-cap),
+    # which is why the budget above matters as much as the flag below.
+    continue-on-error: true
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
