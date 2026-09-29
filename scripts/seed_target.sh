@@ -137,7 +137,34 @@ fi
 # Dropping the read-only bits on the COPY is correct — the seed stays read-only,
 # and each worktree needs a target it can actually write.
 if ! cp -a --reflink=always --no-preserve=mode "$SEED" "$TARGET_DIR" 2>/dev/null; then
+  # A failed clone can leave the destination half-written. The contract is
+  # "reflink failure -> clean target -> cold build", so removing the debris is
+  # part of the failure path, not a courtesy — and it must be VERIFIED, not
+  # assumed. `rm -rf || true` here was a real bug: a subdirectory the clone left
+  # without its write bit defeats the removal, the error was swallowed, and the
+  # script reported `cold` and exited 0 — handing the caller a target containing
+  # half a seed to build over. The silence was the defect; the debris in the
+  # build dir was the consequence.
   rm -rf "$TARGET_DIR" 2>/dev/null || true
+  if [ -e "$TARGET_DIR" ]; then
+    # Second attempt with write bits restored, the usual reason the first failed.
+    chmod -R u+w "$TARGET_DIR" 2>/dev/null || true
+    rm -rf "$TARGET_DIR" 2>/dev/null || true
+  fi
+  if [ -e "$TARGET_DIR" ]; then
+    LEFT="$(find "$TARGET_DIR" -mindepth 1 2>/dev/null | wc -l)"
+    # Same one-line verdict shape as every other outcome, so this state is
+    # greppable the same way `seeded` and `cold` are — and so the word "cold"
+    # never appears in a message that is denying it.
+    say "refused reason=unremovable-leftover key=$KEY target=$TARGET_DIR entries=$LEFT"
+    echo "seed_target.sh: the clone failed AND its leftovers could not be removed." >&2
+    echo "  not handing you a half-populated target to build over: a cold build" >&2
+    echo "  assumes a clean target dir, and this one is not clean." >&2
+    echo "  target: $TARGET_DIR  ($LEFT entries left)" >&2
+    echo "  fix: remove it by hand, then re-run." >&2
+    echo "        chmod -R u+w '$TARGET_DIR' && rm -rf '$TARGET_DIR'" >&2
+    exit 3
+  fi
   cold "reflink-unavailable"
 fi
 # Apparent size, deliberately NOT a df delta: the delta is dominated by whatever

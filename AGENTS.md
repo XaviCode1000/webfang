@@ -532,11 +532,17 @@ it is the path every first build before any seed existed took.
 ```text
 seed: seeded  reason=…    → reuse happened; the build is genuinely faster
 seed: cold    reason=…    → correct build, no reuse; nothing is wrong
+seed: refused reason=…    → stop and read the message; do not build
 ```
 
 `cold` is a normal outcome, not a failure. `reason` names which condition applied
 (no seed for this key, incompatible seed, clone unavailable, …), which is how you
 tell "there simply isn't one" from "the one here cannot be used".
+
+`refused` is the one outcome that is not a build at all: the clone failed **and
+its leftovers could not be removed**, so there is no clean target dir to build
+over. The script prints the exact `chmod`/`rm` to run. Fix that, then re-run —
+do not treat it as a cold build, because the target it found was not clean.
 
 **Not in this contract, on purpose:** which build artifacts a seed contains or
 how it is produced. `scripts/test_seed_contamination.sh` asserts the seed's
