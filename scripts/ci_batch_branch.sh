@@ -115,6 +115,28 @@ fi
 echo "==> Creating worktree: git worktree add -b $branch $target $base"
 git worktree add -b "$branch" "$target" "$base"
 
+# `git worktree add` does NOT materialise .envrc: the file is gitignored, so the
+# new tree starts without one. That is worse than a missing convenience — the
+# tree then inherits CARGO_TARGET_DIR from the invoking shell, which is main's
+# shared cache, and builds a batch worktree straight into it: the exact #1267
+# hazard. From this PR the fast gate also fails closed (exit 2). Bootstrap it
+# here, while we still know the path.
+main_repo="$(dirname "$(git -C "$target" rev-parse --path-format=absolute --git-common-dir)")"
+if [[ ! -f "$target/.envrc" ]]; then
+  if [[ -f "$main_repo/.envrc" ]]; then
+    echo "==> NOTE: $target/.envrc is absent (gitignored, never copied by 'git worktree add')."
+    echo "    Bootstrap it before the fast gate, or this tree inherits main's shared target dir:"
+    echo "      cd $target"
+    echo "      sed -e 's#cargo-target/webfang#cargo-target/${dir}#' \\"
+    echo "          -e 's#^export CARGO_INCREMENTAL=1#export CARGO_INCREMENTAL=0#' \\"
+    echo "          '$main_repo/.envrc' > .envrc"
+    echo "      direnv allow"
+  else
+    echo "    WARNING: no .envrc in $target nor in $main_repo — write one by hand"
+    echo "             (see AGENTS.md § Worktree lifecycle) before building."
+  fi
+fi
+
 failed=""
 for sha in "${shas[@]}"; do
   echo "==> Merging $sha"
@@ -147,9 +169,12 @@ fi
 cat <<EOF
 ==> Batch branch ready: $branch @ $target
 Next steps:
-  1. Fast gate in the new worktree:
+  1. If the bootstrap above was printed, run it (it writes .envrc + direnv allow):
+       cd $target && direnv allow
+  2. Fast gate in the new worktree (fails closed with exit 2 while
+     CARGO_TARGET_DIR is unset — #1677):
        cd $target && bash scripts/ci_fast_gate.sh
-  2. Write CHANGELOG entries there (the ONE place they are written).
-  3. Push + open the batch PR manually (see docs/merge-queue-manual.md).
+  3. Write CHANGELOG entries there (the ONE place they are written).
+  4. Push + open the batch PR manually (see docs/merge-queue-manual.md).
 EOF
 exit 0
