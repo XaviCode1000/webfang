@@ -2,17 +2,18 @@
 //!
 //! Sets up the MCP server using rmcp's StreamableHttpService
 //! mounted on an Axum router at /mcp, with a full middleware stack:
-//! panic containment, panic hook, timeout, body limit, rate limiting, and
-//! optional auth.
+//! panic containment, panic hook, timeout, body limit, rate limiting,
+//! session admission control and optional auth.
 
 use std::any::Any;
+use std::collections::VecDeque;
 use std::net::SocketAddr;
-use std::num::NonZeroU32;
-use std::sync::Arc;
-use std::time::Duration;
+use std::num::{NonZeroU32, NonZeroU64, NonZeroUsize};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::extract::State;
-use axum::http::{header, StatusCode};
+use axum::http::{header, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{middleware, Router};
 use governor::{
@@ -54,16 +55,44 @@ pub struct ServerOptions {
     pub rate_burst: u32,
     /// Expected Bearer token. When `None`, auth is disabled.
     pub auth_token: Option<String>,
+    /// Maximum number of session-creating requests admitted inside one
+    /// [`Self::session_cap_window_secs`] window (default: 64, see
+    /// [`DEFAULT_MAX_SESSIONS`]). Enforced by the session admission cap; see
+    /// `SessionCap` for what "session-creating" means and what the cap does
+    /// NOT know.
+    ///
+    /// A [`NonZeroUsize`], like every count limit in this crate: a cap of zero
+    /// is a misconfiguration, not a mode (cf. `McpState::CategoryLimits`).
+    pub max_sessions: NonZeroUsize,
+    /// Lifetime of one admission slot, in seconds (default: 300, see
+    /// [`DEFAULT_SESSION_CAP_WINDOW_SECS`]).
+    ///
+    /// Also [`NonZeroU64`]: a zero-length window would mean "a slot is never
+    /// released", which is a footgun dressed as a mode.
+    pub session_cap_window_secs: NonZeroU64,
 }
 
 impl Default for ServerOptions {
     fn default() -> Self {
+        // The literals are non-zero by construction; the guard is the repo
+        // idiom from `McpState::CategoryLimits` (never `expect` in production
+        // code). An operator-supplied zero is a different question, and it is
+        // answered at the CLI boundary by the fail-fast checks in the
+        // `webfang-mcp` binary.
+        let nz = |v: usize| {
+            NonZeroUsize::new(v).unwrap_or_else(|| unreachable!("limit literal {v} is non-zero"))
+        };
+        let nz_secs = |v: u64| {
+            NonZeroU64::new(v).unwrap_or_else(|| unreachable!("window literal {v} is non-zero"))
+        };
         Self {
             request_timeout_secs: 30,
             body_limit_bytes: 10 * 1024 * 1024,
             rate_per_second: 10,
             rate_burst: 20,
             auth_token: None,
+            max_sessions: nz(DEFAULT_MAX_SESSIONS),
+            session_cap_window_secs: nz_secs(DEFAULT_SESSION_CAP_WINDOW_SECS),
         }
     }
 }
@@ -165,9 +194,24 @@ where
     let auth_state = AuthState {
         expected_token: options.auth_token.clone().map(Arc::from),
     };
+    let session_cap = Arc::new(SessionCap::new(
+        options.max_sessions,
+        Duration::from_secs(options.session_cap_window_secs.get()),
+    ));
 
     Router::new()
-        .nest_service("/mcp", service)
+        .nest_service(MCP_ENDPOINT_PATH, service)
+        // Innermost layer, applied FIRST: `.layer()` wraps what is already
+        // there, so this is the LAST gate a request meets. Auth, the rate
+        // limiter, the timeout and the body limit have all answered by now —
+        // which is the security property that matters here: a request rejected
+        // 401 (no/invalid token) or shed 429 by the rate limiter can never
+        // consume a session slot, so an unauthenticated flood cannot exhaust
+        // the session budget of the legitimate operator.
+        .layer(middleware::from_fn_with_state(
+            session_cap,
+            session_cap_middleware,
+        ))
         .layer(middleware::from_fn_with_state(auth_state, validate_auth))
         .layer(middleware::from_fn_with_state(
             rate_limiter,
@@ -261,6 +305,254 @@ async fn rate_limit_middleware(
             tracing::warn!(
                 remote = %request.uri().path(),
                 "rate limit exceeded — rejecting with 429"
+            );
+            Err(axum::http::StatusCode::TOO_MANY_REQUESTS)
+        },
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Session admission control (#1611, F6)
+// ---------------------------------------------------------------------------
+
+/// Path the MCP service is nested at (see `build_mcp_router_with_service`).
+pub const MCP_ENDPOINT_PATH: &str = "/mcp";
+
+/// Default number of session-creating requests admitted per window (see
+/// [`DEFAULT_SESSION_CAP_WINDOW_SECS`]).
+///
+/// 64 is roughly an order of magnitude above the fleet a single-instance MCP
+/// server actually serves (one session per agent host, plus reconnects), while
+/// still bounding what an unbounded session map can cost: each session holds a
+/// spawned worker, two 16-slot channels and a cloned `McpHandler`. Above the
+/// rate limiter's default (10 rps, burst 20) it takes seconds of sustained
+/// `initialize` traffic to fill, so the cap sheds abuse instead of throttling
+/// honest reconnects. Operators with a larger fleet raise it
+/// (`--max-sessions` / `WEBFANG_MCP_MAX_SESSIONS`).
+pub const DEFAULT_MAX_SESSIONS: usize = 64;
+
+/// Default admission window, in seconds.
+///
+/// 300 is rmcp's own `SessionConfig::keep_alive` default, and that is exactly
+/// why: a slot is released one keep-alive period after the request that took
+/// it, which is the longest the session it accounts for can still be alive.
+/// A longer window would hold slots for sessions rmcp has already reaped; a
+/// shorter one would free slots belonging to live sessions.
+pub const DEFAULT_SESSION_CAP_WINDOW_SECS: u64 = 300;
+
+/// Header rmcp uses to bind a request to an existing session. The literal is
+/// mirrored here because rmcp keeps `HEADER_SESSION_ID` crate-private
+/// (`transport/common/http_header.rs`); it is the same literal the transport
+/// emits and the test harness sends.
+const MCP_SESSION_ID_HEADER: &str = "mcp-session-id";
+
+/// `operation` field of every event this cap emits — the resource it governs.
+const SESSION_OPERATION: &str = "mcp.session.create";
+
+/// Spanish sentence for the operator to hand to whoever is being shed, carried
+/// as the `user_message` field of the rejection event (see
+/// `session_cap_middleware` for why it is not an HTTP body).
+const SESSION_CAP_USER_MESSAGE: &str =
+    "Límite de sesiones MCP alcanzado. Inténtelo de nuevo en unos segundos.";
+
+/// Whether `path` addresses the nested MCP endpoint (`/mcp` or `/mcp/…`).
+///
+/// The cap is mounted on the whole router, so without this a POST to any
+/// other path would burn a session slot — and answering a 404 with 429 is how
+/// a scanner locks a legitimate operator out of its own server.
+fn is_mcp_endpoint(path: &str) -> bool {
+    path == MCP_ENDPOINT_PATH
+        || path
+            .strip_prefix(MCP_ENDPOINT_PATH)
+            .is_some_and(|rest| rest.starts_with('/'))
+}
+
+/// Whether this request is one rmcp will turn into a new session.
+///
+/// Deliberately NOT "the body says `initialize`". The predicate mirrors
+/// rmcp 1.8.0's own allocation trigger: `handle_post` calls
+/// `session_manager.create_session()` in exactly one place (`tower.rs:1129`),
+/// the `else` arm of "do we have a session id?" — a POST to `/mcp` with no
+/// `mcp-session-id` header. Everything else (a session-bearing POST, GET,
+/// DELETE) rides an existing session or allocates nothing.
+fn creates_session(request: &axum::http::Request<axum::body::Body>) -> bool {
+    request.method() == Method::POST
+        && !request.headers().contains_key(MCP_SESSION_ID_HEADER)
+        && is_mcp_endpoint(request.uri().path())
+}
+
+/// Admission control for Streamable HTTP sessions (#1611, F6).
+///
+/// # The finding
+///
+/// `build_mcp_router` composes rmcp's `LocalSessionManager::default()`
+/// (`session/local.rs:30-34`), whose only knobs are `SessionConfig`'s timeouts
+/// and channel capacity: `keep_alive` bounds the life of ONE session, never how
+/// many exist, and neither `SessionManager` nor `StreamableHttpServerConfig`
+/// carries a count anywhere in the crate. A client can therefore open sessions
+/// without bound.
+///
+/// # Why a middleware and not a `SessionManager` wrapper
+///
+/// The semantically correct shape is a newtype implementing `SessionManager`,
+/// delegating to `LocalSessionManager` and refusing `create_session` past the
+/// cap by reading its public `sessions` map: it would count REAL sessions and a
+/// DELETE would free its slot on the spot. It is deliberately not this slice,
+/// because rmcp maps a `create_session` error to **HTTP 500 with a plain-text
+/// body** (`internal_error_response`, `transport/common/server_side_http.rs`)
+/// — a load-shedding condition answered as a server fault, with no JSON-RPC
+/// envelope to explain it. A middleware answers 429 at the HTTP layer, next to
+/// the rate limiter that already rejects with a bare `StatusCode`. Exact
+/// per-session accounting is the follow-up slice.
+///
+/// # What is counted, and why
+///
+/// The counter is charged by `creates_session`, i.e. by rmcp's own allocation
+/// trigger (see that function). Counting `initialize` *bodies* instead would
+/// leave the resource uncapped through a path this crate does not own: rmcp
+/// allocates the session at `tower.rs:1129` and only THEN checks that the
+/// message is an initialize request (`tower.rs:1146`), so a session-less POST
+/// of anything else is answered `422` and still leaves an entry in the session
+/// map — whose worker gives up on `init_timeout` without the manager ever
+/// removing it. The predicate therefore charges the requests that allocate,
+/// and over-charges the ones rmcp rejects at its own gates (406 / 415 / 422) —
+/// over-counting sheds load, never admits it.
+///
+/// # What this cap does NOT know (all three accepted, none hidden)
+///
+/// 1. **It counts requests, not live sessions.** For a well-behaved client the
+///    two coincide — every re-`initialize` allocates a second session and
+///    never reuses the first — so a client that re-initializes is charged for
+///    work it really did. The divergence is only in the safe direction:
+///    malformed traffic is charged for sessions that were never created.
+/// 2. **A DELETE does not free its slot.** rmcp closes the session at once; the
+///    slot is released when the window slides. Bounded by construction: a slot
+///    outlives its request by at most the window, which defaults to the
+///    session's own maximum lifetime, so the only over-hold is a client that
+///    closed a session early and keeps its slot for the rest of the window.
+///    Freeing it exactly would need the session id of each admission — the
+///    `SessionManager` follow-up's job.
+/// 3. **A client that re-initializes periodically does spend budget.** Steady
+///    state is (re-initializations per second × window) slots, so the defaults
+///    admit one reconnect every ~4.7s indefinitely; a client that reconnects
+///    faster than that is doing exactly what the cap exists to bound. Raise
+///    `max_sessions` for a larger fleet.
+///
+/// # One honest limitation
+///
+/// Admission is a check-then-act on a shared counter, so N requests racing at
+/// the same instant can admit up to N slots. There is no atomic reservation
+/// across the request boundary, and there is no later eviction to undo it, so
+/// concurrent overshoot past `max_sessions` is possible and accepted; the
+/// per-window expiry is what bounds it in time.
+struct SessionCap {
+    /// Slots available inside one window.
+    max: NonZeroUsize,
+    /// Lifetime of a single slot, measured from the admission that took it.
+    window: Duration,
+    /// Admission instants currently holding a slot, oldest first. Bounded by
+    /// `max`: a rejected request never pushes, so the deque cannot grow past
+    /// the cap it enforces.
+    admitted: Mutex<VecDeque<Instant>>,
+}
+
+impl SessionCap {
+    /// Build a cap of `max` slots, each living `window`.
+    fn new(max: NonZeroUsize, window: Duration) -> Self {
+        Self {
+            max,
+            window,
+            admitted: Mutex::new(VecDeque::with_capacity(max.get())),
+        }
+    }
+
+    /// Charge one slot at `now`, or report how many are held.
+    ///
+    /// `Ok(held)` is the count AFTER the admission; `Err(held)` is the count
+    /// that refused it. The whole decision happens inside one short
+    /// synchronous section, so no lock is ever held across an `.await`.
+    ///
+    /// `now` is a parameter rather than `Instant::now()` so the eviction
+    /// boundary is testable exactly instead of approximately after a sleep —
+    /// there is one production caller and it passes the wall clock.
+    fn try_admit(&self, now: Instant) -> Result<usize, usize> {
+        let mut admitted = self.lock();
+        while admitted
+            .front()
+            .is_some_and(|at| now.duration_since(*at) >= self.window)
+        {
+            admitted.pop_front();
+        }
+        let held = admitted.len();
+        if held >= self.max.get() {
+            return Err(held);
+        }
+        admitted.push_back(now);
+        Ok(held + 1)
+    }
+
+    /// Slots currently held — test-only view, without pruning.
+    #[cfg(test)]
+    fn held(&self) -> usize {
+        self.lock().len()
+    }
+
+    /// Recover from a poisoned mutex instead of propagating the panic.
+    ///
+    /// The critical section only prunes and pushes one timestamp, so a panic
+    /// inside it can leave a stale entry but never a corrupted counter —
+    /// whereas propagating the poison would turn one panicking request into a
+    /// cap that is broken for the life of the process.
+    fn lock(&self) -> std::sync::MutexGuard<'_, VecDeque<Instant>> {
+        self.admitted
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+/// Session admission middleware — sheds session-creating requests past the cap
+/// with 429, and charges nothing for traffic on an established session.
+///
+/// Rejection is a bare [`StatusCode::TOO_MANY_REQUESTS`], exactly like
+/// `rate_limit_middleware`: load shedding is an HTTP-layer answer, and the
+/// repo does not answer it with a JSON-RPC envelope. The reason a client was
+/// shed therefore reaches the operator and not the agent — as the Spanish
+/// `user_message` field of the event below (tracing field names and event
+/// messages stay English; the sentence a human hands to a user is Spanish).
+///
+/// `log_scrape_error` is deliberately NOT used: its shape is an error VALUE
+/// plus a URL, a stage and a correlation id for a scrape failure, and a shed
+/// admission is neither — there is no error, no URL and no scrape to correlate.
+/// A structured event at the decision point, carrying the limit, the live count
+/// and the operation, is the honest shape.
+async fn session_cap_middleware(
+    State(cap): State<Arc<SessionCap>>,
+    request: axum::http::Request<axum::body::Body>,
+    next: middleware::Next,
+) -> Result<impl axum::response::IntoResponse, axum::http::StatusCode> {
+    if !creates_session(&request) {
+        return Ok(next.run(request).await);
+    }
+
+    match cap.try_admit(Instant::now()) {
+        Ok(held) => {
+            tracing::debug!(
+                operation = SESSION_OPERATION,
+                limit = cap.max.get(),
+                admitted = held,
+                window_secs = cap.window.as_secs(),
+                "session admitted within the admission cap"
+            );
+            Ok(next.run(request).await)
+        },
+        Err(held) => {
+            tracing::warn!(
+                operation = SESSION_OPERATION,
+                limit = cap.max.get(),
+                admitted = held,
+                window_secs = cap.window.as_secs(),
+                user_message = SESSION_CAP_USER_MESSAGE,
+                "session admission cap exceeded — rejecting the request with 429"
             );
             Err(axum::http::StatusCode::TOO_MANY_REQUESTS)
         },
@@ -592,6 +884,130 @@ mod tests {
         assert_eq!(opts.rate_per_second, 10);
         assert_eq!(opts.rate_burst, 20);
         assert!(opts.auth_token.is_none());
+        assert_eq!(opts.max_sessions.get(), DEFAULT_MAX_SESSIONS);
+        assert_eq!(
+            opts.session_cap_window_secs.get(),
+            DEFAULT_SESSION_CAP_WINDOW_SECS
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // F6 session admission cap (#1611)
+    // ------------------------------------------------------------------
+
+    /// The defaults are load-bearing for every other suite: `ServerOptions::default()`
+    /// is what all the integration tests build, so a default low enough to shed
+    /// honest traffic would fail the whole crate, and a default high enough to
+    /// never bind would silently disable the cap. Pinned here, next to the
+    /// constants, because both are otherwise only observable through a 429.
+    #[test]
+    fn session_cap_defaults_bound_a_real_fleet() {
+        assert_eq!(DEFAULT_MAX_SESSIONS, 64);
+        // 300 is rmcp's `SessionConfig::keep_alive` default, which is the whole
+        // justification for the number (see the constant's doc comment).
+        assert_eq!(DEFAULT_SESSION_CAP_WINDOW_SECS, 300);
+    }
+
+    fn cap(max: usize, window_secs: u64) -> SessionCap {
+        SessionCap::new(
+            NonZeroUsize::new(max).expect("test max is non-zero"),
+            Duration::from_secs(window_secs),
+        )
+    }
+
+    /// The cap admits exactly `max` and then refuses, and the refusal carries
+    /// the count that produced it.
+    #[test]
+    fn try_admit_refuses_past_the_cap_and_reports_the_live_count() {
+        let cap = cap(3, 300);
+        let t0 = Instant::now();
+        assert_eq!(cap.try_admit(t0), Ok(1));
+        assert_eq!(cap.try_admit(t0), Ok(2));
+        assert_eq!(cap.try_admit(t0), Ok(3));
+        assert_eq!(cap.try_admit(t0), Err(3));
+        assert_eq!(cap.try_admit(t0), Err(3));
+        assert_eq!(cap.held(), 3, "a refused request must not consume a slot");
+    }
+
+    /// A slot is released when ITS window slides, not when the counter as a
+    /// whole rolls over: a fixed-window counter would let one client admit
+    /// `2 × max` by straddling a boundary. Two admissions 1s apart in a 1s
+    /// window therefore shed the second and admit the first's replacement.
+    ///
+    /// Time is injected (`try_admit` takes the instant), so this is exact at
+    /// the eviction boundary instead of approximate after a sleep.
+    #[test]
+    fn a_slot_is_released_when_its_own_window_slides() {
+        let cap = cap(1, 1);
+        let t0 = Instant::now();
+        assert_eq!(cap.try_admit(t0), Ok(1));
+        assert_eq!(cap.try_admit(t0 + Duration::from_millis(999)), Err(1));
+        assert_eq!(
+            cap.try_admit(t0 + Duration::from_secs(1)),
+            Ok(1),
+            "an admission exactly one window old is expired"
+        );
+    }
+
+    /// Pruning releases only the AGED-OUT admissions: a fresh one survives, so
+    /// the cap measures a sliding window and not "everything since the last
+    /// full reset". (Clearing the deque on prune would pass the test above and
+    /// fail here.)
+    #[test]
+    fn pruning_releases_only_the_aged_out_admissions() {
+        let cap = cap(2, 10);
+        let t0 = Instant::now();
+        assert_eq!(cap.try_admit(t0), Ok(1));
+        assert_eq!(cap.try_admit(t0 + Duration::from_secs(6)), Ok(2));
+
+        // t=12s: the first admission (12s old) expired, the second (6s old)
+        // did not — so exactly one slot came back.
+        assert_eq!(cap.try_admit(t0 + Duration::from_secs(12)), Ok(2));
+        assert_eq!(cap.try_admit(t0 + Duration::from_secs(12)), Err(2));
+    }
+
+    /// The predicate is the contract with rmcp: charge the requests that make
+    /// it call `create_session`, and nothing else. Each row is a real traffic
+    /// class, so a change here changes who pays for a session.
+    #[test]
+    fn creates_session_matches_only_rmcps_own_allocation_trigger() {
+        let build = |method: &str, path: &str, session: bool| {
+            let mut builder = axum::http::Request::builder().method(method).uri(path);
+            if session {
+                builder = builder.header(MCP_SESSION_ID_HEADER, "s-1");
+            }
+            builder
+                .body(axum::body::Body::empty())
+                .expect("valid request")
+        };
+
+        // The allocation trigger itself.
+        assert!(creates_session(&build("POST", "/mcp", false)));
+        assert!(creates_session(&build("POST", "/mcp/", false)));
+        // Established-session traffic: rides a session, allocates nothing.
+        assert!(!creates_session(&build("POST", "/mcp", true)));
+        // GET opens the SSE stream of an existing session; DELETE closes one.
+        assert!(!creates_session(&build("GET", "/mcp", false)));
+        assert!(!creates_session(&build("DELETE", "/mcp", false)));
+        // Off-endpoint POSTs must not burn a slot (a scanner could otherwise
+        // lock the operator out with requests that allocate nothing).
+        assert!(!creates_session(&build("POST", "/", false)));
+        assert!(!creates_session(&build("POST", "/mcp-not", false)));
+        assert!(!creates_session(&build("POST", "/other", false)));
+    }
+
+    /// The user-facing sentence is Spanish, like every other message a human
+    /// reads out of this server (`panic_messages_are_spanish` pins the same
+    /// convention for the contained-panic bodies).
+    #[test]
+    fn session_cap_user_message_is_spanish() {
+        let has_spanish_char = SESSION_CAP_USER_MESSAGE
+            .chars()
+            .any(|c| matches!(c, 'ñ' | 'á' | 'é' | 'í' | 'ó' | 'ú'));
+        assert!(
+            SESSION_CAP_USER_MESSAGE.contains("Límite") && has_spanish_char,
+            "the operator-facing sentence must be Spanish, got: {SESSION_CAP_USER_MESSAGE}"
+        );
     }
 
     #[test]

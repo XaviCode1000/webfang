@@ -5,13 +5,15 @@
 //! This replaces the old `examples/mcp_server.rs` example.
 
 use std::net::SocketAddr;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::Arc;
 
 use anyhow::Result;
 use clap::Parser;
 use webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV;
 use webfang_mcp::mcp_server::server::{
-    require_auth_for_external_bind, start_mcp_server, ServerOptions, DEFAULT_MCP_ADDR,
+    require_auth_for_external_bind, start_mcp_server, ServerOptions, DEFAULT_MAX_SESSIONS,
+    DEFAULT_MCP_ADDR, DEFAULT_SESSION_CAP_WINDOW_SECS,
 };
 use webfang_mcp::mcp_server::{
     build_container, build_mcp_state, default_dom_inspector, spawn_ai_wiring, McpState,
@@ -46,6 +48,24 @@ struct Args {
     #[arg(long, env = "WEBFANG_MCP_BURST", default_value_t = 20)]
     burst: u32,
 
+    /// Admission cap: how many new MCP sessions may be created per window
+    /// before the server sheds further ones with 429 (#1611, F6). Must be > 0.
+    #[arg(
+        long,
+        env = "WEBFANG_MCP_MAX_SESSIONS",
+        default_value_t = DEFAULT_MAX_SESSIONS
+    )]
+    max_sessions: usize,
+
+    /// Admission cap: how long (seconds) one admitted session keeps its slot in
+    /// the budget. Must be > 0. Defaults to rmcp's own session keep-alive.
+    #[arg(
+        long,
+        env = "WEBFANG_MCP_SESSION_CAP_WINDOW_SECS",
+        default_value_t = DEFAULT_SESSION_CAP_WINDOW_SECS
+    )]
+    session_cap_window_secs: u64,
+
     /// Auth token; if set, requires `Authorization: Bearer <token>`.
     #[arg(long, env = "WEBFANG_MCP_AUTH_TOKEN")]
     auth_token: Option<String>,
@@ -76,6 +96,32 @@ fn build_state(
     Ok(build_mcp_state(container, export_roots)?.with_inspector(default_dom_inspector()))
 }
 
+/// Validate the session admission cap (#1611, F6) at the argv boundary.
+///
+/// `ServerOptions` types both knobs as `NonZero*`, so a zero coming from a flag
+/// or `WEBFANG_MCP_MAX_SESSIONS` is a misconfiguration and NOT a mode: clamping
+/// it to 1 in silence is how `CategoryLimits` used to hide one, and reading it
+/// as "never release" would turn the cap into a lifetime lockout. Both fail
+/// fast with a Spanish operator message instead.
+fn require_positive_max_sessions(raw: usize) -> Result<NonZeroUsize> {
+    NonZeroUsize::new(raw).ok_or_else(|| {
+        anyhow::anyhow!(
+            "El límite de sesiones debe ser mayor que 0 (recibido: {raw}). Defina --max-sessions o WEBFANG_MCP_MAX_SESSIONS con un valor positivo."
+        )
+    })
+}
+
+/// Window counterpart of [`require_positive_max_sessions`]: zero would mean
+/// "a slot is never released", silently converting the cap into a permanent one
+/// for the life of the process.
+fn require_positive_session_cap_window(raw: u64) -> Result<NonZeroU64> {
+    NonZeroU64::new(raw).ok_or_else(|| {
+        anyhow::anyhow!(
+            "La ventana del límite de sesiones debe ser mayor que 0 segundos (recibido: {raw}). Defina --session-cap-window-secs o WEBFANG_MCP_SESSION_CAP_WINDOW_SECS con un valor positivo."
+        )
+    })
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -93,6 +139,12 @@ async fn main() -> Result<()> {
     // REQ-06: fail fast on a tokenless non-loopback bind, before building any
     // container/downloader. Loopback binds stay token-free (development mode).
     require_auth_for_external_bind(args.bind, args.auth_token.is_some())?;
+    // Same fail-fast discipline for the session admission cap (REQ-06's
+    // rationale, one knob over): a zero cap is rejected here, before the
+    // container/downloader exist, not at the composition below.
+    let max_sessions = require_positive_max_sessions(args.max_sessions)?;
+    let session_cap_window_secs =
+        require_positive_session_cap_window(args.session_cap_window_secs)?;
     if args.bind.ip().is_loopback() && args.auth_token.is_none() {
         tracing::warn!("MCP server starting on loopback without auth token (development mode)");
     }
@@ -123,6 +175,8 @@ async fn main() -> Result<()> {
         rate_per_second: args.rate,
         rate_burst: args.burst,
         auth_token: args.auth_token,
+        max_sessions,
+        session_cap_window_secs,
     };
 
     // Disable SSRF for testing with env var, otherwise use default (enabled)
@@ -177,6 +231,58 @@ mod tests {
             state.allowed_export_roots.as_slice(),
             roots.as_slice(),
             "HTTP must honor --export-roots / WEBFANG_MCP_EXPORT_ROOTS (#696)"
+        );
+    }
+
+    /// #1611 F6: a zero cap fails fast at the argv boundary with a Spanish
+    /// message naming both configuration surfaces. The old `CategoryLimits`
+    /// clamp made a zero limit silently mean 1 and hid the misconfiguration —
+    /// pinning the refusal is what keeps that from coming back here.
+    #[test]
+    fn zero_session_cap_is_refused_with_a_spanish_message() {
+        let err = require_positive_max_sessions(0)
+            .expect_err("a cap of zero must be refused, not clamped")
+            .to_string();
+        assert!(
+            err.contains("--max-sessions"),
+            "message must name the flag: {err}"
+        );
+        assert!(
+            err.contains("WEBFANG_MCP_MAX_SESSIONS"),
+            "message must name the env var: {err}"
+        );
+        assert_eq!(
+            require_positive_max_sessions(1)
+                .expect("one is valid")
+                .get(),
+            1
+        );
+        assert_eq!(
+            require_positive_max_sessions(64).expect("valid cap").get(),
+            64
+        );
+    }
+
+    /// Same for the window: zero would mean "never release a slot", i.e. a
+    /// lifetime cap nobody asked for.
+    #[test]
+    fn zero_session_cap_window_is_refused_with_a_spanish_message() {
+        let err = require_positive_session_cap_window(0)
+            .expect_err("a zero window must be refused, not clamped")
+            .to_string();
+        assert!(
+            err.contains("--session-cap-window-secs"),
+            "message must name the flag: {err}"
+        );
+        assert!(
+            err.contains("WEBFANG_MCP_SESSION_CAP_WINDOW_SECS"),
+            "message must name the env var: {err}"
+        );
+        assert_eq!(
+            require_positive_session_cap_window(1)
+                .expect("one second is valid")
+                .get(),
+            1
         );
     }
 }
