@@ -421,7 +421,14 @@ codegraph init                                     # CodeGraph: source explorati
 codedb reindex && codedb status                    # CodeDB: root MUST be $PWD, head MUST match git rev-parse --short HEAD
 # — same without cd: codedb "$PWD" reindex && codedb "$PWD" status
 # Index lives in BOTH ./codedb.snapshot AND ~/.codedb/projects/<hash>/ (see data: in status).
-cargo build                                        # cold on an isolated target (#1267): measured 2m23s for --workspace, not a blocker
+
+# OPTIONAL, never required. Seeding reuses what a previous build already compiled
+# (measured: 162 s cold -> 18 s seeded, for a 0.7 s clone). If there is no
+# compatible seed, or the filesystem cannot clone one, it reports `cold` and you
+# build normally — see "Seed contract" below.
+bash scripts/seed_target.sh
+
+cargo build                                        # cold or seeded; both are correct, and the script says which
 ```
 
 > ⚠️ **`.envrc` + `direnv allow` is mandatory per worktree, and is now ENFORCED.** In a **worktree** it points `CARGO_TARGET_DIR` at a per-tree isolated dir (`~/.cache/cargo-target/<tree-name>`), which is what #1267 requires; the cost is that BoringSSL and every dependency compile again per worktree — measured at 2 m 23 s for `cargo build --workspace`, which is cheap enough that it must never be used as an argument to share a target dir between concurrent builds (#1267). Only `main` uses the shared cache, because there it is a single live tree and therefore sequential by construction.
@@ -485,6 +492,56 @@ list-timers --all` lists no such unit and `~/.config/systemd/user/` does not exi
 step of the runbook above is therefore entirely manual. If the timer is ever installed,
 restore the description here with its actual scope.
 
+### Seed contract
+
+A **seed** is a deliberately published build reference that a new worktree can
+clone to skip most of its first compile. It is an optimisation, never a
+requirement: every rule below has a cold-build answer, and no agent workflow
+depends on a seed existing.
+
+Three different things, and conflating them is the bug this section exists to
+prevent:
+
+```text
+worktree target   mutable state, owned by one agent, disposable
+seed              shared reference, published on purpose, never written by a consumer
+cargo cache       possible future upstream mechanism, not a dependency today
+```
+
+Cargo is developing a cross-workspace cache upstream (2026 goal: cross-workspace
+recompilation and disk duplication). That is context for the future, not
+something this bootstrap relies on or waits for.
+
+**The rules.**
+
+- Your `CARGO_TARGET_DIR` is **yours alone** (`~/.cache/cargo-target/<tree-name>`). Never build into `main`'s target, and never two worktrees into one dir — that is #1267, where an E2E run silently executes the other tree's binary.
+- `scripts/seed_target.sh` **consumes** a seed. It never publishes one. Publication is a separate, explicit step run by a maintainer; a worktree that finds no seed must not create one. Publishing from a worktree would turn a read into a mutation and put two trees racing for the same reference.
+- A seed is used **only** when its compatibility key matches yours exactly. The key covers toolchain, target triple, profile, flags, cargo config, features and `Cargo.lock`. It deliberately does **not** cover your commit, branch, worktree path or workspace identity — those are exactly the things that must not stop one worktree reusing another's compiled dependencies.
+- **`CARGO_TARGET_DIR` pointing at a seed is rejected**, by `scripts/ci_fast_gate.sh`, before Cargo runs, and regardless of whether that seed is healthy. The decision is on the path's identity alone. Building into a reference would write your units into the tree every later worktree copies from.
+- **If `build-dir` is configured, do not seed.** Cargo keeps build-script output in a separate location with an internal layout, and that is where the bulk of what a seed saves lives. It is stable since Rust 1.91, so this is a policy decision about what we can reason about, not a workaround. The check covers every config source Cargo reads, including ones outside the repo.
+- Cloning uses `reflink=always`, never `auto`. `auto` silently falls back to a full copy on a filesystem without copy-on-write, which is slower and quietly not what you asked for. If the clone fails for any reason, you get a cold build.
+
+**When there is no seed, or no compatible one:** build cold and carry on. Do not go
+hunting for another seed, do not fall back to `main`'s target, do not edit a seed,
+and do not publish one from your worktree. A performance optimisation that turns
+into a workflow dependency is a regression, and the cold path is fully supported —
+it is the path every first build before any seed existed took.
+
+**Reading the result.** `seed_target.sh` prints one line, and it is worth reading:
+
+```text
+seed: seeded  reason=…    → reuse happened; the build is genuinely faster
+seed: cold    reason=…    → correct build, no reuse; nothing is wrong
+```
+
+`cold` is a normal outcome, not a failure. `reason` names which condition applied
+(no seed for this key, incompatible seed, clone unavailable, …), which is how you
+tell "there simply isn't one" from "the one here cannot be used".
+
+**Not in this contract, on purpose:** which build artifacts a seed contains or
+how it is produced. `scripts/test_seed_contamination.sh` asserts the seed's
+observable behaviour, not cargo's internal layout, and neither should you.
+
 ### Shared vs. per-worktree resources
 
 | Resource | Shared? | Action required |
@@ -497,6 +554,7 @@ restore the description here with its actual scope.
 | `.env` | ❌ Per-worktree | Manual `cp` from main |
 | `.codegraph/` index | ❌ Per-worktree | `codegraph init` |
 | `codedb.snapshot` + `~/.codedb/projects/<hash>/` | ❌ Per-worktree | `codedb reindex` inside the worktree |
+| Seeds (`~/.cache/cargo-target/seeds/`) | ✅ Shared, read-only | Consumed by `seed_target.sh`; never written by a worktree; `ci_fast_gate.sh` rejects it as a `CARGO_TARGET_DIR` |
 | Git stash (`refs/stash`) | ⚠️ Shared (DANGER) | **NEVER use `git stash`** |
 
 ### CodeDB/CodeGraph in worktrees
