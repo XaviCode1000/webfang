@@ -1103,7 +1103,7 @@ jobs:
   # SCHEDULED: Miri (UB detection on nightly)
   #
   # Design (three-layer defence):
-  #   1. Code level: tests that depend on boring-sys2 FFI (boring2/wreq) or
+  #   1. Code level: tests that depend on btls-sys FFI (btls/wreq) or
   #      onig-sys (syntect) use #[cfg_attr(miri, ignore)] or live in
   #      #[cfg(not(miri))] modules. Miri cannot execute C FFI nor inline
   #      assembly (raw-cpuid via quanta/governor).
@@ -1223,7 +1223,7 @@ jobs:
     timeout-minutes: 120
     # #1510/#1633: advisory, same contract and same structural rationale as
     # the `miri` matrix job above — Miri cannot execute BoringSSL FFI
-    # (TLS_method via boring2/wreq), inline assembly (raw-cpuid via
+    # (TLS_method via btls/wreq), inline assembly (raw-cpuid via
     # quanta/governor) or recent syscalls, so this job's redness is a property
     # of the interpreter, not of the tree. continue-on-error keeps the UB sweep
     # running and keeps its failures visible PER-JOB while removing its power

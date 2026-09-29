@@ -54,8 +54,8 @@ and every on-disk root an install leaves behind:
 <details>
 <summary>Install from source (contributors, not an end-user route)</summary>
 
-Requires Rust 1.88, a C/C++ compiler, and **`cmake`** — `wreq` → `boring2` →
-`boring-sys2` compiles BoringSSL from C++ on first build, and without
+Requires Rust 1.88, a C/C++ compiler, and **`cmake`** — `wreq` → `btls` →
+`btls-sys` (formerly `boring2`/`boring-sys2`) compiles BoringSSL from C++ on first build, and without
 `cmake` the failure surfaces deep in a build script with an error that says
 nothing about the real cause.
 

@@ -1047,7 +1047,7 @@ mod tests {
         (tmp, container)
     }
 
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn test_container_wires_crawl_result_repository() {
         let (_tmp, container) = make_test_container().await;
@@ -1062,7 +1062,7 @@ mod tests {
     /// `with_elastic_ingestion` (`create_pool` stats/creates directories,
     /// `StreamRepository::new` does create_dir_all + File::create). The
     /// wiring contract must hold after the move: sink active, file created.
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn test_with_elastic_ingestion_wires_stream_sink() {
         let (tmp, container) = make_test_container().await;
@@ -1113,7 +1113,7 @@ mod tests {
     /// Wiring: `Container::new` arms the process-wide SSRF guard registry.
     /// Strict-TDD RED without the step-6b arm (fresh nextest process starts
     /// with the registry unarmed; the fallback does not count as armed).
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn test_container_arms_ssrf_guard() {
         let (_tmp, _container) = make_test_container().await;
@@ -1139,7 +1139,7 @@ mod tests {
     /// the winner is exactly the sentinel and the test also proves it
     /// survives `Container::new`), while plain `cargo test` shares one
     /// process where a sibling may have armed it first.
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn test_container_ssrf_guard_arming_is_keep_first() {
         #[derive(Debug, Default)]
@@ -1242,11 +1242,11 @@ mod tests {
     /// `build_sitemap_parser` is the sanctioned place where the domain
     /// `SitemapConfig` DTO + TLS profile become an `Arc<dyn SitemapParserPort>`.
     /// Unlike the session-pool seam, construction builds the wreq fetch client
-    /// (boring-sys2 FFI), so this test follows the established Miri-ignore
+    /// (btls-sys FFI), so this test follows the established Miri-ignore
     /// pattern of every other client-building container test. The assertion is
     /// that the seam succeeds and the erased port type is constructible; no
     /// network call is made.
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[test]
     fn build_sitemap_parser_returns_usable_port() {
         let parser = build_sitemap_parser(
@@ -1265,7 +1265,7 @@ mod tests {
 
     // --- Tests for expanded Container (Phase 3: DI with port/adapter) ---
 
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn test_container_provides_all_required_services() {
         let (_tmp, container) = make_test_container().await;
@@ -1285,7 +1285,7 @@ mod tests {
         );
     }
 
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn test_container_http_client_implements_port() {
         let (_tmp, container) = make_test_container().await;
@@ -1296,7 +1296,7 @@ mod tests {
         // If this compiles, the port trait is properly implemented
     }
 
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn test_container_config_accessors() {
         let (tmp, container) = make_test_container().await;
@@ -1309,7 +1309,7 @@ mod tests {
         );
     }
 
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn test_container_clone_shares_services() {
         let (_tmp, container) = make_test_container().await;
@@ -1360,7 +1360,7 @@ mod tests {
     }
 
     /// REQ-05 (absence): a freshly built container reports no cleaner.
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn cleaner_absent_by_default() {
         let (_tmp, container) = make_test_container().await;
@@ -1371,7 +1371,7 @@ mod tests {
     }
 
     /// REQ-05 (injection): `with_cleaner` makes the accessor report present.
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn with_cleaner_sets_cleaner() {
         let (_tmp, container) = make_test_container().await;
@@ -1411,7 +1411,7 @@ mod tests {
     }
 
     /// #789 (absence): a freshly built container reports no LLM port.
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn llm_port_absent_by_default() {
         let (_tmp, container) = make_test_container().await;
@@ -1422,7 +1422,7 @@ mod tests {
     }
 
     /// #789 (injection): `with_llm_port` makes the accessor report present.
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn with_llm_port_sets_llm_port() {
         let (_tmp, container) = make_test_container().await;
@@ -1451,7 +1451,7 @@ mod tests {
     }
 
     /// Absence: a freshly built container reports no vault note reader.
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn vault_note_reader_absent_by_default() {
         let (_tmp, container) = make_test_container().await;
@@ -1462,7 +1462,7 @@ mod tests {
     }
 
     /// Injection: `with_vault_note_reader` makes the accessor report present.
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn with_vault_note_reader_sets_reader() {
         let (_tmp, container) = make_test_container().await;
