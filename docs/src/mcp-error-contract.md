@@ -105,7 +105,7 @@ All five branches come from one function, `validate_url_no_ssrf`
 This pre-check is not the enforcement point. Every scrape client is independently guarded
 at connect time by `webfang_core::domain::ssrf_guard` (literal-IP redirect policy +
 validating resolver), so A6/A9 are fast-fail UX and defense in depth. See
-[`ssrf-layers.md`](../ssrf-layers.md) for the full layer matrix.
+`docs/ssrf-layers.md` for the full layer matrix.
 
 ### A10–A16 · handler-local protocol errors
 
@@ -170,7 +170,7 @@ provenance envelope and no code is added** — the reason is the text and nothin
 | B3.10 | `url_to_file_path` — `OutputPath::from_url` failed | none | No | Fix the URL. | `mcp_server/handlers/url_utils.rs:193` |
 
 The per-class retry policy these texts inherit is
-[`error-classification-matrix.md`](../error-classification-matrix.md). The MCP channel
+`docs/error-classification-matrix.md`. The MCP channel
 carries no exit code, so the class is not machine-readable here — the agent must parse
 the text.
 
