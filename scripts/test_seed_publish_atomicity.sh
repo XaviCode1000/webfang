@@ -117,6 +117,48 @@ check "successful refresh: replaced" \
 check "successful refresh: still valid" "$(seed_is_valid "$DEST" && echo yes || echo no)" "yes"
 check "no .retired left behind" "$(ls -A "$SEEDS" | grep -c '^\.retired' || true)" "0"
 
+# --- 6. a crash between retire and publish leaves a RECOVERABLE key ---------
+# Two renames cannot be made atomic with each other. If the process dies after
+# the old seed is retired, the key is absent — safe (the consumer goes cold) but
+# it must not be permanent. What makes recovery possible is the key being part
+# of the retired name, so seed_recover.sh can attribute the orphan without
+# guessing. Simulated here by performing the retire by hand, exactly as the
+# transaction does, and leaving the publish undone.
+S="$(mkstage x crash-donor)"
+chmod -R a-w "$S"; chmod 555 "$S"
+chmod -R u+w "$DEST" 2>/dev/null || true
+mv "$DEST" "$SEEDS/.retired.$KEY.99999"
+check "crash: key is absent" "$([ -d "$DEST" ] && echo yes || echo no)" "no"
+check "crash: backup carries the key in its name" \
+  "$([ -d "$SEEDS/.retired.$KEY.99999" ] && echo yes || echo no)" "yes"
+OUT="$(bash "$SCRIPT_DIR/seed_recover.sh" --seeds-root "$SEEDS" 2>&1)"
+check "crash: seed_recover restores the key" "$([ -d "$DEST" ] && echo yes || echo no)" "yes"
+check "crash: restored seed still valid" "$(seed_is_valid "$DEST" && echo yes || echo no)" "yes"
+check "crash: no backup left" "$(ls -A "$SEEDS" | grep -c '^\.retired' || true)" "0"
+case "$OUT" in *restored=1*) ok "crash: recovery reported the restore" ;;
+  *) bad "crash: recovery did not report the restore ($OUT)" ;; esac
+
+# A stale backup must be reported, never silently deleted: a seed at the same key
+# means something was published after it, and deciding which to keep is not this
+# script's call.
+mkstage x stale-donor; chmod -R a-w "$S"; chmod 555 "$S"
+mkdir -p "$SEEDS/.retired.$KEY.88888"; echo x >"$SEEDS/.retired.$KEY.88888/marker"
+OUT="$(bash "$SCRIPT_DIR/seed_recover.sh" --seeds-root "$SEEDS" 2>&1)"
+check "stale backup: kept" "$([ -d "$SEEDS/.retired.$KEY.88888" ] && echo yes || echo no)" "yes"
+# Asserted on the summary counter, not on the word: "stale" legitimately appears
+# in the per-item line, the summary and the closing note.
+case "$OUT" in *"stale=1"*) ok "stale backup: reported in the summary" ;;
+  *) bad "stale backup: not reported as stale=1 ($OUT)" ;; esac
+rm -rf "$SEEDS/.retired.$KEY.88888" 2>/dev/null
+
+# An orphaned staging tree is reported, never restored: a half-built reference is
+# not a seed, and promoting it would be the exact failure mode this file exists to
+# prevent.
+mkdir -p "$SEEDS/.staging.orphan"
+OUT="$(bash "$SCRIPT_DIR/seed_recover.sh" --seeds-root "$SEEDS" 2>&1)"
+check "orphan staging: not restored" "$([ -d "$SEEDS/.staging.orphan" ] && echo yes || echo no)" "yes"
+check "orphan staging: reported" "$(printf '%s' "$OUT" | grep -c 'orphaned staging' || true)" "1"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

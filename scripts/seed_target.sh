@@ -61,30 +61,54 @@ esac
 
 export SEED_REPO_ROOT="$REPO_ROOT"
 
-# build-dir refusal. Cargo separates target-dir (final artifacts) from build-dir
-# (intermediate artifacts, INCLUDING build-script outputs), and BoringSSL's
-# output — the single biggest thing this seed is for — is build-script output.
-# If build-dir is relocated, the tree seed_publish.sh prunes and measures
-# (`<target>/debug/build/`) is not the tree that gets populated, so the pruning
-# assumptions are void and we cannot reason about the result. Hashing build-dir
-# into the key would paper over that: it would claim compatibility we have not
-# established.
+if [ -n "$TARGET" ]; then KEY_ARGS+=(--target "$TARGET"); fi
+KEY="$(bash "$SCRIPT_DIR/seed_compat_key.sh" "${KEY_ARGS[@]}" --profile "$PROFILE")"
+
+# NOTE: this check must stay AFTER the key is computed. `cold` interpolates
+# $KEY, and under `set -u` calling it earlier aborts the script with
+# "KEY: variable sin asignar" instead of degrading to a cold build — which
+# is the exact failure the whole seed mechanism is built to avoid.
+# build-dir: refused when configured, on purpose — it is NOT a key field.
 #
-# Today this is latent rather than live: on Rust 1.88 stable `-Zbuild-dir` is
-# nightly-only, so the setting is ignored. It is refused anyway, because a config
-# key whose MEANING silently changes with the toolchain channel is exactly the
-# kind of thing that must not be left in place to be discovered later. Refuse,
-# and go cold.
+# Cargo stores build-script outputs in build-dir, separately from target-dir, and
+# BoringSSL's output — the single largest thing this seed exists for — is exactly
+# build-script output. Relocating build-dir means the tree the pruning measures
+# (`<target>/debug/build/`) is not the tree that gets populated. Hashing it would
+# only manufacture a compatibility claim out of a gap in what we can reason about.
+#
+# build-dir is STABLE, not nightly-only: it shipped in Rust 1.91 and its layout is
+# still internal and subject to change. WebFang is on 1.88, so on our toolchain
+# the flag is inert today — which is precisely why refusing it is a policy
+# decision rather than a workaround for a broken build. A build-dir shared across
+# worktrees is also a known Cargo footgun (rust-lang/cargo#17312: cargo can
+# conclude nothing needs rebuilding), the same contamination class this whole
+# mechanism exists to prevent.
+#
+# Detection is deliberately BROAD rather than exact: any `build-dir` in any config
+# source cargo could read refuses the seed. A refusal must fail closed. A precise
+# parser would have to model cargo's entire config precedence chain to be narrower
+# than the truth, and being wrong here means silently seeding from a tree whose
+# layout we never modelled.
 if [ -n "${CARGO_BUILD_BUILD_DIR:-}" ]; then
   cold "build-dir-configured"
 fi
-if grep -rqE '^\s*build-dir\s*=' "$REPO_ROOT/.cargo/config.toml" 2>/dev/null \
-   || grep -rqE '^\s*build-dir\s*=' "$REPO_ROOT/.cargo/config" 2>/dev/null; then
-  cold "build-dir-configured"
-fi
+for cfg in "${CARGO_HOME:-$HOME/.cargo}/config.toml" "${CARGO_HOME:-$HOME/.cargo}/config"; do
+  if [ -f "$cfg" ] && grep -q 'build-dir' "$cfg" 2>/dev/null; then
+    cold "build-dir-configured"
+  fi
+done
+# cargo also walks from the CWD up to the root looking for .cargo/config.*, so a
+# config ABOVE the repository applies to our build without living in it.
+dir="$REPO_ROOT"
+while [ "$dir" != "/" ]; do
+  for cfg in "$dir/.cargo/config.toml" "$dir/.cargo/config"; do
+    if [ -f "$cfg" ] && grep -q 'build-dir' "$cfg" 2>/dev/null; then
+      cold "build-dir-configured"
+    fi
+  done
+  dir="$(dirname "$dir")"
+done
 
-if [ -n "$TARGET" ]; then KEY_ARGS+=(--target "$TARGET"); fi
-KEY="$(bash "$SCRIPT_DIR/seed_compat_key.sh" "${KEY_ARGS[@]}" --profile "$PROFILE")"
 SEED="$SEEDS_ROOT/$KEY"
 
 [ -d "$SEED" ] || cold "no-seed"

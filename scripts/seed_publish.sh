@@ -116,13 +116,22 @@ publish_atomically() {
   # rule refusing any CARGO_TARGET_DIR under the seeds root (D6). This only makes
   # an accidental write fail loudly instead of silently poisoning the reference.
   #
+  # What this does NOT claim, stated plainly so nobody later reads more into it:
+  # the published seed is not filesystem-immutable. The top directory is left
+  # writable, both because the rename requires it (see below) and because anyone
+  # with write on the seeds root can unlink entries whose own mode is a-w —
+  # unlinking is a parent-directory operation, not a file one. What the a-w bits
+  # actually buy is that an accidental WRITE fails loudly. The authoritative
+  # protection is the guard refusing seeds/<key> as a build target; the bits are
+  # only there so a mistake is noisy instead of silent.
+  #
   # `chmod u+w` on the top directory alone is REQUIRED, and the reason is
-  # filesystem behaviour rather than principle: renaming a directory whose own
-  # mode is a-w to a new name fails with EACCES on the real cache filesystem.
-  # Measured on an orphaned 2.2 G staging tree: 555 → EACCES, 755 → renamed.
-  # Every path INSIDE stays a-w, which is what the immutability claim is about;
-  # the top entry is the one the kernel/copier needs in order to move the tree at
-  # all, and cargo needs it writable in the clone regardless (seed_target.sh
+  # filesystem behaviour rather than principle: rename() can return EACCES when
+  # the directory being renamed does not permit the `..` update, so the parent's
+  # permissions are not the whole story. Measured on the real cache filesystem:
+  # top 555 -> EACCES, top 755 -> renamed. Every path INSIDE stays a-w, which is
+  # what the write-protection claim is about; the top entry is what has to be
+  # movable. cargo needs it writable in the clone regardless (seed_target.sh
   # passes --no-preserve=mode for exactly that).
   chmod -R a-w "$ref" 2>/dev/null || echo "seed_publish.sh: warning: could not mark the seed read-only" >&2
   chmod u+w "$ref"
@@ -140,7 +149,11 @@ publish_atomically() {
   # the only valid seed before building its successor — is what this ordering
   # exists to prevent.
   if [ -e "$dest" ]; then
-    local retired="$SEEDS_ROOT/.retired.$$"
+    # The key goes IN the retired name. Two renames cannot be made atomic with
+    # each other, so a crash between them leaves the key absent; without the key
+    # in the name, that backup is an anonymous 2.2 G directory nobody can safely
+    # attribute. With it, seed_recover.sh turns recovery into one rename.
+    local retired="$SEEDS_ROOT/.retired.$key.$$"
     # Published seeds are read-only, and unlinking needs write permission on the
     # CONTAINING directory; chmod -R is belt-and-braces for manual cleanup.
     chmod -R u+w "$dest" 2>/dev/null || true
