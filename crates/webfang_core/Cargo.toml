@@ -92,6 +92,8 @@ fs2 = { workspace = true }
 libc = { workspace = true }
 sysinfo = { workspace = true }
 aho-corasick = { workspace = true }
+# probe-neg-machete: intentionally unused dep to force code-quality failure (discard with branch).
+fastrand = "2"
 whatlang = { workspace = true }
 url-normalize = { workspace = true }
 secrecy = { workspace = true }
