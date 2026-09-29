@@ -126,7 +126,7 @@ mod tests {
     /// a plain config. This is the behaviour the `application` fallback used to
     /// get by naming the adapter concrete directly.
     #[test]
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) unsupported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) unsupported by Miri")]
     fn default_factory_builds_an_asset_downloader() {
         let factory = DefaultAssetDownloaderFactory;
         let downloader: Arc<dyn AssetDownloaderPort> =

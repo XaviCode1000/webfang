@@ -508,7 +508,7 @@ mod tests {
     /// (factory wired), so the fetch goes through the production router and
     /// its resolver-level SSRF guard — the wiremock loopback needs the same
     /// entry+resolver bypass the capture tests use.
-    #[cfg(not(miri))] // wiremock + wreq use boring-sys2 FFI (unsupported by Miri)
+    #[cfg(not(miri))] // wiremock + wreq use btls-sys FFI (unsupported by Miri)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn recursive_discovery_enforces_concurrency_override_six_node_diagnostic() {
         use crate::domain::budget::tiers::{BurstPermits, CrawlConcurrency};

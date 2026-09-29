@@ -582,7 +582,7 @@ impl crate::domain::http_port::HttpClientPort for HttpClient {
 }
 
 #[cfg(test)]
-#[cfg(not(miri))] // all tests create wreq::Client with boring-sys2 FFI (unsupported by Miri)
+#[cfg(not(miri))] // all tests create wreq::Client with btls-sys FFI (unsupported by Miri)
 mod tests {
     use super::*;
     use crate::domain::http_config::HttpClientConfig;
@@ -683,7 +683,7 @@ mod tests {
 }
 
 #[cfg(test)]
-#[cfg(not(miri))] // all tests create wreq::Client with boring-sys2 FFI (unsupported by Miri)
+#[cfg(not(miri))] // all tests create wreq::Client with btls-sys FFI (unsupported by Miri)
 mod wiremock_tests {
     use super::*;
     use crate::domain::http_config::HttpClientConfig;

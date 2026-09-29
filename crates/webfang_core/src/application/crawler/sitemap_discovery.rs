@@ -806,7 +806,7 @@ async fn probe_subpath_sitemaps(base: &Url, client: &wreq::Client) -> Option<Str
 }
 
 // All tests in this module build a wreq::Client (test_client()), which
-// depends on boring-sys2 (BoringSSL → TLS_method FFI). Miri cannot execute
+// depends on btls-sys (BoringSSL → TLS_method FFI). Miri cannot execute
 // C FFI — gate the whole module instead of patching test by test, keeping
 // Miri focused on UB in pure Rust logic (same pattern as readability).
 #[cfg(all(test, not(miri)))]
@@ -835,7 +835,7 @@ mod tests {
 
     #[cfg_attr(
         miri,
-        ignore = "test_client() builds a real wreq::Client (boring-sys2 TLS_method FFI at build time); unsupported by Miri (exhaustive survey for #1563)"
+        ignore = "test_client() builds a real wreq::Client (btls-sys TLS_method FFI at build time); unsupported by Miri (exhaustive survey for #1563)"
     )]
     #[tokio::test]
     async fn discovers_via_robots_absolute_directive() {
@@ -855,7 +855,7 @@ mod tests {
 
     #[cfg_attr(
         miri,
-        ignore = "test_client() builds a real wreq::Client (boring-sys2 TLS_method FFI at build time); unsupported by Miri (exhaustive survey for #1563)"
+        ignore = "test_client() builds a real wreq::Client (btls-sys TLS_method FFI at build time); unsupported by Miri (exhaustive survey for #1563)"
     )]
     #[tokio::test]
     async fn discovers_via_robots_relative_directive() {
@@ -875,7 +875,7 @@ mod tests {
 
     #[cfg_attr(
         miri,
-        ignore = "test_client() builds a real wreq::Client (boring-sys2 TLS_method FFI at build time); unsupported by Miri (exhaustive survey for #1563)"
+        ignore = "test_client() builds a real wreq::Client (btls-sys TLS_method FFI at build time); unsupported by Miri (exhaustive survey for #1563)"
     )]
     #[tokio::test]
     async fn discovers_via_fallback_location() {
@@ -897,7 +897,7 @@ mod tests {
 
     #[cfg_attr(
         miri,
-        ignore = "test_client() builds a real wreq::Client (boring-sys2 TLS_method FFI at build time); unsupported by Miri (exhaustive survey for #1563)"
+        ignore = "test_client() builds a real wreq::Client (btls-sys TLS_method FFI at build time); unsupported by Miri (exhaustive survey for #1563)"
     )]
     #[tokio::test]
     async fn discovers_via_subpath_sitemap() {
@@ -963,7 +963,7 @@ mod tests {
     /// through to `SitemapNotFound` (issue #879).
     #[cfg_attr(
         miri,
-        ignore = "test_client() builds a real wreq::Client (boring-sys2 TLS_method FFI at build time); unsupported by Miri (exhaustive survey for #1563)"
+        ignore = "test_client() builds a real wreq::Client (btls-sys TLS_method FFI at build time); unsupported by Miri (exhaustive survey for #1563)"
     )]
     #[test]
     fn robots_txt_waf_challenge_yields_typed_error_and_trace_event() {
@@ -1020,7 +1020,7 @@ mod tests {
     /// status (REQ-WAF-09): discovery must proceed to fallbacks as before.
     #[cfg_attr(
         miri,
-        ignore = "test_client() builds a real wreq::Client (boring-sys2 TLS_method FFI at build time); unsupported by Miri (exhaustive survey for #1563)"
+        ignore = "test_client() builds a real wreq::Client (btls-sys TLS_method FFI at build time); unsupported by Miri (exhaustive survey for #1563)"
     )]
     #[tokio::test]
     async fn benign_robots_txt_mentioning_vendor_does_not_trigger_waf_error() {
@@ -1043,7 +1043,7 @@ mod tests {
 
     #[cfg_attr(
         miri,
-        ignore = "test_client() builds a real wreq::Client (boring-sys2 TLS_method FFI at build time); unsupported by Miri (exhaustive survey for #1563)"
+        ignore = "test_client() builds a real wreq::Client (btls-sys TLS_method FFI at build time); unsupported by Miri (exhaustive survey for #1563)"
     )]
     #[tokio::test]
     async fn errors_when_no_sitemap_found() {

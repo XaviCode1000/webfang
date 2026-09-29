@@ -252,7 +252,7 @@ mod tests {
     /// dependency, so the connect attempt must be rejected by the validating
     /// resolver. (The wiremock tests above pass because their base URL is an
     /// IP *literal*, which wreq resolves without consulting a custom resolver.)
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn llm_client_enforces_ssrf_guard_from_the_port() {
         // Env hermeticity (#926): the escape hatch is captured at client-build

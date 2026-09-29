@@ -1077,7 +1077,7 @@ mod tests {
         assert_eq!(dl.asset_naming, AssetNamingStrategy::Slug);
     }
 
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn test_downloader_creation() {
         let temp_dir = TempDir::new().unwrap();
@@ -1089,7 +1089,7 @@ mod tests {
         assert!(downloader.is_ok());
     }
 
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn test_downloader_lazy_directories() {
         let temp_dir = TempDir::new().unwrap();
@@ -1168,7 +1168,7 @@ mod tests {
         assert_eq!(mime_type_to_extension(""), None);
     }
 
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[test]
     fn test_generate_filename_hash_strategy() {
         let temp_dir = TempDir::new().unwrap();
@@ -1205,7 +1205,7 @@ mod tests {
         );
     }
 
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[test]
     fn test_generate_filename_slug_strategy() {
         let temp_dir = TempDir::new().unwrap();
@@ -1225,7 +1225,7 @@ mod tests {
         assert_eq!(filename, "rust-book.pdf");
     }
 
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[test]
     fn test_generate_filename_content_disposition() {
         let temp_dir = TempDir::new().unwrap();
@@ -1245,7 +1245,7 @@ mod tests {
         assert_eq!(filename, "annual-report.pdf");
     }
 
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[test]
     fn test_generate_filename_content_disposition_fallback() {
         let temp_dir = TempDir::new().unwrap();
@@ -1362,7 +1362,7 @@ mod tests {
         assert!(!sanitized.is_empty());
     }
 
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[test]
     fn generate_filename_cd_falls_back_to_hash_when_fully_hostile() {
         let temp_dir = TempDir::new().unwrap();
@@ -1416,7 +1416,7 @@ mod tests {
         assert_eq!(derive_slug_from_url(&vu("https://example.com/")), "");
     }
 
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn test_download_streaming_limit() {
         let temp_dir = TempDir::new().unwrap();
@@ -1429,7 +1429,7 @@ mod tests {
         assert_eq!(downloader.config.max_file_size, 1024);
     }
 
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn test_download_batch_empty() {
         let temp_dir = TempDir::new().unwrap();
@@ -1462,7 +1462,7 @@ mod tests {
     /// must NOT re-download — the second call reuses the cached file and both
     /// resolve to the same local path. wiremock's `expect(1)` verifies the
     /// single request at server drop.
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn test_download_dedup_sequential_reuses_cached_file() {
         let server = MockServer::start().await;
@@ -1494,7 +1494,7 @@ mod tests {
     /// produce exactly ONE origin request — the losers wait on the winner's
     /// result instead of opening second connections. The response delay
     /// forces the two downloads to overlap.
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn test_download_dedup_concurrent_single_request() {
         use std::sync::Arc;
@@ -1545,7 +1545,7 @@ mod tests {
     /// #782 guardrail: failures are NOT cached — a failed download leaves the
     /// registry cell uninitialized, so a later page may retry the URL and
     /// every caller keeps its typed error verbatim (no error poisoning).
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn test_download_failure_not_cached_in_dedup_registry() {
         let server = MockServer::start().await;
@@ -1621,7 +1621,7 @@ mod tests {
     /// cannot hop onto a literal forbidden IP through a redirect — the 301
     /// itself becomes a terminal HTTP error and `/target` is never fetched
     /// (wire-level proof via `expect(0)`).
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn test_redirect_to_forbidden_literal_ip_is_stopped() {
         // Keep the guard active: the escape hatch must be unset in this
@@ -1669,7 +1669,7 @@ mod memory_probe_tests {
     use std::sync::Arc;
 
     #[test]
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) unsupported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) unsupported by Miri")]
     fn probe_downloaded_urls_growth_50k_assets() {
         const N: usize = 50_000;
         let downloader = Downloader::new(DownloadConfig::default()).expect("downloader builds");
@@ -1731,7 +1731,7 @@ mod bounded_cache_tests {
     /// the bounded cache's entry count plateaus at the cap while the
     /// unbounded baseline keeps growing linearly.
     #[test]
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) unsupported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) unsupported by Miri")]
     fn bounded_asset_cache_plateaus_at_capacity() {
         const CAP: usize = 10_000;
         const WORKLOAD: usize = 50_000;
@@ -1763,7 +1763,7 @@ mod bounded_cache_tests {
     /// unbounded baseline (the cap only changes behavior for entries that
     /// would otherwise have been evicted anyway).
     #[test]
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) unsupported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) unsupported by Miri")]
     fn bounded_cache_within_cap_is_byte_identical_to_unbounded() {
         const CAP: usize = 100;
         const WORKLOAD: usize = 60; // < CAP: no eviction ever fires
@@ -1838,7 +1838,7 @@ mod bounded_cache_tests {
     /// with NO active download) must be evictable so error-heavy long runs
     /// stay bounded, while genuinely in-flight cells are preserved.
     #[test]
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) unsupported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) unsupported by Miri")]
     fn abandoned_failure_zombies_evicted_inflight_preserved() {
         const CAP: usize = 8;
         let dl = Downloader::with_asset_cache_capacity(DownloadConfig::default(), CAP)
@@ -1896,7 +1896,7 @@ mod bounded_cache_tests {
     /// A second eviction pass with an all-in-flight excess must terminate and
     /// preserve every in-flight cell (rotation bound, no infinite loop).
     #[test]
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) unsupported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) unsupported by Miri")]
     fn eviction_terminates_when_excess_is_all_inflight() {
         const CAP: usize = 2;
         let dl = Downloader::with_asset_cache_capacity(DownloadConfig::default(), CAP)
@@ -1935,7 +1935,7 @@ mod bounded_cache_tests {
     /// Legacy unbounded mode skips the insertion ledger entirely: no per-URL
     /// strings, no O(n) membership work (review MEDIUM fix).
     #[test]
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) unsupported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) unsupported by Miri")]
     fn legacy_unbounded_skips_insertion_ledger() {
         let dl = Downloader::new(DownloadConfig::default()).expect("downloader builds");
         for i in 0..200 {
@@ -1958,7 +1958,7 @@ mod bounded_cache_tests {
     /// now under the production-derived cap; RSS delta must be bounded by
     /// roughly cap * per-entry cost instead of linear in the workload.
     #[test]
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) unsupported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) unsupported by Miri")]
     fn memory_probe_downloaded_urls_after_cap() {
         const CAP: usize = 24_576; // asset tier 3 × 8_192 (production derivation)
         let downloader = Downloader::with_asset_cache_capacity(

@@ -1098,7 +1098,7 @@ mod tests {
         );
     }
 
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[test]
     fn registry_fallback_is_self_sufficient() {
         // Under a shared `cargo test` process a sibling may have armed the
