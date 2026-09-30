@@ -596,6 +596,11 @@ mod tests {
 
         #[tokio::test]
         async fn test_run_persists_resource_and_chunk() {
+            // #1615 (G-5): `ResourceDownloader::download` now applies the
+            // literal-IP entry guard, which refuses wiremock's 127.0.0.1.
+            // The named constructor is the repo's rule — never spell the
+            // variable out at the call site.
+            let _entry_off = webfang_test_utils::EnvGuard::entry_guard_off();
             let repo = InMemoryRepo::default();
             let orc = make_orchestrator(repo.clone());
             let (_server, url) =
@@ -635,6 +640,11 @@ mod tests {
 
         #[tokio::test]
         async fn test_run_dedup_short_circuits_when_hash_exists() {
+            // #1615 (G-5): `ResourceDownloader::download` now applies the
+            // literal-IP entry guard, which refuses wiremock's 127.0.0.1.
+            // The named constructor is the repo's rule — never spell the
+            // variable out at the call site.
+            let _entry_off = webfang_test_utils::EnvGuard::entry_guard_off();
             let repo = InMemoryRepo::default();
             let orc = make_orchestrator(repo.clone());
             let (_server, url) = serve_html("<main><p>duplicate content</p></main>").await;
@@ -679,6 +689,11 @@ mod tests {
 
         #[tokio::test]
         async fn test_ingest_batch_all_success() {
+            // #1615 (G-5): `ResourceDownloader::download` now applies the
+            // literal-IP entry guard, which refuses wiremock's 127.0.0.1.
+            // The named constructor is the repo's rule — never spell the
+            // variable out at the call site.
+            let _entry_off = webfang_test_utils::EnvGuard::entry_guard_off();
             let repo = InMemoryRepo::default();
             let orc = make_orchestrator(repo.clone());
 
@@ -703,6 +718,11 @@ mod tests {
 
         #[tokio::test]
         async fn test_ingest_batch_mixed_results() {
+            // #1615 (G-5): `ResourceDownloader::download` now applies the
+            // literal-IP entry guard, which refuses wiremock's 127.0.0.1.
+            // The named constructor is the repo's rule — never spell the
+            // variable out at the call site.
+            let _entry_off = webfang_test_utils::EnvGuard::entry_guard_off();
             let repo = InMemoryRepo::default();
             let orc = make_orchestrator(repo.clone());
 
@@ -745,6 +765,11 @@ mod tests {
 
         #[tokio::test]
         async fn test_ingest_batch_dedup() {
+            // #1615 (G-5): `ResourceDownloader::download` now applies the
+            // literal-IP entry guard, which refuses wiremock's 127.0.0.1.
+            // The named constructor is the repo's rule — never spell the
+            // variable out at the call site.
+            let _entry_off = webfang_test_utils::EnvGuard::entry_guard_off();
             let repo = InMemoryRepo::default();
             let orc = make_orchestrator(repo.clone());
             let (_server, url) = serve_html("<main><p>unique batch dedup content</p></main>").await;

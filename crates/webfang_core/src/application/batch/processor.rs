@@ -1135,6 +1135,11 @@ mod tests {
     #[cfg(not(miri))] // wiremock + wreq use btls-sys FFI (unsupported by Miri)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn batch_mode_scrapes_seed_only_with_concurrency_override() {
+        // #1615 (F11 / G-3 / G-4 / G-5): this path now applies the
+        // literal-IP entry guard, which refuses wiremock's 127.0.0.1.
+        // The named constructor is the repo's rule — never spell the
+        // variable out at the call site.
+        let _entry_off = webfang_test_utils::EnvGuard::entry_guard_off();
         use crate::domain::budget::{
             tiers::{BurstPermits, CrawlConcurrency},
             BudgetOverrides,

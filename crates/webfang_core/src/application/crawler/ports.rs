@@ -393,6 +393,11 @@ mod tests {
     )]
     #[tokio::test]
     async fn fallback_branch_propagates_status_and_cookies() {
+        // #1615 (F11 / G-3 / G-4 / G-5): this path now applies the
+        // literal-IP entry guard, which refuses wiremock's 127.0.0.1.
+        // The named constructor is the repo's rule — never spell the
+        // variable out at the call site.
+        let _entry_off = webfang_test_utils::EnvGuard::entry_guard_off();
         let (_server, url) = mock_203_with_cookie().await;
         let config = config_for(&url);
         let fetcher = ProductionPageFetcher {
@@ -441,6 +446,11 @@ mod tests {
     )]
     #[tokio::test]
     async fn branches_agree_on_status_after_fix() {
+        // #1615 (F11 / G-3 / G-4 / G-5): this path now applies the
+        // literal-IP entry guard, which refuses wiremock's 127.0.0.1.
+        // The named constructor is the repo's rule — never spell the
+        // variable out at the call site.
+        let _entry_off = webfang_test_utils::EnvGuard::entry_guard_off();
         let (_server, url) = mock_203_with_cookie().await;
         let config = config_for(&url);
 
@@ -499,10 +509,18 @@ mod tests {
     )]
     #[tokio::test]
     async fn fallback_branch_propagates_final_url_after_redirect() {
-        let _guard = webfang_test_utils::EnvGuard::with(&[(
-            crate::infrastructure::ssrf::DISABLE_REDIRECT_GUARD_ENV,
-            "1",
-        )]);
+        // #1615 (F11): this path now applies the literal-IP entry guard, which
+        // refuses wiremock's 127.0.0.1.
+        //
+        // ONE `EnvGuard` listing BOTH hatches, not two. `ENV_LOCK` is not
+        // reentrant (see the `webfang_test_utils` nesting invariant), so
+        // arming the entry guard and then the redirect guard here deadlocks the
+        // test — which is exactly what happened, and why the two variables now
+        // share a single guard rather than getting one line each.
+        let _guards = webfang_test_utils::EnvGuard::with(&[
+            (crate::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV, "1"),
+            (crate::infrastructure::ssrf::DISABLE_REDIRECT_GUARD_ENV, "1"),
+        ]);
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))

@@ -1511,7 +1511,30 @@ pub enum PreflightResult {
 
 /// Send a HEAD request to verify connectivity before starting discovery.
 /// Falls back to GET with Range: bytes=0-0 if HEAD is blocked (405) or times out.
+///
+/// # SSRF layer 2 (#1615, G-4)
+///
+/// This path has no caller in the tree today — the discovery flow resolves its
+/// seed through guarded code — which is exactly why it was unguarded: nothing
+/// exercised it, so nothing noticed it built a client and dialled whatever it
+/// was handed. That is a trap, not a defence: the next wiring would inherit an
+/// unguarded fetch path, and a HEAD to a cloud-metadata address is a real
+/// request.
+///
+/// Rather than delete a dead-but-public function (a compatibility change the
+/// issue explicitly left as a maintainer decision), the guard goes in now, so
+/// the function is safe the moment it is wired. The refusal rides the existing
+/// `Failed` arm: to a caller asking "can I reach this host?", a refused target
+/// and an unreachable one are the same answer, and the reason is carried in
+/// the message rather than hidden.
+///
+/// The GET fallback is covered by the same check because it runs only after
+/// this one passed.
 pub async fn preflight_check(url: &url::Url) -> PreflightResult {
+    if let Err(rejection) = crate::domain::ssrf_guard::reject_forbidden_literal_url(url) {
+        return PreflightResult::Failed(rejection.to_string());
+    }
+
     let client = match crate::create_http_client() {
         Ok(c) => c,
         Err(e) => return PreflightResult::Failed(format!("failed to create HTTP client: {e}")),
