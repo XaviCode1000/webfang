@@ -119,8 +119,16 @@ fn advertised_no_op_fields_are_still_accepted() {
 /// place is deliberate, because removing it is a behaviour change and
 /// advertising a field is not the same as validating it. This pins that the
 /// two halves did not drift apart: an in-bounds value is accepted, an
-/// out-of-bounds one is still refused with the published `invalid_params`
-/// channel.
+/// out-of-bounds one is still refused.
+///
+/// The channel is the one `docs/src/mcp-error-contract.md` publishes, not a
+/// fourth shape: `ScrapeWithOptionsParams::validate()` is called at the top of
+/// the handler body, so this is row **A3** — a JSON-RPC `-32602` carrying
+/// `data.reason = out_of_range` (row A3.4) — and not the Channel B
+/// `isError: true` a *deserialization* rejection would take (rows A1/A2).
+/// Asserted here at the `ErrorData` level; the wire shape is observed in
+/// `mcp_error_channel_mapping_test.rs` and the slug in
+/// `mcp_validation_reason_code_test.rs`.
 #[test]
 fn inert_max_pages_keeps_its_spec_bound() {
     let out_of_bounds = ScrapeWithOptionsParams {
@@ -137,7 +145,16 @@ fn inert_max_pages_keeps_its_spec_bound() {
     assert_eq!(
         err.code,
         rmcp::model::ErrorCode::INVALID_PARAMS,
-        "the published invalid_params channel must not change: {err:?}"
+        "row A3 must stay a -32602: {err:?}"
+    );
+    // Row A3.4: the slug is part of the published contract, so a field that
+    // is inert but still bounded must not quietly lose its machine-readable
+    // reason either.
+    assert!(
+        err.data
+            .as_ref()
+            .is_some_and(|data| data.to_string().contains("out_of_range")),
+        "row A3.4's reason slug must not change: {err:?}"
     );
 }
 
