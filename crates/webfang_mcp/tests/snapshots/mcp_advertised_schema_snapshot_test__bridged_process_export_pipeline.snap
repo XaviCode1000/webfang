@@ -1,0 +1,38 @@
+---
+source: crates/webfang_mcp/tests/mcp_advertised_schema_snapshot_test.rs
+expression: advertised_pretty(tool)
+---
+{
+  "$defs": {
+    "McpUrl": {
+      "format": "uri",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "format": {
+      "default": "jsonl",
+      "description": "Export format for RAG pipeline (jsonl, vector, auto) NOTE: Use --content-format for output file format (markdown, text, json)",
+      "enum": [
+        "jsonl",
+        "vector",
+        "auto"
+      ],
+      "type": "string"
+    },
+    "pipeline_format": {
+      "description": "Export format",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "url": {
+      "description": "Optional URL to scrape before exporting. Omit to skip scraping and run the export stage on previously-saved content.",
+      "type": "string"
+    }
+  },
+  "type": "object"
+}

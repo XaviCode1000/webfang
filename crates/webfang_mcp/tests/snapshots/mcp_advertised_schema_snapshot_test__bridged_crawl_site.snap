@@ -1,0 +1,71 @@
+---
+source: crates/webfang_mcp/tests/mcp_advertised_schema_snapshot_test.rs
+expression: advertised_pretty(tool)
+---
+{
+  "$defs": {
+    "McpUrl": {
+      "format": "uri",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "checkpoint_dir": {
+      "description": "Directory for crawl checkpoints: enables write on truncated runs and\nresume on subsequent calls with the same directory (default: none)",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "js_strategy": {
+      "default": "static",
+      "description": "JavaScript rendering strategy: static (wreq only), hybrid (3-layer), full (Chromiumoxide only)",
+      "enum": [
+        "static",
+        "hybrid",
+        "full"
+      ],
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "max_depth": {
+      "default": 3,
+      "description": "Maximum depth to crawl (0 = only seed URL)",
+      "maximum": 10,
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "max_pages": {
+      "default": 100,
+      "description": "Maximum pages to scrape",
+      "maximum": 100000,
+      "minimum": 1,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "session_pool": {
+      "description": "Enable the per-domain session pool for rate limiting (default: false)",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "url": {
+      "description": "URL to scrape (required unless using a subcommand)",
+      "type": "string"
+    }
+  },
+  "required": [
+    "url"
+  ],
+  "type": "object"
+}

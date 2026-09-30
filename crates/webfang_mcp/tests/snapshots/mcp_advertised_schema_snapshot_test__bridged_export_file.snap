@@ -1,0 +1,43 @@
+---
+source: crates/webfang_mcp/tests/mcp_advertised_schema_snapshot_test.rs
+expression: advertised_pretty(tool)
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "content": {
+      "description": "Content to export (written to the output file)",
+      "type": "string"
+    },
+    "content_format": {
+      "description": "Export format: jsonl, vector, auto",
+      "type": "string"
+    },
+    "filename": {
+      "description": "Filename (without extension)",
+      "type": "string"
+    },
+    "format": {
+      "default": "jsonl",
+      "description": "Export format for RAG pipeline (jsonl, vector, auto) NOTE: Use --content-format for output file format (markdown, text, json)",
+      "enum": [
+        "jsonl",
+        "vector",
+        "auto"
+      ],
+      "type": "string"
+    },
+    "output_dir": {
+      "description": "Output directory path",
+      "type": "string"
+    }
+  },
+  "required": [
+    "output_dir",
+    "filename",
+    "content_format",
+    "content"
+  ],
+  "type": "object"
+}
