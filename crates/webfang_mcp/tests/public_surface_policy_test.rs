@@ -380,15 +380,18 @@ fn record_if_requested() -> bool {
 ///
 /// The class labels are the point: a red test that only says "values differ"
 /// gets re-recorded, while one that says "narrowed (S2/breaking)" gets a
-/// decision.
+/// decision. Returns `(report, changed_row_count)` so the caller can state how
+/// much moved rather than a net delta.
 fn diff_rows(
     live: &BTreeMap<(String, String), PropertyRow>,
     pinned: &BTreeMap<(String, String), PropertyRow>,
-) -> String {
+) -> (String, usize) {
     let mut report = String::new();
+    let mut changed = 0usize;
     for (key, row) in live {
         match pinned.get(key) {
             None => {
+                changed += 1;
                 let _ = writeln!(
                     report,
                     "  + {}/{}: ADDED PROPERTY — {} (policy §3.1: added-and-optional is S1/minor, added-and-required is S2/breaking)",
@@ -396,6 +399,7 @@ fn diff_rows(
                 );
             },
             Some(old) if old != row => {
+                changed += 1;
                 let (tool, property) = key;
                 let _ = writeln!(report, "  ~ {tool}/{property} changed:");
                 if old.required != row.required {
@@ -442,6 +446,7 @@ fn diff_rows(
     }
     for (key, row) in pinned {
         if !live.contains_key(key) {
+            changed += 1;
             let _ = writeln!(
                 report,
                 "  - {}/{}: REMOVED PROPERTY — S2/breaking (policy §3.1). With deny_unknown_fields on every params struct, an old client sending it is now REJECTED, not ignored: {}",
@@ -449,7 +454,7 @@ fn diff_rows(
             );
         }
     }
-    report
+    (report, changed)
 }
 
 /// The tool inventory is append-only within a major. A removed or renamed tool
@@ -501,13 +506,13 @@ fn advertised_property_matrix_is_pinned() {
         "the derived surface is empty — the fixture would pin nothing"
     );
     if live.properties != pinned.properties {
-        let report = diff_rows(&live.properties, &pinned.properties);
+        let (report, changed) = diff_rows(&live.properties, &pinned.properties);
         panic!(
-            "advertised input schema moved without a decision ({} row(s)):\n{report}\n\
+            "advertised input schema moved without a decision ({changed} of {} row(s)):\n{report}\n\
              classify each row per docs/src/mcp-public-surface-policy.md §3.1, then:\n\
              - S0 -> the fixture was stale or the change is drift; fix the code, not the fixture\n\
              - S1/S2 -> scripts/check_mcp_public_surface.sh --record, then bump contract_version",
-            live.properties.len() as i64 - pinned.properties.len() as i64
+            live.properties.len()
         );
     }
 }
