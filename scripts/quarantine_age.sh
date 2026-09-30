@@ -34,7 +34,12 @@
 # observed at the time, not "now" and not an inferred old mtime.
 #
 # Exit: record 0 ok / 1 already recorded / 2 usage
-#        eligible 0 eligible / 1 not yet / 2 unknown (no or bad metadata — fail closed)
+#        eligible 0 eligible · 1 not yet · 2 UNKNOWN — not eligible, fail-closed
+#
+# There is NO fallback. A missing, unparseable or future quarantine_started_at is
+# never resolved from mtime, atime, ctime, the seed's built_at, or the directory
+# name. Those attributes are diagnostics, and a policy with an implicit fallback to
+# them is a policy that will quietly measure the wrong thing.
 
 set -euo pipefail
 
@@ -99,13 +104,25 @@ cmd_eligible() {
     echo "UNKNOWN  $path  (unparseable quarantine_started_at: '$stamp')" >&2
     exit 2
   }
-  now=$(date -u +%s); age=$(( now - start ))
+  now=$(date -u +%s)
+  # A future start is not "not yet" — it is an untrustworthy record. Computed
+  # generically it would fall through as a negative age and print NOT YET, which
+  # is the right verdict for the wrong reason: a clock in the future usually means
+  # a typo, a timezone slip, or a record written on a machine whose clock is wrong,
+  # and every one of those is a reason to stop rather than to wait.
+  if [ "$start" -gt "$now" ]; then
+    echo "UNKNOWN  $path  (quarantine_started_at is in the future: '$stamp')" >&2
+    echo "  fail-closed: not eligible. Check the recorded timestamp before proceeding." >&2
+    exit 2
+  fi
+  age=$(( now - start ))
   if [ "$age" -lt "$need" ]; then
     echo "NOT YET  $path  age=$(( age / 3600 ))h of $(( need / 3600 ))h"
     exit 1
   fi
   echo "ELIGIBLE  $path  age=$(( age / 3600 ))h of $(( need / 3600 ))h"
   echo "  Age is a gate, not evidence. Fresh ownership and use evidence is still required."
+  echo "  ELIGIBLE means decidable, not authorised. Deletion needs a separate decision."
   exit 0
 }
 

@@ -215,6 +215,33 @@ clock must be a deliberate act.
 | `seeds/v1-b76756ec52d50dfc.20260930` | 2026-09-30T00:45:58Z | 48 h | **2026-10-02 00:45 UTC** |
 | `seeds/v1-4de4a216ec95753d.20260930` | 2026-09-30T00:45:58Z | 48 h | **2026-10-02 00:45 UTC** |
 
+### The rule, exhaustively
+
+```
+quarantine_started_at absent      ->  NOT ELIGIBLE
+quarantine_started_at unparseable ->  NOT ELIGIBLE
+quarantine_started_at in the future ->  NOT ELIGIBLE
+age < minimum_quarantine_age      ->  NOT ELIGIBLE
+age >= minimum_quarantine_age     ->  ELIGIBLE  (decidable, NOT authorised)
+```
+
+**Age never suffices on its own**, and the last line is the only one that can produce
+`ELIGIBLE`: fresh ownership and use evidence, collected at the moment of deletion, is
+still required. `ELIGIBLE` means *decidable*, not *authorised*.
+
+The three failure modes are not the same thing and are reported differently on purpose.
+A missing record is an incomplete operation, an unparseable one is a corrupt record,
+and a future one is an untrustworthy record — usually a typo, a timezone slip, or a
+machine with a wrong clock. Computed generically the future case would fall through as
+a negative age and print `NOT YET`, which is the right verdict for the wrong reason and
+would tell the operator to wait rather than to look.
+
+**There is no fallback.** A missing, unparseable or future `quarantine_started_at` is
+never resolved from `mtime`, `atime`, `ctime`, a seed's `built_at`, or the directory
+name. Those are diagnostics. A policy with an implicit fallback to them is a policy
+that will quietly measure the wrong thing, and the wrong thing here is "old enough to
+delete 478 GB".
+
 All three were backfilled with `--started-at` at the moment the rename was observed, so
 the value is a deliberate record of a known instant rather than an inference from a
 filesystem attribute. `ctime` is kept as auxiliary evidence in the note, not as the clock.

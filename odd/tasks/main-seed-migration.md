@@ -98,6 +98,14 @@ pending item: remove `incremental_not_a_key_input` from the hashed `[key]` block
 That item was applied in `67530751` and re-verified. Manual review remains a human
 activity recorded here, not a lineage approval.
 
+**Mechanism, stated once so the finding no longer needs a count:**
+
+```
+inspect   exposes a committed base-diff candidate
+start     accepts only ordinary (working-tree) or judgment-day
+transport no supported path binds the projected base-diff to a review
+```
+
 **Reason: the runtime review surface cannot consume a committed base-diff.** Seven
 separate routes were attempted against seven different lineages and seven different
 targets, reproducing the same result each time — across candidates ranging from two
