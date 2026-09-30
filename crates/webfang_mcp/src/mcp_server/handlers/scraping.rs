@@ -812,13 +812,9 @@ impl McpHandler {
                             excluded,
                             "discover_urls filtered to seed-host-internal links"
                         );
-                        let content = serde_json::to_string_pretty(&urls)
-                            .unwrap_or_else(|_| "failed to serialize".into());
-                        Ok(provenance::untrusted_text(
-                            &provenance::Origin::RemoteFetch {
-                                url: url.to_string(),
-                            },
-                            &content,
+                        Ok(discovered_urls_tool_result(
+                            url.as_str(),
+                            serde_json::to_string_pretty(&urls),
                         ))
                     },
                     Err(e) => {
@@ -901,13 +897,9 @@ impl McpHandler {
                     excluded,
                     "discover_sitemap filtered to seed-host-internal URLs"
                 );
-                let content = serde_json::to_string_pretty(&urls)
-                    .unwrap_or_else(|_| "failed to serialize".into());
-                Ok(provenance::untrusted_text(
-                    &provenance::Origin::RemoteFetch {
-                        url: seed.to_string(),
-                    },
-                    &content,
+                Ok(discovered_urls_tool_result(
+                    seed.as_str(),
+                    serde_json::to_string_pretty(&urls),
                 ))
             },
             Err(e) => {
@@ -1221,6 +1213,34 @@ fn filter_ssrf_safe(
 /// [`build_tool_router`](crate::mcp_server::handlers::build_tool_router).
 pub fn build_router() -> ToolRouter<McpHandler> {
     McpHandler::tool_router_scraping()
+}
+
+/// Map a serialized discovery payload to its tool result (#1613, EC-06).
+///
+/// Shared by `discover_urls` and `discover_sitemap`, which reported a
+/// serialization failure as a SUCCESS whose entire body was the literal
+/// `"failed to serialize"` — a lost URL list indistinguishable from a real one.
+/// The failure is routed to [`provenance::neutralized_error`]: the same channel
+/// as the adjacent `Err` arm of both handlers, and the same mapping
+/// `render_metrics` already uses in `security.rs` (REQ-10). Deliberately NOT
+/// `McpError::internal_error` (`-32603`) — the surrounding `match` returns a
+/// `CallToolResult` directly, and `?`-propagating would move these functions'
+/// failures to a second channel.
+fn discovered_urls_tool_result(
+    url: &str,
+    json: Result<String, serde_json::Error>,
+) -> CallToolResult {
+    match json {
+        Ok(content) => provenance::untrusted_text(
+            &provenance::Origin::RemoteFetch {
+                url: url.to_string(),
+            },
+            &content,
+        ),
+        Err(e) => {
+            provenance::neutralized_error(&format!("no se pudo serializar la lista de URLs: {e}"))
+        },
+    }
 }
 
 /// Record per-domain scrape metrics for a completed batch (#696).
@@ -2201,5 +2221,45 @@ mod tests {
         assert_eq!(snap.error_count, 1, "all-failed domain is Error");
         assert_eq!(snap.domains["example.com"].pages, 2, "ok + bad counted");
         assert_eq!(snap.domains["broken.test"].pages, 1);
+    }
+
+    /// #1613 EC-06: `discover_urls` / `discover_sitemap` share
+    /// `discovered_urls_tool_result` — a serialization failure there is a
+    /// TOOL ERROR, not a success body reading `"failed to serialize"`.
+    #[test]
+    fn discovered_urls_serialization_failure_is_a_tool_error() {
+        let unwritable = Err(serde_json::Error::io(std::io::Error::other(
+            "url set not serializable",
+        )));
+        let res = discovered_urls_tool_result("https://example.com", unwritable);
+        assert_eq!(
+            res.is_error,
+            Some(true),
+            "a lost URL list must be isError:true, got: {}",
+            result_text(&res)
+        );
+        let text = result_text(&res);
+        assert!(
+            text.contains("no se pudo serializar la lista de URLs"),
+            "the honest Spanish reason must reach the agent, got: {text}"
+        );
+    }
+
+    /// The success arm of the shared mapping is untouched.
+    #[test]
+    fn discovered_urls_serialization_success_stays_a_tool_success() {
+        let res = discovered_urls_tool_result(
+            "https://example.com",
+            Ok("[\"https://example.com/a\"]".to_string()),
+        );
+        assert_ne!(
+            res.is_error,
+            Some(true),
+            "a serializable list is not an error"
+        );
+        assert!(
+            result_text(&res).contains("https://example.com/a"),
+            "the payload must survive"
+        );
     }
 }

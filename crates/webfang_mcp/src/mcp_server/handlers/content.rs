@@ -80,16 +80,10 @@ impl McpHandler {
             &params.html,
             params.base_url.as_str(),
         ) {
-            Ok(links) => {
-                let content = serde_json::to_string_pretty(&links)
-                    .unwrap_or_else(|_| "failed to serialize".into());
-                Ok(provenance::untrusted_text(
-                    &provenance::Origin::RemoteDerived {
-                        via: "extract_links",
-                    },
-                    &content,
-                ))
-            },
+            Ok(links) => Ok(links_tool_result(
+                "extract_links",
+                serde_json::to_string_pretty(&links),
+            )),
             Err(e) => Ok(provenance::neutralized_error(&e.to_string())),
         }
     }
@@ -225,6 +219,29 @@ impl McpHandler {
 /// [`build_tool_router`](crate::mcp_server::handlers::build_tool_router).
 pub fn build_router() -> ToolRouter<McpHandler> {
     McpHandler::tool_router_content()
+}
+
+/// Map a serialized `extract_links` payload to its tool result (#1613, EC-06).
+///
+/// A serialization failure is a FAILURE of this tool, not a body of text: the
+/// old `unwrap_or_else(|_| "failed to serialize")` handed it back as a
+/// SUCCESS whose entire content was that literal, so an agent could not tell a
+/// lost link list from a real one. The failure is routed to
+/// [`provenance::neutralized_error`] — the same channel as this function's
+/// adjacent `Err` arm, and the same mapping `render_metrics` already uses in
+/// `security.rs` (REQ-10). Deliberately NOT `McpError::internal_error`
+/// (`-32603`): the surrounding `match` returns a `CallToolResult` directly, and
+/// `?`-propagating would silently move this function's failures to a second
+/// channel.
+fn links_tool_result(via: &'static str, json: Result<String, serde_json::Error>) -> CallToolResult {
+    match json {
+        Ok(content) => {
+            provenance::untrusted_text(&provenance::Origin::RemoteDerived { via }, &content)
+        },
+        Err(e) => provenance::neutralized_error(&format!(
+            "no se pudo serializar la lista de enlaces: {e}"
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -522,6 +539,44 @@ mod tests {
             parsed.get("content_type").and_then(|v| v.as_str()),
             Some("markdown"),
             "markdown must be classified: {parsed}"
+        );
+    }
+
+    /// #1613 EC-06: a `serde_json` failure must leave as a TOOL ERROR, and
+    /// must not report itself with the old English placeholder body (which
+    /// travelled inside a SUCCESS and read as a link list).
+    #[test]
+    fn extract_links_serialization_failure_is_a_tool_error() {
+        let broken = Err(serde_json::Error::io(std::io::Error::other(
+            "link set not serializable",
+        )));
+        let res = links_tool_result("extract_links", broken);
+        assert_eq!(
+            res.is_error,
+            Some(true),
+            "a lost link list must be isError:true"
+        );
+        let text = result_text(&res);
+        assert!(
+            text.contains("no se pudo serializar la lista de enlaces"),
+            "the honest Spanish reason must reach the agent, got: {text}"
+        );
+    }
+
+    /// The success arm of the same `match` still carries the JSON array, so
+    /// the happy path is untouched (`tests/mcp_internal_failure_channel_test.rs`
+    /// pins the same invariant end-to-end).
+    #[test]
+    fn extract_links_serialization_success_stays_a_tool_success() {
+        let res = links_tool_result("extract_links", Ok("[\"https://example.com\"]".to_string()));
+        assert_ne!(
+            res.is_error,
+            Some(true),
+            "a serializable list is not an error"
+        );
+        assert!(
+            result_text(&res).contains("https://example.com"),
+            "the payload must survive"
         );
     }
 }

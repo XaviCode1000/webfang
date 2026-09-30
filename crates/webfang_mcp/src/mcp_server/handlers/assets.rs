@@ -78,13 +78,11 @@ impl McpHandler {
                     documents = config.download_documents,
                     "assets downloaded"
                 );
-                let content = serde_json::to_string_pretty(&assets)
-                    .unwrap_or_else(|_| "failed to serialize".into());
-                Ok(provenance::untrusted_text(
+                Ok(assets_tool_result(
                     &provenance::Origin::RemoteFetch {
                         url: base_url.to_string(),
                     },
-                    &content,
+                    serde_json::to_string_pretty(&assets),
                 ))
             },
             Err(e) => Ok(provenance::neutralized_error(&e.to_string())),
@@ -99,6 +97,30 @@ impl McpHandler {
 /// [`build_tool_router`](crate::mcp_server::handlers::build_tool_router).
 pub fn build_router() -> ToolRouter<McpHandler> {
     McpHandler::tool_router_assets()
+}
+
+/// Map a serialized `download_assets` payload to its tool result (#1613, EC-06).
+///
+/// A serialization failure is a FAILURE of this tool, not a body of text: the
+/// old `unwrap_or_else(|_| "failed to serialize")` handed it back as a
+/// SUCCESS whose entire content was that literal, so an agent could not tell a
+/// lost report from a real one. The failure is routed to
+/// [`provenance::neutralized_error`] — the same channel as this function's
+/// adjacent `Err` arm, and the same mapping `render_metrics` already uses in
+/// `security.rs` (REQ-10). Deliberately NOT `McpError::internal_error`
+/// (`-32603`): the surrounding `match` returns a `CallToolResult` directly, and
+/// `?`-propagating would silently move this function's failures to a second
+/// channel.
+fn assets_tool_result(
+    origin: &provenance::Origin,
+    json: Result<String, serde_json::Error>,
+) -> CallToolResult {
+    match json {
+        Ok(content) => provenance::untrusted_text(origin, &content),
+        Err(e) => provenance::neutralized_error(&format!(
+            "no se pudo serializar la respuesta de assets: {e}"
+        )),
+    }
 }
 
 #[cfg(test)]
@@ -270,5 +292,51 @@ mod tests {
             "downloaded asset must be reported: {text}"
         );
         let _ = std::fs::remove_dir_all(out_dir);
+    }
+
+    /// #1613 EC-06: a `serde_json` failure must leave as a TOOL ERROR.
+    ///
+    /// The payload types' `Serialize` impls are total, so
+    /// `to_string_pretty(..)` cannot be made to fail from outside; the
+    /// mapping is therefore exercised on the `Err` it would receive. The old
+    /// code turned that `Err` into a SUCCESS whose entire body was the literal
+    /// `"failed to serialize"`.
+    #[test]
+    fn assets_serialization_failure_is_a_tool_error() {
+        let origin = provenance::Origin::RemoteFetch {
+            url: "https://example.com".to_string(),
+        };
+        let failure = serde_json::Error::io(std::io::Error::other("asset list not writable"));
+        let res = assets_tool_result(&origin, Err(failure));
+        assert_eq!(
+            res.is_error,
+            Some(true),
+            "a lost asset report must be isError:true, not a success body"
+        );
+        let text = result_text(&res);
+        assert!(
+            text.contains("no se pudo serializar"),
+            "the honest Spanish reason must reach the agent, got: {text}"
+        );
+        assert!(
+            !text.contains("failed to serialize"),
+            "the old English placeholder must be gone, got: {text}"
+        );
+    }
+
+    /// The other side of the same `match`: a real payload is still a normal
+    /// success carrying the serialized body.
+    #[test]
+    fn assets_serialization_success_stays_a_tool_success() {
+        let origin = provenance::Origin::RemoteFetch {
+            url: "https://example.com".to_string(),
+        };
+        let res = assets_tool_result(&origin, Ok("[]".to_string()));
+        assert_ne!(
+            res.is_error,
+            Some(true),
+            "a serializable list is not an error"
+        );
+        assert!(result_text(&res).contains("[]"), "the payload must survive");
     }
 }
