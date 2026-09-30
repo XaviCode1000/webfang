@@ -9,6 +9,7 @@ pub mod commands;
 pub mod completions;
 pub mod config;
 pub mod crash_points;
+pub mod discovery_phase;
 pub mod elastic;
 pub mod error;
 pub mod exit_codes;

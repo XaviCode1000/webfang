@@ -2,7 +2,7 @@
 //!
 //! Extracted from `cli/orchestrator.rs` as part of the composition-root
 //! decomposition (issue #1619, finding F1). Everything reachable only from
-//! [`run_batch`] lives here: the per-URL crawl, the bounded capture spool,
+//! `run_batch` lives here: the per-URL crawl, the bounded capture spool,
 //! content extraction, the elastic/resume wiring and the batch crawl-config
 //! projection.
 //!
@@ -18,12 +18,11 @@ use tracing::{error, info, warn};
 use crate::application::batch::{BatchManager, BatchManagerSummary};
 use crate::application::crawl_options::{CrawlLimits, CrawlOptions};
 use crate::application::crawler::BoundedFileSink;
+use crate::cli::discovery_phase::resolve_sitemap_projection;
 use crate::cli::elastic::{build_elastic_ingestion, run_elastic_ingestion};
 use crate::cli::error::CliExit;
 use crate::cli::exit_codes::{batch_exit_code, report_phase};
-use crate::cli::orchestrator::{
-    export_phase, output_vectors_gate, resolve_persistence_root, resolve_sitemap_projection,
-};
+use crate::cli::orchestrator::{export_phase, output_vectors_gate, resolve_persistence_root};
 use crate::domain;
 use crate::domain::config::ScraperConfig;
 use crate::domain::http_config::HttpClientConfig;
