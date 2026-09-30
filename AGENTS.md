@@ -410,17 +410,20 @@ export CARGO_LLVM_COV_TARGET_DIR=$HOME/.cache/cargo-target/$TREE-llvm-cov
 EOF
 direnv allow     # gitignored; carries the per-tree cache policy
 
-# fail loudly instead of silently sharing a target dir
+# There is deliberately NO second check here. The only enforcement is
+# scripts/ci_fast_gate.sh, and it works by canonical identity, not by name.
+# A basename test here was wrong twice over: it would reject a legitimate
+# ~/.cache/cargo-target/x/webfang, and it would accept a symlink resolving to
+# main's target — which is the exact failure the gate exists to close. The tree
+# name above is the bootstrap CONVENTION, not a condition of validity; the
+# mandatory condition is that a worktree's target is independent of every other
+# tree's, and in particular is neither main's target nor inside the seed store.
 export CARGO_TARGET_DIR="${CARGO_TARGET_DIR:?}"
-# A worktree's target dir must be NAMED after that worktree. This test does not
-# mention main at all, so it cannot be invalidated by anything main does.
-[ "$(basename "$(readlink -f "$CARGO_TARGET_DIR")")" = "$TREE" ] \
-  || { echo "REFUSING: target dir is not this worktree's own (#1267)"; exit 1; }
 #   .envrc is the ONLY place this policy can live: mise.toml is byte-identical in
-#   every tree, so it cannot tell main from a worktree. Every tree - main
-#   included - gets CARGO_TARGET_DIR=~/.cache/cargo-target/<tree-name>,
-#   CARGO_INCREMENTAL=0 and the sccache wrapper UNSET. main uses its own too:
-#   there is no longer a "shared" target dir in this repo.
+#   every tree, so it cannot tell main from a worktree. Every tree — main
+#   included — gets its own CARGO_TARGET_DIR; there is no longer a "shared" target
+#   dir in this repo. Every WORKTREE also sets CARGO_INCREMENTAL=0 and unsets the
+#   sccache wrapper; main keeps CARGO_INCREMENTAL=1 on measured grounds.
 #   The snippet above is documentation, not enforcement: scripts/ci_fast_gate.sh
 #   is the check that actually runs, and it fails closed when CARGO_TARGET_DIR
 #   is unset in any tree, or when a worktree's CARGO_TARGET_DIR points at main's
@@ -441,7 +444,7 @@ bash scripts/seed_target.sh
 cargo build                                        # cold or seeded; both are correct, and the script says which
 ```
 
-> ⚠️ **`.envrc` + `direnv allow` is mandatory per worktree, and is now ENFORCED.** In a **worktree** it points `CARGO_TARGET_DIR` at a per-tree isolated dir (`~/.cache/cargo-target/<tree-name>`), which is what #1267 requires; the cost is that BoringSSL and every dependency compile again per worktree — measured at 2 m 23 s for `cargo build --workspace`, which is cheap enough that it must never be used as an argument to share a target dir between concurrent builds (#1267). **There is no shared target dir in this repo any more.** `main` used to keep one, and that single exception is what let 46 dead worktrees accumulate in a 478 G target dir that Cargo cannot attribute by ownership. `main` now has its own `~/.cache/cargo-target/main`, seeded like any other tree.
+> ⚠️ **`.envrc` + `direnv allow` is mandatory per worktree, and is now ENFORCED.** In a **worktree** it points `CARGO_TARGET_DIR` at a per-tree isolated dir (`~/.cache/cargo-target/<tree-name>`), which is what #1267 requires. The cost of isolation depends on whether a compatible seed exists: with one, a worktree builds in a measured 18 s against 162 s cold, because the 639 BoringSSL objects and the heavy dependencies come from the seed; with no compatible seed it pays the full cold build, measured 2 m 23 s for `cargo build --workspace`. Either way that is cheap enough that it must never be used as an argument to share a target dir between concurrent builds (#1267). **There is no shared target dir in this repo any more.** `main` used to keep one, and that single exception is what let 46 dead worktrees accumulate in a 478 G target dir that Cargo cannot attribute by ownership. `main` now has its own `~/.cache/cargo-target/main`, seeded like any other tree.
 >
 > `main` is the one tree that keeps `CARGO_INCREMENTAL=1` while the seed contract pins `0`. Measured cost: the first build over a freshly seeded target spends one extra workspace rebuild (20 s) because the incremental flag changes the fingerprints; every build after that is unaffected, and the 669 BoringSSL C++ objects are reused under either setting. The seed contract deliberately does NOT hash the installation paths, so the same compiler in two places stays the same seed.
 >
