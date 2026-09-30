@@ -11,8 +11,133 @@
 //! own input schema does not have.** That is SD-06 exactly, and it is
 //! mechanically checkable, so it does not depend on a reviewer noticing.
 
-use serde_json::Value;
+use serde_json::{json, Value};
 use webfang_mcp::mcp_server::handlers::build_tool_router;
+use webfang_mcp::mcp_server::params::{ScrapeBatchParams, ScrapeWithOptionsParams};
+
+/// A field the tool accepts, bounds-checks, advertises -- and never reads.
+///
+/// The two instances (#1612 SD-03, SD-04; the pair VG-04 calls out as
+/// "validation implies control that does not exist"):
+///
+/// - `scrape_with_options.max_pages` — the handler copies it into
+///   `ScraperConfig` and `scraper_service::scrape_with_config` never reads
+///   the field; the tool fetches one URL and does no discovery.
+/// - `scrape_batch.single_page` — never read at all. Batch scraping is
+///   single-page by construction (#1215), so there is no crawl-expansion
+///   mode for the flag to disable.
+const NO_OP_FIELDS: &[(&str, &str)] = &[
+    ("scrape_with_options", "max_pages"),
+    ("scrape_batch", "single_page"),
+];
+
+fn advertised_properties(tool: &str) -> Vec<(String, Value)> {
+    let router = build_tool_router();
+    let route = router
+        .map
+        .get(tool)
+        .unwrap_or_else(|| panic!("tool {tool} must be registered"));
+    route
+        .attr
+        .input_schema
+        .get("properties")
+        .and_then(Value::as_object)
+        .map(|props| props.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+        .unwrap_or_default()
+}
+
+fn property(tool: &str, name: &str) -> Value {
+    advertised_properties(tool)
+        .into_iter()
+        .find(|(k, _)| k == name)
+        .map(|(_, v)| v)
+        .unwrap_or_else(|| panic!("{tool} must advertise `{name}`"))
+}
+
+/// SD-03/SD-04, decided rather than deferred wholesale.
+///
+/// Neither field can be REMOVED here — dropping an advertised field, or
+/// turning `single_page: false` into a rejection, breaks MCP consumers, and
+/// that is #1614's call. What this issue can do without a compat decision is
+/// stop the advertisement from implying a control the handler does not
+/// implement: each no-op field now carries a per-tool description that says
+/// it has no effect and names the tool that does the thing.
+///
+/// This test is the decision's record. If someone later implements the field,
+/// the description it contradicts fails here and the test is deleted with the
+/// change rather than left as a lie in the other direction.
+#[test]
+fn advertised_no_op_fields_declare_themselves_inert() {
+    for (tool_name, field) in NO_OP_FIELDS {
+        let prop = property(tool_name, field);
+        let description = prop["description"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{tool_name}.{field} must be described: {prop}"));
+        assert!(
+            description.contains("no effect"),
+            "{tool_name}.{field} is a no-op (the handler never reads it) but its \
+             advertised description does not say so, so the schema still implies a \
+             control that does not exist: {description:?}"
+        );
+    }
+}
+
+/// The other half of the same record: the fields stay ACCEPTED.
+///
+/// A description that says "no effect" is only honest if passing the field is
+/// still a valid call. If a future change starts rejecting `max_pages`, this
+/// fails and the rejection has to arrive as a deliberate, reviewed decision
+/// rather than as an accident.
+#[test]
+fn advertised_no_op_fields_are_still_accepted() {
+    let scrape_with_options = serde_json::from_value::<ScrapeWithOptionsParams>(json!({
+        "url": "https://example.com/",
+        "max_pages": 5,
+    }))
+    .expect("scrape_with_options must still accept max_pages");
+    scrape_with_options
+        .validate()
+        .expect("an in-bounds max_pages must still validate");
+    assert_eq!(scrape_with_options.max_pages, Some(5));
+
+    let scrape_batch = serde_json::from_value::<ScrapeBatchParams>(json!({
+        "urls": ["https://example.com/"],
+        "single_page": false,
+    }))
+    .expect("scrape_batch must still accept single_page");
+    scrape_batch
+        .validate()
+        .expect("a batch with single_page must still validate");
+    assert_eq!(scrape_batch.single_page, Some(false));
+}
+
+/// The bound on the inert `max_pages` is still enforced while it is inert.
+///
+/// VG-04's complaint is that validation implies control; leaving the bound in
+/// place is deliberate, because removing it is a behaviour change and
+/// advertising a field is not the same as validating it. This pins that the
+/// two halves did not drift apart: an in-bounds value is accepted, an
+/// out-of-bounds one is still refused with the published `invalid_params`
+/// channel.
+#[test]
+fn inert_max_pages_keeps_its_spec_bound() {
+    let out_of_bounds = ScrapeWithOptionsParams {
+        url: "https://example.com/".parse().expect("valid url"),
+        max_pages: Some(100_001),
+        download_images: None,
+        download_documents: None,
+        selector: None,
+        ignore_robots: None,
+    };
+    let err = out_of_bounds
+        .validate()
+        .expect_err("max_pages above the spec cap must still be refused");
+    assert_eq!(
+        err.code,
+        rmcp::model::ErrorCode::INVALID_PARAMS,
+        "the published invalid_params channel must not change: {err:?}"
+    );
+}
 
 /// Control parameters whose mention in a tool description is a *behavioural*
 /// claim — "this tool runs N at a time", "this tool can be paced", "this tool

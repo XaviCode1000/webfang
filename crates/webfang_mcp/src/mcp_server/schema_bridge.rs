@@ -82,9 +82,31 @@ pub const CRAWL_WITH_SITEMAP_PROPERTIES: &[SpecProperty] = &[
 ];
 
 /// `scrape_with_options`: every parameter overlaps the crawler spec group.
+///
+/// `max_pages` carries a per-tool description override (SD-03, #1612). The
+/// handler copies it into `ScraperConfig` and
+/// `scraper_service::scrape_with_config` never reads it — the one-page use
+/// case this tool serves has nothing to count. Bounds stay enforced
+/// (1..=100_000 from `crawler::MAX_PAGES`), so the advertisement says the
+/// field is inert rather than pretending it is a control.
+///
+/// **Deferred to #1614 (compat policy), deliberately not done here:**
+/// removing `max_pages` from this tool's advertised schema, or rejecting a
+/// value above 1, is a breaking change for MCP consumers and is that issue's
+/// call. This table states the decision so the next reader inherits it
+/// instead of re-deriving it.
 pub const SCRAPE_WITH_OPTIONS_PROPERTIES: &[SpecProperty] = &[
     prop("url", &crawler::URL),
-    prop("max_pages", &crawler::MAX_PAGES),
+    SpecProperty {
+        name: "max_pages",
+        spec: &crawler::MAX_PAGES,
+        description_override: Some(
+            "Accepted and bounds-checked (1-100000), but it has no effect here: this tool \
+             fetches exactly the `url` you give it and never discovers or follows links, so \
+             every call returns one page. To crawl more than one page use crawl_site or \
+             crawl_with_sitemap.",
+        ),
+    },
     prop("selector", &crawler::SELECTOR),
     prop("download_images", &crawler::DOWNLOAD_IMAGES),
     prop("download_documents", &crawler::DOWNLOAD_DOCUMENTS),
@@ -115,12 +137,29 @@ pub const PROCESS_EXPORT_PIPELINE_PROPERTIES: &[SpecProperty] = &[
 /// (issue #948 coverage gap — the tool was registered in WU3 without
 /// a bridge table). Other params (`urls`, `concurrency`) are MCP-only
 /// and stay on the schemars derive. `single_page` overlaps the spec too
-/// (AUDIT-02 P6-4 CLI `--single-page` parity). `delay_ms` overlaps the
-/// spec too (RC-1 slice 4, G2 pacing parity — the SAME token-bucket
-/// cadence the CLI `--delay-ms` drives).
+/// (AUDIT-02 P6-4 CLI `--single-page` parity) and carries a per-tool
+/// description override (SD-04, #1612): the handler never reads it, so
+/// the advertisement says so. `delay_ms` overlaps the spec too (RC-1
+/// slice 4, G2 pacing parity — the SAME token-bucket cadence the CLI
+/// `--delay-ms` drives).
+///
+/// **Deferred to #1614 (compat policy), deliberately not done here:** removing
+/// `single_page` from the advertised schema, or turning `single_page: false`
+/// into a rejection, are both breaking changes for MCP consumers. The
+/// alternative — adding a crawl-expansion mode to `scrape_batch` so the flag
+/// acquires a meaning — is a feature, not a schema fix, and belongs to
+/// whichever issue takes it.
 pub const SCRAPE_BATCH_PROPERTIES: &[SpecProperty] = &[
     prop("ignore_robots", &crawler::IGNORE_ROBOTS),
-    prop("single_page", &crawler::SINGLE_PAGE),
+    SpecProperty {
+        name: "single_page",
+        spec: &crawler::SINGLE_PAGE,
+        description_override: Some(
+            "Accepted for CLI --single-page parity, but it has no effect here: \
+             scrape_batch already scrapes exactly one page per input URL and never expands \
+             into linked pages, so there is no crawl mode for it to disable.",
+        ),
+    },
     prop("delay_ms", &crawler::DELAY_MS),
 ];
 
@@ -823,6 +862,12 @@ mod tests {
     /// Proof (AUDIT-02 P6-4): `scrape_batch` advertises `single_page`
     /// through the spec entry — CLI `--single-page` parity — with the F5
     /// nullability promotion for the `Option<bool>` field.
+    ///
+    /// Since SD-04 (#1612) the row also carries a per-tool description
+    /// override, because the handler never reads the field: the spec's
+    /// generic `--single-page` help reads as a control this tool offers.
+    /// The type and default still come from the spec; the description is
+    /// the truth about the handler, which is what the override is for.
     #[test]
     fn scrape_batch_single_page_renders_through_spec_entry() {
         let schema = scrape_batch_input_schema();
@@ -834,8 +879,17 @@ mod tests {
             json!(["boolean", "null"]),
             "single_page (Option<bool>) must advertise a nullable type"
         );
-        assert_eq!(rendered["description"], expected["description"]);
         assert_eq!(rendered["default"], expected["default"]);
+        assert_ne!(
+            rendered["description"], expected["description"],
+            "the per-tool override must replace the spec help, or SD-04's no-op \
+             field is advertised as a control"
+        );
+        let description = rendered["description"].as_str().expect("description");
+        assert!(
+            description.contains("no effect"),
+            "the override must say the field is inert, got: {description}"
+        );
     }
 
     /// Proof (issue #948 coverage gap): `get_accessibility_snapshot` now

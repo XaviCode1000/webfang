@@ -41,7 +41,7 @@ expression: advertised_pretty(tool)
     },
     "single_page": {
       "default": false,
-      "description": "Scrape only the seed URL without discovery or crawling (batch mode always scrapes one page per URL)",
+      "description": "Accepted for CLI --single-page parity, but it has no effect here: scrape_batch already scrapes exactly one page per input URL and never expands into linked pages, so there is no crawl mode for it to disable.",
       "type": [
         "boolean",
         "null"
