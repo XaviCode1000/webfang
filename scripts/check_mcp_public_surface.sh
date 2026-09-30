@@ -25,8 +25,13 @@
 # Usage:
 #   scripts/check_mcp_public_surface.sh [--base <ref>] [--record]
 #
-#   --base <ref>   compare against <ref> (default: the merge-base of HEAD and
-#                  `main`, falling back to `origin/main` then `HEAD~1`)
+#   --base <ref>   compare against <ref>. The default is the last commit that
+#                  touched the fixture OR the marker, which is the semantic
+#                  that actually matters: the guard is about the change sitting
+#                  in front of you, not about the whole branch. A merge-base
+#                  with main is wrong for a feature branch whose fixture was
+#                  introduced mid-stack -- every row would read as "added" and
+#                  the guard would go blind after the introducing commit.
 #   --record       re-derive the fixture from the live router first, then
 #                  run the same check. Recording NEVER touches the version
 #                  marker, so a breaking change recorded this way stays red
@@ -62,17 +67,12 @@ if ! command -v git >/dev/null 2>&1; then
 fi
 
 # --- resolve the base -------------------------------------------------------
-# The merge-base with main is what makes this meaningful on a feature branch
-# whose commits are not on main yet: without it, `git diff main` would report
-# the whole stack as a change.
+# Default: the last commit that touched either tracked file. See --help for why
+# a merge-base is the wrong default here.
 if [[ -z "$BASE" ]]; then
-  BASE="$(git -C "$ROOT" merge-base HEAD main 2>/dev/null || true)"
-  for candidate in main origin/main HEAD~1; do
-    [[ -n "$BASE" ]] && break
-    BASE="$(git -C "$ROOT" rev-parse --verify --quiet "$candidate" 2>/dev/null || true)"
-  done
+  BASE="$(git -C "$ROOT" log -1 --format=%H -- "$FIXTURE" "$MARKER" 2>/dev/null || true)"
 fi
-[[ -n "$BASE" ]] || fail "no base ref available; pass --base <ref>"
+[[ -n "$BASE" ]] || fail "no base commit touches $FIXTURE or $MARKER yet; pass --base <ref>"
 
 # --- optional re-record -----------------------------------------------------
 if [[ "$RECORD" == "1" ]]; then

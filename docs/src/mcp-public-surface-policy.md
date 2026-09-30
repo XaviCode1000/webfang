@@ -271,6 +271,7 @@ auditable rather than asserted.
 | Advertised default == applied default (bridged + MCP-only) | `options_spec_parity_test`, `mcp_advertised_defaults_test` (#1612, #1294) | yes |
 | Bridged schema byte-for-byte | `mcp_advertised_schema_snapshot_test` (#1612) | yes |
 | A shape change **moved `contract_version`** | `scripts/check_mcp_public_surface.sh` | **no** — local gate, see below |
+| The whole surface is **feature-independent** (36 tools, 81 properties, identical under default and `--all-features`) | `public_surface_policy_test` run under both feature sets | yes |
 
 ### 8.1 `contract_version`
 
@@ -289,10 +290,17 @@ fixture, so it fails in CI the moment a shape moves and the fixture is not
 updated. It cannot know *whether the author bumped `contract_version`*, because
 both live in the same file.
 
-`scripts/check_mcp_public_surface.sh` closes that half. It diffs the fixture
-against its committed state at the merge-base with `main`, classifies every
-changed row per §3.1, and **exits non-zero when the surface moved and
-`contract_version` did not**.
+`scripts/check_mcp_public_surface.sh` closes that half. It compares the fixture against **the last commit that touched the fixture or
+the marker**, classifies every changed row per §3.1, and **exits non-zero when
+the surface moved and `contract_version` did not** — and also in the reverse
+case, a version bump with no surface change, which would silence the guard
+without a reason.
+
+The base is *not* the merge-base with `main`, and that is deliberate. On a
+feature branch that introduces the fixture mid-stack, a merge-base base makes
+every row read as "added" and the guard goes blind right after the introducing
+commit. The last-touching-commit base asks the question that actually matters:
+did *this* change move the surface without moving the marker?
 
 It is wired into `scripts/ci_fast_gate.sh` (the local pre-push gate). It is
 **not** wired into `.github/workflows/ci.yml`, which this issue is forbidden to
@@ -313,7 +321,7 @@ which is a one-PR change once this stack merges.
 | BC-04 | Unsealed public port traits | **Policy declared**, §6. Migration rule stated. Sealing not performed — see §10. |
 | BC-05 | `SemanticCleaner` sealing unverified | **Settled: it is sealed.** §6. Compile-fail fixture remains open. |
 | BC-06 | `CheckpointStore` sealed, no method-addition policy | **Policy declared**, §6. Confirmed as the reference pattern. |
-| BC-07 | AI/chromium always registered | **Client policy declared**, §7. Verified ungated. |
+| BC-07 | AI/chromium always registered | **Client policy declared**, §7. Verified ungated — and the pinned surface is byte-identical under both feature sets, which proves the claim instead of asserting it. |
 | BC-08 | Output payloads untyped/unversioned | **Deferred** — the manifest covers input schemas only, and §3.2 says so. Follow-up recorded. |
 | BC-09 | Defaults / nullability / bounds | **Rules + machine check**, §5. |
 | BC-10 | No semver promise stated | **Declared**, §1 — narrowed to three boundaries, with B and C explicitly promised nothing. |
