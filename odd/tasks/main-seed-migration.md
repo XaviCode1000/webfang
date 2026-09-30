@@ -98,9 +98,10 @@ pending item: remove `incremental_not_a_key_input` from the hashed `[key]` block
 That item was applied in `67530751` and re-verified. Manual review remains a human
 activity recorded here, not a lineage approval.
 
-**Reason: the runtime review surface cannot consume a committed base-diff.** Five
-separate routes were attempted against five different lineages and five different
-targets, reproducing the same result each time:
+**Reason: the runtime review surface cannot consume a committed base-diff.** Six
+separate routes were attempted against six different lineages and six different
+targets, reproducing the same result each time — including one whose candidate was
+only two documentation files, so the failure is independent of candidate size.
 
 | Route | Result |
 | :--- | :--- |
@@ -116,7 +117,7 @@ immutable transport blocks. The review surface covers the uncommitted working tr
 the work-unit-commits discipline requires the work to be committed.
 
 This is a deterministic property of the runtime, not a transient failure and not a
-routing mistake. Five identical reproductions across five lineages and five targets
+routing mistake. Six identical reproductions across six lineages and six targets
 are the evidence, and each was a faithful invocation of the route `inspect` offered.
 
 **No candidate was approved, and the empty lineage is deliberately left as a non-usable

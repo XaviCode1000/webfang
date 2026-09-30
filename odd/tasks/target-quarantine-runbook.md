@@ -168,17 +168,35 @@ Restore path: `mv ~/.cache/cargo-target/quarantine/main-shared-478g-20260930
 ~/.cache/cargo-target/webfang` and restore the old `.envrc`. Nothing else references
 that path any more.
 
+### Re-verification before any deletion decision
+
+Runbook §2–§5, re-run against the quarantined path. Every precondition still holds,
+and the gap since quarantine has grown rather than shrunk:
+
+| Check | Result |
+| :--- | :--- |
+| A live worktree owns it (§3) | none — `git worktree list` contains no such path |
+| `main` declares it (§4) | no — `main` declares `cargo-target/main` |
+| Any script names it | none |
+| Build processes (§5) | 0 cargo, rustc, nextest, sccache |
+| Open files (§5) | `lsof` 0 |
+| Moving window (§5) | 545 907 → 545 907 over 90 s, **delta 0** |
+| Most recent mtime | 366 min before, unchanged in character since quarantine |
+| Size / file count | 478 G, 545 907 files — identical to the quarantine-time reading |
+
+A 6-hour-old newest mtime and a zero delta over 90 s say the same thing: nothing has
+written here since `main` moved off it. **The deletion in §8 remains unauthorised and
+was not performed.**
+
 ### Not quarantined, deliberately
 
 | Path | Size | Why it is still there |
 | :--- | --- | :--- |
-| `~/.cache/cargo-target/seeds/v1-4de4a216ec95753d` | 2.2 G | Category A. An incompatible seed is a correct `cold`, not garbage. Reclaiming it is an explicit seed policy. |
-| `~/.cache/cargo-target/seeds/v1-b76756ec52d50dfc` | 2.2 G | Category A, orphaned when the key derivation changed. Same rule. |
-| `~/.cache/cargo-target/seeds/v1-dfde71780c07a662` | 2.2 G | **Live.** The current key. |
+| `~/.cache/cargo-target/seeds/v1-da8aa82dd29c4018` | 2.2 G | **Live.** The active key. |
+| `~/.cache/cargo-target/seeds/v1-dfde71780c07a662` | 2.2 G | `RETAINED` predecessor, per `seed-reclamation-runbook.md`. |
 | `~/.cache/cargo-target/fix-build-cache-leak` | 7.1 G | Category C, another mission's. Not ours to attribute. |
-
-Note on the seeds: their contents are intentionally read-only, so `rm -rf` fails with
-`EACCES` until permissions are restored. That is the protection working, not a fault.
+The two obsolete seeds moved to `quarantine/seeds/` by rename under the seed policy;
+they are **not deleted**. See `odd/tasks/seed-reclamation-runbook.md`.
 
 ---
 
