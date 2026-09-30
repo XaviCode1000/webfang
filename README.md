@@ -340,6 +340,10 @@ rm -rf "${HF_HOME:-$HOME/.cache/huggingface}"
 ls output/
 ```
 
+Steps 2 and 3 are POSIX-shell commands. On macOS the webfang cache base is
+`~/Library/Caches`, and the model cache is `~/.cache/huggingface` on **every**
+platform — not `%LOCALAPPDATA%`. The PowerShell equivalents are in the guide.
+
 `webfang/state/<domain>.json.lock` is a **permanent sentinel**; its survival
 after an uninstall is correct behaviour, not a failed removal.
 
