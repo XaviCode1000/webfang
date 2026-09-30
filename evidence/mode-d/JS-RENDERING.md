@@ -31,7 +31,13 @@ Cause: the harness exports `RUSTUP_TOOLCHAIN=stable` (1.97.1), which overrides t
 `--no-keep-memory` and `--reduce-memory-overheads` are BFD-only. Fix: add
 `-u RUSTUP_TOOLCHAIN` to the existing `env -u RUSTC_WRAPPER`; the recipe then runs
 verbatim. (Alternative on a modern toolchain: drop the flags, or `-C linker-features=-lld`.)
-`env -u RUSTC_WRAPPER` was still required — `mise.toml:43` sets `RUSTC_WRAPPER = "sccache"`.
+`env -u RUSTC_WRAPPER` was required **for this run** — `mise.toml` then declared
+`[env] RUSTC_WRAPPER = "sccache"`. **Superseded 2026-09-29:** that declaration has since
+been removed; `mise.toml`'s `[env]` block is now comments-only and deliberately leaves
+`RUSTC_WRAPPER` unset. The wrapper's absence is the repository's current configuration — do
+not restore it, and note `mise.toml` is byte-identical across main, every worktree and every
+clone, so a declaration there could not be opted out of per tree. The unset is now a guard (a
+shell can inherit the variable from its parent), not a fix for a live injection.
 
 ```bash
 export CARGO_TARGET_DIR=~/.cache/cargo-target/feat-f52-js-rendering
