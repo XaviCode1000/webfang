@@ -63,9 +63,13 @@ fn error_field(resp: &Value) -> String {
         .to_string()
 }
 
-/// The `data.reason` slug — the machine-readable half. `None` when the key is
-/// absent, which is a legitimate state for callers outside `validation.rs`
-/// (see `reason_less_invalid_params_keeps_working_for_out_of_module_callers`).
+/// The `data.reason` slug — the machine-readable half.
+///
+/// `None` when the key is absent. The server no longer produces that state:
+/// every rejection carries a slug, and the reason-less constructor was removed
+/// rather than left as a dead branch (EC-08, #1613). It stays `Option` here
+/// because `error.data` is sender-defined, so a foreign or pre-EC-08 server
+/// can still omit it and a client must not panic on that.
 fn error_reason(resp: &Value) -> Option<String> {
     error_data(resp)
         .get("reason")

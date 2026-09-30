@@ -12,8 +12,8 @@
 //! Since EC-08 (issue #1613) that envelope's `data` is a structured OBJECT
 //! (`{"field": …, "reason": <slug>}`) rather than a bare string, so a caller
 //! can tell WHICH field was wrong and WHY without parsing prose. The seven
-//! stable slugs are `validation::REASON_*` (documented on the `invalid_params`
-//! builder below, which is module-private).
+//! stable slugs are `validation::REASON_*` (documented on the
+//! `invalid_params_with_reason` builder below, which is module-private).
 
 use rmcp::ErrorData as McpError;
 use serde_json::{json, Value};
@@ -62,13 +62,15 @@ pub const REASON_OUT_OF_RANGE: &str = "out_of_range";
 pub const REASON_NOT_IN_ALLOWED_SET: &str = "not_in_allowed_set";
 
 /// Build the standard `McpError::invalid_params` envelope used by every
-/// handler in this crate, WITHOUT a reason slug.
+/// handler in this crate, WITH a stable [`REASON_*`] slug. `data` is
+/// `{"field": "<field>", "reason": "<slug>"}`.
 ///
-/// This is the escape hatch for callers outside this module (e.g.
-/// `path_gate.rs`) that cannot name a better reason: it emits
-/// `{"field": "<field>"}` and no `reason` key, so `data.reason` is absent
-/// rather than wrong. Everything inside this module uses
-/// [`invalid_params_with_reason`] instead.
+/// Every rejection branch in the crate funnels through here, which is what
+/// makes the taxonomy exhaustive: a caller can always branch on `data.reason`
+/// instead of parsing prose. The sibling SSRF channel
+/// ([`crate::mcp_server::ssrf`]) attaches the same `data.reason` key without a
+/// `field` — an SSRF refusal is not a bad field but a policy decision or a
+/// server-side DNS fault — so one reader handles both.
 ///
 /// # The reason taxonomy is a STABLE contract (EC-08, issue #1613)
 ///
@@ -95,17 +97,11 @@ pub const REASON_NOT_IN_ALLOWED_SET: &str = "not_in_allowed_set";
 /// `docs/src/mcp-error-contract.md`. Message text remains the human-readable
 /// half and is NOT part of this contract (the module mixes English and one
 /// Spanish island by design, #1613).
-pub(crate) fn invalid_params(field: &str, msg: impl Into<String>) -> McpError {
-    McpError::invalid_params(msg.into(), Some(json!({ "field": field })))
-}
-
-/// Build the `invalid_params` envelope WITH a stable [`REASON_*`] slug:
-/// `data` is `{"field": "<field>", "reason": "<slug>"}`.
 ///
-/// Every rejection branch inside this module funnels through here, which is
-/// what makes the taxonomy exhaustive for the `require_*` helpers. The
-/// sibling SSRF channel ([`crate::mcp_server::ssrf`]) attaches the same
-/// `data.reason` key, so one reader handles both.
+/// There is deliberately no reason-less variant: a caller that cannot name a
+/// slug should pick the closest one rather than ship an absent reason, because
+/// a consumer branching on `data.reason` must be able to rely on it being
+/// there. Every rejection in the crate therefore carries one.
 pub(crate) fn invalid_params_with_reason(
     field: &str,
     msg: impl Into<String>,
@@ -1144,16 +1140,6 @@ mod tests {
             "no debe contener ':' (riesgo de flujos alternativos NTFS)"
         );
         assert_eq!(tag(&err).1.as_deref(), Some(REASON_PATH_NOT_ALLOWED));
-    }
-
-    #[test]
-    fn reason_less_invalid_params_keeps_working_for_out_of_module_callers() {
-        // `path_gate.rs` and a few inline `params.rs` branches cannot name a
-        // slug; they must still produce the structured `data` with the field
-        // and NO invented reason (an absent slug beats a wrong one).
-        let err = invalid_params("output_dir", "outside the export roots");
-        assert_eq!(err.message, "outside the export roots");
-        assert_eq!(tag(&err), ("output_dir".to_string(), None));
     }
 
     #[test]

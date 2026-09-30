@@ -19,7 +19,10 @@
 use super::McpHandler;
 use crate::mcp_server::params::*;
 use crate::mcp_server::provenance;
-use crate::mcp_server::validation::SanitizedFilename;
+use crate::mcp_server::validation::{
+    invalid_params_with_reason, SanitizedFilename, REASON_MALFORMED, REASON_NOT_IN_ALLOWED_SET,
+    REASON_PATH_NOT_ALLOWED,
+};
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::tool;
@@ -191,9 +194,10 @@ impl McpHandler {
         // Invalid format is a protocol-level invalid-params error, never a
         // silent fallback (REQ-MCP-EXPORT-07).
         let format = ExportFormat::parse_str(&params.content_format).map_err(|e| {
-            McpError::invalid_params(
+            invalid_params_with_reason(
+                "content_format",
                 format!("formato inválido: {e}"),
-                Some(serde_json::Value::String("content_format".to_string())),
+                REASON_NOT_IN_ALLOWED_SET,
             )
         })?;
 
@@ -203,9 +207,10 @@ impl McpHandler {
         // still used for the synthetic URL / title below.
         let filename = params.filename.clone();
         let safe_filename = SanitizedFilename::try_from(filename.as_str()).map_err(|_| {
-            McpError::invalid_params(
+            invalid_params_with_reason(
+                "filename",
                 "nombre de archivo inválido",
-                Some(serde_json::Value::String("filename".to_string())),
+                REASON_PATH_NOT_ALLOWED,
             )
         })?;
 
@@ -227,18 +232,27 @@ impl McpHandler {
             "export_file: caller content neutralized, provenance header prepended"
         );
         let url = url::Url::parse(&format!("https://webfang.local/{filename}")).map_err(|e| {
-            McpError::invalid_params(
+            invalid_params_with_reason(
+                "filename",
                 format!("nombre de archivo inválido: {e}"),
-                Some(serde_json::Value::String("filename".to_string())),
+                REASON_PATH_NOT_ALLOWED,
             )
         })?;
         // F-31 (#1233): the synthetic URL goes through the HARDENED gate, not
         // the old infallible wrap. A `filename` that smuggled credentials or
         // flipped the scheme can no longer reach an export unvalidated.
         let valid_url = webfang_core::domain::ValidUrl::try_from_url(url.clone()).map_err(|e| {
-            McpError::invalid_params(
+            // `try_from_url` collapses "unparseable" and "scheme not http(s)"
+            // into one error, and the taxonomy is deliberately coarse, so both
+            // land on `malformed` — same decision (and rationale) as the
+            // `McpUrl` boundary in `params.rs`. The scheme here is
+            // server-built (`https://webfang.local/{filename}`), so the slug
+            // must describe the CALLER's field: the `filename` whose shape
+            // makes the derived URL unacceptable.
+            invalid_params_with_reason(
+                "filename",
                 format!("URL no soportada para el nombre de archivo '{url}': {e}"),
-                Some(serde_json::Value::String("filename".to_string())),
+                REASON_MALFORMED,
             )
         })?;
         let scraped = ScrapedContent {
@@ -309,9 +323,10 @@ impl McpHandler {
         // `output_dir`.
         let filename = SanitizedFilename::try_from(params.filename.as_deref().unwrap_or("export"))
             .map_err(|_| {
-                McpError::invalid_params(
+                invalid_params_with_reason(
+                    "filename",
                     "nombre de archivo inválido",
-                    Some(serde_json::Value::String("filename".to_string())),
+                    REASON_PATH_NOT_ALLOWED,
                 )
             })?;
 
@@ -346,9 +361,10 @@ impl McpHandler {
         // Validated flat filename (issue #601): see `export_jsonl` above.
         let filename = SanitizedFilename::try_from(params.filename.as_deref().unwrap_or("export"))
             .map_err(|_| {
-                McpError::invalid_params(
+                invalid_params_with_reason(
+                    "filename",
                     "nombre de archivo inválido",
-                    Some(serde_json::Value::String("filename".to_string())),
+                    REASON_PATH_NOT_ALLOWED,
                 )
             })?;
 
@@ -391,9 +407,10 @@ impl McpHandler {
 
         let format_str = params.pipeline_format.as_deref().unwrap_or("jsonl");
         let format = ExportFormat::parse_str(format_str).map_err(|e| {
-            McpError::invalid_params(
+            invalid_params_with_reason(
+                "pipeline_format",
                 format!("formato inválido: {e}"),
-                Some(serde_json::Value::String("pipeline_format".to_string())),
+                REASON_NOT_IN_ALLOWED_SET,
             )
         })?;
 
@@ -450,9 +467,10 @@ impl McpHandler {
         // tightens, this surfaces as an honest invalid-params error rather
         // than a panic.
         let filename = SanitizedFilename::try_from("export").map_err(|_| {
-            McpError::invalid_params(
+            invalid_params_with_reason(
+                "filename",
                 "nombre de archivo interno inválido",
-                Some(serde_json::Value::String("filename".to_string())),
+                REASON_PATH_NOT_ALLOWED,
             )
         })?;
         export_results(&results, output_dir, format, &filename)

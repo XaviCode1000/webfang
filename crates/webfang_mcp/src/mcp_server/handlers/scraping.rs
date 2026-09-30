@@ -7,6 +7,9 @@ use super::McpHandler;
 use crate::mcp_server::metrics::{domain_of, Outcome};
 use crate::mcp_server::params::*;
 use crate::mcp_server::provenance;
+use crate::mcp_server::validation::{
+    invalid_params_with_reason, REASON_NOT_IN_ALLOWED_SET, REASON_UNSUPPORTED_SCHEME,
+};
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::tool;
@@ -452,9 +455,10 @@ impl McpHandler {
             .map(str::parse::<webfang_core::domain::JsStrategy>)
             .transpose()
             .map_err(|e: String| {
-                McpError::invalid_params(
+                invalid_params_with_reason(
+                    "js_strategy",
                     format!("estrategia JS no soportada: {e}"),
-                    Some(serde_json::Value::String("js_strategy".to_string())),
+                    REASON_NOT_IN_ALLOWED_SET,
                 )
             })?
             .unwrap_or_default();
@@ -593,9 +597,15 @@ impl McpHandler {
             .as_ref()
             .map(|s| {
                 webfang_core::domain::ValidUrl::try_from_url(s.as_url().clone()).map_err(|e| {
-                    McpError::invalid_params(
+                    // The value is already PARSED (the `McpUrl` boundary did
+                    // it), so `try_from_url` can only reject it on its
+                    // scheme allow-list — the slug names that cause rather
+                    // than the generic "malformed" the unparsed `McpUrl`
+                    // collapse has to use.
+                    invalid_params_with_reason(
+                        "sitemap_url",
                         format!("URL de sitemap no soportada '{}': {e}", s.as_str()),
-                        Some(serde_json::Value::String("sitemap_url".to_string())),
+                        REASON_UNSUPPORTED_SCHEME,
                     )
                 })
             })

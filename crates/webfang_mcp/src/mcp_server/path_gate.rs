@@ -58,7 +58,10 @@ use std::path::{Component, Path, PathBuf};
 
 use rmcp::ErrorData as McpError;
 
-use super::validation::{invalid_params, MAX_PATH_LEN};
+use super::validation::{
+    invalid_params_with_reason, MAX_PATH_LEN, REASON_EMPTY, REASON_PATH_NOT_ALLOWED,
+    REASON_TOO_LONG,
+};
 
 /// Normalize a path lexically: resolve `.` and `..` components without
 /// filesystem access. Applied first by [`resolve_fully`] so redundant
@@ -266,34 +269,47 @@ pub(crate) fn host_abs(p: &str) -> String {
 /// Returns `McpError::invalid_params` for empty/oversize input, rooted
 /// non-absolute forms, `..` traversal, absolute paths with no configured
 /// roots, and absolute paths outside every resolved root. Every rejection
-/// carries a structured `tracing::warn!` (field, path, roots — message stays
-/// static per the observability conventions).
+/// carries a stable slug (EC-08, #1613): empty and oversize report
+/// [`REASON_EMPTY`] / [`REASON_TOO_LONG`] because their remedy is to fill in
+/// or shorten the value, while the four remaining branches share
+/// [`REASON_PATH_NOT_ALLOWED`] — the caller's remedy ("use a safe path inside
+/// an allowed export root") is the same for all of them and the message
+/// carries the specific rule. Every rejection also emits a structured
+/// `tracing::warn!` (field, path, roots; message stays static per the
+/// observability conventions).
 pub(crate) fn confine(field: &str, raw: &str, roots: &[PathBuf]) -> Result<(), McpError> {
     if raw.is_empty() {
-        return Err(invalid_params(field, "must not be empty"));
+        return Err(invalid_params_with_reason(
+            field,
+            "must not be empty",
+            REASON_EMPTY,
+        ));
     }
     if raw.len() > MAX_PATH_LEN {
-        return Err(invalid_params(
+        return Err(invalid_params_with_reason(
             field,
             format!("exceeds maximum length of {MAX_PATH_LEN} bytes"),
+            REASON_TOO_LONG,
         ));
     }
     let shape = classify(raw);
     if matches!(shape, PathShape::RootedNotAbsolute) {
         tracing::warn!(field, path = raw, "path rejected: rooted non-absolute form");
-        return Err(invalid_params(
+        return Err(invalid_params_with_reason(
             field,
             "must be absolute or relative; rooted non-absolute forms ('\\foo', 'C:foo') \
              are not allowed",
+            REASON_PATH_NOT_ALLOWED,
         ));
     }
     let path = Path::new(raw);
     // Reject `..` BEFORE any lexical normalization: normalize_lexical resolves
     // `..` before symlinks, which is the wrong order for containment.
     if path.components().any(|c| matches!(c, Component::ParentDir)) {
-        return Err(invalid_params(
+        return Err(invalid_params_with_reason(
             field,
             "must not contain '..' traversal components",
+            REASON_PATH_NOT_ALLOWED,
         ));
     }
     if matches!(shape, PathShape::Relative) {
@@ -308,12 +324,13 @@ pub(crate) fn confine(field: &str, raw: &str, roots: &[PathBuf]) -> Result<(), M
             path = raw,
             "absolute path rejected: no export roots configured"
         );
-        return Err(invalid_params(
+        return Err(invalid_params_with_reason(
             field,
             format!(
                 "absolute {field} requires server-configured export roots (none configured); \
                  set --export-roots or use a relative path"
             ),
+            REASON_PATH_NOT_ALLOWED,
         ));
     }
     if resolved_within_roots(path, roots) {
@@ -325,15 +342,17 @@ pub(crate) fn confine(field: &str, raw: &str, roots: &[PathBuf]) -> Result<(), M
         roots = ?roots,
         "path outside allowed export roots"
     );
-    Err(invalid_params(
+    Err(invalid_params_with_reason(
         field,
         format!("{field} '{raw}' is outside allowed export roots"),
+        REASON_PATH_NOT_ALLOWED,
     ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     // --- classify ---------------------------------------------------------
 
@@ -464,6 +483,66 @@ mod tests {
                 classify_with(raw, is_absolute, has_root),
                 PathShape::RootedNotAbsolute,
                 "drive-relative '{raw}' must stay rejected on a Windows host"
+            );
+        }
+    }
+
+    // --- confine: the EC-08 reason slug (issue #1613) -----------------------
+
+    /// EC-08: every rejection this gate emits must carry BOTH halves of
+    /// `error.data` — the offending `field` and the stable `reason` slug — so
+    /// a caller never has to parse the message to know which rule fired.
+    ///
+    /// The JSON-RPC code (`INVALID_PARAMS`) and the message text are pinned by
+    /// the tests above; this one covers the machine-readable payload, and it
+    /// deliberately samples EVERY rejection branch of `confine` (they all
+    /// share the one slug).
+    #[test]
+    fn every_rejection_carries_field_and_reason_slug() {
+        let roots = vec![PathBuf::from(host_abs("/srv/exports"))];
+        let oversize = "a".repeat(MAX_PATH_LEN + 1);
+        let no_roots = host_abs("/srv/exports/x");
+        let outside = host_abs("/srv/checkpoints");
+        let cases: [(&str, &str, &[PathBuf], &str); 6] = [
+            // empty — its own remedy ("fill it in") beats the path slug
+            ("output_dir", "", &roots, REASON_EMPTY),
+            // oversize — likewise
+            ("output_dir", &oversize, &roots, REASON_TOO_LONG),
+            // rooted non-absolute
+            ("output_dir", "\\foo", &roots, REASON_PATH_NOT_ALLOWED),
+            // `..` traversal
+            (
+                "output_dir",
+                "sub/../other",
+                &roots,
+                REASON_PATH_NOT_ALLOWED,
+            ),
+            // absolute with no roots configured (fail-closed)
+            ("output_dir", &no_roots, &[], REASON_PATH_NOT_ALLOWED),
+            // absolute outside every root
+            ("checkpoint_dir", &outside, &roots, REASON_PATH_NOT_ALLOWED),
+        ];
+        for (field, raw, roots, expected_reason) in cases {
+            let err = confine(field, raw, roots).expect_err("must be rejected");
+            assert_eq!(
+                err.code,
+                rmcp::model::ErrorCode::INVALID_PARAMS,
+                "{raw}: the JSON-RPC code must stay -32602, got: {err:?}"
+            );
+            let data = err.data.as_ref().expect("every rejection carries `data`");
+            assert!(
+                data.is_object(),
+                "`data` must be a JSON OBJECT (not a bare string): {data}"
+            );
+            assert_eq!(
+                data.get("field").and_then(Value::as_str),
+                Some(field),
+                "{raw}: `data.field` must name the offending field: {data}"
+            );
+            assert_eq!(
+                data.get("reason").and_then(Value::as_str),
+                Some(expected_reason),
+                "{raw}: `data.reason` must carry the stable slug: {data}"
             );
         }
     }
