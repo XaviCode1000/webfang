@@ -14,14 +14,23 @@ use webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV;
 use webfang_mcp::mcp_server::server::{
     plaintext_bind_warning, require_auth_or_explicit_anonymous, start_mcp_server, ServerOptions,
     DEFAULT_MAX_SESSIONS, DEFAULT_MCP_ADDR, DEFAULT_SESSION_CAP_WINDOW_SECS,
-    MAX_ALLOWED_SESSIONS_CAP,
+    MAX_ALLOWED_SESSIONS_CAP, REDACTED_CREDENTIAL,
 };
 use webfang_mcp::mcp_server::{
     build_container, build_mcp_state, default_dom_inspector, spawn_ai_wiring, McpState,
 };
 
 /// Webfang MCP Server — Streamable HTTP transport.
-#[derive(Parser, Debug)]
+///
+/// # Redacted `Debug` (#1615, F9)
+///
+/// `--auth-token` / `WEBFANG_MCP_AUTH_TOKEN` arrives as a raw `String` and
+/// clap hands the parsed struct to whoever asks for it, `Debug` included. The
+/// `Debug` impl is therefore hand-written: a derived one renders the bearer
+/// token in full, and this is a `main` that already warns, logs, and prints
+/// startup diagnostics. See [`ServerOptions`] for the same treatment on the
+/// library type.
+#[derive(Parser)]
 #[command(
     name = "webfang-mcp",
     version,
@@ -92,6 +101,33 @@ struct Args {
     /// (fail-closed); relative paths always work.
     #[arg(long, env = "WEBFANG_MCP_EXPORT_ROOTS", value_delimiter = ',')]
     export_roots: Vec<std::path::PathBuf>,
+}
+
+/// Redacted `Debug` for [`Args`] (#1615, F9).
+///
+/// The token renders as `Some("[REDACTED]")` — presence, never value. Every
+/// other field is a non-secret knob and stays visible, because a redacted
+/// `Debug` that hides the bind address is worse than none: it is exactly the
+/// field an operator checks when the server refuses to start.
+impl std::fmt::Debug for Args {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Args")
+            .field("bind", &self.bind)
+            .field("timeout_secs", &self.timeout_secs)
+            .field("body_limit", &self.body_limit)
+            .field("rate", &self.rate)
+            .field("burst", &self.burst)
+            .field("max_sessions", &self.max_sessions)
+            .field("session_cap_window_secs", &self.session_cap_window_secs)
+            .field(
+                "auth_token",
+                &self.auth_token.as_ref().map(|_| REDACTED_CREDENTIAL),
+            )
+            .field("allow_anonymous", &self.allow_anonymous)
+            .field("enable_ai", &self.enable_ai)
+            .field("export_roots", &self.export_roots)
+            .finish()
+    }
 }
 
 /// Compose the [`McpState`] this binary ships (#1294 NS-01).
@@ -472,5 +508,106 @@ mod tests {
                 "a {window}s window still bounds live sessions, so it must not warn: {logs}"
             );
         }
+    }
+
+    /// #1615 F9: the bearer token must not reach a log line through the argv
+    /// struct.
+    ///
+    /// This is the regression row for the finding itself. `--auth-token` /
+    /// `WEBFANG_MCP_AUTH_TOKEN` lands in `Args.auth_token` as a raw `String`,
+    /// and a derived `Debug` on this struct rendered it in full — so any
+    /// `?args`, any `#[instrument]`, any future startup diagnostic dumped the
+    /// deployment's only credential into stderr. The test asserts on the
+    /// DEBUG RENDERING, because that is the surface the leak lived on, and it
+    /// also checks the rendered form still says a token IS configured: an
+    /// operator diagnosing a 401 needs presence, not the value.
+    #[test]
+    fn argv_debug_never_renders_the_bearer_token() {
+        let secret = "sk-super-secret-bearer-value-1615";
+        let args = Args {
+            bind: DEFAULT_MCP_ADDR.parse().expect("default bind parses"),
+            timeout_secs: 30,
+            body_limit: 10_485_760,
+            rate: 10,
+            burst: 20,
+            max_sessions: DEFAULT_MAX_SESSIONS,
+            session_cap_window_secs: DEFAULT_SESSION_CAP_WINDOW_SECS,
+            auth_token: Some(secret.to_string()),
+            allow_anonymous: false,
+            enable_ai: false,
+            export_roots: Vec::new(),
+        };
+
+        let rendered = format!("{args:?}");
+
+        assert!(
+            !rendered.contains(secret),
+            "the bearer token must never appear in a Debug rendering: {rendered}"
+        );
+        assert!(
+            rendered.contains(REDACTED_CREDENTIAL),
+            "the redacted marker must be present so an operator can still see a \
+             token IS configured: {rendered}"
+        );
+        assert!(
+            rendered.contains(DEFAULT_MCP_ADDR),
+            "redaction must not blind the fields an operator actually reads: {rendered}"
+        );
+    }
+
+    /// And the same struct with no token must not print a phantom one.
+    #[test]
+    fn argv_debug_shows_no_token_when_none_is_configured() {
+        let args = Args {
+            bind: DEFAULT_MCP_ADDR.parse().expect("default bind parses"),
+            timeout_secs: 30,
+            body_limit: 10_485_760,
+            rate: 10,
+            burst: 20,
+            max_sessions: DEFAULT_MAX_SESSIONS,
+            session_cap_window_secs: DEFAULT_SESSION_CAP_WINDOW_SECS,
+            auth_token: None,
+            allow_anonymous: true,
+            enable_ai: false,
+            export_roots: Vec::new(),
+        };
+
+        let rendered = format!("{args:?}");
+        assert!(
+            rendered.contains("auth_token: None"),
+            "an absent token must read as absent, not as a redacted one: {rendered}"
+        );
+        assert!(
+            !rendered.contains(REDACTED_CREDENTIAL),
+            "nothing was configured, so nothing may be marked redacted: {rendered}"
+        );
+    }
+
+    /// The composition root hands `args.auth_token` straight to
+    /// `ServerOptions`, so the library type carries the same guarantee — and
+    /// this is the row that would fail if someone re-derived `Debug` on
+    /// `ServerOptions` after fixing only the binary.
+    #[test]
+    fn server_options_debug_never_renders_the_bearer_token() {
+        let secret = "sk-super-secret-bearer-value-1615";
+        let opts = ServerOptions {
+            auth_token: Some(secret.to_string()),
+            ..Default::default()
+        };
+
+        let rendered = format!("{opts:?}");
+
+        assert!(
+            !rendered.contains(secret),
+            "the bearer token must never appear in a Debug rendering: {rendered}"
+        );
+        assert!(
+            rendered.contains(REDACTED_CREDENTIAL),
+            "the redacted marker must be present: {rendered}"
+        );
+        assert!(
+            rendered.contains("request_timeout_secs"),
+            "the non-secret knobs stay readable: {rendered}"
+        );
     }
 }

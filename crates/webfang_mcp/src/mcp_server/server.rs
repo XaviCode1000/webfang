@@ -40,7 +40,17 @@ use super::McpHandler;
 pub const DEFAULT_MCP_ADDR: &str = "127.0.0.1:8080";
 
 /// Configuration for the MCP HTTP server middleware stack.
-#[derive(Debug, Clone)]
+///
+/// # Redacted `Debug` (#1615, F9)
+///
+/// [`auth_token`](Self::auth_token) is a raw credential, so this type's
+/// `Debug` is hand-written rather than derived: a derived `Debug` would render
+/// the token in full, and `ServerOptions` is exactly the kind of value that
+/// gets logged on a startup or a config-dump path. The redacted form still
+/// prints `"auth_token": Some("[REDACTED]")` — i.e. it says a credential IS
+/// configured, which is the fact an operator needs when a 401 surprises
+/// them — and never the value.
+#[derive(Clone)]
 pub struct ServerOptions {
     /// Request timeout in seconds (default: 30).
     pub request_timeout_secs: u64,
@@ -87,6 +97,36 @@ pub struct ServerOptions {
     /// released", which is a footgun dressed as a mode.
     pub session_cap_window_secs: NonZeroU64,
 }
+
+/// Redacted `Debug` for [`ServerOptions`] (#1615, F9).
+///
+/// Hand-written because the token must never render. The presence marker is
+/// the point: `Some("[REDACTED]")` tells an operator that a credential IS set
+/// without telling anyone what it is, which is the fact that explains a 401.
+impl std::fmt::Debug for ServerOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServerOptions")
+            .field("request_timeout_secs", &self.request_timeout_secs)
+            .field("body_limit_bytes", &self.body_limit_bytes)
+            .field("rate_per_second", &self.rate_per_second)
+            .field("rate_burst", &self.rate_burst)
+            .field(
+                "auth_token",
+                &self.auth_token.as_ref().map(|_| REDACTED_CREDENTIAL),
+            )
+            .field("allow_anonymous", &self.allow_anonymous)
+            .field("max_sessions", &self.max_sessions)
+            .field("session_cap_window_secs", &self.session_cap_window_secs)
+            .finish()
+    }
+}
+
+/// Placeholder rendered in place of a credential value (#1615, F9).
+///
+/// A recognisable constant rather than an empty string: `"Some(\"\")"` in a log
+/// reads as "an empty token is configured", which is a different — and wrong —
+/// operational conclusion.
+pub const REDACTED_CREDENTIAL: &str = "[REDACTED]";
 
 impl Default for ServerOptions {
     fn default() -> Self {

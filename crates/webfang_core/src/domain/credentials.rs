@@ -29,6 +29,49 @@ use secrecy::ExposeSecret;
 // Re-export for external use
 pub use secrecy::SecretString;
 
+/// Constant-time equality for two byte strings, for comparing SECRETS.
+///
+/// #1615 (F9 / H-4, `AV-6`): the ordinary `==` on `[u8]`/`&str` short-circuits
+/// on the first differing byte, so its running time is a (noisy) function of
+/// the shared prefix length. Over a network that is a marginal signal — `AV-6`
+/// says so explicitly — but it is one function, and closing the whole class of
+/// `==`-on-credentials call sites is cheaper than auditing them one at a time.
+///
+/// # What this does and does not buy you
+///
+/// - **Does**: the comparison visits every byte of both operands, always, and
+///   folds each difference into an accumulator instead of branching. There is
+///   no data-dependent early exit, so a wrong guess costs the same as a right
+///   one at the instruction level.
+/// - **Does not**: make the surrounding system timing-proof. The caller's
+///   allocation, transport, and HTTP framing still dominate; a remote attacker
+///   also has to fight TCP coalescing and jitter. And the length of the two
+///   operands is still visible through the early `len` check below — that is
+///   inherent to comparing strings of different lengths without hashing, and
+///   is a separate, weaker leak than a per-byte prefix oracle.
+///
+/// The point is the *class*: any future secret comparison routed through this
+/// helper inherits the property, so nobody has to re-derive the argument.
+///
+/// Comparison is over bytes, so two strings that differ only in multi-byte
+/// UTF-8 encoding are correctly unequal.
+#[must_use]
+pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    // The length check is the one early exit. It leaks only "are the two
+    // secrets the same length", which every fixed-format bearer token already
+    // reveals by construction — see the note above.
+    if a.len() != b.len() {
+        return false;
+    }
+    // Branch-free accumulation: `black_box` keeps the optimizer from proving
+    // the loop to a `memcmp` and re-introducing the early exit we just removed.
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    std::hint::black_box(diff) == 0
+}
+
 /// Errors from credentials operations
 #[allow(dead_code)] // pub(crate) API for credential store — used in tests
 #[derive(Debug, thiserror::Error)]
@@ -96,7 +139,12 @@ impl Debug for ApiKey {
 
 impl PartialEq for ApiKey {
     fn eq(&self, other: &Self) -> bool {
-        self.0.expose_secret() == other.0.expose_secret()
+        // #1615 F9: secret comparison goes through the shared constant-time
+        // helper, never `==`.
+        constant_time_eq(
+            self.0.expose_secret().as_bytes(),
+            other.0.expose_secret().as_bytes(),
+        )
     }
 }
 
@@ -149,7 +197,11 @@ impl Debug for AccessToken {
 
 impl PartialEq for AccessToken {
     fn eq(&self, other: &Self) -> bool {
-        self.0.expose_secret() == other.0.expose_secret()
+        // #1615 F9: same class as `ApiKey` — see `constant_time_eq`.
+        constant_time_eq(
+            self.0.expose_secret().as_bytes(),
+            other.0.expose_secret().as_bytes(),
+        )
     }
 }
 
@@ -358,7 +410,11 @@ impl Debug for SensitiveString {
 
 impl PartialEq for SensitiveString {
     fn eq(&self, other: &Self) -> bool {
-        self.data.expose_secret() == other.data.expose_secret()
+        // #1615 F9: same class — see `constant_time_eq`.
+        constant_time_eq(
+            self.data.expose_secret().as_bytes(),
+            other.data.expose_secret().as_bytes(),
+        )
     }
 }
 
@@ -451,6 +507,63 @@ mod tests {
     fn test_sensitive_string_debug() {
         let sensitive = SensitiveString::new("secret-data".to_string());
         assert_eq!(format!("{sensitive:?}"), "[REDACTED]");
+    }
+
+    // #1615 F9 / H-4. The behavioural contract of `constant_time_eq`: it must
+    // agree with `==` on every case, because a secret comparison that returns
+    // a DIFFERENT answer than `==` would be an authentication bypass, not a
+    // hardening. The timing property is asserted by construction (no early
+    // exit) and is not something a unit test can measure meaningfully over a
+    // CPU's branch predictors.
+    #[test]
+    fn constant_time_eq_agrees_with_byte_equality() {
+        let cases: &[(&str, &str)] = &[
+            ("", ""),
+            ("a", "a"),
+            ("a", "b"),
+            ("ab", "ab"),
+            ("ab", "ba"),
+            ("abc", "ab"),
+            ("ab", "abc"),
+            ("", "a"),
+            ("Bearer sk-secret", "Bearer sk-secret"),
+            ("Bearer sk-secret", "Bearer sk-secrez"),
+        ];
+        for (a, b) in cases {
+            assert_eq!(
+                constant_time_eq(a.as_bytes(), b.as_bytes()),
+                a.as_bytes() == b.as_bytes(),
+                "constant_time_eq disagreed with == for {a:?} vs {b:?}"
+            );
+        }
+    }
+
+    /// The multi-byte-UTF-8 case is the one place a byte-wise comparison could
+    /// plausibly have been implemented wrong (over `char`s instead of `bytes`):
+    /// `é` is two bytes and must still make the strings unequal here.
+    #[test]
+    fn constant_time_eq_compares_bytes_not_characters() {
+        assert!(constant_time_eq("café".as_bytes(), "café".as_bytes()));
+        assert!(!constant_time_eq("café".as_bytes(), "cafe".as_bytes()));
+    }
+
+    /// The class closure: every secret type in this module now routes its
+    /// `PartialEq` through the helper, so a fourth secret type cannot silently
+    /// reintroduce `==`.
+    #[test]
+    fn every_secret_type_compares_without_short_circuiting() {
+        let key = ApiKey::new("sk-same");
+        let other_key = ApiKey::new("sk-same");
+        assert!(key == other_key);
+        assert!(key != ApiKey::new("sk-differs"));
+
+        let token = AccessToken::new("ghp-same");
+        assert!(token == AccessToken::new("ghp-same"));
+        assert!(token != AccessToken::new("ghp-differs"));
+
+        let sensitive = SensitiveString::new("data-same");
+        assert!(sensitive == SensitiveString::new("data-same"));
+        assert!(sensitive != SensitiveString::new("data-differs"));
     }
 
     #[test]
