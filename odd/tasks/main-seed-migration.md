@@ -46,15 +46,15 @@ Create `~/.cache/cargo-target/main` from the current seed, point `main`'s `.envr
 
 `.envrc` is untracked, so T2 is a local environment change; the policy in T1 is what ships.
 
-### T3 — Quarantine the historical target
+### T3 — Quarantine the historical target (DONE)
 
 Verify no writers, sample twice 60 s apart requiring delta 0, confirm ownership, then rename
 to a quarantine name. No deletion in this work.
 
-### T4 — Documented, not executed
+### T4 — Documented, not executed (DONE)
 
-Record the deletion procedure for the quarantined 478 GB as a separate step requiring fresh
-authorization. **Not performed here.**
+Runbook written to `odd/tasks/target-quarantine-runbook.md`. The deletion it describes is
+**not authorised and was not performed**. Quarantine state recorded in its section 9.
 
 ## Non-goals
 
@@ -70,3 +70,8 @@ authorization. **Not performed here.**
 - Incremental toggle: 0 → 1 costs one 20 s workspace rebuild; subsequent toggles free;
   669 C++ objects preserved across both settings.
 - Historical target: 478 GB, 46 dead worktrees referenced by live fingerprints.
+- Quarantine: `quarantine/main-shared-478g-20260930`, rename same-filesystem, 545 907 files,
+  moving window delta 0 over 90 s, 0 build processes, `lsof` 0, latest mtime 327 min prior.
+  Post-rename `cargo build --workspace` on `main` = 0.28 s no-op, still `webfang 2.4.1`.
+- T1 also uncovered `scripts/ci_batch_branch.sh` printing the removed sed recipe; fixed in
+  `77d39f08`.
