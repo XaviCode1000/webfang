@@ -21,6 +21,7 @@
 #   pacing                 Rate-limit wait cost per pacing scope (issue #1610)
 #   pacing-hot [N]         Top N URLs by rate-limit wait time (default 10)
 #   admission              Admission/dispatch wait cost per operation (#1610)
+#   percentiles            p50/p95/p99 of scrape durations, from the JSONL (#1610)
 #
 # Requires: jq
 set -euo pipefail
@@ -105,6 +106,19 @@ case "$CMD" in
     jq -r 'select(.message == "rate limit wait") | [(.fields.waited_ms // 0), .fields.scope, (.fields.url // "unknown")] | @tsv' "$FILE" \
       | awk -F'\t' '{t[$2 FS $3] += $1} END {for (k in t) print t[k] "\t" k}' \
       | sort -rn | head -n "$N"
+    ;;
+  percentiles)
+    # The reconstruction query for OBS-M4: the same nearest-rank percentiles
+    # the in-process reservoir publishes, computed over the whole trace file.
+    # `message` is TOP-LEVEL in this JSONL - selecting `.fields.message`
+    # returns nothing and reports `samples: 0`, which reads like "no scrapes"
+    # rather than like a broken query.
+    jq -s '[ .[] | select(.message? == "scrape recorded")
+             | .fields.duration_ms ] | sort
+       | . as $s | ($s|length) as $n
+       | def nr($p): if $n == 0 then null
+                     else $s[((((($p*$n)+99)/100)|floor) - 1)] end;
+         { samples: $n, p50_ms: nr(50), p95_ms: nr(95), p99_ms: nr(99) }' "$FILE"
     ;;
   admission)
     # Every semaphore/pool admission wait across the three transports, one
