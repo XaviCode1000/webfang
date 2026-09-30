@@ -75,3 +75,43 @@ Runbook written to `odd/tasks/target-quarantine-runbook.md`. The deletion it des
   Post-rename `cargo build --workspace` on `main` = 0.28 s no-op, still `webfang 2.4.1`.
 - T1 also uncovered `scripts/ci_batch_branch.sh` printing the removed sed recipe; fixed in
   `77d39f08`.
+
+---
+
+## Review disposition
+
+**Formal review coverage: NONE.** Not "approved", not "reviewed" — none.
+
+| Commit | Subject |
+| :--- | :--- |
+| `eb20f797` | main is a seed consumer, not the shared cache |
+| `4a7c8d99` | CARGO_INCREMENTAL must not fork the SeedCompatibilityKey |
+| `77d39f08` | the batch bootstrap still taught the sed recipe that silently breaks isolation |
+| `7394afc8` | runbook for reclaiming quarantined target dirs |
+
+**Reason: the runtime review surface cannot consume a committed base-diff.** Three
+separate routes were attempted against two different lineages and two different
+targets, reproducing the same result each time:
+
+| Route | Result |
+| :--- | :--- |
+| `start` with `{"mode":"ordinary"}` | binds to the working tree; `paths: []` because the work is committed; `empty_candidate_base_ref_required` |
+| `start` with explicit `baseRef` / `committedOnly` | controller rejects: "START supports only ordinary or judgment-day mode" |
+| plain shell | `immutable_review_transport_unsupported` — the immutable transport is host-only |
+| the `external.select_base_ref` collect binding | `capture-binding-rejected` |
+
+`inspect` projects a correct `base-diff` candidate (7 paths, base `4c03aa12`,
+`committedOnly=true`), but the `input` contract of `start` has no axis to request it. The
+only native command carrying `--base-ref` and `--committed-only` is the one the
+immutable transport blocks. The review surface covers the uncommitted working tree, and
+the work-unit-commits discipline requires the work to be committed.
+
+This is a deterministic property of the runtime, not a transient failure and not a
+routing mistake. Three identical reproductions are the evidence.
+
+**No candidate was approved, and the empty lineage is deliberately left as a non-usable
+review attempt with this reason attached.** Marking any of these commits as reviewed on
+the strength of a diff that the reviewer never saw would be worse than recording the gap.
+
+Technical review of the same content is still available as a manual diff of
+`4c03aa12..HEAD`. That is the recommended path and it has not been performed.
