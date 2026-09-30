@@ -127,9 +127,18 @@ if [[ ! -f "$target/.envrc" ]]; then
     echo "==> NOTE: $target/.envrc is absent (gitignored, never copied by 'git worktree add')."
     echo "    Bootstrap it before the fast gate, or this tree inherits main's target dir:"
     echo "      cd $target"
-    echo "      sed -e 's#cargo-target/webfang#cargo-target/${dir}#' \\"
-    echo "          -e 's#^export CARGO_INCREMENTAL=1#export CARGO_INCREMENTAL=0#' \\"
-    echo "          '$main_repo/.envrc' > .envrc"
+    # Written from the tree's own name, never derived by rewriting main's. The old
+    # sed form silently produced a VALID CARGO_TARGET_DIR pointing at main's target
+    # once main moved off 'cargo-target/webfang', so every new worktree would have
+    # inherited a broken isolation policy and only the fast gate would have caught
+    # it, one build later. See AGENTS.md, worktree bootstrap.
+    echo "      TREE=\$(basename \"\$PWD\")"
+    echo "      cat > .envrc <<EOF"
+    echo "      export CARGO_TARGET_DIR=\$HOME/.cache/cargo-target/\$TREE"
+    echo "      export CARGO_INCREMENTAL=0"
+    echo "      unset RUSTC_WRAPPER"
+    echo "      export CARGO_LLVM_COV_TARGET_DIR=\$HOME/.cache/cargo-target/\$TREE-llvm-cov"
+    echo "      EOF"
     echo "      direnv allow"
   else
     echo "    WARNING: no .envrc in $target nor in $main_repo — write one by hand"
