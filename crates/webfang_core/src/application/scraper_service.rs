@@ -13,7 +13,7 @@
 
 use crate::application::error_mapping::scraper_error_from_http;
 use crate::application::http_client::HttpClientPort;
-use crate::application::rate_limiter::SharedRateLimiter;
+use crate::application::rate_limiter::{PacingContext, SharedRateLimiter};
 use crate::domain::config::ScraperConfig;
 use crate::domain::crawler_port::{RobotsDecision, RobotsPort};
 use crate::domain::html_cleaner::clean_html;
@@ -783,9 +783,12 @@ async fn scrape_multiple_inner(
                 // G2 (RC-1 slice 4): pre-fetch pacing — the wait happens
                 // BEFORE the network is touched, mirroring the crawl engine
                 // and the CLI scrape phase (one shared cadence policy, no
-                // second limiter implementation).
+                // second limiter implementation). #1610: measured and
+                // emitted, so a slow batch can be told apart from a batch
+                // that was being paced.
                 if let Some(limiter) = pacing {
-                    limiter.until_ready().await;
+                    let wait_ctx = PacingContext::bare("batch_scrape").with_url(url.as_str());
+                    limiter.until_ready_observed(&wait_ctx).await;
                 }
                 let result = scrape_with_config(
                     client,

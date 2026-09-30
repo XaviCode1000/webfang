@@ -14,7 +14,9 @@ use crate::error::ScraperError;
 use governor::state::{InMemoryState, NotKeyed};
 use governor::{Quota, RateLimiter};
 
-use crate::application::rate_limiter::{GovernorClock, GovernorMiddleware};
+use crate::application::rate_limiter::{
+    record_pacing_wait, GovernorClock, GovernorMiddleware, PacingContext,
+};
 use std::collections::HashMap;
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -158,9 +160,16 @@ impl HttpClient {
         } else {
             (None, String::new())
         };
-        // Apply rate limiting if configured
+        // Apply rate limiting if configured. #1610: this client carries a bare
+        // governor limiter (per-session quota), so it measures its own wait and
+        // reports it through the shared pacing emitter — the wait is
+        // attributable to this URL instead of silently inflating every
+        // request's wall clock.
         if let Some(ref limiter) = self.rate_limiter {
+            let wait_ctx = PacingContext::bare("http_client").with_url(url);
+            let started = std::time::Instant::now();
             limiter.until_ready().await;
+            record_pacing_wait(&wait_ctx, started.elapsed(), "granted");
         }
 
         // Track in-flight requests

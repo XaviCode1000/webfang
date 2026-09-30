@@ -9,6 +9,16 @@
 //! - Thread-safe via Arc (shares across async tasks)
 //! - Configurable delay and burst parameters
 //! - No Mutex needed - governor handles internal synchronization
+//!
+//! # Waits are observable (#1610, OBS-P1-2 / OBS-H2 / OBS-M1)
+//!
+//! Pacing is invisible by construction: a wait produces no event, so a slow
+//! crawl looks identical to a slow network. The [`PacingContext`] passed to
+//! the `*_observed` wait variants carries the identifying fields (scope, URL,
+//! correlation identity), and the wait emits one structured
+//! `rate limit wait` event with its measured cost. Measured BEFORE the wait is
+//! emitted, not after the fetch, so the number answers "how long did pacing
+//! hold this request back", never "how long did the page take".
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
@@ -95,6 +105,102 @@ impl RateLimiterConfig {
 #[error("rate limit wait cancelled by engine shutdown")]
 pub struct RateLimitCancelled;
 
+/// `operation` field of every event a pacing wait emits (#1610).
+///
+/// Dotted `resource.action` shape, shared with the session-cap and rate-limit
+/// events the MCP server already publishes (#1611) so one `jq` can select
+/// every admission/pacing decision across the two transports.
+pub const RATE_LIMIT_WAIT_OPERATION: &str = "http.rate_limit.wait";
+
+/// Identifying context for one observed pacing wait (#1610).
+///
+/// Passed by the caller because the limiter is shared: it cannot know which
+/// URL it is pacing, nor which operation is waiting. `url` and `correlation`
+/// are optional — a wait is still measured without them, and when they are
+/// absent the corresponding fields are OMITTED from the event rather than
+/// emitted empty (the #698 rule: the presence of a key implies a real
+/// identity).
+#[derive(Debug, Clone, Copy)]
+pub struct PacingContext<'a> {
+    /// Which pacing site is waiting (`"crawl_discovery"`, `"cli_scrape"`,
+    /// `"batch_scrape"`, `"http_client"`) — the dimension that answers
+    /// "which path is being throttled".
+    pub scope: &'static str,
+    /// URL being paced, when the call site knows it.
+    pub url: Option<&'a str>,
+    /// Identity to attribute the wait to. Pacing happens BEFORE the page span
+    /// in the crawl path (OBS-H2), so without this the wait would belong to no
+    /// span at all and could not be joined back to its page.
+    pub correlation: Option<&'a crate::domain::CorrelationId>,
+}
+
+impl<'a> PacingContext<'a> {
+    /// A pacing context for a site with no known target or identity.
+    #[must_use]
+    pub fn bare(scope: &'static str) -> Self {
+        Self {
+            scope,
+            url: None,
+            correlation: None,
+        }
+    }
+
+    /// Attach the URL being paced.
+    #[must_use]
+    pub fn with_url(mut self, url: &'a str) -> Self {
+        self.url = Some(url);
+        self
+    }
+
+    /// Attach the operation identity the wait belongs to.
+    #[must_use]
+    pub fn with_correlation(mut self, correlation: &'a crate::domain::CorrelationId) -> Self {
+        self.correlation = Some(correlation);
+        self
+    }
+}
+
+/// Emit the one structured event that makes a pacing wait measurable (#1610).
+///
+/// Public because not every pacing site holds a [`SharedRateLimiter`]: the
+/// HTTP client carries a bare `governor::RateLimiter` (per-session quota), so
+/// it measures its own wait and reports it through the same helper. One
+/// emitter, one event shape, two limiter types.
+///
+/// DEBUG level on purpose: a paced fetch emits this on EVERY page, and the
+/// console filter honours the operator's verbosity. The `--trace-file` layer
+/// always runs at TRACE (`init_logging_dual`), so the event is in the JSONL
+/// whether or not anyone asked for `-vv` — the trace file is the observability
+/// surface, stderr is the human one.
+pub fn record_pacing_wait(ctx: &PacingContext<'_>, waited: Duration, outcome: &'static str) {
+    let waited_ms = waited.as_millis() as u64;
+    let url = ctx.url.unwrap_or("unknown");
+    match ctx.correlation {
+        Some(correlation) => {
+            tracing::debug!(
+                operation = RATE_LIMIT_WAIT_OPERATION,
+                scope = ctx.scope,
+                url,
+                correlation_id = %correlation,
+                trace_id = %correlation.trace_id(),
+                waited_ms,
+                outcome,
+                "rate limit wait"
+            );
+        },
+        None => {
+            tracing::debug!(
+                operation = RATE_LIMIT_WAIT_OPERATION,
+                scope = ctx.scope,
+                url,
+                waited_ms,
+                outcome,
+                "rate limit wait"
+            );
+        },
+    }
+}
+
 /// Shared rate limiter for crawl operations
 #[derive(Clone)]
 pub struct SharedRateLimiter(Arc<CrawlRateLimiter>);
@@ -145,6 +251,53 @@ impl SharedRateLimiter {
             () = cancel.cancelled() => Err(RateLimitCancelled),
         }
     }
+
+    /// [`Self::until_ready`] with the wait measured and emitted (#1610).
+    ///
+    /// Returns the time actually spent waiting — `Duration::ZERO` when a
+    /// burst permit was available immediately, which is the normal case and
+    /// is still emitted so "no pacing at all" is a queryable observation
+    /// rather than an absence.
+    pub async fn until_ready_observed(&self, ctx: &PacingContext<'_>) -> Duration {
+        let started = std::time::Instant::now();
+        self.0.until_ready().await;
+        let waited = started.elapsed();
+        record_pacing_wait(ctx, waited, "granted");
+        waited
+    }
+
+    /// [`Self::until_ready_or_cancel`] with the wait measured and emitted
+    /// (#1610).
+    ///
+    /// A cancelled wait is a SKIP, not a failure (#509), but it is still a
+    /// wait somebody paid for: it emits with `outcome = "cancelled"` and
+    /// returns the time spent before the token fired.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RateLimitCancelled`] when the token fires before a permit
+    /// is granted.
+    pub async fn until_ready_or_cancel_observed(
+        &self,
+        ctx: &PacingContext<'_>,
+        cancel: &CancellationToken,
+    ) -> Result<Duration, RateLimitCancelled> {
+        let started = std::time::Instant::now();
+        let result = tokio::select! {
+            () = self.0.until_ready() => Ok(()),
+            () = cancel.cancelled() => Err(RateLimitCancelled),
+        };
+        let waited = started.elapsed();
+        record_pacing_wait(
+            ctx,
+            waited,
+            match result {
+                Ok(()) => "granted",
+                Err(_) => "cancelled",
+            },
+        );
+        result.map(|()| waited)
+    }
 }
 
 impl From<GovernorLimiter<NotKeyed, InMemoryState, GovernorClock, GovernorMiddleware>>
@@ -160,6 +313,160 @@ impl From<GovernorLimiter<NotKeyed, InMemoryState, GovernorClock, GovernorMiddle
 #[cfg(all(test, not(miri)))]
 mod tests {
     use super::*;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    /// `tracing` caches the per-callsite `Interest` process-wide: the first
+    /// thread to reach the `rate limit wait` callsite WITHOUT a subscriber
+    /// caches `Interest::never()` forever, which would silently turn these
+    /// assertions into a test of nothing. Installing a global sink subscriber
+    /// once makes every callsite register as always-interested; the per-test
+    /// `FileTraceLayer` below still collects what it needs.
+    static GLOBAL_SUBSCRIBER: std::sync::Once = std::sync::Once::new();
+
+    fn ensure_global_subscriber() {
+        GLOBAL_SUBSCRIBER.call_once(|| {
+            let _ = tracing::subscriber::set_global_default(
+                tracing_subscriber::fmt()
+                    .with_writer(std::io::sink)
+                    .finish(),
+            );
+        });
+    }
+
+    /// Run `body` under a real `FileTraceLayer` and return the JSONL records.
+    ///
+    /// The production layer — not a mock — is the assertion surface: what this
+    /// proves is that the event survives the same path `--trace-file` uses.
+    /// The body drives its own runtime (governor needs a Tokio timer), so the
+    /// whole future stays inside the `with_default` scope and every event it
+    /// emits is captured.
+    fn capture_trace<F, Fut>(body: F) -> Vec<serde_json::Value>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        ensure_global_subscriber();
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("trace.jsonl");
+        let layer = crate::infrastructure::observability::FileTraceLayer::new(path.clone())
+            .expect("trace layer");
+        let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        tracing::dispatcher::with_default(&dispatch, || runtime.block_on(body()));
+        std::fs::read_to_string(&path)
+            .expect("trace file")
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).expect("jsonl line"))
+            .collect()
+    }
+
+    fn wait_events(records: &[serde_json::Value]) -> Vec<&serde_json::Value> {
+        records
+            .iter()
+            .filter(|r| r["message"] == "rate limit wait")
+            .collect()
+    }
+
+    /// #1610 (OBS-P1-2 / OBS-M1): a paced wait emits ONE structured event
+    /// carrying the identifying fields and its measured cost.
+    #[test]
+    fn observed_wait_emits_measured_event() {
+        let limiter = SharedRateLimiter::new(&RateLimiterConfig::new(120, 1)).unwrap();
+        let correlation = crate::domain::CorrelationId::new();
+
+        let records = capture_trace(|| async {
+            // Burn the burst so the next wait is a REAL, measurable one.
+            limiter.until_ready().await;
+            let ctx = PacingContext::bare("crawl_discovery")
+                .with_url("https://example.com/page")
+                .with_correlation(&correlation);
+            let waited = limiter.until_ready_observed(&ctx).await;
+            assert!(
+                waited >= Duration::from_millis(100),
+                "measured wait must reflect the real delay, got {waited:?}"
+            );
+        });
+
+        let events = wait_events(&records);
+        assert_eq!(events.len(), 1, "exactly one wait event");
+        let fields = events[0]["fields"].as_object().expect("fields");
+        assert_eq!(
+            fields["operation"].as_str(),
+            Some("http.rate_limit.wait"),
+            "operation names the governed resource"
+        );
+        assert_eq!(fields["scope"].as_str(), Some("crawl_discovery"));
+        assert_eq!(
+            fields["url"].as_str(),
+            Some("https://example.com/page"),
+            "OBS-H2: the wait must name the URL it delayed"
+        );
+        assert_eq!(fields["outcome"].as_str(), Some("granted"));
+        assert_eq!(
+            fields["correlation_id"].as_str(),
+            Some(correlation.to_traceparent().as_str()),
+            "OBS-H2: the wait must carry the page identity"
+        );
+        assert!(
+            fields["waited_ms"].as_u64().is_some_and(|ms| ms >= 100),
+            "waited_ms must carry the measured cost, got {:?}",
+            fields["waited_ms"]
+        );
+    }
+
+    /// #1610: a burst permit costs nothing but is STILL emitted, so "this run
+    /// was never paced" is an observation rather than an absence.
+    #[test]
+    fn observed_wait_emits_zero_cost_for_burst_permit() {
+        let limiter = SharedRateLimiter::new(&RateLimiterConfig::new(5_000, 4)).unwrap();
+        let records = capture_trace(|| async {
+            let ctx = PacingContext::bare("cli_scrape").with_url("https://example.com/a");
+            assert!(
+                limiter.until_ready_observed(&ctx).await < Duration::from_millis(1),
+                "a burst permit must report no wait"
+            );
+        });
+
+        let events = wait_events(&records);
+        assert_eq!(events.len(), 1);
+        let fields = events[0]["fields"].as_object().expect("fields");
+        assert_eq!(fields["waited_ms"].as_u64(), Some(0));
+        assert!(
+            !fields.contains_key("correlation_id"),
+            "a wait with no identity must OMIT the key, not report an empty one"
+        );
+        assert!(
+            !fields.contains_key("trace_id"),
+            "no trace_id without identity"
+        );
+    }
+
+    /// #1610: a wait abandoned by shutdown still reports what it cost, with
+    /// `outcome = "cancelled"` — a skip that stays invisible is how a run
+    /// ends up "0 pages" for nobody's known reason (#509).
+    #[test]
+    fn observed_wait_reports_cancelled_outcome() {
+        let limiter = SharedRateLimiter::new(&RateLimiterConfig::new(60_000, 1)).unwrap();
+        let cancel = CancellationToken::new();
+
+        let records = capture_trace(|| async {
+            limiter.until_ready().await; // burn the burst: the next wait blocks a minute
+            tokio::time::sleep(Duration::from_millis(30)).await;
+            cancel.cancel();
+            let ctx = PacingContext::bare("crawl_discovery").with_url("https://example.com/slow");
+            let result = limiter.until_ready_or_cancel_observed(&ctx, &cancel).await;
+            assert!(matches!(result, Err(RateLimitCancelled)));
+        });
+
+        let events = wait_events(&records);
+        assert_eq!(events.len(), 1);
+        let fields = events[0]["fields"].as_object().expect("fields");
+        assert_eq!(fields["outcome"].as_str(), Some("cancelled"));
+    }
 
     #[test]
     fn test_rate_limiter_config_default() {

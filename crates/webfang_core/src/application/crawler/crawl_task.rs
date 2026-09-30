@@ -8,6 +8,7 @@
 
 use std::sync::atomic::AtomicUsize;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tracing::{debug, instrument, warn};
 use url::Url;
@@ -16,6 +17,7 @@ use super::checkpoint::BannedDomain;
 use super::crawl_task_ctx::CrawlTaskCtx;
 use super::ports::{waf_challenge_message, FetchOutcome};
 use crate::application::pipeline::{ScrapedItem, StageOutcome};
+use crate::application::rate_limiter::PacingContext;
 use crate::application::url_filter::is_allowed;
 use crate::domain::crawler_port::UrlSource;
 use crate::domain::downloader_port::Cookie;
@@ -85,44 +87,58 @@ pub(crate) async fn run_crawl_task(
     ctx: Arc<CrawlTaskCtx>,
     discovered_url: DiscoveredUrl,
 ) -> Result<(), CrawlError> {
-    match ctx
+    // Per-page identity minted BEFORE the pacing wait (#1610, OBS-H2). The
+    // wait used to happen with no identity at all, so it belonged to no span
+    // and could not be joined back to the page it delayed; minting here makes
+    // the wait attributable AND lets the `crawl_page` span carry the wait it
+    // absorbed (`rate_limit_wait_ms`).
+    let page_correlation = ctx.correlation_id.child();
+    let wait_ctx = PacingContext::bare("crawl_discovery")
+        .with_url(discovered_url.url.as_str())
+        .with_correlation(&page_correlation);
+    let wait = match ctx
         .rate_limiter
-        .until_ready_or_cancel(&ctx.cancel_token)
+        .until_ready_or_cancel_observed(&wait_ctx, &ctx.cancel_token)
         .await
     {
-        Ok(()) => {},
+        Ok(waited) => waited,
         Err(_cancelled) => {
             debug!("Rate limit wait cancelled by engine shutdown");
             return Err(CrawlError::Cancelled);
         },
-    }
+    };
 
-    let page_correlation = ctx.correlation_id.child();
-    run_crawl_task_inner(ctx, discovered_url, page_correlation).await
+    run_crawl_task_inner(ctx, discovered_url, page_correlation, wait).await
 }
 
 /// Inner implementation of [`run_crawl_task`] — carries the per-page
 /// `crawl_page` span (#519).
 ///
 /// The `#[instrument]` span declares the per-page identity (`correlation_id`,
-/// `trace_id`) AT CREATION time (#501): FileTraceLayer snapshots span fields
-/// in `on_new_span`, so fields recorded later never reach the `--trace-file`
-/// JSONL. The instrumented span lifecycle is also async-safe — no `enter()`
-/// guard crosses an `.await` (#519).
+/// `trace_id`) AT CREATION time (#501), and the outcome it can only know at
+/// the end (`outcome`, `error_class`, `http_status`) is declared `Empty` and
+/// filled in with `Span::record` — the FileTraceLayer merges late records into
+/// the same snapshot (`on_record`, #1610). The instrumented span lifecycle is
+/// async-safe: no `enter()` guard crosses an `.await` (#519).
 #[instrument(
     name = "crawl_page",
-    skip(ctx, page_correlation, discovered_url),
+    skip(ctx, page_correlation, discovered_url, rate_limit_wait_ms),
     fields(
         correlation_id = %page_correlation,
         trace_id = %page_correlation.trace_id(),
         url = %discovered_url.url,
-        depth = discovered_url.depth
+        depth = discovered_url.depth,
+        rate_limit_wait_ms = rate_limit_wait_ms.as_millis() as u64,
+        outcome = tracing::field::Empty,
+        http_status = tracing::field::Empty,
+        error_class = tracing::field::Empty
     )
 )]
 async fn run_crawl_task_inner(
     ctx: Arc<CrawlTaskCtx>,
     discovered_url: DiscoveredUrl,
     page_correlation: CorrelationId,
+    rate_limit_wait_ms: Duration,
 ) -> Result<(), CrawlError> {
     let url_str = discovered_url.url.as_str().to_string();
     let url_depth = discovered_url.depth;
@@ -131,7 +147,10 @@ async fn run_crawl_task_inner(
     // the pool had no available session for this domain — skip the URL.
     let session_id = match acquire_session(&ctx, &url_str) {
         Ok(id) => id,
-        Err(()) => return Ok(()),
+        Err(()) => {
+            record_page_outcome("session_unavailable", None, None);
+            return Ok(());
+        },
     };
 
     debug!("Crawling: {} (depth={})", url_str, url_depth);
@@ -139,7 +158,17 @@ async fn run_crawl_task_inner(
     let parsed_url =
         url::Url::parse(&url_str).map_err(|e| CrawlError::Internal(format!("invalid URL: {e}")))?;
 
-    let outcome = fetch_page(&ctx, &parsed_url, &url_str, &page_correlation).await?;
+    let outcome = match fetch_page(&ctx, &parsed_url, &url_str, &page_correlation).await {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            record_page_outcome("error", None, Some(e.classify()));
+            return Err(e);
+        },
+    };
+    // The HTTP status travels on the SPAN too (#1610, OBS-P2-4): the outcome
+    // was previously only derivable by joining separate events.
+    tracing::Span::current().record("http_status", u64::from(outcome.status));
+
     // Crash-injection: fetch completed, nothing processed yet (batch path).
     crate::cli::crash_points::hit(crate::cli::crash_points::MID_FETCH);
     // The post-redirect URL is where the content actually lives. It drives
@@ -161,6 +190,7 @@ async fn run_crawl_task_inner(
     // Crash-injection: fetched + spooled; clean/validate/extraction not run.
     crate::cli::crash_points::hit(crate::cli::crash_points::POST_FETCH_PRE_EXTRACT);
     if !run_pipeline(&ctx, final_url.as_str(), &response, outcome.status).await {
+        record_page_outcome("pipeline_skipped", None, None);
         return Ok(());
     }
 
@@ -172,7 +202,31 @@ async fn run_crawl_task_inner(
 
     extract_and_queue_links(&ctx, &response, final_url.as_str(), url_depth, &final_url).await;
 
+    record_page_outcome("ok", Some(outcome.status), None);
     Ok(())
+}
+
+/// Record how a `crawl_page` ended on its own span (#1610, OBS-P2-4).
+///
+/// `#[instrument]` can only see arguments, so the outcome is declared `Empty`
+/// and filled in here. Without it the span closed as a bare "it took N ms"
+/// and every answer to "did this page work" had to be reassembled from
+/// neighbouring events.
+fn record_page_outcome(
+    outcome: &'static str,
+    http_status: Option<u16>,
+    error_class: Option<crate::error::ErrorClass>,
+) {
+    let span = tracing::Span::current();
+    span.record("outcome", outcome);
+    if let Some(status) = http_status {
+        span.record("http_status", u64::from(status));
+    }
+    if let Some(class) = error_class {
+        // `display` wraps the Display impl as a tracing Value; the JSONL
+        // spells the class exactly as the error events do.
+        span.record("error_class", &tracing::field::display(class));
+    }
 }
 
 /// Acquire a per-domain session from the pool, if one is configured.
