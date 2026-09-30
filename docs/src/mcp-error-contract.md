@@ -526,7 +526,7 @@ live listener.
 | # | Condition | Status | Retriable | Agent should | Source |
 | :-: | :--- | :-: | :-: | :-: | :-: |
 | T1 | Missing / malformed / wrong bearer token | `401` | No | Fix the `Authorization` header. | `mcp_server/auth.rs:38-60` |
-| T2 | Rate-limit quota exceeded | `429` | Yes, after backoff | Slow down. | `mcp_server/server.rs:298-312` |
+| T2 | Rate-limit quota exceeded | `429` + `Retry-After` | Yes, after backoff | Slow down for the advertised number of seconds. The quota is **per credential** (keyed), so another caller's traffic does not consume yours. | `mcp_server/server.rs` (`rate_limit_middleware`, `rate_key`) |
 | T3 | Session-admission cap exceeded | `429` | Yes, after the window | Slow down. Bounded by `--max-sessions` / `--session-cap-window-secs`. | `mcp_server/server.rs:629-677` |
 | T4 | Request took longer than `--request-timeout-secs` | `408` | Yes | Retry. | `mcp_server/server.rs:222-224` |
 | T5 | Body over `--body-limit-bytes` | `413` | No | Shrink the payload. | `mcp_server/server.rs:225` |
@@ -535,9 +535,17 @@ live listener.
 | T8 | Non-`initialize` request with no `mcp-session-id` | `422` | No | Complete the handshake first. | rmcp; same matrix |
 | T9 | Panic on the HTTP request path | `500` + JSON-RPC `-32603` body | No | Report it. The body echoes the JSON-RPC `id` when one is recoverable; see the id rules above. | `mcp_server/panic_containment.rs` |
 
-Layer order matters for reading this: the session cap is the **innermost** gate, so a
-request rejected `401` or shed `429` upstream never consumes a session slot
-(`mcp_server/server.rs:205-215`).
+Layer order matters for reading this, and #1611 F5 changed it. Outermost to
+innermost: panic backstop → tracing → body limit → timeout → **auth** →
+**rate limit** → session cap → id-echoing panic containment → the rmcp
+service. Two properties follow, and each is pinned by a test rather than by a
+comment:
+
+- A request refused `401` (no or wrong token) never reaches the rate limiter,
+  so an unauthenticated flood cannot spend the authenticated caller's quota and
+  lock the operator out of its own server.
+- A request refused `401` or shed `429` never consumes a session slot, so the
+  session cap measures sessions rather than rejections.
 
 ---
 

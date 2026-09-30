@@ -17,9 +17,8 @@ use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{middleware, Router};
 use governor::{
-    clock::DefaultClock,
-    state::{InMemoryState, NotKeyed},
-    Quota, RateLimiter as GovernorLimiter,
+    clock::Clock, clock::DefaultClock, state::keyed::HashMapStateStore, Quota,
+    RateLimiter as GovernorLimiter,
 };
 use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager, tower::StreamableHttpService,
@@ -192,10 +191,10 @@ where
 {
     let service = tower::ServiceExt::map_response(service, into_axum_response);
 
-    let rate_limiter = build_rate_limiter(options);
     let auth_state = AuthState {
         expected_token: options.auth_token.clone().map(Arc::from),
     };
+    let rate_limiter = build_rate_limiter(options, &auth_state);
     let session_cap = Arc::new(SessionCap::new(
         options.max_sessions,
         Duration::from_secs(options.session_cap_window_secs.get()),
@@ -228,11 +227,22 @@ where
             session_cap,
             session_cap_middleware,
         ))
-        .layer(middleware::from_fn_with_state(auth_state, validate_auth))
+        // #1611 F5: the rate limiter is mounted INSIDE authentication — the
+        // `.layer(auth)` call below it wraps this one. That ordering is the
+        // fix, not a detail: a request with no or a wrong bearer token is
+        // answered `401` here, before it can spend a single cell of the
+        // legitimate operator's quota, so an unauthenticated flood can no
+        // longer lock the operator out of its own server by exhausting the
+        // shared budget. What this stack used to do — charge the quota first,
+        // then check the token — inverted both halves of that.
         .layer(middleware::from_fn_with_state(
             rate_limiter,
             rate_limit_middleware,
         ))
+        // Auth wraps the rate limiter, the session cap and the id-echoing
+        // panic layer; see the F5 note above for why the order is this way
+        // round.
+        .layer(middleware::from_fn_with_state(auth_state, validate_auth))
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(options.request_timeout_secs),
@@ -294,30 +304,161 @@ fn jsonrpc_panic_response(payload: Box<dyn Any + Send + 'static>) -> Response {
 
 /// Build a `governor` rate limiter from [`ServerOptions`].
 ///
-/// A direct (unkeyed) limiter applies one global quota across all requests.
-fn build_rate_limiter(
-    options: &ServerOptions,
-) -> Arc<GovernorLimiter<NotKeyed, InMemoryState, DefaultClock>> {
+/// # Keyed, not direct (#1611, F5)
+///
+/// The finding was a `NotKeyed` limiter: ONE quota shared by every caller,
+/// with no way to tell a noisy client from a well-behaved one. `Keyed` gives
+/// each identity its own token bucket, so the quota is per caller.
+///
+/// `auth_enabled` decides whether a request's own `Authorization` header is
+/// allowed to choose the key (see [`rate_key`]): with auth configured, only
+/// the exact expected token can reach this limiter at all, so the key space is
+/// one entry; with auth disabled, every request shares the anonymous entry and
+/// a client cannot mint new buckets by inventing headers. That is what keeps
+/// the keyed map from reintroducing the unbounded-map shape F6 just closed,
+/// and it is asserted by a test rather than assumed.
+fn build_rate_limiter(options: &ServerOptions, auth_state: &AuthState) -> KeyedRateLimiter {
     let per_second = NonZeroU32::new(options.rate_per_second).unwrap_or(NonZeroU32::MIN);
     let burst = NonZeroU32::new(options.rate_burst).unwrap_or(NonZeroU32::MIN);
     let quota = Quota::per_second(per_second).allow_burst(burst);
-    Arc::new(GovernorLimiter::direct(quota))
+    KeyedRateLimiter {
+        limiter: Arc::new(GovernorLimiter::<
+            RateKey,
+            HashMapStateStore<RateKey>,
+            DefaultClock,
+        >::hashmap(quota)),
+        auth_enabled: auth_state.expected_token.is_some(),
+        // One clock instance for the whole router: measuring how long a shed
+        // client must wait needs a "now" in the limiter's own time type, and
+        // building one per request would cost more than the check it serves.
+        clock: Arc::new(DefaultClock::default()),
+    }
 }
 
-/// Rate limiting middleware — rejects requests exceeding the quota with 429.
+/// The keyed limiter this stack mounts: one token bucket per [`rate_key`].
+type RateLimiter = GovernorLimiter<RateKey, HashMapStateStore<RateKey>, DefaultClock>;
+
+/// The rate limiter plus the one fact about the request context `governor`
+/// cannot hold for itself: whether authentication is configured.
+///
+/// Carried here rather than inside the limiter because governor's type is
+/// foreign — a wrapper is what lets the middleware ask the question the
+/// [`rate_key`] rule depends on without re-reading `ServerOptions`.
+#[derive(Clone)]
+struct KeyedRateLimiter {
+    limiter: Arc<RateLimiter>,
+    auth_enabled: bool,
+    clock: Arc<DefaultClock>,
+}
+
+impl KeyedRateLimiter {
+    /// Charge `key` one cell, or report how long until one frees.
+    fn check(&self, key: &RateKey) -> Result<(), Duration> {
+        self.limiter
+            .check_key(key)
+            .map_err(|not_until| not_until.wait_time_from(self.clock.now()))
+    }
+
+    /// How many distinct buckets exist — the number whose bound must be
+    /// asserted, not assumed (see [`rate_key`]).
+    #[cfg(test)]
+    fn tracked_keys(&self) -> usize {
+        self.limiter.len()
+    }
+}
+
+/// Key a request is charged to: a 64-bit fingerprint of the credential that
+/// authenticated it.
+///
+/// Never the token itself. `InMemoryState` entries live for the life of the
+/// process, so a map keyed by bearer tokens would keep every credential the
+/// server ever accepted in memory; a fingerprint keeps the bucket identity and
+/// drops the secret. A fingerprint collision would merge two clients' buckets,
+/// which costs fairness and nothing else — and with a single configured token
+/// (`AuthState::expected_token` matches exactly one value) there is only one
+/// key in practice anyway.
+type RateKey = u64;
+
+/// Key every token-less request shares when authentication is disabled.
+///
+/// A named constant rather than the fingerprint of the empty string so the
+/// anonymous bucket is recognisable in a debugger and cannot collide with a
+/// real token's fingerprint by accident.
+const ANONYMOUS_RATE_KEY: RateKey = 0;
+
+/// Which bucket this request is charged to.
+///
+/// `auth_enabled` mirrors [`AuthState::expected_token`]: with auth configured,
+/// a request that reaches the rate limiter has already presented THE expected
+/// token (auth is mounted outside it), so keying on the presented value is
+/// safe AND the key space collapses to that one token. With auth disabled, the
+/// presented header is attacker-controlled and is deliberately ignored —
+/// otherwise a client could mint an unbounded number of buckets and get a
+/// fresh full quota with every invented header, turning the bound into a
+/// no-op (the same "unbounded map" shape F6 closed for sessions).
+fn rate_key(auth_enabled: bool, auth_header: Option<&str>) -> RateKey {
+    if !auth_enabled {
+        return ANONYMOUS_RATE_KEY;
+    }
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    auth_header.unwrap_or_default().hash(&mut hasher);
+    hasher.finish()
+}
+
+/// `operation` field of every event the rate limiter emits — the resource it
+/// governs (same convention as the session cap's `SESSION_OPERATION`).
+const RATE_LIMIT_OPERATION: &str = "mcp.request.rate_limit";
+
+/// Round a wait up to whole seconds for a `Retry-After` header, never below 1.
+///
+/// Shared with the session cap so both shed responses state the same rule:
+/// `Retry-After` is an integer number of seconds, and rounding a sub-second
+/// remainder DOWN would invite the client back while the limiter still refuses
+/// it, turning an honest retry into a second 429.
+fn retry_after_secs(wait: Duration) -> u64 {
+    let rounded_up = u64::from(wait.subsec_nanos() > 0) + wait.as_secs();
+    rounded_up.max(1)
+}
+
+/// Rate limiting middleware — rejects requests exceeding the quota with 429
+/// plus a `Retry-After` (#1611, F5).
+///
+/// The header is the one thing a shed client is told, and it is computable
+/// exactly: `governor` returns the instant the next cell frees. The body stays
+/// empty for the same reason the session cap's does — load shedding is an
+/// HTTP-layer answer, and a JSON-RPC envelope here would only invite an agent
+/// to parse it as a protocol error.
+///
+/// The middleware now answers `Response` rather than `Result<_, StatusCode>`
+/// because the shed answer needs a header the status alone cannot carry.
 async fn rate_limit_middleware(
-    State(limiter): State<Arc<GovernorLimiter<NotKeyed, InMemoryState, DefaultClock>>>,
+    State(limiter): State<KeyedRateLimiter>,
     request: axum::http::Request<axum::body::Body>,
     next: middleware::Next,
-) -> Result<impl axum::response::IntoResponse, axum::http::StatusCode> {
-    match limiter.check() {
-        Ok(()) => Ok(next.run(request).await),
-        Err(_not_until) => {
+) -> Response {
+    // `build_rate_limiter` captured whether auth is configured at compose
+    // time; the limiter itself carries no view of the request, so the same
+    // rule is applied here.
+    let auth_enabled = limiter.auth_enabled;
+    let auth_header = request
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+    let key = rate_key(auth_enabled, auth_header);
+
+    match limiter.check(&key) {
+        Ok(()) => next.run(request).await,
+        Err(wait) => {
+            let retry_after = retry_after_secs(wait);
             tracing::warn!(
+                operation = RATE_LIMIT_OPERATION,
                 remote = %request.uri().path(),
+                wait_ms = wait.as_millis() as u64,
+                retry_after_secs = retry_after,
                 "rate limit exceeded — rejecting with 429"
             );
-            Err(axum::http::StatusCode::TOO_MANY_REQUESTS)
+            shed_response(retry_after)
         },
     }
 }
@@ -588,8 +729,7 @@ impl SessionCap {
         let remaining = self
             .window
             .saturating_sub(now.saturating_duration_since(oldest));
-        let rounded_up = u64::from(remaining.subsec_nanos() > 0) + remaining.as_secs();
-        Some(rounded_up.max(1))
+        Some(retry_after_secs(remaining))
     }
 
     /// Slots currently held — test-only view, without pruning.
@@ -1321,9 +1461,15 @@ mod tests {
             rate_burst: 5,
             ..Default::default()
         };
-        let limiter = build_rate_limiter(&opts);
+        let limiter = build_rate_limiter(
+            &opts,
+            &AuthState {
+                expected_token: None,
+            },
+        );
+        let key = ANONYMOUS_RATE_KEY;
         for _ in 0..5 {
-            assert!(limiter.check().is_ok());
+            assert!(limiter.check(&key).is_ok());
         }
     }
 
@@ -1334,12 +1480,112 @@ mod tests {
             rate_burst: 2,
             ..Default::default()
         };
-        let limiter = build_rate_limiter(&opts);
+        let limiter = build_rate_limiter(
+            &opts,
+            &AuthState {
+                expected_token: None,
+            },
+        );
+        let key = ANONYMOUS_RATE_KEY;
         // Exhaust the burst capacity
-        assert!(limiter.check().is_ok());
-        assert!(limiter.check().is_ok());
+        assert!(limiter.check(&key).is_ok());
+        assert!(limiter.check(&key).is_ok());
         // Third request should be rejected
-        assert!(limiter.check().is_err());
+        assert!(limiter.check(&key).is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // F5 keyed rate limiter, inside auth (#1611)
+    // ------------------------------------------------------------------
+
+    fn limiter_with_auth(
+        rate_per_second: u32,
+        burst: u32,
+        token: Option<&str>,
+    ) -> KeyedRateLimiter {
+        build_rate_limiter(
+            &ServerOptions {
+                rate_per_second,
+                rate_burst: burst,
+                ..Default::default()
+            },
+            &AuthState {
+                expected_token: token.map(Arc::from),
+            },
+        )
+    }
+
+    /// The keyed property itself: one caller's exhausted quota must NOT shed
+    /// another caller. This is the whole of F5 — a `NotKeyed` limiter had
+    /// exactly one bucket, so a noisy client spent everyone's budget.
+    #[test]
+    fn rate_limit_buckets_are_per_credential() {
+        let limiter = limiter_with_auth(1, 1, Some("secret"));
+        let noisy = rate_key(true, Some("Bearer secret"));
+        let quiet = rate_key(true, Some("Bearer another-secret"));
+
+        assert!(limiter.check(&noisy).is_ok(), "first call fits the burst");
+        assert!(
+            limiter.check(&noisy).is_err(),
+            "the noisy caller exhausts its own bucket"
+        );
+        assert!(
+            limiter.check(&quiet).is_ok(),
+            "a different credential must keep its own full budget"
+        );
+        assert_eq!(
+            limiter.tracked_keys(),
+            2,
+            "one bucket per credential, and no more"
+        );
+    }
+
+    /// The bound on the key space, asserted rather than assumed. With auth
+    /// DISABLED the presented header is attacker-controlled, so keying on it
+    /// would let a client mint a fresh full quota per invented header — an
+    /// unbounded map of buckets, i.e. the F6 shape one layer over. Every
+    /// header therefore lands in the single anonymous bucket.
+    #[test]
+    fn an_invented_header_cannot_mint_a_bucket_when_auth_is_disabled() {
+        let limiter = limiter_with_auth(1, 1, None);
+        for i in 0..50 {
+            let key = rate_key(false, Some(&format!("Bearer invented-{i}")));
+            assert_eq!(key, ANONYMOUS_RATE_KEY, "the header is ignored");
+            let _ = limiter.check(&key);
+        }
+        assert_eq!(
+            limiter.tracked_keys(),
+            1,
+            "token-less traffic must occupy exactly one bucket"
+        );
+    }
+
+    /// The mirror image: with auth configured, distinct credentials are
+    /// distinct buckets — and the fingerprint is not the token itself, so a
+    /// key cannot be read back as a secret.
+    #[test]
+    fn with_auth_configured_the_credential_picks_the_bucket() {
+        let one = rate_key(true, Some("Bearer secret"));
+        let two = rate_key(true, Some("Bearer secret"));
+        let other = rate_key(true, Some("Bearer other"));
+        assert_eq!(one, two, "the same credential is the same bucket");
+        assert_ne!(one, other, "different credentials never share a bucket");
+        assert!(
+            !ANONYMOUS_RATE_KEY.to_string().contains("secret"),
+            "a key is a fingerprint, never the token"
+        );
+    }
+
+    /// `Retry-After` must be a whole number of seconds, at least 1 — rounding
+    /// a sub-second wait DOWN invites the client back into a second 429.
+    #[test]
+    fn retry_after_rounds_up_and_never_says_zero() {
+        assert_eq!(retry_after_secs(Duration::ZERO), 1);
+        assert_eq!(retry_after_secs(Duration::from_millis(1)), 1);
+        assert_eq!(retry_after_secs(Duration::from_millis(999)), 1);
+        assert_eq!(retry_after_secs(Duration::from_secs(1)), 1);
+        assert_eq!(retry_after_secs(Duration::from_millis(1_001)), 2);
+        assert_eq!(retry_after_secs(Duration::from_secs(30)), 30);
     }
 
     #[tokio::test]
