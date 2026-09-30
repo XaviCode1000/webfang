@@ -483,6 +483,66 @@ mod tests {
     use url::Url;
 
     use super::*;
+
+    /// #1610 (OBS-P2-4): the `crawl_page` outcome must survive the trip into
+    /// the JSONL — including `error_class`, recorded through
+    /// `tracing::field::display` because `Span::record` takes a `&dyn Value`
+    /// and has no `%` shorthand. That path is easy to get subtly wrong (Debug
+    /// quoting leaking into the field), so it is asserted on parsed JSON.
+    #[test]
+    fn page_outcome_reaches_the_trace_jsonl() {
+        use crate::infrastructure::observability::FileTraceLayer;
+        use tracing_subscriber::layer::SubscriberExt;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("trace.jsonl");
+        let layer = FileTraceLayer::new(path.clone()).expect("trace layer");
+        let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer));
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            let span = tracing::info_span!(
+                "crawl_page",
+                url = "https://example.com/page",
+                outcome = tracing::field::Empty,
+                http_status = tracing::field::Empty,
+                error_class = tracing::field::Empty,
+            );
+            let _enter = span.enter();
+            record_page_outcome(
+                "error",
+                None,
+                Some(crate::error::ErrorClass::TransientBackoff),
+            );
+        });
+
+        let closes: Vec<serde_json::Value> = std::fs::read_to_string(&path)
+            .expect("trace file")
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).expect("jsonl line"))
+            .filter(|v| v["record"] == "span_close")
+            .collect();
+        assert_eq!(closes.len(), 1, "exactly one span_close record");
+        let fields = closes[0]["span_fields"]
+            .as_object()
+            .expect("span_fields must be an object");
+
+        assert_eq!(
+            fields["outcome"].as_str(),
+            Some("error"),
+            "outcome must reach the JSONL as a plain token"
+        );
+        assert_eq!(
+            fields["error_class"].as_str(),
+            Some("transient_backoff"),
+            "ErrorClass must reach the JSONL as snake_case with no Debug              quoting (got {:?})",
+            fields["error_class"]
+        );
+        assert!(
+            !fields.contains_key("http_status"),
+            "an outcome with no HTTP status must OMIT the key, not report an empty one"
+        );
+    }
     use crate::application::crawler::ports::{
         ContentPipeline, CrawlResultCollector, FetchOutcome, LinkExtractorPort, PageFetcher,
         RobotsChecker,
