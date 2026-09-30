@@ -1,0 +1,26 @@
+# CC-L2 exemption table for scripts/check_concurrency_lints.sh (issue #1616).
+#
+# A `Semaphore::new(<non-literal>)` call site that is nonetheless PROVABLY
+# non-zero may be listed here. Each row is:
+#
+#     <repo-relative-path>|<substring matched on the source line>|<why it is safe>
+#
+# The third column is mandatory and must name the guard, not the line: a row
+# that only says "this is fine" is indistinguishable from a row blessing a real
+# bug. Keep it under ~100 columns.
+#
+# This is an ALLOWLIST, so understand what it does and does not buy. Deleting a
+# clamp while leaving the call site's argument text intact keeps the gate green
+# — the row tracks the argument, not the guard. That is the same tradeoff
+# scripts/check_intra_crate_direction_allowlist.txt already makes, and it is why
+# the third column is required.
+#
+# A `NonZeroUsize` argument needs no row when the variable holding it is
+# declared once, near the top, as `NonZeroUsize` (that is the case for
+# `CategoryLimits` below): the type makes zero unrepresentable at every use.
+
+crates/webfang_core/src/application/batch/processor.rs|max_concurrent|BatchProcessor::new returns Err(InvalidConcurrency) when it is 0, before this call
+crates/webfang_core/src/infrastructure/downloader/resource_governor.rs|max_permits|with_max_instances applies max_permits.max(1) immediately above this call
+crates/webfang_core/src/application/container.rs|permits|build_ingestion_semaphore_permits clamps to at least 1 (added #1616)
+crates/webfang_core/src/application/adaptive_engine/mod.rs|max_concurrent_inference|clamped with .max(1) at this call site (added #1616)
+crates/webfang_mcp/src/mcp_server/state.rs|limits.|CategoryLimits holds NonZeroUsize, so .get() cannot be zero
