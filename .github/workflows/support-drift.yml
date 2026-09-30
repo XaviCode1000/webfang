@@ -1,0 +1,98 @@
+# ============================================================================
+# SUPPORT LINE DRIFT — is .github/support.json still true?
+# ============================================================================
+# Two jobs, deliberately split by what each one needs and by whether it is
+# green today:
+#
+#   support-declaration  ENFORCING. Checks the file against itself: valid
+#                        schema, `accepts` coherent with each line's state, at
+#                        most two live lines, and SUPPORT.md matching a fresh
+#                        render. Needs no git tags, so it is deterministic and
+#                        GREEN today — it enforces immediately.
+#
+#   support-published    ADVISORY (continue-on-error). Checks the file against
+#                        what the repository actually publishes: the declared
+#                        STABLE must be the newest published minor, every
+#                        tracked minor must be declared, `latest` must exist as
+#                        a tag. Needs `fetch-depth: 0`.
+#
+# WHY ADVISORY (#1676)
+# main is drifted RIGHT NOW: support.json still declares 2.1 STABLE while
+# v2.2.0, v2.3.0, v2.3.1 and v2.4.0/2.4.1 are published. Closing that gap
+# means registering and EOL-ing lines, which is a maintainer governance
+# decision (approved issue behind it), not something this gate may decide by
+# asserting it. Shipping this job as a hard gate today would mean shipping a
+# RED check, which is how guards get ignored. So the drifted half reports on
+# every PR and is enforced the moment support.json is consistent — remove
+# `continue-on-error` from the `support-published` job in that same commit that
+# brings the file back in line.
+#
+# Why its own workflow file and not ci.yml: ci.yml is edited by several
+# sibling worktrees in this repo, and a dedicated file keeps this gate small,
+# tag-only and instant (~5s, no toolchain, no cargo) instead of a lane of the
+# 6m34s pipeline. It is not a required context, so it cannot block a merge
+# until the maintainer adds it to branch protection.
+#
+# Triggers: every PR (path-filtered to the support governance surface), pushes
+# to main, and manual dispatch.
+name: Support Drift
+
+on:
+  pull_request:
+    paths:
+      - ".github/support.json"
+      - "SUPPORT.md"
+      - ".github/workflows/support-drift.yml"
+      - "scripts/check_support_drift.sh"
+      - "scripts/render-support-md.sh"
+      - "scripts/rotate-stable.sh"
+      - "scripts/eol-line.sh"
+      - "scripts/cut-support-branch.sh"
+      - "scripts/bump-support-patch.sh"
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: support-drift-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  support-declaration:
+    name: Support declaration (enforcing)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: support.json + SUPPORT.md coherence
+        run: scripts/check_support_drift.sh --scope=declared
+
+      - name: Script lint (the gate must itself be sound)
+        run: shellcheck scripts/check_support_drift.sh scripts/render-support-md.sh
+
+      - name: Harness for the gate
+        run: scripts/test_support_drift.sh
+
+  support-published:
+    name: Support drift vs published tags (advisory — see header)
+    # Flip to enforcing when support.json agrees with the tags: that is the
+    # commit that backfills the undeclared minors, not a separate one.
+    continue-on-error: true
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # fetch-depth: 0 — the check refuses a shallow clone on purpose (a guard
+      # that cannot see the tags must not pass), so it has to be able to see them.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: support.json vs git tags
+        run: scripts/check_support_drift.sh --scope=published
