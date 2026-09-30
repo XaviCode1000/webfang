@@ -145,6 +145,13 @@ fi
 # BoringSSL objects survive either way. Reading it from the ambient at all was the
 # bug — the same class of leak as the CARGO_BUILD_* ambient that #1721 closed,
 # and it is why the regression now compares keys across differing ambients.
+#
+# There is deliberately no marker field for this exclusion. A constant inside the
+# [key] block mixes identity inputs with documentation about exclusions, and it
+# makes prose part of the hash: editing that text would invalidate every seed
+# without a single artifact changing. Deliberate format changes are versioned with
+# key_schema; exclusions are explained here and repeated in [provenance], which is
+# not hashed.
 
 # Canonical serialisation. Field order is fixed and every value is on its own
 # line; a change to this layout is a key_schema bump, not a silent re-key.
@@ -157,7 +164,6 @@ rustc = "$RUSTC_V"
 target = "$TARGET_TRIPLE"
 profile = "$PROFILE"
 rustflags = "${RUSTFLAGS:-}"
-incremental_not_a_key_input = "see comment above"
 config = "$CONFIG_DIGEST"
 workspace_contract = "$WORKSPACE_DIGEST_ARG"
 features = "$FEATURES_CANON"
@@ -179,7 +185,9 @@ if [ -n "$EMIT" ]; then
     echo "[provenance]"
     echo "# Informational only. Deliberately NOT part of [key]: a seed is meant to"
     echo "# be shared across commits, so the source that built it is a fact about"
-    echo "# the seed, not a compatibility input."
+    echo "# the seed, not a compatibility input. Likewise absent from [key] is"
+    echo "# incremental: the recipe pins CARGO_INCREMENTAL=0 for every build it runs,"
+    echo "# so it is a constant of the contract and a constant cannot fork a key."
     echo "built_from_commit = \"$(git -C "$REPO_ROOT" rev-parse HEAD)\""
     echo "built_at = \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\""
   } >> "$EMIT/manifest.toml"
