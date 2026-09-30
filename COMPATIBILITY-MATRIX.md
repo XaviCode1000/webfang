@@ -50,6 +50,14 @@ bash scripts/check_compatibility.sh --ci-required   # 6 required combos (CI)
 bash scripts/check_compatibility.sh --all           # +2 pairwise (local/nightly)
 ```
 
+The binary under test is resolved from `$CARGO_TARGET_DIR`, falling back to
+`./target` when that variable is unset — the same convention as
+`scripts/gen-cli-reference.sh`. Every worktree in this repo builds into its own
+`~/.cache/cargo-target/<tree>` (isolated target dirs, #1267), so a hardcoded
+`./target/debug/webfang` made the probes report `exit 127` (command not found)
+in exactly the context the harness is meant to run in, which reads as a
+contract failure and is not one (#1698).
+
 ## Inventory
 
 Full 32-row `#[ignore]` catalog (26 test attributes + 6 doc/comment mentions): [`docs/test-inventory.md`](docs/test-inventory.md) (generated via `rg -n "#\[ignore" crates/ --glob '!target'`).
