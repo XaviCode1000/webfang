@@ -9,7 +9,7 @@
 //! - **Torn-tail recovery**: on start the file tail is scanned for a half-
 //!   written last line; invalid trailing bytes are truncated back to the last
 //!   valid newline (warn! carries both byte counts) and a content-hash index
-//!   (`checksum_sha256` per line) is built from the surviving lines.
+//!   ([`CHECKSUM_FIELD`] per line) is built from the surviving lines.
 //! - **Flush barrier**: [`JsonlSession::flush`] awaits a oneshot ack that the
 //!   writer sends only AFTER the OS-level flush returns \u2014 this ack IS the D3
 //!   step-1 durability barrier.
@@ -25,6 +25,8 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
+
+use super::CHECKSUM_FIELD;
 
 /// Ack channel used by [`LineMsg::FlushAnd`]: the writer resolves it after
 /// flushing the file.
@@ -247,24 +249,44 @@ fn recover_torn_tail(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Build the content-hash index (`checksum_sha256` per line) from surviving
+/// Build the content-hash index ([`CHECKSUM_FIELD`] per line) from surviving
 /// valid lines \u2014 the same contract `CommitSession` uses for promotion.
+///
+/// A line that parses as a JSON object but carries no [`CHECKSUM_FIELD`] is the
+/// signature of a renamed writer: the old code skipped it, so a rename emptied
+/// the index and `--resume` re-drove every already-committed page with nothing
+/// in the logs to say why. Those lines are now counted and reported (#1617,
+/// D3), so the failure stays visible even when the compatibility test does not
+/// cover the exact file at hand.
 fn build_hash_index(path: &Path) -> io::Result<HashSet<String>> {
     let mut index = HashSet::new();
     if !path.exists() {
         return Ok(index);
     }
     let data = fs::read_to_string(path)?;
+    let mut without_checksum = 0usize;
     for line in data.lines() {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
-        if let Some(hash) = value
-            .get("checksum_sha256")
+        match value
+            .get(CHECKSUM_FIELD)
             .and_then(serde_json::Value::as_str)
         {
-            index.insert(hash.to_owned());
+            Some(hash) => {
+                index.insert(hash.to_owned());
+            },
+            None => without_checksum += 1,
         }
+    }
+    if without_checksum > 0 {
+        warn!(
+            lines_without_checksum = without_checksum,
+            indexed = index.len(),
+            field = CHECKSUM_FIELD,
+            path = %path.display(),
+            "JSONL lines carry no checksum field; resume dedup will re-drive them (writer/reader field-name mismatch?)"
+        );
     }
     Ok(index)
 }
@@ -396,6 +418,28 @@ mod tests {
         // and the re-appended line starts exactly at that boundary.
         let expected = format!("{}\n{}\n{}\n", valid_line(1), valid_line(2), valid_line(3));
         assert_eq!(final_content, expected);
+    }
+
+    /// #1617 (D3): a line that parses as JSON but lacks [`CHECKSUM_FIELD`] is the
+    /// signature of a renamed writer. It must produce an EMPTY index (the
+    /// honest answer) AND be counted, so the emptiness is attributable in the
+    /// logs instead of looking like a clean file.
+    #[tokio::test]
+    async fn renamed_checksum_field_empties_the_index_instead_of_silently_filling_it() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("renamed.jsonl");
+        // Same shape as a real export line, with the field name changed.
+        let mut content = String::new();
+        for n in 1..=3 {
+            content.push_str(&format!("{{\"n\":{n},\"content_hash\":\"hash-{n}\"}}\n"));
+        }
+        fs::write(&path, &content).expect("seed renamed-writer file");
+
+        let (_session, index) = JsonlSession::open(&path).expect("open succeeds");
+        assert!(
+            index.is_empty(),
+            "no line carries CHECKSUM_FIELD, so no line may be indexed"
+        );
     }
 
     #[tokio::test]

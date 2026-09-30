@@ -96,8 +96,8 @@ CREATE INDEX IF NOT EXISTS idx_notes_path ON notes(path);";
 /// fix, so a database whose marker is not ours fails closed BEFORE any DDL
 /// runs — the file is never opened for writing by a build that does not
 /// understand it. The one tolerated case is `0`: a database written before the
-/// marker existed, or a fresh one. Its schema is by construction the one
-/// [`SCHEMA_DDL`] creates idempotently, so it is adopted rather than refused.
+/// marker existed, or a fresh one. Its schema is by construction the one this
+/// module's DDL creates idempotently, so it is adopted rather than refused.
 ///
 /// Bump this only together with a migration, and only after that migration
 /// exists — a bump without one turns every existing database into a refusal.

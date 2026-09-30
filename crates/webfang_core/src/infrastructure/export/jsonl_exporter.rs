@@ -29,6 +29,31 @@ use serde::Serialize;
 use crate::domain::entities::DocumentChunkValidated;
 use crate::domain::exporter::{ExportResult, ExporterConfig, ExporterError};
 
+/// The JSONL field name carrying the content checksum — pinned, load-bearing.
+///
+/// #1617 (D3). Three independent sites read this name off disk: the exporter
+/// WRITES it (as the serde name of [`WebfangMetadata::checksum_sha256`]), and
+/// [`crate::infrastructure::export::jsonl_writer`] and `CommitSession` READ it
+/// to rebuild the resume dedup index. A rename of the Rust field would silently
+/// empty both indexes — the readers skip lines that lack the key and return
+/// success, so `--resume` would re-drive every already-committed page with
+/// nothing in the logs to say why.
+///
+/// `serde(rename)` takes a string literal, not a const, so this cannot be the
+/// single source of truth on the write side. It is the pinned READ contract
+/// plus the thing `serialized_uses_the_pinned_checksum_field_name` asserts the
+/// writer against, which is what makes the pair a gate rather than a comment:
+/// renaming the struct field breaks that test.
+///
+/// This is deliberately separate from #1595, which covers `extra_metadata` KEY
+/// ORDER being process-dependent. That is a serialization determinism problem;
+/// this is a field-rename compatibility problem.
+///
+/// This is NOT the same class as D5's decorative `metadata_version`: unlike
+/// that field, this one is READ by live code, and this const is what stops it
+/// from being renamed out from under them.
+pub const CHECKSUM_FIELD: &str = "checksum_sha256";
+
 /// Webfang JSONL metadata schema (v2.1.0)
 ///
 /// Wraps DocumentChunkValidated with additional fields for
@@ -44,6 +69,10 @@ pub struct WebfangMetadata<'a> {
     /// Extracted text content
     pub content: &'a str,
     /// SHA-256 hash of content for deduplication
+    ///
+    /// Serialized as [`CHECKSUM_FIELD`]; the field name is pinned there and a
+    /// test fails if the two ever diverge (#1617, D3).
+    #[serde(rename = "checksum_sha256")]
     pub checksum_sha256: String,
     /// Schema version
     pub metadata_version: &'static str,
@@ -379,6 +408,52 @@ mod tests {
         let chunk = create_test_chunk("Version Test");
         let metadata = WebfangMetadata::from_chunk(&chunk);
         assert_eq!(metadata.metadata_version, "2.1.0");
+    }
+
+    /// #1617 (D3) — THE GATE for the pinned checksum field name.
+    ///
+    /// `CHECKSUM_FIELD` is what `build_hash_index` and `CommitSession` read to
+    /// rebuild the resume dedup index; `serde(rename)` cannot take a const, so
+    /// the writer side has no compile-time link to it. This test is that link:
+    /// rename the struct field, or change the constant, and the emitted key
+    /// stops matching what the readers look for — which is precisely the
+    /// "rename silently empties the hash index" defect, caught here instead of
+    /// in production.
+    #[test]
+    fn serialized_uses_the_pinned_checksum_field_name() {
+        let chunk = create_test_chunk("Checksum Field Test");
+        let json = serde_json::to_string(&WebfangMetadata::from_chunk(&chunk)).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+
+        let expected = metadata_checksum_of(&chunk);
+        assert_eq!(
+            value
+                .get(CHECKSUM_FIELD)
+                .and_then(serde_json::Value::as_str),
+            Some(expected.as_str()),
+            "the serialized key must be exactly CHECKSUM_FIELD ({CHECKSUM_FIELD})"
+        );
+        // And the hash is real: a 64-hex SHA-256, so the pinned field carries a
+        // value rather than being present-and-empty.
+        let hash = value
+            .get(CHECKSUM_FIELD)
+            .and_then(serde_json::Value::as_str)
+            .expect("checksum field present");
+        assert_eq!(hash.len(), 64, "SHA-256 hex is 64 chars");
+        assert!(
+            hash.chars().all(|c| c.is_ascii_hexdigit()),
+            "SHA-256 hex only: {hash}"
+        );
+    }
+
+    /// The checksum the exporter writes for `chunk`, computed independently of
+    /// `WebfangMetadata` so the assertion above triangulates rather than
+    /// restating the implementation.
+    fn metadata_checksum_of(chunk: &DocumentChunkValidated) -> String {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(chunk.content.as_bytes());
+        format!("{:x}", hasher.finalize())
     }
 
     #[test]
