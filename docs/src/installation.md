@@ -341,22 +341,37 @@ WebFang never removes anything for you. The binary itself is one file; the
 ### 2. Remove the data
 
 **Check where things actually live first** — the ONNX model cache is the big
-one (~372 MB for the default `granite-97m`, ~1.2 GB for `granite-311m`) and
-**no `WEBFANG_*` variable relocates it**. It is controlled by HuggingFace's
-own `HF_HOME`. If you set `HF_HOME` to relocate the model, the default
-location below is empty and deleting it recovers nothing.
+one (~372 MB for the default `granite-97m`, ~1.2 GB for `granite-311m`), and
+it is the one entry that is **not** relocatable by any `WEBFANG_*` variable.
+Start at the webfang cache base:
 
 ```bash
 # Where the webfang cache base resolves on THIS machine — run the line
 # that matches your platform, and note the printed path.
-echo "${XDG_CACHE_HOME:-$HOME/.cache}"          # Linux
+echo "${XDG_CACHE_HOME:-$HOME/.cache}"           # Linux
 # echo "${XDG_CACHE_HOME:-$HOME/Library/Caches}"   # macOS
-# echo "%LOCALAPPDATA%\webfang"                     # Windows
+# echo "$env:LOCALAPPDATA"                         # Windows (PowerShell)
 ```
+
+Every `webfang/…` row in the table below is **relative to that base** — the
+table does not repeat the `webfang/` prefix on Windows, so
+`%LOCALAPPDATA%\webfang\state` is the state directory, not
+`%LOCALAPPDATA%\webfang\webfang\state`.
 
 The config base is the sibling you will also want when cleaning up:
 `~/.config` (Linux), `~/Library/Application Support` (macOS), `%APPDATA%`
 (Windows).
+
+> ⚠️ **The model cache is NOT under any of those bases.** It is the only
+> entry in this table that does not live under the webfang cache base, and
+> [§ below](#the-model-cache-is-the-exception) gives its exact location on
+> each platform. `XDG_CACHE_HOME` moves the webfang roots; it does **not**
+> move the model.
+>
+> Also note `XDG_CACHE_HOME` / `XDG_CONFIG_HOME` are honored **only when they
+> hold an absolute path** — a relative or empty value is ignored, and the
+> platform default is used instead. The `echo` above prints the variable even
+> when WebFang ignores it; a path that looks wrong is probably this.
 
 | Path (relative to the base above) | Created by | Size | Auto-cleaned? |
 | :--- | :--- | :--- | :--- |
@@ -364,7 +379,7 @@ The config base is the sibling you will also want when cleaning up:
 | `webfang/state/<domain>.json.lock` | every `RecordStore` write | 0 B | **No — permanent by design.** See the note below. |
 | `webfang/state/<domain>.json.bak` | migrating a stale state version | same as state | No — an existing backup is kept as-is |
 | `webfang/user_agents.json` | any fetch that resolves a user-agent list | KBs | No — relocatable via `XDG_CACHE_HOME` |
-| `huggingface/hub/` (under the **HF** cache base) | any `--clean-ai` run, via `hf_hub` | **372 MB** default / ~1.2 GB | No — relocatable via **`HF_HOME`**, a HuggingFace variable, *not* `WEBFANG_*` |
+| `huggingface/hub/` — see [below](#the-model-cache-is-the-exception) | any `--clean-ai` run, via `hf_hub` | **372 MB** default / ~1.2 GB | No — relocatable via **`HF_HOME`**, a HuggingFace variable, *not* `WEBFANG_*` |
 | `<output_dir>/` — Markdown, `export.jsonl`, `rag_dataset/`, `_inbox/` | every run | unbounded — **your data** | No — relocatable via `-o` / `WEBFANG_OUTPUT`; defaults to `output/` in the current directory |
 | `webfang/config.toml` (under the **config** base: `~/.config`, `~/Library/Application Support`, `%APPDATA%`) | you, by editing it | KBs | No — relocatable via `WEBFANG_CONFIG` or `XDG_CONFIG_HOME` |
 
@@ -378,14 +393,48 @@ The config base is the sibling you will also want when cleaning up:
 To remove the webfang-owned cache roots and leave everything else alone:
 
 ```bash
-# Linux: cache + state + UA cache, but NOT the model cache
-rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/webfang"
+# Linux / macOS: cache + state + UA cache, but NOT the model cache
+rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/webfang"     # Linux
+rm -rf "${XDG_CACHE_HOME:-$HOME/Library/Caches}/webfang"  # macOS
+```
 
-# …and the ONNX model cache, if you want the ~372 MB back.
-# Confirm you did not relocate it first, or this removes nothing:
+```powershell
+# Windows: cache + state + UA cache, but NOT the model cache
+Remove-Item -Recurse -Force "$env:LOCALAPPDATA\webfang"
+```
+
+#### The model cache is the exception
+
+`hf_hub` does not use WebFang's platform helper. Its default is
+`dirs::home_dir()/.cache/huggingface/hub` — literally `~/.cache/…` on
+**every** platform, including macOS and Windows, where the webfang cache base
+is `~/Library/Caches` and `%LOCALAPPDATA%` respectively. It is only moved by
+`HF_HOME`, and no `WEBFANG_*` or `XDG_*` variable relocates it.
+
+| Platform | Default model cache (no `HF_HOME`) | With `HF_HOME=/some/dir` |
+| :--- | :--- | :--- |
+| Linux | `~/.cache/huggingface/hub` | `/some/dir/hub` |
+| macOS | `~/.cache/huggingface/hub` — **not** `~/Library/Caches/…` | `/some/dir/hub` |
+| Windows | `%USERPROFILE%\.cache\huggingface\hub` — **not** `%LOCALAPPDATA%\…` | `/some/dir/hub` |
+
+To confirm before deleting, and to remove it:
+
+```bash
+# Unix
 echo "${HF_HOME:-$HOME/.cache/huggingface}"
 rm -rf "${HF_HOME:-$HOME/.cache/huggingface}"
 ```
+
+```powershell
+# Windows
+$HF = if ($env:HF_HOME) { $env:HF_HOME } else { "$env:USERPROFILE\.cache\huggingface" }
+$HF
+Remove-Item -Recurse -Force $HF
+```
+
+If `HF_HOME` is set, the default location is empty and deleting it recovers
+nothing — which is why the confirmation line comes first, and why the two are
+never collapsed into one `rm`.
 
 **Never** delete a `webfang` directory without reading the path you built
 above — a relative or empty base would resolve to somewhere unintended, and
