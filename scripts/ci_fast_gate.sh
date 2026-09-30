@@ -82,7 +82,7 @@ cd "$ROOT" || exit 1
 
 # --- build-cache policy guard --------------------------------------------------
 # AGENTS.md § worktree bootstrap: every tree builds with CARGO_TARGET_DIR
-# provided by direnv (shared cache on main, isolated dir per worktree).
+# provided by direnv (every tree, main included, points at its own dir).
 # Without it cargo silently falls back to ./target (or crates/*/target),
 # duplicating the whole workspace compile into paths no cleanup step knows
 # about (in-repo audit 2026-09-29: six such dirs, 39G logical). No dry-run
@@ -97,7 +97,7 @@ fi
 
 # A defined CARGO_TARGET_DIR is not sufficient. A worktree created without a
 # .envrc INHERITS main's value from the shell that launched it, so the check
-# above passes and this tree compiles straight into the shared cache: the
+# above passes and this tree compiles straight into main's target dir: the
 # #1267 hazard (two trees, same output filenames, last writer wins, E2E runs
 # silently execute the other tree's binary). Measured 2026-09-29 on main's
 # shared target: 46 dead worktrees referenced by live fingerprints, plus one
@@ -137,7 +137,7 @@ if [[ "$ROOT" != "$MAIN_ROOT" ]]; then
     echo "  main checkout is not bootstrapped: $WHY." >&2
     echo "  without it this gate cannot prove that" >&2
     echo "    $(readlink -f "${CARGO_TARGET_DIR%/}")" >&2
-    echo "  is not main's shared cache, so it refuses rather than assume." >&2
+    echo "  is not main's own target dir, so it refuses rather than assume." >&2
     echo "  Cargo itself is fine here; this is a precondition of the workflow." >&2
     echo "  fix: bootstrap the main checkout, then re-run:" >&2
     echo "        cd $MAIN_ROOT" >&2
@@ -145,11 +145,11 @@ if [[ "$ROOT" != "$MAIN_ROOT" ]]; then
     echo "        direnv allow" >&2
     exit 2
   elif [[ "$(readlink -f "${CARGO_TARGET_DIR%/}")" == "$(readlink -f "$MAIN_TARGET")" ]]; then
-    echo "error: this worktree's CARGO_TARGET_DIR resolves to main's shared cache" >&2
+    echo "error: this worktree's CARGO_TARGET_DIR resolves to main's target dir" >&2
     echo "  tree:            $ROOT" >&2
     echo "  CARGO_TARGET_DIR $(readlink -f "${CARGO_TARGET_DIR%/}")" >&2
     echo "  main's target:   $(readlink -f "$MAIN_TARGET")" >&2
-    echo "  this would compile this tree into another tree's target dir (#1267)." >&2
+    echo "  this would compile this tree into main's target dir (#1267)." >&2
     echo "  fix: give this worktree its own target dir and re-run:" >&2
     echo "        cd $ROOT" >&2
     echo "        sed -e 's#cargo-target/$(basename "$MAIN_TARGET")#cargo-target/$(basename "$ROOT")#' \\" >&2

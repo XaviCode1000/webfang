@@ -411,6 +411,77 @@ else
   bad "a different rustc did not move the key; the equality above proves nothing"
 fi
 
+amb_bad=0
+# The DIRECT call, not the recipe path. seed_target.sh and seed_publish.sh both
+# invoke seed_compat_key.sh themselves with the recipe's arguments, in their own
+# shell, where the caller's ambient is still intact. An earlier version of this
+# regression went through the recipe and was green against the defect: the recipe
+# path happened to be immune, so the probe could not see the fork. The defect lived
+# one layer down, in the function the two scripts call directly.
+amb_direct() {
+  if [ -z "${1:-}" ]; then set --; fi
+  # shellcheck disable=SC2016  # $0/$1/$2 and ${A[@]} are resolved by the bash -c at runtime
+  env "$@" SEED_REPO_ROOT="$REPO_ROOT" bash -c '
+    . "$0"; seed_recipe_parse "$1" --features "" >/dev/null 2>&1
+    mapfile -t A < <(seed_recipe_key_args)
+    exec bash "$2" "${A[@]}" 2>/dev/null' \
+    "$SCRIPT_DIR/seed_recipe.sh" "$REPO_ROOT" "$SCRIPT_DIR/seed_compat_key.sh"
+}
+amb_key() {
+  if [ -z "${1:-}" ]; then set --; fi
+  # shellcheck disable=SC2016  # $0/$1 are resolved by the bash -c at runtime
+  env "$@" bash -c '. "$0"; seed_recipe_parse "$1" --features ""; seed_recipe_compute_key "$1"; printf "%s" "$SEED_RECIPE_KEY"' \
+      "$SCRIPT_DIR/seed_recipe.sh" "$REPO_ROOT" 2>/dev/null
+}
+
+# --- 14. a differing ambient does not fork the key ----------------------------
+# This is the regression for the defect that shipped in #1721: CARGO_INCREMENTAL
+# was read from the ambient and written into the [key] block, so main (which sets
+# 1) and every worktree (which sets 0) computed different keys. The primary
+# workflow — publish from main, consume from a worktree — failed with
+# `incompatible-manifest` against a seed that was sitting there under a matching
+# name. Every test passed because publisher and consumer always ran with the same
+# ambient, so the fork was invisible to all of them.
+AMBIENT_BASE="$(amb_key)"
+DIRECT_BASE="$(amb_direct)"
+DIRECT_BAD=0
+for spec in "CARGO_INCREMENTAL=0" "CARGO_INCREMENTAL=1" "CARGO_INCREMENTAL=true"; do
+  DK="$(amb_direct "$spec")"
+  if [ -z "$DK" ] || [ "$DK" != "$DIRECT_BASE" ]; then
+    bad "seed_compat_key.sh called directly: $spec forks the key ($DIRECT_BASE -> $DK)"
+    DIRECT_BAD=1
+  fi
+done
+if [ -n "$DIRECT_BASE" ] && [ "$DIRECT_BAD" -eq 0 ]; then
+  ok "the direct key call is identical across CARGO_INCREMENTAL values"
+else
+  bad "the direct key call forks on CARGO_INCREMENTAL"
+fi
+for spec in "CARGO_INCREMENTAL=0" "CARGO_INCREMENTAL=1" "CARGO_INCREMENTAL=true" \
+            "CARGO_BUILD_RUSTC=/opt/otro/rustc" "CARGO_BUILD_TARGET=aarch64-unknown-linux-gnu" \
+            "CARGO_PROFILE_DEV_OPT_LEVEL=3" "CARGO_TARGET_DIR=/tmp/otro" "RUSTC=/opt/otro/rustc"; do
+  AK="$(amb_key "$spec")"
+  if [ -z "$AK" ]; then bad "amb_key produced nothing for $spec";
+  elif [ "$AK" = "$AMBIENT_BASE" ]; then :; else
+    bad "$spec forks the key: $AMBIENT_BASE -> $AK"
+  fi
+done
+if [ -n "$AMBIENT_BASE" ] && [ "$amb_bad" -eq 0 ]; then
+  ok "the key is identical across differing CARGO_*/RUST* ambients (8 probes)"
+else
+  bad "at least one ambient forked the key"
+fi
+# RUSTFLAGS is the deliberate counter-example and must stay: the recipe captures
+# it and passes it to the build, so key and build agree and a flags mismatch has
+# to reject the seed. If this ever stops holding, the recipe is lying again.
+RF="$(amb_key "RUSTFLAGS=-Cdebuginfo=0")"
+if [ -n "$RF" ] && [ "$RF" != "$AMBIENT_BASE" ]; then
+  ok "RUSTFLAGS still moves the key, as the contract intends"
+else
+  bad "RUSTFLAGS no longer moves the key; either the recipe stopped feeding it to"
+  echo "       the build, or it became a constant that silently forks nothing"
+fi
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
