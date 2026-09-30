@@ -582,6 +582,23 @@ observable behaviour, not cargo's internal layout, and neither should you.
 | Quarantine (`~/.cache/cargo-target/quarantine/`) | ⚠️ Deliberate, do not touch | Historical objects explicitly removed from the active build system by rename. This currently contains the former shared `main` target and obsolete seeds. Quarantine contents are not valid active build targets and must not be consumed, republished, or cleaned as part of normal bootstrap. Both this store and the seed store are rejected by `ci_fast_gate.sh` before Cargo runs. Deletion is a separate, explicitly authorized operation. Age only makes an object eligible for deletion; it does not authorize deletion. See `odd/tasks/target-quarantine-runbook.md` and `odd/tasks/seed-reclamation-runbook.md`. |
 | Git stash (`refs/stash`) | ⚠️ Shared (DANGER) | **NEVER use `git stash`** |
 
+### `~/.cache/cargo-target/` namespace
+
+Treat the cache root as a reserved namespace with exactly these semantic categories:
+
+```text
+~/.cache/cargo-target/
+├── <worktree-target>/   ← build state owned by one worktree
+├── seeds/                ← RESERVED: published seed store
+└── quarantine/           ← RESERVED: retired objects, never a build target
+```
+
+A worktree target may use the bootstrap-generated tree name or an explicitly configured custom name, but it remains **worktree-owned build state**. Do not invent additional semantic categories or use names such as `scratch/`, `shared/`, `cache/`, or `tmp/` for another kind of state under this root.
+
+`seeds/` and `quarantine/` are reserved namespaces and must never be used as a worktree `CARGO_TARGET_DIR`. Follow their respective runbooks for lifecycle operations.
+
+This exists because a denylist cannot stop invention. `ci_fast_gate.sh` refuses three known identities — `main`'s target, `seeds/`, `quarantine/` — and accepts anything else, so a name nobody had thought of yet is a name the guard will happily let you build into. Measured 2026-09-30: `~/.cache/cargo-target/scratch` is accepted with exit 0, and during that investigation 40 GB were written into `quarantine/` itself by a probe that had not read this section. The gate protects what it knows about; what it does not know about is bounded by the namespace being stated, not by the denylist growing.
+
 ### CodeDB/CodeGraph in worktrees
 
 Both tools resolve projects by name; bare-name resolution picks the main checkout — so queries run from a worktree without the absolute path read the **main checkout**, not your worktree (#360). **In worktrees, ALWAYS use the absolute path** (§2.3).
