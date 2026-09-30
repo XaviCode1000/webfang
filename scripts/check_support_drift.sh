@@ -69,8 +69,11 @@ check_declared() {
   bad_state="$(jq -r '.lines[] | select(.state != "STABLE" and .state != "MAINTENANCE" and .state != "EOL") | .minor' "$SUPPORT_JSON")"
   [[ -z "$bad_state" ]] || err "estado desconocido en las líneas: $(echo "$bad_state" | tr '\n' ' ') (permitidos: STABLE, MAINTENANCE, EOL)."
 
-  # Support window is structural, not a calendar: at most two live lines.
-  [[ "$n_stable" -le 1 ]] || err "hay $n_stable líneas STABLE; la política admite como máximo una."
+  # Support window is structural, not a calendar: at most two live lines. And
+  # exactly one STABLE, not "at most one": a declaration where everything is
+  # EOL is internally consistent and would sail through this scope while
+  # stating that nothing is supported at all (#1676 review R4-NO-ACTIVE-STABLE).
+  [[ "$n_stable" -eq 1 ]] || err "hay $n_stable líneas STABLE; se requiere exactamente una (la minor vigente)."
   [[ "$n_maint" -le 1 ]] || err "hay $n_maint líneas MAINTENANCE; la política admite como máximo una."
   [[ "$live" -le 2 ]] || err "hay $live líneas vivas; el máximo estructural es 2 (STABLE + MAINTENANCE)."
 

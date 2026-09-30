@@ -790,7 +790,7 @@ Support window (structural, no calendar): at most 2 live lines. Publishing `vX.(
 
 | Scope | Asserts | Fail-closed on |
 | :--- | :--- | :--- |
-| `--scope=declared` | valid schema; `accepts` coherent with each line's state (STABLE `bugfix`+`security`, MAINTENANCE `security`, EOL none); ≤1 STABLE, ≤1 MAINTENANCE, ≤2 live lines; `SUPPORT.md` matches a fresh render | unreadable/invalid JSON, unknown `state`, missing renderer |
+| `--scope=declared` | valid schema; `accepts` coherent with each line's state (STABLE `bugfix`+`security`, MAINTENANCE `security`, EOL none); **exactly one** STABLE, ≤1 MAINTENANCE, ≤2 live lines; `SUPPORT.md` matches a fresh render | unreadable/invalid JSON, unknown `state`, missing renderer |
 | `--scope=published` | declared STABLE is the newest published minor; every minor at or above the tracking floor is declared; MAINTENANCE is the immediately-previous published minor; every `latest` exists as a tag | shallow clone, no tags, unparseable `v*` tag |
 
 The tracking floor is the **oldest declared line**: minors published before it (1.x) predate support tracking, the same fact 2.0 records as `eol_reason: "baseline: predates support tracking"`, and demanding they be declared would invent history. `-rc.N` tags are candidates, not publications, so they never move the window.

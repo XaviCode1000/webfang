@@ -172,6 +172,20 @@ set_lines "$FX_WINDOW" '{
 add_tags "$FX_WINDOW" v2.0.0 v2.1.0 v2.2.0 v2.3.0
 expect "$FX_WINDOW" fail "tres líneas vivas (el máximo es dos)" --scope=declared
 
+# Everything EOL is internally consistent — valid schema, no `accepts`, correct
+# render — yet it declares that nothing is supported. Only the published scope
+# would notice, and that scope is advisory (#1676 review R4-NO-ACTIVE-STABLE).
+FX_NOSTABLE="$(new_fixture no_stable)"
+set_lines "$FX_NOSTABLE" '{
+  "schema_version": 1,
+  "lines": [
+    {"minor":"2.1","state":"EOL","branch":null,"latest":"2.1.0","eol_at":"2026-10-01","eol_reason":"fixture"},
+    {"minor":"2.0","state":"EOL","branch":null,"latest":"2.0.0","eol_at":"2026-09-14","eol_reason":"baseline"}
+  ]
+}'
+add_tags "$FX_NOSTABLE" v2.0.0 v2.1.0 v2.1.1
+expect "$FX_NOSTABLE" fail "ninguna línea STABLE declarada (nada soportado)" --scope=declared
+
 FX_ACCEPTS="$(new_fixture accepts)"
 set_lines "$FX_ACCEPTS" '{
   "schema_version": 1,
