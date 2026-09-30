@@ -13,16 +13,18 @@ expression: advertised_pretty(tool)
   "additionalProperties": false,
   "properties": {
     "concurrency": {
+      "default": 3,
       "description": "Concurrency limit. When omitted the tool applies the advertised `default`\n(#1294 NS-04: the number used to live only in this sentence, and it was\nwrong — the machine-readable default in the bridge is the single source).",
       "format": "uint",
-      "minimum": 0,
+      "maximum": 64,
+      "minimum": 1,
       "type": [
         "integer",
         "null"
       ]
     },
     "delay_ms": {
-      "default": 1000,
+      "default": 0,
       "description": "Delay between requests in milliseconds",
       "type": [
         "integer",

@@ -395,21 +395,28 @@ fn scrape_with_options_input_schema() -> Arc<Map<String, Value>> {
 }
 
 fn export_file_input_schema() -> Arc<Map<String, Value>> {
-    merged_input_schema::<ExportFileParams>(EXPORT_FILE_PROPERTIES, &[])
+    let overrides = default_overrides_for_tool("export_file");
+    merged_input_schema::<ExportFileParams>(EXPORT_FILE_PROPERTIES, &overrides)
 }
 
 fn process_export_pipeline_input_schema() -> Arc<Map<String, Value>> {
-    merged_input_schema::<ProcessExportPipelineParams>(PROCESS_EXPORT_PIPELINE_PROPERTIES, &[])
+    let overrides = default_overrides_for_tool("process_export_pipeline");
+    merged_input_schema::<ProcessExportPipelineParams>(
+        PROCESS_EXPORT_PIPELINE_PROPERTIES,
+        &overrides,
+    )
 }
 
 fn scrape_batch_input_schema() -> Arc<Map<String, Value>> {
-    merged_input_schema::<ScrapeBatchParams>(SCRAPE_BATCH_PROPERTIES, &[])
+    let overrides = default_overrides_for_tool("scrape_batch");
+    merged_input_schema::<ScrapeBatchParams>(SCRAPE_BATCH_PROPERTIES, &overrides)
 }
 
 fn get_accessibility_snapshot_input_schema() -> Arc<Map<String, Value>> {
+    let overrides = default_overrides_for_tool("get_accessibility_snapshot");
     merged_input_schema::<GetAccessibilitySnapshotParams>(
         GET_ACCESSIBILITY_SNAPSHOT_PROPERTIES,
-        &[],
+        &overrides,
     )
 }
 
@@ -589,6 +596,57 @@ mod tests {
         // The un-overridden derive advertises max_pages WITHOUT any bound:
         let derived = &raw_derived::<CrawlSiteParams>()["properties"]["max_pages"];
         assert!(derived.get("maximum").is_none());
+    }
+
+    /// Proof (#1612, BC-09): every bridged tool's router schema carries its
+    /// OWN advertised-default overrides.
+    ///
+    /// Measured red before this invariant existed: `export_file`,
+    /// `process_export_pipeline`, `scrape_batch` and
+    /// `get_accessibility_snapshot` all called
+    /// `merged_input_schema::<P>(PROPS, &[])`, silently dropping the table
+    /// `default_overrides_for_tool` builds for them. `scrape_batch` therefore
+    /// published `concurrency` with the derive's `minimum: 0` and no
+    /// `default` at all, and `delay_ms` with the CLI's 1000 ms while the
+    /// handler runs unthrottled — the #1294 NS-04 and RC-1 G2 fixes, dead on
+    /// the wire.
+    ///
+    /// The existing suites missed it because they re-merged the schema
+    /// themselves with the overrides supplied by hand, so they asserted the
+    /// intent rather than the served bytes. The check here is that applying
+    /// the table to what the ROUTER emits changes nothing: idempotence is the
+    /// property "the helper passed its overrides", and it needs no
+    /// per-tool expectation to stay true as the table grows.
+    #[test]
+    fn every_bridged_tool_applies_its_own_default_overrides() {
+        let router = handlers::build_tool_router();
+        for (tool_name, schema_fn) in OVERRIDES {
+            let overrides = default_overrides_for_tool(tool_name);
+            if overrides.is_empty() {
+                continue;
+            }
+            let route = router
+                .map
+                .get(*tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be registered"));
+            let served = Value::Object(route.attr.input_schema.as_ref().clone());
+            assert_eq!(
+                served,
+                as_value(&schema_fn()),
+                "{tool_name}: the router must serve exactly what its bridge fn builds"
+            );
+            let mut props = match served.get("properties") {
+                Some(Value::Object(map)) => map.clone(),
+                other => panic!("{tool_name}: input schema must carry properties, got {other:?}"),
+            };
+            let before = props.clone();
+            apply_default_overrides(&mut props, &overrides);
+            assert_eq!(
+                before, props,
+                "{tool_name}: the served schema does not already carry its own \
+                 advertised-default overrides"
+            );
+        }
     }
 
     /// Proof: the router wiring actually swaps in the bridge schema — the
