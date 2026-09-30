@@ -1,13 +1,55 @@
-# Configuration for zizmor (GitHub Actions SAST security linter)
+# Configuration for zizmor (GitHub Actions security linter)
 # https://docs.zizmor.sh/configuration/
-
-rules:
-  # Unpinned actions (@v4, @v5) are tracked as supply chain debt.
-  # Disabled until a dedicated commit-SHA pinning sweep is scheduled.
-  unpinned-uses: {}
-
-  # ci-health is a read-only observer triggered on workflow_run completions on main.
-  # It does not download untrusted PR artifacts or run untrusted code.
-  dangerous-triggers:
-    ignore:
-      - .github/workflows/ci-health.yml
+#
+# MEASURED 2026-09-30 with zizmor 1.30.1, the version pinned in
+# .github/workflows/ci.yml, against a synthetic probe workflow. Both entries
+# this file used to carry are now gone, for two DIFFERENT reasons. The
+# distinction matters, so both are recorded rather than collapsed.
+#
+#   1. `unpinned-uses: {}` was a NO-OP. An empty table changes nothing, and
+#      `unpinned-uses` is ON BY DEFAULT. Probe: a workflow with
+#      `uses: actions/checkout@v5` produced the identical
+#      `error[unpinned-uses]: unpinned action reference` with this config and
+#      with no config at all.
+#      The comment that used to sit here claimed the rule was "Disabled until a
+#      dedicated commit-SHA pinning sweep is scheduled". It was never disabled,
+#      and the sweep it was waiting for is already complete: every `uses:` in
+#      .github/workflows/ is SHA-pinned. So the file was asserting a protection
+#      it was not applying, while the real protection stayed on by default the
+#      whole time. The entry is removed to stop the false claim; the rule itself
+#      remains at its default (enabled), which is the posture we want — the next
+#      unpinned `uses:` fails the build.
+#
+#   2. `dangerous-triggers: { ignore: [.github/workflows/ci-health.yml] }` DID
+#      work, and is removed only because it is REDUNDANT, not because it was
+#      broken. Probe: with the inline comment absent and the ignore list naming
+#      the probed file by its real path, zizmor reported no
+#      `error[dangerous-triggers]`; with no config it did report it.
+#      The same file already carries a narrower, inline exemption on the trigger
+#      key itself, `.github/workflows/ci-health.yml:48`:
+#          on:
+#            workflow_run: # zizmor: ignore[dangerous-triggers]
+#      Both mechanisms were therefore suppressing the same finding. A file-level
+#      ignore is also coarser than it looks: it disables the rule for EVERY
+#      trigger in that file, so any future `workflow_run` added to ci-health.yml
+#      would be silenced without anyone re-reading this decision. Deleting the
+#      global entry and keeping the inline one narrows the exemption to the one
+#      trigger key that needs it, at the point where a reviewer reading
+#      ci-health.yml can actually see it.
+#
+# WHY THE INLINE EXCEPTION IS STILL REQUIRED (it is not removable):
+#   ci-health.yml is a read-only observer triggered by `workflow_run`, which
+#   zizmor flags because the BASE repository controls the triggering run's
+#   credentials: a fork workflow the maintainer later merges, or a PR merged
+#   with a rewritten base, could otherwise influence a privileged observer.
+#   This workflow does none of the things that makes such a trigger dangerous:
+#     * it does NOT download artifacts of the triggering run (no
+#       `actions/download-artifact`, no equivalent `run:` call),
+#     * it does NOT check out the triggering run's code, and
+#     * its `permissions:` block is the minimum the observer needs (read-only
+#       API access to the workflows' own runs, plus issues: write for the
+#       tracking issues it maintains).
+#
+# `rules: {}` is therefore the whole configuration: every audit runs at its
+# default severity, and the single accepted exception lives at the point of use.
+rules: {}

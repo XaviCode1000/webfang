@@ -152,11 +152,23 @@ jobs:
           persist-credentials: false
       - name: Classify changed paths
         id: scope
+        # SC-09 (issue #1607): no GitHub expression expansion inside a `run:`
+        # block. The expression engine substitutes BEFORE the shell parses the
+        # script, so a value carrying shell metacharacters is spliced in as
+        # code, not data.
+        # An `env:` var is handed to the shell as an argument instead, so the same
+        # bytes stay data no matter what they contain. The SHAs are empty on
+        # every non-`pull_request` event, which is exactly what the `if` below
+        # needs in order to tell those events apart.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          if [ "${{ github.event_name }}" = "pull_request" ]; then
+          if [ "$EVENT_NAME" = "pull_request" ]; then
             bash scripts/ci_path_classifier.sh \
-              --base "${{ github.event.pull_request.base.sha }}" \
-              --head "${{ github.event.pull_request.head.sha }}" \
+              --base "$PR_BASE_SHA" \
+              --head "$PR_HEAD_SHA" \
               --format github >> "$GITHUB_OUTPUT"
           else
             {
@@ -171,7 +183,7 @@ jobs:
               echo "needs_mutation_hotpath=true"
               echo "snapshot_changed=true"
             } >> "$GITHUB_OUTPUT"
-            echo "change-scope: event=${{ github.event_name }} -> full scope (run_code_jobs=true, needs_ai=true, needs_mcp=true, needs_mutation_hotpath=true, snapshot_changed=true)"
+            echo "change-scope: event=$EVENT_NAME -> full scope (run_code_jobs=true, needs_ai=true, needs_mcp=true, needs_mutation_hotpath=true, snapshot_changed=true)"
           fi
 
   # ============================================================================
@@ -448,7 +460,15 @@ jobs:
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # SC-11: the `tool:` input is pinned. This action's DEFAULT tool set is
+      # resolved per-pinned-ref and meant "latest", so omitting it floated an
+      # executable inside a SHA-pinned pipeline — the supply-chain property the
+      # action pin exists to provide, undone one layer down. 0.9.114 is this
+      # repository's declared MSRV-safe pin (mise.toml: "pinned — latest requires
+      # Rust >1.88"); the toolchain file pins 1.88, and 0.9.146 needs a newer rustc.
       - uses: taiki-e/install-action@e88e69ecdb9658bd172693dcdc2c84e7f0ab6a11
+        with:
+          tool: nextest@0.9.114
       - name: Pre-build test binary
         run: cargo build -p webfang_cli --bin webfang
       - name: Unit tests (lib)
@@ -475,7 +495,15 @@ jobs:
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
+      # SC-11: the `tool:` input is pinned. This action's DEFAULT tool set is
+      # resolved per-pinned-ref and meant "latest", so omitting it floated an
+      # executable inside a SHA-pinned pipeline — the supply-chain property the
+      # action pin exists to provide, undone one layer down. 0.9.114 is this
+      # repository's declared MSRV-safe pin (mise.toml: "pinned — latest requires
+      # Rust >1.88"); the toolchain file pins 1.88, and 0.9.146 needs a newer rustc.
       - uses: taiki-e/install-action@e88e69ecdb9658bd172693dcdc2c84e7f0ab6a11
+        with:
+          tool: nextest@0.9.114
       # NOTE: no ONNX model download here. test-full runs zero AI inference
       # (all --features compile + test, no --ignored); the only --ignored
       # consumer is the test-ai job, which keeps its own download. Skipping
@@ -534,7 +562,15 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      # SC-11: the `tool:` input is pinned. This action's DEFAULT tool set is
+      # resolved per-pinned-ref and meant "latest", so omitting it floated an
+      # executable inside a SHA-pinned pipeline — the supply-chain property the
+      # action pin exists to provide, undone one layer down. 0.9.114 is this
+      # repository's declared MSRV-safe pin (mise.toml: "pinned — latest requires
+      # Rust >1.88"); the toolchain file pins 1.88, and 0.9.146 needs a newer rustc.
       - uses: taiki-e/install-action@e88e69ecdb9658bd172693dcdc2c84e7f0ab6a11
+        with:
+          tool: nextest@0.9.114
       - name: Pre-build test binary
         run: cargo build -p webfang_cli --bin webfang
       - name: Unit tests (lib)
@@ -591,7 +627,15 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
       # no rust-cache (#1171): non-gate job, compiles cold — cache pool budget, benches.yml:55-60 precedent
+      # SC-11: the `tool:` input is pinned. This action's DEFAULT tool set is
+      # resolved per-pinned-ref and meant "latest", so omitting it floated an
+      # executable inside a SHA-pinned pipeline — the supply-chain property the
+      # action pin exists to provide, undone one layer down. 0.9.114 is this
+      # repository's declared MSRV-safe pin (mise.toml: "pinned — latest requires
+      # Rust >1.88"); the toolchain file pins 1.88, and 0.9.146 needs a newer rustc.
       - uses: taiki-e/install-action@e88e69ecdb9658bd172693dcdc2c84e7f0ab6a11
+        with:
+          tool: nextest@0.9.114
       - name: Compile proof (webfang_cli with console under unstable cfg)
         run: cargo check -p webfang_cli --features console
       - name: Console smoke test (delta ceiling + baseline recovery)
@@ -719,8 +763,20 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           persist-credentials: false
+      # SC-11: both tools are pinned, and both pins are LOAD-BEARING rather than
+      # hygiene. `deny.toml` is written against cargo-deny 0.20.2's schema
+      # (advisories `unmaintained`/`unsound` scopes, `unused-ignored-advisory`,
+      # the removal of `vulnerability`/`notice`), and
+      # scripts/check_advisory_policy.sh depends on cargo-audit 0.22.2 exiting
+      # non-zero on a denied warning — without `-D warnings` that exit code is 0,
+      # which is the SC-01/SC-07 defect itself. A silent bump of either binary
+      # changes the verdict of the gate, so the version is stated here.
       - uses: taiki-e/install-action@347438fa49c6c030ac9a8f98ea84f0e151483e84
+        with:
+          tool: cargo-deny@0.20.2
       - uses: taiki-e/install-action@fd94a048c157f8a2d1975d01ffb26bd0de4f192e
+        with:
+          tool: cargo-audit@0.22.2
       - name: Advisories + licenses + bans + sources
         run: cargo deny check
       # The advisory --ignore flags are DERIVED from deny.toml [advisories]
@@ -959,10 +1015,13 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       # The compatibility harness runs `cargo nextest` per combo; `cargo hack`
-      # comes from this action's default tool at the pinned ref.
+      # comes from the same install step. Both are version-pinned (SC-11).
       - uses: taiki-e/install-action@4787a8cb96c211ae024644db52123a03bf511c68
         with:
-          tool: cargo-hack,nextest
+          # SC-11: both entries pinned. `tool:` accepts a comma-separated
+          # `name@version` list, so a single install step still covers both
+          # executables the harness needs.
+          tool: cargo-hack@0.6.45,nextest@0.9.114
       - name: Feature matrix check
         run: cargo hack check --each-feature --workspace --no-dev-deps
       # `cargo hack check` never compiles test targets (and `--no-dev-deps` drops
@@ -1360,7 +1419,11 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
       # no rust-cache (#1171): non-gate job, compiles cold — cache pool budget, benches.yml:55-60 precedent
+      # SC-11: pinned — see the nextest pin above for why an unpinned `tool:`
+      # floats an executable inside a SHA-pinned step.
       - uses: taiki-e/install-action@166cdddc0349c6f3c1da17f66a8fc88ec3bc4dd5
+        with:
+          tool: cargo-llvm-cov@0.9.1
       - name: Generate coverage
         run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info -- --skip test_mcp
       - name: Report coverage
