@@ -29,31 +29,6 @@ use serde::Serialize;
 use crate::domain::entities::DocumentChunkValidated;
 use crate::domain::exporter::{ExportResult, ExporterConfig, ExporterError};
 
-/// The JSONL field name carrying the content checksum — pinned, load-bearing.
-///
-/// #1617 (D3). Three independent sites read this name off disk: the exporter
-/// WRITES it (as the serde name of [`WebfangMetadata::checksum_sha256`]), and
-/// [`crate::infrastructure::export::jsonl_writer`] and `CommitSession` READ it
-/// to rebuild the resume dedup index. A rename of the Rust field would silently
-/// empty both indexes — the readers skip lines that lack the key and return
-/// success, so `--resume` would re-drive every already-committed page with
-/// nothing in the logs to say why.
-///
-/// `serde(rename)` takes a string literal, not a const, so this cannot be the
-/// single source of truth on the write side. It is the pinned READ contract
-/// plus the thing `serialized_uses_the_pinned_checksum_field_name` asserts the
-/// writer against, which is what makes the pair a gate rather than a comment:
-/// renaming the struct field breaks that test.
-///
-/// This is deliberately separate from #1595, which covers `extra_metadata` KEY
-/// ORDER being process-dependent. That is a serialization determinism problem;
-/// this is a field-rename compatibility problem.
-///
-/// This is NOT the same class as D5's decorative `metadata_version`: unlike
-/// that field, this one is READ by live code, and this const is what stops it
-/// from being renamed out from under them.
-pub const CHECKSUM_FIELD: &str = "checksum_sha256";
-
 /// Webfang JSONL metadata schema (v2.1.0)
 ///
 /// Wraps DocumentChunkValidated with additional fields for
@@ -70,8 +45,9 @@ pub struct WebfangMetadata<'a> {
     pub content: &'a str,
     /// SHA-256 hash of content for deduplication
     ///
-    /// Serialized as [`CHECKSUM_FIELD`]; the field name is pinned there and a
-    /// test fails if the two ever diverge (#1617, D3).
+    /// Serialized as [`CHECKSUM_FIELD`](crate::domain::exporter::CHECKSUM_FIELD);
+    /// the field name is pinned there and a test fails if the two ever diverge
+    /// (#1617, D3).
     #[serde(rename = "checksum_sha256")]
     pub checksum_sha256: String,
     /// Schema version
@@ -293,6 +269,11 @@ impl crate::domain::exporter::Exporter for JsonlExporter {
 mod tests {
     use std::path::PathBuf;
     use tempfile::TempDir;
+
+    // The pinned field name lives in the domain, because the application layer
+    // reads it too and ADR-0010 forbids reaching outward into infrastructure
+    // to get it. Re-exported from `infrastructure::export`.
+    use crate::domain::exporter::CHECKSUM_FIELD;
 
     use crate::domain::config::ExportFormat;
     use crate::domain::exporter::Exporter;

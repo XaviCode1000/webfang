@@ -16,8 +16,9 @@ pub mod state_store;
 pub mod vector_exporter;
 
 // Re-export for convenience
+pub use crate::domain::exporter::CHECKSUM_FIELD;
 pub use file_exporter::FileExporter;
-pub use jsonl_exporter::{JsonlExporter, CHECKSUM_FIELD};
+pub use jsonl_exporter::JsonlExporter;
 pub use jsonl_writer::JsonlSession;
 pub use record_store::RecordStore;
 pub use state_store::StateStore;

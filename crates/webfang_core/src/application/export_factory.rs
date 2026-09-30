@@ -33,7 +33,11 @@ use crate::domain::persistence::{
     DomainRecords, LastError, RawRecord, RecordStoreError, RecordStorePort,
 };
 use crate::domain::record_transition;
-use crate::domain::{entities::ExportFormat, exporter::ExporterError, Exporter, ExporterConfig};
+use crate::domain::{
+    entities::ExportFormat,
+    exporter::{ExporterError, CHECKSUM_FIELD},
+    Exporter, ExporterConfig,
+};
 
 /// Per-run resume/commit context handed to the export functions (D5 seams).
 ///
@@ -564,10 +568,7 @@ fn build_content_hash_index(path: &std::path::Path) -> HashSet<String> {
         }
         lines += 1;
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
-            match value
-                .get(crate::infrastructure::export::CHECKSUM_FIELD)
-                .and_then(|h| h.as_str())
-            {
+            match value.get(CHECKSUM_FIELD).and_then(|h| h.as_str()) {
                 Some(hash) => {
                     index.insert(hash.to_string());
                 },
@@ -580,7 +581,7 @@ fn build_content_hash_index(path: &std::path::Path) -> HashSet<String> {
             file = %path.display(),
             lines,
             lines_without_checksum = without_checksum,
-            field = crate::infrastructure::export::CHECKSUM_FIELD,
+            field = CHECKSUM_FIELD,
             "output lines carry no checksum field; resume dedup will re-drive them (writer/reader field-name mismatch?)"
         );
     }
