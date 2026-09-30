@@ -224,8 +224,10 @@ fn record_page_outcome(
     }
     if let Some(class) = error_class {
         // `display` wraps the Display impl as a tracing Value; the JSONL
-        // spells the class exactly as the error events do.
-        span.record("error_class", &tracing::field::display(class));
+        // spells the class exactly as the error events do. The value is passed
+        // WITHOUT a borrow: `Span::record` is generic over `Q: Value`, and the
+        // strict gate denies `needless_borrows_for_generic_args`.
+        span.record("error_class", tracing::field::display(class));
     }
 }
 

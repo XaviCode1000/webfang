@@ -139,7 +139,7 @@ where
     /// outcome lived only in a separate event, which is exactly the gap
     /// OBS-P2-4 reports.
     ///
-    /// The recorded values land in the SAME [`EventRecorder`] extension the
+    /// The recorded values land in the SAME `EventRecorder` extension the
     /// creation-time snapshot uses, so they appear in `span_fields` of every
     /// subsequent event inside the span AND in the `span_close` record.
     fn on_record(&self, id: &tracing::Id, values: &tracing::span::Record<'_>, ctx: Context<'_, S>) {
