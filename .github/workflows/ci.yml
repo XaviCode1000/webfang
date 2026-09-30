@@ -723,20 +723,18 @@ jobs:
       - uses: taiki-e/install-action@fd94a048c157f8a2d1975d01ffb26bd0de4f192e
       - name: Advisories + licenses + bans + sources
         run: cargo deny check
-      # --ignore flags mirror deny.toml [advisories] ignore list.
-      - name: Audit (RustSec, redundant with cargo-deny)
-        run: |
-          cargo audit \
-            --ignore RUSTSEC-2025-0141 \
-            --ignore RUSTSEC-2025-0119 \
-            --ignore RUSTSEC-2024-0320 \
-            --ignore RUSTSEC-2025-0052 \
-            --ignore RUSTSEC-2024-0436 \
-            --ignore RUSTSEC-2026-0173 \
-            --ignore RUSTSEC-2026-0221 \
-            --ignore RUSTSEC-2026-0183 \
-            --ignore RUSTSEC-2026-0184 \
-            --ignore RUSTSEC-2026-0253
+      # The advisory --ignore flags are DERIVED from deny.toml [advisories]
+      # ignore (via `check_advisory_policy.sh --print-ignores`) instead of being
+      # duplicated by hand here, so there is no second copy to drift out of sync.
+      # The script always passes `-D warnings`, which is the whole fix: without
+      # it `cargo audit` exits 0 on an unmaintained/unsound finding, so this step
+      # used to print a brand-new advisory and still go green (issue #1607,
+      # SC-01/SC-07). It also audits fuzz/Cargo.lock — fuzz/ is not a workspace
+      # member, so nothing else covered that lock (SC-14) — and enforces the
+      # fail-closed knobs, the per-entry `# Expires:` dates, and the
+      # duplicate-crate descending ratchet.
+      - name: Advisory policy (deny.toml is the single source of truth)
+        run: bash scripts/check_advisory_policy.sh
 
   # ============================================================================
   # TIER 5: DOC QUALITY — Independent of tests

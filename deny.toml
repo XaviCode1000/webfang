@@ -1,6 +1,73 @@
+# deny.toml — cargo-deny policy for the WebFang workspace.
+#
+# ============================================================================
+# FAIL-CLOSED CONTRACT (issue #1607, SC-01 / SC-06 / SC-07)
+# ============================================================================
+# This file is the SINGLE SOURCE OF TRUTH for which RustSec advisories this
+# repository accepts. scripts/check_advisory_policy.sh is the enforcement
+# mechanism and the CI step in .github/workflows/ci.yml calls it instead of
+# hand-written `cargo audit --ignore ...` flags. Do NOT add advisory ids to a
+# CI command by hand: the audit invocation derives its --ignore flags from the
+# [advisories] ignore list below, and the script fails closed whenever one of
+# the fail-closed knobs in this file is relaxed.
+#
+# WHY the script is not optional — the measured defect (issue #1607):
+# `cargo audit` 0.22.2 exits 0 for unmaintained/unsound findings unless it is
+# told to deny warnings. Measured in this repository, offline, over the same
+# local advisory DB:
+#   cargo audit --no-fetch              -> exit 0, "11 allowed warnings found"
+#   cargo audit --no-fetch -D warnings  -> exit 1, "11 denied warnings found"
+# The pre-#1607 CI step ran `cargo audit --ignore ...` with no `-D warnings`, so
+# a brand-new advisory could not fail the build: the finding was printed and the
+# step still went green. The script always passes `-D warnings`; that flag is
+# the whole fix. A suppressed id stays suppressed — everything NOT listed below
+# becomes an error.
+#
+# EXPIRY IS NOT ENFORCED BY cargo-deny — IT IS ENFORCED BY THE SCRIPT.
+# cargo-deny 0.20.2 has no per-entry expiry field. Its [advisories] keys are
+# exactly: version, db-path, db-urls, unmaintained, unsound, yanked, ignore,
+# severity-threshold, git-fetch-with-cli, disable-yank-checking,
+# maximum-db-staleness, unused-ignored-advisory. (`vulnerability` and `notice`
+# were REMOVED upstream; setting either is a hard config error, which is why
+# this file uses `unmaintained` / `unsound` and never the removed names.)
+# Every ignore entry therefore carries a machine-greppable
+#     # Expires: YYYY-MM-DD
+# comment line immediately above it, and scripts/check_advisory_policy.sh
+# enforces it — a missing, unparseable, or past expiry fails the build, and the
+# report names the id, the date, and the days overdue. Treat a `# Expires:`
+# line as a contract with the script, not as a cargo-deny feature.
+#
+# NOTE: the marker that used to read `# Review date: 2027-03-20` on each entry
+# was renamed to `# Expires: 2027-03-20`. Same date, no information lost — but
+# "review date" was decorative (nothing read it) while "expires" is load-bearing
+# (the script fails on it). The historical purge/re-add protocol below is
+# unchanged.
+# ============================================================================
+
 [advisories]
-# IMPORTANT: Keep this list synchronized with CI cargo audit --ignore flags.
-# Each entry must document: crate, version, severity, why safe to ignore, tracking, review date.
+# Fail-closed severity knobs (SC-01 / SC-07). cargo-deny's own defaults here are
+# permissive: an unmaintained or unsound advisory would be reported and the run
+# would still succeed. Pinning them to "all" makes each one a hard error, and
+# `yanked = "deny"` stops a lockfile from pinning a crate version that was
+# yanked upstream. scripts/check_advisory_policy.sh asserts all three, so a later
+# edit that relaxes one fails the build instead of silently reopening the gate.
+unmaintained = "all"
+unsound = "all"
+yanked = "deny"
+# Kept at "warn" ON PURPOSE, and deliberately not "deny". cargo-deny's
+# advisory-not-detected diagnostics are known to drift from cargo-audit's: four
+# ids below (RUSTSEC-2026-0183/0184/0221/0253) are reported as not-detected by
+# cargo-deny while cargo-audit matches them against the same lock. Promoting
+# this to an error would turn `cargo deny check` red and regress a positive
+# control, so the drift surfaces as a warning and is reconciled instead by the
+# script's `-D warnings` audit, which is the stricter of the two.
+unused-ignored-advisory = "warn"
+
+# The ignore list below is the only sanctioned suppression mechanism, and every
+# entry carries: crate, version, severity, why it is safe to ignore, tracking
+# link, and a machine-greppable `# Expires:` date enforced by the script. The
+# `cargo audit --ignore` flags used in CI are DERIVED from this list — there is
+# no second copy to keep in sync.
 #
 # NOTE: stale ignores purge (issue #727): removed the 6 entries that
 # `cargo deny` reported as advisory-not-detected on 2026-08-16:
@@ -21,22 +88,22 @@ ignore = [
     # Input is deterministic local data, never network input. No maintained
     # 1.x exists; upgrade waits on syntect migrating to bincode 2.
     # Tracking: https://rustsec.org/advisories/RUSTSEC-2025-0141
-    # Review date: 2027-03-20
-    "RUSTSEC-2025-0141",
+    # Expires: 2027-03-20
+    { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3 unmaintained; via syntect 5.3.0, which deserializes precompiled local syntax dumps and never network input; no maintained 1.x exists" },
 
     # RUSTSEC-2025-0119 (number_prefix 0.4.0, severity: unmaintained)
     # Via indicatif 0.17 (CLI progress bars). Display formatting only, no
     # security-relevant logic.
     # Tracking: https://rustsec.org/advisories/RUSTSEC-2025-0119
-    # Review date: 2027-03-20
-    "RUSTSEC-2025-0119",
+    # Expires: 2027-03-20
+    { id = "RUSTSEC-2025-0119", reason = "number_prefix 0.4.0 unmaintained; via indicatif 0.17 CLI progress bars, display formatting only with no security-relevant logic" },
 
     # RUSTSEC-2024-0320 (yaml-rust 0.4.5, severity: unmaintained)
     # Via syntect 5.3.0 (YAML syntax definitions, parsed from local data).
     # No runtime network impact.
     # Tracking: https://rustsec.org/advisories/RUSTSEC-2024-0320
-    # Review date: 2027-03-20
-    "RUSTSEC-2024-0320",
+    # Expires: 2027-03-20
+    { id = "RUSTSEC-2024-0320", reason = "yaml-rust 0.4.5 unmaintained; via syntect 5.3.0 YAML syntax definitions parsed from local data, no runtime network impact" },
 
     # RUSTSEC-2025-0052 (async-std 1.13.2, severity: unmaintained)
     # Discontinued upstream. Transitive via chromiumoxide 0.7 behind the
@@ -44,8 +111,8 @@ ignore = [
     # harness, not the default production path). No maintained alternative
     # to chromiumoxide 0.7 at the time of this change.
     # Tracking: https://rustsec.org/advisories/RUSTSEC-2025-0052
-    # Review date: 2027-03-20
-    "RUSTSEC-2025-0052",
+    # Expires: 2027-03-20
+    { id = "RUSTSEC-2025-0052", reason = "async-std 1.13.2 unmaintained; transitive via chromiumoxide 0.7 behind the optional chromium feature of webfang_core, with no maintained alternative available" },
 
     # RUSTSEC-2024-0436 (paste 1.0.15, severity: unmaintained)
     # No longer maintained. Proc-macro helper via macro_rules_attribute and
@@ -53,8 +120,8 @@ ignore = [
     # Re-added under the re-add protocol above (purged in #1424, re-matched
     # after the DB criteria revision).
     # Tracking: https://rustsec.org/advisories/RUSTSEC-2024-0436
-    # Review date: 2027-03-20
-    "RUSTSEC-2024-0436",
+    # Expires: 2027-03-20
+    { id = "RUSTSEC-2024-0436", reason = "paste 1.0.15 unmaintained; proc-macro helper via macro_rules_attribute and tokenizers, compile-time codegen only and never shipped in the binary" },
 
     # RUSTSEC-2026-0173 (proc-macro-error2 2.0.1, severity: unmaintained)
     # Via i18n-embed-fl 0.9.4 <- age 0.11.5 (wizard identity encryption in
@@ -62,8 +129,8 @@ ignore = [
     # crate is unmaintained with no safe upgrade available. Used for
     # compile-time diagnostics only.
     # Tracking: https://rustsec.org/advisories/RUSTSEC-2026-0173
-    # Review date: 2027-03-20
-    "RUSTSEC-2026-0173",
+    # Expires: 2027-03-20
+    { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 2.0.1 unmaintained; via i18n-embed-fl 0.9.4 <- age 0.11.5 non-optional wizard identity encryption, compile-time diagnostics only and no safe upgrade available" },
 
     # RUSTSEC-2026-0221 (event-listener 5.4.1, severity: unsound)
     # `!Send` tags can cross thread boundaries via `StackSlot`. Transitive
@@ -72,24 +139,24 @@ ignore = [
     # in webfang code. (Lock also contains event-listener 2.5.3, which the
     # advisory does not match.)
     # Tracking: https://rustsec.org/advisories/RUSTSEC-2026-0221
-    # Review date: 2027-03-20
-    "RUSTSEC-2026-0221",
+    # Expires: 2027-03-20
+    { id = "RUSTSEC-2026-0221", reason = "event-listener 5.4.1 unsound; !Send tags can cross thread boundaries via StackSlot, transitive via async-lock/async-process <- async-std <- chromiumoxide 0.7 and never used directly in webfang code" },
 
     # RUSTSEC-2026-0183 (git2 0.20.4, severity: unsound)
     # Potential UB when calling Remote::list(). Via `built` (build-dependency
     # of webfang_core for compile-time version info): build-time only, the
     # Remote API is never called.
     # Tracking: https://rustsec.org/advisories/RUSTSEC-2026-0183
-    # Review date: 2027-03-20
-    "RUSTSEC-2026-0183",
+    # Expires: 2027-03-20
+    { id = "RUSTSEC-2026-0183", reason = "git2 0.20.4 unsound; potential UB when calling Remote::list(), reachable only through the built build-dependency of webfang_core, which never calls the Remote API" },
 
     # RUSTSEC-2026-0184 (git2 0.20.4, severity: unsound)
     # Potential UB with Signature from a buffer-created BlameHunk. Same
     # build-time-only path as RUSTSEC-2026-0183 (via `built`); the Blame API
     # is never called.
     # Tracking: https://rustsec.org/advisories/RUSTSEC-2026-0184
-    # Review date: 2027-03-20
-    "RUSTSEC-2026-0184",
+    # Expires: 2027-03-20
+    { id = "RUSTSEC-2026-0184", reason = "git2 0.20.4 unsound; potential UB with Signature from a buffer-created BlameHunk, same build-time-only path as RUSTSEC-2026-0183 and the Blame API is never called" },
 
     # RUSTSEC-2026-0253 (lru 0.16.4 + 0.18.1, severity: unsound)
     # Potential use-after-free on panic inside `LruCache::pop()`. Via
@@ -97,8 +164,8 @@ ignore = [
     # the single advisory ID. Trigger requires a panicking Drop during pop;
     # neither path runs panicking code inside pop.
     # Tracking: https://rustsec.org/advisories/RUSTSEC-2026-0253
-    # Review date: 2027-03-20
-    "RUSTSEC-2026-0253",
+    # Expires: 2027-03-20
+    { id = "RUSTSEC-2026-0253", reason = "lru 0.16.4 and 0.18.1 unsound; potential use-after-free on a panicking Drop inside LruCache::pop(), via html-to-markdown-rs and wreq, neither of which runs panicking code inside pop" },
 ]
 
 [licenses]
@@ -119,9 +186,34 @@ allow = [
 ]
 
 [bans]
+# `multiple-versions = "warn"` is a POSITIVE CONTROL, not a relaxation: the
+# crate-version conflicts below are intentional and documented in AGENTS.md
+# ("Crate version conflicts (DO NOT unify)") — dashmap 5.x+6.x via governor,
+# selectors 0.35/0.37/0.38 via legible/lol_html/scraper, windows-sys x5, and so
+# on. An agent proposing to "clean up duplicate dependencies" must be stopped.
+# "deny" here would make `cargo deny check` red and take the whole security job
+# with it.
+#
+# cargo-deny 0.20.2 has NO `duplicate` key in [bans] (its keys are
+# multiple-versions, multiple-versions-include-dev, highlight, deny, allow,
+# allow-workspace, features, external-default-features, workspace-default-features,
+# skip, skip-tree, wildcards, allow-wildcard-paths, allow-build-scripts, build,
+# workspace-dependencies, std-replacements), so there is no way to fail closed on
+# duplicates from this file. The gap is closed one level up, in
+# scripts/check_advisory_policy.sh, which compares the crates reported as
+# `warning[duplicate]` against the committed descending-ratchet baseline
+# scripts/duplicate-crate-baseline.txt and FAILS on any crate not in it.
 multiple-versions = "warn"
 wildcards = "allow"
 
 [sources]
-unknown-registry = "warn"
-unknown-git = "warn"
+# SC-06 (issue #1607): both of these were "warn", which made a dependency
+# arriving from an unknown registry or an unknown git source a non-blocking
+# observation — the lockfile could gain a source nobody vetted and the job would
+# still go green. Both are "deny" now, and the change is verified to still pass
+# against the real graph (`cargo deny check` ends with "advisories ok, bans ok,
+# licenses ok, sources ok"). scripts/check_advisory_policy.sh asserts both, so a
+# later edit that reverts either one fails the build instead of quietly
+# re-permitting unvetted sources.
+unknown-registry = "deny"
+unknown-git = "deny"
