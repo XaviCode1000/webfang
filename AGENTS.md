@@ -713,8 +713,8 @@ If you detect you operated outside your assigned worktree, or `git stash pop` ap
 ### Validity status (read first — this section phases in)
 
 - **ACTIVE today:** `main` as the only development line; tags `v*` from `main`; `release.yml` preflight (RC vs stable channel + `tag == Cargo.toml` fail-fast); `support.json` + `SUPPORT.md` (2.1 STABLE, 2.0 EOL); process labels (`release:cut`, `support:create`, `support:extended`, `breaking:*`, `migration:*`); the agent routing below.
-- **WARN-ONLY today:** the branch-topology check in `pr-validation.yml` reports misrouted PRs without failing (`continue-on-error`). Read its output; do not rely on it as a gate yet.
-- **NOT YET:** no `release/*` or `support/*` branch exists. Do not create one speculatively — support lines are materialized on demand (see below), never "just in case". Enforcement (removing `continue-on-error`) lands separately after the soak.
+- **ENFORCING today:** the branch-topology check is a **required gate**, not a warning. `scripts/check-topology.sh` runs as the step `Validate branch topology (enforcing)` inside the job `Validate PR metadata` in `pr-validation.yml`, with **no `continue-on-error`** — enforcement landed in #1502 (`d4f8fa79`, 2026-09-21), which also extended the conventional-branch regex to admit `hotfix/*`, `release/*` and `support/*` so no enforced arm is dead on arrival. `Validate PR metadata` is in the required status-check list for `main`, so a misrouted PR fails a required check within seconds and is unmergeable. Plan the base branch **before** opening the PR; never retarget an open PR onto another working branch (see "No stacked PRs in this repo" below).
+- **NOT YET:** no `release/*` or `support/*` branch exists. Do not create one speculatively — support lines are materialized on demand (see below), never "just in case".
 
 ### Mental model: version first, branch second
 
@@ -812,7 +812,7 @@ Run inside a `chore/support-*` branch (base `main`); mutations travel by normal 
 | `eol-line.sh X.Y` | Declare EOL (deletes branch remote+local, marks entry) |
 | `render-support-md.sh` | Regenerate `SUPPORT.md` (agent commits both files; CI verifies diff only) |
 | `bump-support-patch.sh X.Y.Z [pr#]` | Manual patch bump with release-contract checks (see above) |
-| `check-topology.sh` | Head-prefix → base validation (CI warn-only until enforcement) |
+| `check-topology.sh` | Head-prefix → base validation. **Required gate** — invoked as step `Validate branch topology (enforcing)` by `pr-validation.yml`; the script itself is policy-agnostic, so the enforcement lives entirely in that step |
 
 ### Merge Queue (durable statement, not environment-dependent)
 
