@@ -12,7 +12,7 @@ use anyhow::Result;
 use clap::Parser;
 use webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV;
 use webfang_mcp::mcp_server::server::{
-    require_auth_for_external_bind, start_mcp_server, ServerOptions, DEFAULT_MAX_SESSIONS,
+    require_auth_or_explicit_anonymous, start_mcp_server, ServerOptions, DEFAULT_MAX_SESSIONS,
     DEFAULT_MCP_ADDR, DEFAULT_SESSION_CAP_WINDOW_SECS, MAX_ALLOWED_SESSIONS_CAP,
 };
 use webfang_mcp::mcp_server::{
@@ -72,6 +72,14 @@ struct Args {
     /// Auth token; if set, requires `Authorization: Bearer <token>`.
     #[arg(long, env = "WEBFANG_MCP_AUTH_TOKEN")]
     auth_token: Option<String>,
+
+    /// Serve requests with NO token configured (#1611, G-18) — the development
+    /// mode. Off by default: an unset credential used to mean "anyone who can
+    /// reach the socket", which is a fail-open default for a security boundary.
+    /// Only honoured on a loopback bind; a routable bind without a token is
+    /// still refused.
+    #[arg(long, env = "WEBFANG_MCP_ALLOW_ANONYMOUS")]
+    allow_anonymous: bool,
 
     /// Enable AI semantic cleaning (requires the `ai` feature at build time).
     #[arg(long, env = "WEBFANG_MCP_AI")]
@@ -161,6 +169,12 @@ fn require_positive_session_cap_window(raw: u64) -> Result<NonZeroU64> {
     Ok(window)
 }
 
+/// Spanish warning printed when the operator explicitly asks for anonymous
+/// operation (#1611, G-18): the mode is legitimate, but it should never be
+/// mistaken for a hardened deployment.
+const ANONYMOUS_START_WARNING: &str =
+    "El servidor MCP acepta peticiones sin token en loopback. Cualquier proceso local puede usar todas las herramientas. Defina --auth-token (o WEBFANG_MCP_AUTH_TOKEN) en cualquier despliegue compartido.";
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -176,8 +190,11 @@ async fn main() -> Result<()> {
     }
 
     // REQ-06: fail fast on a tokenless non-loopback bind, before building any
-    // container/downloader. Loopback binds stay token-free (development mode).
-    require_auth_for_external_bind(args.bind, args.auth_token.is_some())?;
+    // container/downloader. #1611 G-18 adds the second refusal: with the
+    // fail-closed default, "no token AND no opt-in" is a misconfiguration too,
+    // and a server that starts and then 401s everything looks like a broken
+    // deployment.
+    require_auth_or_explicit_anonymous(args.bind, args.auth_token.is_some(), args.allow_anonymous)?;
     // Same fail-fast discipline for the session admission cap (REQ-06's
     // rationale, one knob over): a zero cap is rejected here, before the
     // container/downloader exist, not at the composition below.
@@ -185,7 +202,11 @@ async fn main() -> Result<()> {
     let session_cap_window_secs =
         require_positive_session_cap_window(args.session_cap_window_secs)?;
     if args.bind.ip().is_loopback() && args.auth_token.is_none() {
-        tracing::warn!("MCP server starting on loopback without auth token (development mode)");
+        tracing::warn!(
+            user_message = ANONYMOUS_START_WARNING,
+            "MCP server starting on loopback with anonymous access explicitly allowed \
+             (development mode) — every local process may call every tool"
+        );
     }
 
     // Build the container FAST — no model resolution happens here (#759).
@@ -214,6 +235,7 @@ async fn main() -> Result<()> {
         rate_per_second: args.rate,
         rate_burst: args.burst,
         auth_token: args.auth_token,
+        allow_anonymous: args.allow_anonymous,
         max_sessions,
         session_cap_window_secs,
     };

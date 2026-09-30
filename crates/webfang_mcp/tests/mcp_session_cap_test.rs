@@ -65,8 +65,14 @@ async fn start_capped_server(
 /// token, a tight rate limiter — while still reaching the cap in a handful of
 /// requests.
 async fn start_server_with_options(
-    options: ServerOptions,
+    mut options: ServerOptions,
 ) -> (String, tokio::task::JoinHandle<()>) {
+    // #1611 G-18: authentication is fail-closed by default, and every test in
+    // this file drives a token-less router. Stated once, here, rather than
+    // repeated in each options literal — the one test that DOES configure a
+    // token sets it explicitly, and `allow_anonymous` is ignored once a token
+    // exists (`AuthState`), so this cannot weaken that test.
+    options.allow_anonymous = true;
     let config = Config::default();
     let container = Container::new(config.crawler, config.scraper)
         .await

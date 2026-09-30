@@ -525,7 +525,7 @@ live listener.
 
 | # | Condition | Status | Retriable | Agent should | Source |
 | :-: | :--- | :-: | :-: | :-: | :-: |
-| T1 | Missing / malformed / wrong bearer token | `401` | No | Fix the `Authorization` header. | `mcp_server/auth.rs:38-60` |
+| T1 | Missing / malformed / wrong bearer token, **and** the server's own fail-closed default: no token configured and anonymous operation not explicitly enabled (#1611, G-18) | `401` | No | Fix the `Authorization` header — or, if the server was started without a token, know that the operator must set one (`--auth-token` / `WEBFANG_MCP_AUTH_TOKEN`) or opt in to `--allow-anonymous` on loopback. A `401` with no token configured is a SERVER configuration state, not a wrong guess: the binary refuses to start in that state unless the opt-in is present. | `mcp_server/auth.rs`, `require_auth_or_explicit_anonymous` in `mcp_server/server.rs` |
 | T2 | Rate-limit quota exceeded | `429` + `Retry-After` | Yes, after backoff | Slow down for the advertised number of seconds. The quota is **per credential** (keyed), so another caller's traffic does not consume yours. | `mcp_server/server.rs` (`rate_limit_middleware`, `rate_key`) |
 | T3 | Session-admission cap exceeded | `429` | Yes, after the window | Slow down. Bounded by `--max-sessions` / `--session-cap-window-secs`. | `mcp_server/server.rs:629-677` |
 | T4 | Request took longer than `--request-timeout-secs` | `408` | Yes | Retry. | `mcp_server/server.rs:222-224` |

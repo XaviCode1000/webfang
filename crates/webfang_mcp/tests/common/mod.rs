@@ -126,7 +126,16 @@ pub async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
         .expect("container creation failed");
     let state = McpState::new(container);
 
-    let app = build_mcp_router(state, &ServerOptions::default());
+    let app = build_mcp_router(
+        state,
+        &ServerOptions {
+            // #1611 G-18: authentication is fail-closed by default, so every
+            // harness that drives a token-less router states the opt-in once,
+            // here. Production gets the same choice from `--allow-anonymous`.
+            allow_anonymous: true,
+            ..Default::default()
+        },
+    );
 
     serve_on_random_port(app).await
 }
@@ -151,7 +160,16 @@ pub async fn start_server(
         None => McpState::new(container),
     };
 
-    let app = build_mcp_router(state, &ServerOptions::default());
+    let app = build_mcp_router(
+        state,
+        &ServerOptions {
+            // #1611 G-18: authentication is fail-closed by default, so every
+            // harness that drives a token-less router states the opt-in once,
+            // here. Production gets the same choice from `--allow-anonymous`.
+            allow_anonymous: true,
+            ..Default::default()
+        },
+    );
 
     serve_on_random_port(app).await
 }
@@ -225,7 +243,16 @@ pub async fn start_seeded_server(
     // `arm_wiremock_hatches` (issue #1126).
     arm_wiremock_hatches();
 
-    let app = build_mcp_router(state, &ServerOptions::default());
+    let app = build_mcp_router(
+        state,
+        &ServerOptions {
+            // #1611 G-18: authentication is fail-closed by default, so every
+            // harness that drives a token-less router states the opt-in once,
+            // here. Production gets the same choice from `--allow-anonymous`.
+            allow_anonymous: true,
+            ..Default::default()
+        },
+    );
 
     let (base_url, handle) = serve_on_random_port(app).await;
 
@@ -253,7 +280,16 @@ pub async fn start_test_server_ssrf_enabled() -> (String, tokio::task::JoinHandl
         .expect("container creation failed");
     let state = McpState::new(container);
 
-    let app = build_mcp_router(state, &ServerOptions::default());
+    let app = build_mcp_router(
+        state,
+        &ServerOptions {
+            // #1611 G-18: authentication is fail-closed by default, so every
+            // harness that drives a token-less router states the opt-in once,
+            // here. Production gets the same choice from `--allow-anonymous`.
+            allow_anonymous: true,
+            ..Default::default()
+        },
+    );
 
     serve_on_random_port(app).await
 }

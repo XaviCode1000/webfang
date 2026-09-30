@@ -52,8 +52,23 @@ pub struct ServerOptions {
     /// Maximum burst size for rate limiting (default: 20, matching the
     /// `webfang-mcp` HTTP binary's `--burst` default).
     pub rate_burst: u32,
-    /// Expected Bearer token. When `None`, auth is disabled.
+    /// Expected Bearer token. When `None`, requests are REFUSED unless
+    /// [`Self::allow_anonymous`] is set — see that field.
     pub auth_token: Option<String>,
+    /// Serve requests that carry no valid token, with no token configured
+    /// (#1611, G-18).
+    ///
+    /// `false` by default: an unset credential is a refusal, not a mode. The
+    /// old default made "bind loopback, configure nothing" — the shipped
+    /// configuration — mean "every process that can reach the socket may use
+    /// every scraper tool", and that is a fail-open default for a security
+    /// boundary. Opting in is one flag, and the HTTP binary prints a warning
+    /// when it is used.
+    ///
+    /// Ignored when [`Self::auth_token`] is set: a configured token is always
+    /// required. Anonymous mode is a LOCALHOST development affordance, and
+    /// [`require_auth_for_external_bind`] keeps it off any routable bind.
+    pub allow_anonymous: bool,
     /// Maximum number of session-creating requests admitted inside one
     /// [`Self::session_cap_window_secs`] window (default: 64, see
     /// [`DEFAULT_MAX_SESSIONS`]). Enforced by the session admission cap; see
@@ -92,6 +107,9 @@ impl Default for ServerOptions {
             rate_per_second: 10,
             rate_burst: 20,
             auth_token: None,
+            // Fail-closed (#1611, G-18): the shipped default must not be
+            // "anyone who can reach the socket".
+            allow_anonymous: false,
             max_sessions: nz(DEFAULT_MAX_SESSIONS),
             session_cap_window_secs: nz_secs(DEFAULT_SESSION_CAP_WINDOW_SECS),
         }
@@ -110,6 +128,11 @@ impl Default for ServerOptions {
 /// Returns a user-facing Spanish error naming the bind address when `bind`
 /// is non-loopback and no auth token is present, pointing the operator at
 /// `--auth-token` / `WEBFANG_MCP_AUTH_TOKEN`.
+///
+/// #1611 G-18 extends the guard: with the fail-closed default there is a
+/// second way to fail fast, so the two are stated in one place and named
+/// together — see [`require_auth_or_explicit_anonymous`], which is what the
+/// binary calls. This function remains the non-loopback rule on its own.
 pub fn require_auth_for_external_bind(bind: SocketAddr, token_present: bool) -> anyhow::Result<()> {
     if !bind.ip().is_loopback() && !token_present {
         return Err(anyhow::anyhow!(
@@ -117,6 +140,44 @@ pub fn require_auth_for_external_bind(bind: SocketAddr, token_present: bool) -> 
         ));
     }
     Ok(())
+}
+
+/// Fail-fast guard for the fail-closed default (#1611, G-18).
+///
+/// Three configurations start, and exactly one does not:
+///
+/// - a token is configured — authenticated operation, any bind;
+/// - no token, but the operator explicitly accepted anonymous operation on a
+///   LOOPBACK bind — the development mode;
+/// - no token and no opt-in, or anonymous operation on a routable bind —
+///   refused before the container exists, in Spanish, naming both fixes.
+///
+/// Failing here rather than at request time is the point: a server that starts
+/// and then answers `401` to everything looks like a broken deployment, while
+/// this message says which of two knobs is missing.
+///
+/// # Errors
+///
+/// Returns a user-facing Spanish error naming the bind address and the two
+/// ways to start a token-bearing server.
+pub fn require_auth_or_explicit_anonymous(
+    bind: SocketAddr,
+    token_present: bool,
+    allow_anonymous: bool,
+) -> anyhow::Result<()> {
+    if token_present {
+        return Ok(());
+    }
+    if allow_anonymous {
+        // Anonymous mode stays a loopback affordance (REQ-06): the moment the
+        // socket is routable, "no credential" is not a development convenience.
+        return require_auth_for_external_bind(bind, false);
+    }
+    Err(anyhow::anyhow!(
+        "No se puede iniciar el servidor MCP en {bind} sin token de autenticación ni con --allow-anonymous. \
+         Defina --auth-token o WEBFANG_MCP_AUTH_TOKEN, o use --allow-anonymous (o WEBFANG_MCP_ALLOW_ANONYMOUS) \
+         solo en loopback."
+    ))
 }
 
 /// Build the Axum router with MCP endpoint and full middleware stack.
@@ -193,6 +254,7 @@ where
 
     let auth_state = AuthState {
         expected_token: options.auth_token.clone().map(Arc::from),
+        allow_anonymous: options.allow_anonymous,
     };
     let rate_limiter = build_rate_limiter(options, &auth_state);
     let session_cap = Arc::new(SessionCap::new(
@@ -943,7 +1005,13 @@ mod tests {
 
         let app = build_mcp_router_with_service(
             tower::service_fn(panicking_route),
-            &ServerOptions::default(),
+            &ServerOptions {
+                // #1611 G-18: the stack is fail-closed by default, so a test
+                // that mounts a service directly has to say it wants anonymous
+                // operation — same opt-in production gets from --allow-anonymous.
+                allow_anonymous: true,
+                ..Default::default()
+            },
         );
         let request = axum::http::Request::builder()
             .method(Method::POST)
@@ -1173,6 +1241,14 @@ mod tests {
         assert_eq!(opts.rate_per_second, 10);
         assert_eq!(opts.rate_burst, 20);
         assert!(opts.auth_token.is_none());
+        // #1611 G-18: the shipped default is fail-CLOSED. Pinned here because
+        // every integration suite that drives a token-less router has to opt
+        // in explicitly, and a flipped default would fail all of them at once
+        // — this row is what makes that flip loud rather than mysterious.
+        assert!(
+            !opts.allow_anonymous,
+            "no token configured must not mean anonymous access"
+        );
         assert_eq!(opts.max_sessions.get(), DEFAULT_MAX_SESSIONS);
         assert_eq!(
             opts.session_cap_window_secs.get(),
@@ -1390,6 +1466,9 @@ mod tests {
             }),
             &ServerOptions {
                 max_sessions: NonZeroUsize::new(1).expect("one is non-zero"),
+                // #1611 G-18: token-less by default means fail-closed, so a
+                // test that mounts a service directly states the opt-in.
+                allow_anonymous: true,
                 ..Default::default()
             },
         );
@@ -1465,6 +1544,7 @@ mod tests {
             &opts,
             &AuthState {
                 expected_token: None,
+                allow_anonymous: false,
             },
         );
         let key = ANONYMOUS_RATE_KEY;
@@ -1484,6 +1564,7 @@ mod tests {
             &opts,
             &AuthState {
                 expected_token: None,
+                allow_anonymous: false,
             },
         );
         let key = ANONYMOUS_RATE_KEY;
@@ -1511,6 +1592,9 @@ mod tests {
             },
             &AuthState {
                 expected_token: token.map(Arc::from),
+                // Irrelevant to a rate limiter: with no token configured
+                // every request shares the anonymous bucket anyway.
+                allow_anonymous: false,
             },
         )
     }
@@ -1639,6 +1723,41 @@ mod tests {
     fn require_auth_non_loopback_with_token_is_ok() {
         let bind: SocketAddr = "0.0.0.0:8080".parse().unwrap();
         assert!(require_auth_for_external_bind(bind, true).is_ok());
+    }
+
+    /// #1611 G-18: the fail-closed startup guard, all three cases.
+    ///
+    /// The third is the regression row for the finding: "no token, no opt-in"
+    /// used to START, and a server that starts unauthenticated is the whole
+    /// of the vulnerability. Failing here — before the container exists —
+    /// turns it into an operator message that names both fixes.
+    #[test]
+    fn require_auth_or_explicit_anonymous_covers_all_three_configurations() {
+        let loopback: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let routable: SocketAddr = "0.0.0.0:8080".parse().unwrap();
+
+        // A token always starts, on any bind.
+        assert!(require_auth_or_explicit_anonymous(loopback, true, false).is_ok());
+        assert!(require_auth_or_explicit_anonymous(routable, true, false).is_ok());
+        assert!(require_auth_or_explicit_anonymous(routable, true, true).is_ok());
+
+        // The explicit opt-in is the development mode, and stays local.
+        assert!(require_auth_or_explicit_anonymous(loopback, false, true).is_ok());
+        assert!(
+            require_auth_or_explicit_anonymous(routable, false, true).is_err(),
+            "anonymous operation on a routable bind is still refused (REQ-06)"
+        );
+
+        // The shipped default: no token and no opt-in does not start.
+        match require_auth_or_explicit_anonymous(loopback, false, false) {
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(msg.contains("127.0.0.1:8080"), "names the bind: {msg}");
+                assert!(msg.contains("--auth-token"), "names the token: {msg}");
+                assert!(msg.contains("--allow-anonymous"), "names the opt-in: {msg}");
+            },
+            Ok(()) => panic!("a token-less, opt-in-less bind must be refused"),
+        }
     }
 
     // ------------------------------------------------------------------

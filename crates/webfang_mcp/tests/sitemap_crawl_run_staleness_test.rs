@@ -76,7 +76,15 @@ async fn start_server() -> (String, tokio::task::JoinHandle<()>, tempfile::TempD
         .expect("container creation failed");
 
     let state = McpState::new(container);
-    let app = build_mcp_router(state, &ServerOptions::default());
+    let app = build_mcp_router(
+        state,
+        &ServerOptions {
+            // #1611 G-18: anonymous operation is an explicit opt-in now,
+            // and this suite is one of the places that makes it.
+            allow_anonymous: true,
+            ..Default::default()
+        },
+    );
 
     let (base_url, handle) = serve_on_random_port(app).await;
     (base_url, handle, container_tmp)

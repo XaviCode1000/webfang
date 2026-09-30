@@ -144,7 +144,15 @@ async fn start_panic_probe_server() -> (String, tokio::task::JoinHandle<()>) {
         Default::default(),
     );
 
-    let app = build_mcp_router_with_service(service, &ServerOptions::default());
+    let app = build_mcp_router_with_service(
+        service,
+        &ServerOptions {
+            // #1611 G-18: anonymous operation is an explicit opt-in now,
+            // and this suite is one of the places that makes it.
+            allow_anonymous: true,
+            ..Default::default()
+        },
+    );
     serve_on_random_port(app).await
 }
 
@@ -397,7 +405,12 @@ fn panicking_service_app() -> axum::Router {
 
     build_mcp_router_with_service(
         tower::service_fn(panicking_route),
-        &ServerOptions::default(),
+        &ServerOptions {
+            // #1611 G-18: anonymous operation is an explicit opt-in now,
+            // and this suite is one of the places that makes it.
+            allow_anonymous: true,
+            ..Default::default()
+        },
     )
 }
 
@@ -555,8 +568,15 @@ async fn the_inner_service_still_receives_the_whole_body() {
     ];
 
     for body in bodies {
-        let app =
-            build_mcp_router_with_service(tower::service_fn(echo_route), &ServerOptions::default());
+        let app = build_mcp_router_with_service(
+            tower::service_fn(echo_route),
+            &ServerOptions {
+                // #1611 G-18: anonymous operation is an explicit opt-in now,
+                // and this suite is one of the places that makes it.
+                allow_anonymous: true,
+                ..Default::default()
+            },
+        );
         let request = axum::http::Request::builder()
             .method(axum::http::Method::POST)
             .uri("/mcp")
@@ -590,7 +610,15 @@ async fn non_panicking_service_passes_through_unchanged() {
         Ok(axum::response::Response::new(axum::body::Body::empty()))
     }
 
-    let app = build_mcp_router_with_service(tower::service_fn(ok_route), &ServerOptions::default());
+    let app = build_mcp_router_with_service(
+        tower::service_fn(ok_route),
+        &ServerOptions {
+            // #1611 G-18: anonymous operation is an explicit opt-in now,
+            // and this suite is one of the places that makes it.
+            allow_anonymous: true,
+            ..Default::default()
+        },
+    );
     let request = axum::http::Request::builder()
         .uri("/mcp")
         .body(axum::body::Body::empty())
