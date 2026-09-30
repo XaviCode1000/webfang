@@ -1,5 +1,7 @@
 ---
-source: crates/webfang_mcp/../../tests/mcp_behavioral_test.rs
+source: crates/webfang_mcp/tests/mcp_behavioral_test.rs
+assertion_line: 815
 expression: "redact_path(&text, out.path())"
 ---
 Exportación completada: 1 documentos → [OUT_DIR]/vectors.json
+Se escribió además un archivo de procedencia ([OUT_DIR]/vectors.json.provenance.json), que acompaña al contenido exportado.
