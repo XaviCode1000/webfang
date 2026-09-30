@@ -17,7 +17,7 @@
 //! # Constant-time bearer comparison (#1615, F9 / H-4)
 //!
 //! The credential is compared with
-//! [`constant_time_eq`](crate::domain::credentials::constant_time_eq) instead
+//! [`webfang_core::domain::credentials::constant_time_eq`] instead
 //! of `==`, which short-circuits on the first differing byte. `AV-6` in the
 //! threat model is explicit that this is a marginal signal over TCP — the
 //! transport dominates and a remote attacker fights jitter — but it is one
