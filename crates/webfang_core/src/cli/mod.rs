@@ -10,6 +10,7 @@ pub mod config;
 pub mod crash_points;
 pub mod elastic;
 pub mod error;
+pub mod exit_codes;
 pub mod export_flow;
 /// LLM provider startup wiring (`--extract-with-llm`, §8b DEBE expiry).
 pub mod llm_wire;
