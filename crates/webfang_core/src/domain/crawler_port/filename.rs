@@ -138,9 +138,9 @@ pub fn parse_content_disposition(value: &str) -> Option<String> {
 /// runs BEFORE the length cap, so a suffixed name over the cap still goes
 /// through the hash-truncation path.
 ///
-/// Windows-illegal characters (XP-P-05, issue #1608): every char in
-/// [`WINDOWS_INVALID_COMPONENT_CHARS`] — including the NTFS
-/// alternate-data-stream `:` — is substituted with [`INVALID_CHAR_REPLACEMENT`]
+/// Windows-illegal characters (XP-P-05, issue #1608): every character in
+/// `WINDOWS_INVALID_COMPONENT_CHARS` — including the NTFS
+/// alternate-data-stream `:` — is substituted with `INVALID_CHAR_REPLACEMENT`
 /// so a server-supplied name can never create a stream or an uncreatable file.
 /// Previously only the MCP boundary rejected these; the crawler/export
 /// download path (Content-Disposition and URL-derived names) passed them
@@ -272,6 +272,13 @@ pub fn confine_filename_component(raw: &str, fallback: &str) -> String {
 /// content-type fallback (`<host>_<path-hash>.<ext>`). `content_disposition`
 /// is the raw header value or `None` when absent — callers pass
 /// `page.headers.get("content-disposition")` directly.
+///
+/// Every branch returns a name that went through
+/// [`sanitize_filename_component`], including the synthesized fallback: a
+/// host can be up to 253 bytes (RFC 1035 §2.3.4), so
+/// `<host>_<8 hex>.<ext>` reaches ~266 bytes and would be rejected by ext4's
+/// 255-byte component limit (XP-P-07). The fallback used to skip the cap
+/// entirely, so an over-long host produced a name the filesystem refuses.
 pub fn derive_filename_from_content_disposition(
     content_disposition: Option<&str>,
     url: &Url,
@@ -297,7 +304,8 @@ pub fn derive_filename_from_content_disposition(
         }
     }
 
-    // Fallback: generate filename from content type
+    // Fallback: `<host>_<path-hash>.<ext>`, with the HOST capped so the whole
+    // component fits MAX_FILENAME_LEN (XP-P-07).
     let ext = match content_type {
         ct if ct.contains("application/pdf") => "pdf",
         ct if ct.contains("application/zip") => "zip",
@@ -319,7 +327,41 @@ pub fn derive_filename_from_content_disposition(
         path.hash(&mut hasher);
         format!("{:x}", hasher.finish())
     };
-    format!("{}_{}.{ext}", host.replace('.', "_"), &path_hash[..8])
+    // Last-resort length cap on the name we synthesize ourselves: a host can be
+    // up to 253 bytes (RFC 1035 §2.3.4), so `<host>_<8 hex>.<ext>` reaches ~266
+    // bytes and ext4 rejects components over 255 with ENAMETOOLONG. The
+    // fallback used to skip the cap entirely.
+    //
+    // Only the HOST is truncated, never the whole name: the generic
+    // hash-truncation path in `sanitize_filename_component` replaces the tail,
+    // which would silently drop the extension and leave the caller unable to
+    // tell a zip from a png. `_` and hex and a dotted extension are already
+    // legal on Windows, so no other rewriting rule applies to this shape.
+    let host: String = host.replace('.', "_");
+    let hash8 = &path_hash[..8];
+    // "_" + hash8 + "." + ext, in bytes.
+    let tail_len = 1 + hash8.len() + 1 + ext.len();
+    let host = truncate_on_char_boundary(&host, MAX_FILENAME_LEN.saturating_sub(tail_len));
+    format!("{host}_{hash8}.{ext}")
+}
+
+/// Truncate `value` to at most `max_bytes` bytes without splitting a UTF-8
+/// character. A `max_bytes` of 0 yields an empty string.
+fn truncate_on_char_boundary(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    let mut out = String::with_capacity(max_bytes);
+    let mut used = 0usize;
+    for c in value.chars() {
+        let char_len = c.len_utf8();
+        if used + char_len > max_bytes {
+            break;
+        }
+        out.push(c);
+        used += char_len;
+    }
+    out
 }
 
 /// Sanitize a parsed Content-Disposition filename, logging when the value is
@@ -516,6 +558,51 @@ mod tests {
         assert!(
             !derived.contains(':'),
             "an ADS colon must never reach the filesystem: {derived}"
+        );
+    }
+
+    #[test]
+    fn derive_filename_caps_the_synthesized_fallback_at_the_component_limit() {
+        // XP-P-07: a 253-byte host (the RFC 1035 maximum) plus `_<8 hex>.<ext>`
+        // reaches ~266 bytes, which ext4 rejects with ENAMETOOLONG. The
+        // fallback used to skip the cap entirely.
+        let long_host = format!("{}.example.com", "a".repeat(240));
+        let url = url::Url::parse(&format!("https://{long_host}/")).expect("root url");
+        let derived = derive_filename_from_content_disposition(None, &url, "application/zip");
+        assert!(
+            derived.len() <= MAX_FILENAME_LEN,
+            "fallback name must respect the {MAX_FILENAME_LEN}-byte component cap, got {} bytes",
+            derived.len()
+        );
+        // The whole point of truncating the HOST instead of the whole name:
+        // the hash and the extension must survive, or the caller cannot tell a
+        // zip from a png.
+        assert!(
+            derived.ends_with(".zip"),
+            "the extension must survive truncation, got: {derived}"
+        );
+        let hash_and_ext = &derived[derived.len() - 13..];
+        assert!(
+            hash_and_ext.starts_with('_')
+                && hash_and_ext[1..9].chars().all(|c| c.is_ascii_hexdigit()),
+            "the path hash must survive truncation, got: {derived}"
+        );
+    }
+
+    #[test]
+    fn derive_filename_keeps_short_fallbacks_byte_identical() {
+        // The cap must not perturb an ordinary host: this is the shape every
+        // existing snapshot and test depends on.
+        let url = url::Url::parse("https://example.com/").expect("url");
+        let derived = derive_filename_from_content_disposition(None, &url, "application/pdf");
+        assert!(derived.starts_with("example_com_"), "got: {derived}");
+        assert!(derived.ends_with(".pdf"), "got: {derived}");
+        assert_eq!(derived.len(), "example_com_".len() + 8 + ".pdf".len());
+        assert!(
+            derived["example_com_".len()..derived.len() - ".pdf".len()]
+                .chars()
+                .all(|c| c.is_ascii_hexdigit()),
+            "the hash segment must be 8 hex chars, got: {derived}"
         );
     }
 }
