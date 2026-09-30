@@ -267,14 +267,19 @@ async fn unresolvable_host_is_infrastructure_failure_with_reason_slug() {
 // Class 3 — CALLER INPUT: unaffected, and still field-tagged.
 // ============================================================================
 
-/// A params-validation rejection is untouched by EC-03 and keeps its field tag
-/// as `data`.
+/// A params-validation rejection is untouched by EC-03 and still names its
+/// field, now inside the structured `data` object rather than as a bare string.
 ///
-/// This is the regression guard for the OTHER `-32602` shape in the protocol:
-/// `validation::invalid_params` attaches `Some(Value::String(field))` — a bare
-/// string, not the `{"reason": …}` object the SSRF pre-check now uses. Both are
-/// `-32602`, so this test exists to prove the two shapes stay distinguishable
-/// and that broadening the SSRF payload did not normalise the params one.
+/// Both `-32602` producers now put a machine-readable `reason` slug under the
+/// SAME `data.reason` key — the SSRF pre-check (`ssrf.rs`) and this validation
+/// funnel (`validation.rs`) — which is the point of EC-08: one reader handles
+/// both channels. They stay distinguishable by whether `data` also carries a
+/// `field` key, because an SSRF refusal is not a bad field but a policy
+/// decision or a server-side DNS fault.
+///
+/// This particular envelope (`max_depth` over the cap) is built by
+/// `params.rs::validate_max_depth`, which is the *other* MCP entry point into
+/// the taxonomy, so it carries `field` AND `reason`.
 #[tokio::test]
 async fn params_validation_rejection_keeps_field_tag_data() {
     let (base_url, _handle) = start_test_server().await;
@@ -297,7 +302,8 @@ async fn params_validation_rejection_keeps_field_tag_data() {
     );
     assert_eq!(
         resp.get("error").and_then(|e| e.get("data")),
-        Some(&json!("max_depth")),
-        "caller-input `data` must remain the bare field tag, unchanged by EC-03: {resp}"
+        Some(&json!({"field": "max_depth", "reason": "out_of_range"})),
+        "a caller-input rejection must name the offending field and carry the \
+         stable `out_of_range` slug (#1613 EC-08): {resp}"
     );
 }

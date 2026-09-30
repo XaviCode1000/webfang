@@ -347,8 +347,9 @@ fn scrape_batch_params_rejects_a_batch_past_the_cap() {
     );
     assert_eq!(
         err.data,
-        Some(serde_json::json!("urls")),
-        "the field tag must be the same `urls` the emptiness check uses"
+        Some(serde_json::json!({"field": "urls", "reason": "out_of_range"})),
+        "the field tag must be the same `urls` the emptiness check uses, and \
+         `out_of_range` is the stable slug for the cap rejection (#1613 EC-08)"
     );
     assert!(
         err.message.contains(&URLS_MAX.to_string()),

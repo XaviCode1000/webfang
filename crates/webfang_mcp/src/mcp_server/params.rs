@@ -15,15 +15,15 @@
 use rmcp::ErrorData as McpError;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use serde_json::Value;
 use webfang_core::domain::options_spec::{self as options_spec, export};
 use webfang_core::domain::ValidUrl;
 
 use crate::mcp_server::validation::{
-    invalid_params, require_max_len, require_max_value_u64, require_non_empty, require_one_of,
-    require_range_u64, require_safe_domain, require_safe_filename, require_safe_name,
-    require_safe_path, require_safe_path_allow_absolute, require_safe_seed, MAX_BLOB_LEN,
-    MAX_URL_LEN,
+    invalid_params_with_reason, require_max_len, require_max_value_u64, require_non_empty,
+    require_one_of, require_range_u64, require_safe_domain, require_safe_filename,
+    require_safe_name, require_safe_path, require_safe_path_allow_absolute, require_safe_seed,
+    MAX_BLOB_LEN, MAX_URL_LEN, REASON_EMPTY, REASON_MALFORMED, REASON_NOT_IN_ALLOWED_SET,
+    REASON_OUT_OF_RANGE,
 };
 
 /// A URL parsed and hardened EXACTLY ONCE, at the MCP deserialization
@@ -86,9 +86,15 @@ impl TryFrom<String> for McpUrl {
         // then apply the domain hardening (scheme allow-list + credential
         // strip) — the single parse this type exists to guarantee.
         require_max_len("url", &s, MAX_URL_LEN)?;
+        // `ValidUrl` collapses "unparseable" and "scheme not http(s)" into one
+        // `ScraperError::InvalidUrl`, and the taxonomy is deliberately coarse,
+        // so both land on `malformed`: the slug says the URL is not acceptable,
+        // and the message still names the real cause. Splitting them would mean
+        // string-matching the error, which is exactly the brittleness the
+        // machine-readable reason exists to remove.
         ValidUrl::parse(&s)
             .map(McpUrl)
-            .map_err(|e| invalid_params("url", e.to_string()))
+            .map_err(|e| invalid_params_with_reason("url", e.to_string(), REASON_MALFORMED))
     }
 }
 
@@ -146,7 +152,11 @@ fn export_formats() -> &'static [&'static str] {
 pub(crate) fn validate_max_pages(value: u32) -> Result<(), McpError> {
     let raw = u64::from(value);
     if let Err(bound) = options_spec::crawler::MAX_PAGES.check_bound(raw) {
-        return Err(invalid_params("max_pages", bound.to_string()));
+        return Err(invalid_params_with_reason(
+            "max_pages",
+            bound.to_string(),
+            REASON_OUT_OF_RANGE,
+        ));
     }
     Ok(())
 }
@@ -163,7 +173,11 @@ pub(crate) fn validate_max_pages(value: u32) -> Result<(), McpError> {
 /// inclusive bounds.
 pub(crate) fn validate_max_depth(value: u64) -> Result<(), McpError> {
     if let Err(bound) = options_spec::crawler::MAX_DEPTH.check_bound(value) {
-        return Err(invalid_params("max_depth", bound.to_string()));
+        return Err(invalid_params_with_reason(
+            "max_depth",
+            bound.to_string(),
+            REASON_OUT_OF_RANGE,
+        ));
     }
     Ok(())
 }
@@ -446,9 +460,10 @@ impl ScrapeBatchParams {
     /// [`CONCURRENCY_MIN`]..=[`CONCURRENCY_MAX`].
     pub fn validate(&self) -> Result<(), McpError> {
         if self.urls.is_empty() {
-            return Err(McpError::invalid_params(
+            return Err(invalid_params_with_reason(
+                "urls",
                 "urls must not be empty",
-                Some(Value::String("urls".to_string())),
+                REASON_EMPTY,
             ));
         }
         // #1611 F7: the count check lives HERE, beside the emptiness check, and
@@ -509,17 +524,19 @@ impl CrawlSiteParams {
         }
         if let Some(s) = &self.js_strategy {
             s.parse::<webfang_core::domain::JsStrategy>().map_err(|e| {
-                McpError::invalid_params(
+                invalid_params_with_reason(
+                    "js_strategy",
                     format!("estrategia JS no soportada '{s}': {e}"),
-                    Some(serde_json::Value::String("js_strategy".to_string())),
+                    REASON_NOT_IN_ALLOWED_SET,
                 )
             })?;
         }
         if let Some(d) = &self.checkpoint_dir {
             if d.trim().is_empty() {
-                return Err(McpError::invalid_params(
+                return Err(invalid_params_with_reason(
+                    "checkpoint_dir",
                     "checkpoint_dir no puede estar vacío".to_string(),
-                    Some(serde_json::Value::String("checkpoint_dir".to_string())),
+                    REASON_EMPTY,
                 ));
             }
         }
