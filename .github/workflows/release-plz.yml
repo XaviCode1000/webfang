@@ -113,52 +113,39 @@ jobs:
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           fetch-depth: 0
-          # release-plz pushes the tag at this commit, and the candidate is
-          # resolved with `git tag --points-at HEAD`, so tags must be fetched.
+          # release-plz creates the tag through the GitHub API inside the sibling
+          # job, and the candidate resolution reads the whole tag history, so
+          # tags must be fetched. This fresh checkout is taken AFTER that job
+          # completed, which is also why the API-created tag is visible here
+          # (webfang#1535, Bug A).
           fetch-tags: true
           persist-credentials: false
 
       - name: Dispatch release.yml for a tag missing a complete GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # The subject of the commit this run is processing. Passed explicitly
+          # so the "release commit with no tag anywhere" check cannot depend on
+          # how the caller resolved HEAD.
+          HEAD_COMMIT_SUBJECT: ${{ github.event.head_commit.message }}
         run: |
           set -euo pipefail
+          bash scripts/sweep-releases.sh --head-commit-subject "$HEAD_COMMIT_SUBJECT"
 
-          # Candidates: the release-plz tags created at THIS commit. The trust
-          # predicate (annotated + github-actions[bot] + "chore: Release package
-          # ...") lives in scripts/release-plz-tags.sh, shared with the release-tag
-          # verification above and with the reconciliation sweep, so the three
-          # cannot drift apart. It deliberately excludes human tags: v1.0.0 has no
-          # Release, and release.yml checks out the tag it is handed, so
-          # dispatching the wrong one would publish a release built from unrelated
-          # code.
-          mapfile -t candidates < <(bash scripts/release-plz-tags.sh)
-
-          case "${#candidates[@]}" in
-            0)
-              echo "No release-plz tag points at HEAD; nothing to dispatch."
-              exit 0
-              ;;
-            1)
-              TAG="${candidates[0]}"
-              ;;
-            *)
-              echo "::error::multiple release-plz tags point at HEAD: ${candidates[*]} - refusing to guess" >&2
-              exit 1
-              ;;
-          esac
-
-          # Now hand the tag to release.yml. The expected-asset list, the
-          # idempotency check and the bounded retry live in
-          # scripts/ensure-release.sh, shared with the scheduled sweep
-          # (release-reconcile.yml) so the two cannot disagree about what
-          # "complete" means, or about how a failed dispatch is retried.
-          # ensure-release.sh takes expected_sha as positional arg 2 — without
-          # it the default-branch dispatch hits L1.1 Identity fail-closed
-          # ("default-branch dispatch requires PROV_EXPECTED_SHA input"), the
-          # exact block observed on the v2.2.0 dispatch (run 35765291580).
-          EXPECTED_SHA="$(git rev-parse "refs/tags/$TAG^{commit}")"
-          bash scripts/ensure-release.sh "$TAG" "$EXPECTED_SHA"
+      # Why the shared sweep and not a HEAD-scoped lookup (webfang#1674):
+      # `git tag --points-at HEAD` finds the tag only when it lands on the
+      # commit being pushed. A Release PR merged by squash creates a NEW commit
+      # on main while the tag release-plz pushed still points at the PR's
+      # pre-squash head — unreachable from HEAD. Measured on v2.4.0 (PR #1554):
+      # 0 candidates, "Dispatch binary release" green in 6 s, 0 release.yml runs.
+      # A merge commit breaks the same lookup identically — PR #1668
+      # (`chore: release v2.4.1`) was merged with one, and run 36625232646 again
+      # reported "Dispatch binary release" success in 6 s with nothing
+      # dispatched; v2.4.1 shipped only ~16.5 h later, via the daily sweep.
+      # A silent success is worse than a red, so the sweep also refuses to
+      # green-light the one shape that is genuinely broken — a release commit on
+      # HEAD with no trusted tag anywhere — and reports every no-op as an
+      # explicit, visible skip instead of an empty success.
 
   # Release PR generator. Re-enabled after upstream release-plz 0.3.168 shipped
   # #3058 ("reconstruct git-only releases without creating crate archives"),
