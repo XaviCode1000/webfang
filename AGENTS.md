@@ -1126,6 +1126,53 @@ The script:
 Do NOT rely on `--auto`: it never accepts in this repo configuration. If a future PR
 needs auto-merge (e.g. transferring the repo to an organization with rulesets), revisit.
 
+### No stacked PRs in this repo — slice large changes sequentially
+
+**A stacked/chained PR cannot be merged here, and the gate rejects it in seconds.**
+`scripts/check-topology.sh` admits exactly these head-prefix → base pairs:
+
+| Head prefix | Allowed base |
+| :--- | :--- |
+| `hotfix/*` | `support/*` |
+| `fix/*` | `main`, `release/*` |
+| `feat/*` `refactor/*` `perf/*` `docs/*` `test/*` `chore/*` `style/*` `build/*` `ci/*` `revert/*` | `main` only |
+| `release/*` `support/*` `release-plz-*` `dependabot/*` `renovate/*` | exempt (own flow) |
+
+There is therefore **no head prefix whose base may be another working branch**. Both
+strategies the `chained-pr` skill offers are structurally impossible here:
+
+- *"Stacked PRs to main"* — the skill's own diagram requires slice *N+1* to be built on
+  slice *N* and retargeted onto it. A `fix/*` slice retargeted onto a `fix/*` parent is
+  rejected: `fix/* debe apuntar a main o release/X.Y, no a <parent>`.
+- *"Feature Branch Chain"* — the tracker branch is a `feat/*` head whose base must be
+  `main`, and every child PR targets the tracker or its parent. The first child already
+  violates the table above.
+
+**Observed, not theoretical.** PR #1665 (`fix/mcp-session-cap`, stacked on #1664's
+`fix/mcp-session-cap-design`) failed the required check ~15 s after the run started, with
+the annotation `fix/* debe apuntar a main o release/X.Y, no a fix/mcp-session-cap-design`.
+It was closed; the change was rebuilt against the new `main` and merged as #1672.
+
+**The mechanism that does work is sequential delivery:**
+
+1. Ship slice 1 as an ordinary PR based on `main`; merge it.
+2. Rebase or rebuild slice 2 from the **new** `main` — `git rebase origin/main` on a fresh
+   branch, or cherry-pick the slice commits — and open it based on `main`.
+3. Repeat. Each PR is a normal one-work-unit PR; reviewability is preserved because the
+   slices are separate, not because they are stacked.
+
+**Do not let the harness skill override the repo gate.** `chained-pr` activates on
+"PRs over 400 lines, stacked PRs, review slices" and proposes a tracker branch or a
+retarget. In this repo the 400-line concern is real and the stacked answer is wrong: the
+equivalent control is the **sequential** pattern above, plus `work-unit-commits` so each
+slice is already a self-contained commit. If a large change genuinely cannot be split
+into slices that each land on `main`, that is a maintainer decision (a policy change to
+`check-topology.sh` or an explicit exception), not something to discover at PR time.
+
+**Never retarget an open PR onto a working branch to "make the diff small".** That is the
+single move that turned a healthy PR into an unmergeable one in the #1664/#1665/#1672
+sequence. Rebasing onto `main` and opening a new branch is always available and always legal.
+
 ### Batch merge of multiple green PRs (avoid N× CI re-runs)
 
 Canonical procedure: `docs/merge-queue-manual.md` (helpers + strict-mode cost rationale).
