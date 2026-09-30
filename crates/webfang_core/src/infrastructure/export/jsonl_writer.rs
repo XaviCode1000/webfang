@@ -198,6 +198,12 @@ fn closed_writer_error(_: tokio::sync::mpsc::error::SendError<LineMsg>) -> io::E
 ///
 /// Bytes after the final newline never got their terminator, so they cannot be
 /// a durable line regardless of content \u2014 truncate them and say how many.
+///
+/// M3 (#1617): truncation is a destructive rewrite, and the `None` branch
+/// below wipes the WHOLE file, so both branches back up the pre-truncation
+/// bytes first. Before this, a torn tail was the one destructive rewrite in
+/// the export pipeline with no recovery at all: once the file was reopened for
+/// append, the truncated records were gone.
 fn recover_torn_tail(path: &Path) -> io::Result<()> {
     if !path.exists() {
         return Ok(());
@@ -207,6 +213,11 @@ fn recover_torn_tail(path: &Path) -> io::Result<()> {
         Some(last_newline) => {
             let trailing = data.len() - (last_newline + 1);
             if trailing > 0 {
+                crate::application::resume::preserve_abandoned_bytes(
+                    path,
+                    &data,
+                    "jsonl_torn_tail_truncated",
+                );
                 let f = OpenOptions::new().write(true).open(path)?;
                 f.set_len((last_newline + 1) as u64)?;
                 warn!(
@@ -220,6 +231,11 @@ fn recover_torn_tail(path: &Path) -> io::Result<()> {
             // No newline at all: either empty, or one unterminated line that
             // cannot be durable \u2014 unterminated means not durable.
             if !data.is_empty() {
+                crate::application::resume::preserve_abandoned_bytes(
+                    path,
+                    &data,
+                    "jsonl_unterminated_file_wiped",
+                );
                 fs::write(path, b"")?;
                 warn!(
                     truncated_bytes = data.len(),
@@ -396,9 +412,47 @@ mod tests {
             pristine,
             "a fully valid file must not be touched by recovery"
         );
+        assert!(
+            !crate::application::resume::backup_sibling(&path).exists(),
+            "a clean file must not produce a .bak — only a destructive rewrite backs up"
+        );
         assert_eq!(
             index,
             HashSet::from(["hash-1".to_string(), "hash-2".to_string()])
+        );
+    }
+
+    /// M3 (#1617): truncating a torn tail destroys bytes. The `.bak` is the
+    /// only way back to the pre-truncation file once the output is reopened
+    /// for append, so recovery must not be a one-way door. Also pins that the
+    /// backup keeps the artifact's own extension (`out.jsonl.bak`).
+    #[tokio::test]
+    async fn torn_tail_recovery_backs_up_the_pre_truncation_bytes() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("out.jsonl");
+        let mut initial = String::new();
+        initial.push_str(&valid_line(1));
+        initial.push('\n');
+        initial.push_str(r#"{"n":2,"checksum_sha256":"partial"#);
+        fs::write(&path, &initial).expect("seed torn file");
+
+        let (_session, _index) = JsonlSession::open(&path).expect("open recovers torn tail");
+
+        let backup = crate::application::resume::backup_sibling(&path);
+        assert_eq!(
+            backup.file_name().and_then(|n| n.to_str()),
+            Some("out.jsonl.bak"),
+            "the backup keeps the artifact's own extension"
+        );
+        assert_eq!(
+            fs::read_to_string(&backup).expect("read backup"),
+            initial,
+            "the .bak must carry the exact pre-truncation bytes"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).expect("read recovered"),
+            format!("{}\n", valid_line(1)),
+            "the live file is still truncated back to the last newline"
         );
     }
 
