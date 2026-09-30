@@ -33,6 +33,8 @@ SCRATCH="$REPO_ROOT/crates/webfang_core/src/zz_seed_guard_probe.rs"
 trap 'rm -f "$SCRATCH"; chmod -R u+w "$SANDBOX" 2>/dev/null; rm -rf "$SANDBOX"' EXIT
 printf '// scratch file: forces the CODE lane so cargo is reachable. Removed by the test.\n' >"$SCRATCH"
 STORES="$SANDBOX/seeds"
+QSTORE="$SANDBOX/quarantine"
+mkdir -p "$QSTORE"
 MARKER="$SANDBOX/cargo-was-called"
 mkdir -p "$SANDBOX/bin" "$STORES"
 
@@ -56,6 +58,7 @@ expect_reject() {
       PATH="$SANDBOX/bin:$PATH" \
       CARGO_TARGET_DIR="$target" \
       WEBFANG_SEEDS_ROOT="$STORES" \
+        WEBFANG_QUARANTINE_ROOT="$QSTORE" \
       bash "$GATE" 2>&1)"; rc=$?
   if [ "$rc" -ne 2 ]; then
     bad "$label — expected exit 2, got $rc"; return
@@ -74,6 +77,7 @@ expect_allow() {
       PATH="$SANDBOX/bin:$PATH" \
       CARGO_TARGET_DIR="$target" \
       WEBFANG_SEEDS_ROOT="$STORES" \
+        WEBFANG_QUARANTINE_ROOT="$QSTORE" \
       bash "$GATE" 2>&1)"; rc=$?
   if printf '%s' "$out" | grep -q 'points into the seed store'; then
     bad "$label — wrongly refused by the seed store guard"; return
@@ -118,6 +122,21 @@ expect_reject "9. store holds no seed at all"          "$STORES/never-published"
 # apart by the suite.
 expect_reject "10. dotdot into the store, nothing created" "$STORES/../seeds/never-created-xyz"
 echo
+  # --- quarantine store: the same rule, enforced rather than documented ------
+  # Until this existed, AGENTS.md was the only thing stopping an agent from
+  # pointing CARGO_TARGET_DIR at a quarantined object. The entries are real Cargo
+  # target dirs, so cargo would have compiled into one without complaint, and a
+  # rule that exists only in prose is one an agent can ignore by writing a
+  # different .envrc. Measured before the check: exit 0, accepted.
+  mkdir -p "$QSTORE/main-shared-478g" "$QSTORE/seeds/v1-deadbeef"
+  expect_reject "11. target = quarantine root"               "$QSTORE"
+  expect_reject "12. target = quarantined main target"       "$QSTORE/main-shared-478g"
+  expect_reject "13. target = quarantined seed"              "$QSTORE/seeds/v1-deadbeef"
+  expect_reject "14. dotdot into quarantine, nothing created" "$QSTORE/../quarantine/never-created"
+  ln -sfn "$QSTORE/main-shared-478g" "$SANDBOX/q-link"
+  expect_reject "15. symlink resolving into quarantine"      "$SANDBOX/q-link"
+  expect_allow "16. target = quarantine-webfang (prefix only)" "$SANDBOX/quarantine-webfang"
+  expect_allow "17. quarantine-named target elsewhere"         "$SANDBOX/elsewhere/quarantine"
 echo "allow:"
 expect_allow "7. target = seeds-webfang (prefix only)" "$SANDBOX/seeds-webfang"
 expect_allow "8. custom target named webfang elsewhere" "$SANDBOX/elsewhere/webfang"
@@ -136,6 +155,7 @@ out="$(cd "$REPO_ROOT" && env \
     PATH="$SANDBOX/bin:$PATH" \
     CARGO_TARGET_DIR="$SANDBOX/elsewhere/webfang" \
     WEBFANG_SEEDS_ROOT="$STORES" \
+        WEBFANG_QUARANTINE_ROOT="$QSTORE" \
     bash "$GATE" 2>&1)"; rc=$?
 if [ "$rc" -eq 2 ]; then
   ok "10. unresolvable path → exit 2 (fail-closed, not fail-open)"

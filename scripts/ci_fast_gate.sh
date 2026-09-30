@@ -220,6 +220,33 @@ if [[ "$TGT_CANON" == "$SEEDS_CANON" || "$TGT_CANON" == "$SEEDS_CANON"/* ]]; the
   exit 2
 fi
 
+# The quarantine store gets the same treatment, and for the same reason. Until now
+# only AGENTS.md stopped an agent from building into it, which made the documented
+# rule the sole guard — and a rule that only exists in prose is one an agent can
+# ignore by pointing CARGO_TARGET_DIR at the directory. Measured before this check:
+# a worktree targeting the quarantined 478 G target passed with exit 0.
+#
+# It matters more than it looks. A quarantined object is one that was moved OUT of
+# the build system precisely because it could not be trusted: the old shared main
+# target carried 46 dead worktrees' state, and the seeds are known-incompatible
+# references. Building into either puts exactly that back into a live path, and
+# because the object is a real Cargo target dir, cargo would comply without comment.
+QUARANTINE_ROOT="${WEBFANG_QUARANTINE_ROOT:-$HOME/.cache/cargo-target/quarantine}"
+TGT_CANON="$(_canon "${CARGO_TARGET_DIR%/}")"
+QUARANTINE_CANON="$(_canon "$QUARANTINE_ROOT")"
+if [[ "$TGT_CANON" == "$QUARANTINE_CANON" || "$TGT_CANON" == "$QUARANTINE_CANON"/* ]]; then
+  echo "error: CARGO_TARGET_DIR points into the quarantine store" >&2
+  echo "  CARGO_TARGET_DIR $TGT_CANON" >&2
+  echo "  quarantine       $QUARANTINE_CANON" >&2
+  echo "  quarantined objects were moved out of the build system because they" >&2
+  echo "  cannot be trusted, and their removal is a separate authorized step" >&2
+  echo "  gated on scripts/quarantine_age.sh plus fresh ownership evidence." >&2
+  echo "  Building into one puts that state back into an active path." >&2
+  echo "  fix: give this worktree its own target dir, e.g." >&2
+  echo "        $HOME/.cache/cargo-target/$(basename "$ROOT")" >&2
+  exit 2
+fi
+
 # --- step runner (no `set -e`: collect failures, report a summary) ------------
 PASS=0
 FAIL=0
