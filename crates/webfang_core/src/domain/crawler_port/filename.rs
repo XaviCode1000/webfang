@@ -30,6 +30,28 @@ const WINDOWS_RESERVED: &[&str] = &[
 /// convention of `UrlPath::to_safe_filename_with_format` (`CON` → `CON_safe`).
 const RESERVED_SAFE_SUFFIX: &str = "_safe";
 
+/// Characters that cannot survive a Windows path component.
+///
+/// The first six are outright illegal on Windows (`Win32` naming rules). `:` is
+/// the dangerous one (XP-P-05, issue #1608): on NTFS it is not rejected but
+/// reinterpreted as the ALTERNATE DATA STREAM separator, so
+/// `Content-Disposition: filename="report.txt:hidden"` creates a **0-byte**
+/// `report.txt` whose real content lives in a stream — the operation reports
+/// success and the download silently vanishes.
+///
+/// These are SUBSTITUTED rather than rejected: the input here is server-
+/// controlled (Content-Disposition / URL path) and the function must return a
+/// usable name, so it neutralizes instead of failing.
+const WINDOWS_INVALID_COMPONENT_CHARS: &[char] = &['<', '>', '"', '|', '?', '*', ':'];
+
+/// Replacement for every character in [`WINDOWS_INVALID_COMPONENT_CHARS`].
+///
+/// `_` is already legal on every supported filesystem, so substituting it needs
+/// no second rule. Distinct inputs can collide after substitution (`a:b` and
+/// `a_b`); the downloader layer's existing collision resolution and the
+/// hash-suffix path below own disambiguation, exactly as they do for long names.
+const INVALID_CHAR_REPLACEMENT: char = '_';
+
 /// True when the STEM of `name` (everything before the FIRST `.`) matches a
 /// Windows reserved device name, ASCII case-insensitively.
 ///
@@ -115,6 +137,22 @@ pub fn parse_content_disposition(value: &str) -> Option<String> {
 /// appended so the derived name is creatable on Windows hosts. The check
 /// runs BEFORE the length cap, so a suffixed name over the cap still goes
 /// through the hash-truncation path.
+///
+/// Windows-illegal characters (XP-P-05, issue #1608): every char in
+/// [`WINDOWS_INVALID_COMPONENT_CHARS`] — including the NTFS
+/// alternate-data-stream `:` — is substituted with [`INVALID_CHAR_REPLACEMENT`]
+/// so a server-supplied name can never create a stream or an uncreatable file.
+/// Previously only the MCP boundary rejected these; the crawler/export
+/// download path (Content-Disposition and URL-derived names) passed them
+/// straight through, which is where the 0-byte-main-stream outcome lived.
+///
+/// Windows trailing dot/space (XP-P-06, issue #1608): NTFS silently trims
+/// both, so `report.` and `report` are the SAME file there while being two on
+/// Linux. Trimming here makes both platforms agree instead of producing a
+/// name that collides only after the export crosses a filesystem boundary.
+///
+/// Ordering is load-bearing: neutralize chars, THEN trim, THEN the reserved
+/// stem check (`CON.` must become `CON_safe`, not `CON._safe`), THEN the cap.
 #[must_use]
 pub fn sanitize_filename_component(name: &str) -> Option<String> {
     // Remove control characters first (NUL included): they cannot appear in
@@ -126,7 +164,13 @@ pub fn sanitize_filename_component(name: &str) -> Option<String> {
         .rfind(|segment| !segment.is_empty() && *segment != "." && *segment != "..")
         .map(str::to_string)?;
 
-    let mut candidate = candidate;
+    let candidate = neutralize_windows_invalid_chars(&candidate);
+    let candidate = trim_windows_trailing_dots_and_spaces(&candidate);
+    if candidate.is_empty() {
+        return None;
+    }
+
+    let mut candidate = candidate.to_string();
     if is_windows_reserved(&candidate) {
         candidate.push_str(RESERVED_SAFE_SUFFIX);
     }
@@ -160,6 +204,33 @@ pub fn sanitize_filename_component(name: &str) -> Option<String> {
     debug_assert!(truncated.len() <= MAX_FILENAME_LEN);
 
     (!truncated.is_empty()).then_some(truncated)
+}
+
+/// Substitute every Windows-illegal component character with
+/// [`INVALID_CHAR_REPLACEMENT`] (XP-P-05).
+fn neutralize_windows_invalid_chars(name: &str) -> String {
+    if !name.contains(WINDOWS_INVALID_COMPONENT_CHARS) {
+        return name.to_string();
+    }
+    name.chars()
+        .map(|c| {
+            if WINDOWS_INVALID_COMPONENT_CHARS.contains(&c) {
+                INVALID_CHAR_REPLACEMENT
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// Trim the trailing dots and spaces NTFS discards on its own (XP-P-06).
+///
+/// Borrowed, not allocated: the callers only need the view, and a name made
+/// entirely of trim-able characters yields an empty slice, which the caller
+/// turns into `None` (nothing safe remains — `...` is not a creatable file on
+/// any supported platform).
+fn trim_windows_trailing_dots_and_spaces(name: &str) -> &str {
+    name.trim_end_matches(['.', ' '])
 }
 
 /// Contain an untrusted name inside its parent directory (#1125).
@@ -349,5 +420,102 @@ mod tests {
         let once = confine_filename_component("CON", "export");
         assert_eq!(once, "CON_safe");
         assert_eq!(confine_filename_component(&once, "export"), once);
+    }
+
+    // --- NTFS hazards in the DOWNLOAD path (issue #1608, XP-P-05/XP-P-06) ---
+    //
+    // The MCP boundary (mcp_server/validation.rs) already rejected these; the
+    // crawler/export download path did not, and it is the one fed by
+    // server-controlled Content-Disposition and URL-path names.
+
+    #[test]
+    fn sanitize_substitutes_ntfs_alternate_data_stream_colon() {
+        // XP-P-05: `:` must never survive into a component — on NTFS it opens
+        // a stream and leaves the main file 0 bytes.
+        assert_eq!(
+            sanitize_filename_component("report.txt:hidden"),
+            Some("report.txt_hidden".to_string())
+        );
+        assert_eq!(
+            sanitize_filename_component("a:b:c"),
+            Some("a_b_c".to_string())
+        );
+        // A bare ADS-style name that reduces to nothing usable returns None so
+        // the caller falls through to the next derivation source.
+        assert_eq!(sanitize_filename_component(":"), Some("_".to_string()));
+    }
+
+    #[test]
+    fn sanitize_substitutes_windows_invalid_charset() {
+        // Illegal on Windows, ordinary bytes on Linux — the exact asymmetry
+        // that made derived exports non-portable.
+        assert_eq!(
+            sanitize_filename_component("a<b>c|d?e*f"),
+            Some("a_b_c_d_e_f".to_string())
+        );
+        assert_eq!(
+            sanitize_filename_component("informe \"final\".pdf"),
+            Some("informe _final_.pdf".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_trims_windows_trailing_dots_and_spaces() {
+        // XP-P-06: NTFS trims these silently, so accepting them creates a name
+        // that collides with the trimmed form only after the filesystem is
+        // crossed. Trimming makes both platforms agree.
+        assert_eq!(
+            sanitize_filename_component("report."),
+            Some("report".to_string())
+        );
+        assert_eq!(
+            sanitize_filename_component("report  "),
+            Some("report".to_string())
+        );
+        // Order is load-bearing: a reserved stem is checked AFTER trimming, so
+        // `CON.` must yield `CON_safe`, never `CON._safe`.
+        assert_eq!(
+            sanitize_filename_component("CON."),
+            Some("CON_safe".to_string())
+        );
+        // Nothing creatable remains.
+        assert_eq!(sanitize_filename_component("..."), None);
+        assert_eq!(sanitize_filename_component("   "), None);
+        // Mid-name dots and spaces are untouched.
+        assert_eq!(
+            sanitize_filename_component("a.b c"),
+            Some("a.b c".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_ntfs_neutralization_is_idempotent() {
+        // Every neutralized form must survive a second pass unchanged —
+        // otherwise a re-sanitized name keeps drifting (the #1125 idempotence
+        // contract applied to the new rules).
+        for raw in ["report.txt:hidden", "a<b>c", "report.", "CON.", "Nul:ads"] {
+            let once = sanitize_filename_component(raw)
+                .unwrap_or_else(|| panic!("'{raw}' must stay usable"));
+            let twice = sanitize_filename_component(&once)
+                .unwrap_or_else(|| panic!("'{once}' must stay usable"));
+            assert_eq!(once, twice, "'{raw}' is not idempotent");
+        }
+    }
+
+    #[test]
+    fn derive_filename_neutralizes_ntfs_hazards_from_content_disposition() {
+        // End-to-end over the server-controlled input that actually carries the
+        // hazard, not just the primitive.
+        let url = url::Url::parse("https://example.com/download").expect("url");
+        let derived = derive_filename_from_content_disposition(
+            Some(r#"attachment; filename="informe.txt:oculto""#),
+            &url,
+            "text/plain",
+        );
+        assert_eq!(derived, "informe.txt_oculto");
+        assert!(
+            !derived.contains(':'),
+            "an ADS colon must never reach the filesystem: {derived}"
+        );
     }
 }
