@@ -115,7 +115,34 @@ pub const SCRAPE_WITH_OPTIONS_PROPERTIES: &[SpecProperty] = &[
 
 /// `export_file`: only `format` overlaps (`export::EXPORT_FORMAT`; wire name
 /// differs from the spec id `export_format`). Path/blob params are MCP-only.
-pub const EXPORT_FILE_PROPERTIES: &[SpecProperty] = &[prop("format", &export::EXPORT_FORMAT)];
+///
+/// **SD-01 / BC-01 (#1612), decided as far as it can be here.** Three names
+/// are in play and they are not three fields:
+///
+/// | name | where it comes from | advertised |
+/// |---|---|---|
+/// | `content_format` | the params struct, and `required` in the derive | yes |
+/// | `format` | this bridge row, mapped from spec id `export_format` | yes |
+/// | `export_format` | the OptionsSpec id, which nothing accepts on this tool | no |
+///
+/// Collapsing the two advertised spellings into one is a *removal* from the
+/// advertised schema and belongs to #1614, so neither is removed here. What
+/// this row does is stop the bridge from advertising `format` as if it were an
+/// extra field: the override says it is the alternative spelling of the
+/// required `content_format`, and that sending both is a duplicate-field
+/// error. Measured, not assumed -- `serde_json::from_value` on
+/// `{"content_format": …, "format": …}` fails with
+/// ``duplicate field `content_format` ``.
+pub const EXPORT_FILE_PROPERTIES: &[SpecProperty] = &[SpecProperty {
+    name: "format",
+    spec: &export::EXPORT_FORMAT,
+    description_override: Some(
+        "Export format (jsonl, vector, auto). Alternative spelling of the required \
+         `content_format` property -- send exactly one of the two, never both: they are \
+         aliases of a single field, and sending both is a duplicate-field error. The spec \
+         id is `export_format`, which this tool does not accept.",
+    ),
+}];
 
 /// `process_export_pipeline`: `url` and `format` overlap their spec entries.
 /// The `url` row carries a per-tool description override (issue #948 F6) —
@@ -130,7 +157,22 @@ pub const PROCESS_EXPORT_PIPELINE_PROPERTIES: &[SpecProperty] = &[
             "Optional URL to scrape before exporting. Omit to skip scraping and run the export stage on previously-saved content.",
         ),
     },
-    prop("format", &export::EXPORT_FORMAT),
+    SpecProperty {
+        name: "format",
+        spec: &export::EXPORT_FORMAT,
+        // SD-02 (#1612): the params accept `pipeline_format`, `format` AND
+        // `export_format`; the schema advertised two of the three. The third
+        // is NOT added here: a third advertised spelling next to the other
+        // two is a wider target for a client that sends two of them and eats
+        // a duplicate-field error. Declaring the accepted set in prose fixes
+        // the discoverability gap without widening the surface, and whether
+        // the set stays at three is #1614's compat decision.
+        description_override: Some(
+            "Export format (jsonl, vector, auto). Also accepted as `pipeline_format` and \
+             `export_format`; send exactly one of the three, never two -- they are aliases \
+             of a single field and sending two is a duplicate-field error.",
+        ),
+    },
 ];
 
 /// `scrape_batch`: the `ignore_robots` field overlaps `crawler::GROUP`
@@ -554,19 +596,40 @@ mod tests {
         assert_eq!(schema["properties"]["max_pages"]["default"], json!(100));
     }
 
-    /// Proof: `export_file`'s advertised `format` property is rendered
-    /// byte-consistently from `export::EXPORT_FORMAT`, not from the schemars
-    /// derive.
+    /// Proof: `export_file`'s advertised `format` property is rendered from
+    /// `export::EXPORT_FORMAT`, not from the schemars derive.
+    ///
+    /// Since SD-01/BC-01 (#1612) the row carries a per-tool
+    /// `description_override`, so "byte-consistently" now means every
+    /// dimension the SSOT owns — `type`, the closed `enum`, and `default` —
+    /// while `description` is the bridge's, by design (#948 F6).
     #[test]
     fn export_file_advertises_spec_enum_byte_consistently() {
         let schema = export_file_input_schema();
-        assert_eq!(
-            schema["properties"]["format"],
-            export::EXPORT_FORMAT.json_schema(),
-            "format must be the SSOT rendering (enum variants, default, help text)"
+        let rendered = &schema["properties"]["format"];
+        let expected = export::EXPORT_FORMAT.json_schema();
+
+        for dimension in ["type", "enum", "default"] {
+            assert_eq!(
+                rendered[dimension], expected[dimension],
+                "format.{dimension} must be the SSOT rendering"
+            );
+        }
+        assert_ne!(
+            rendered["description"], expected["description"],
+            "the per-tool override must replace the spec help, which reads as a CLI \
+             flag that does not exist on this tool"
         );
+        assert!(
+            rendered["description"]
+                .as_str()
+                .expect("description")
+                .contains("content_format"),
+            "the override must name the alias it is an alternative spelling of"
+        );
+
         // Override-path proof: the pre-bridge derive had a different shape
-        // (no closed enum / spec default), so equality above cannot be an
+        // (no closed enum / spec default), so the equality above cannot be an
         // accident of the derive.
         let derived = raw_derived::<ExportFileParams>();
         assert_ne!(

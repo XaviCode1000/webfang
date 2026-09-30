@@ -13,7 +13,9 @@
 
 use serde_json::{json, Value};
 use webfang_mcp::mcp_server::handlers::build_tool_router;
-use webfang_mcp::mcp_server::params::{ScrapeBatchParams, ScrapeWithOptionsParams};
+use webfang_mcp::mcp_server::params::{
+    ExportFileParams, ProcessExportPipelineParams, ScrapeBatchParams, ScrapeWithOptionsParams,
+};
 
 /// A field the tool accepts, bounds-checks, advertises -- and never reads.
 ///
@@ -111,8 +113,7 @@ fn advertised_no_op_fields_are_still_accepted() {
     assert_eq!(scrape_batch.single_page, Some(false));
 }
 
-/// The bound on the inert `max_pages` is still enforced while it is inert.
-///
+/// The bound on the inert `max_pages` is still enforced while it is inert.///
 /// VG-04's complaint is that validation implies control; leaving the bound in
 /// place is deliberate, because removing it is a behaviour change and
 /// advertising a field is not the same as validating it. This pins that the
@@ -270,6 +271,231 @@ fn no_tool_advertises_a_control_its_schema_lacks() {
                      parameter (properties: {:?})",
                     tool.name,
                     tool.properties
+                );
+            }
+        }
+    }
+}
+
+// ============================================================================
+// SD-01 / SD-02 / BC-01 — the export wire-name matrix
+// ============================================================================
+
+/// One export tool's name story, declared once.
+///
+/// `advertised` is what the served schema lists; `accepted` is what serde
+/// actually deserializes. The two sets are the whole of SD-01/SD-02, and
+/// declaring them side by side is what turns the remaining gap into a
+/// decision rather than a drift nobody can see.
+struct ExportTool {
+    /// Registered tool name.
+    tool: &'static str,
+    /// Wire names the advertised input schema lists.
+    advertised: &'static [&'static str],
+    /// Wire names the params struct actually accepts.
+    accepted: &'static [&'static str],
+    /// Accepted but not advertised. Each entry is a reviewed, recorded gap --
+    /// see [`unadvertised_export_alias_is_declared_and_still_works`].
+    accepted_not_advertised: &'static [&'static str],
+    /// A minimal call for the tool with NO format key, so each test controls
+    /// exactly which name gets inserted.
+    base: fn() -> serde_json::Value,
+}
+
+fn export_file_call() -> serde_json::Value {
+    json!({
+        "output_dir": "/tmp/export",
+        "filename": "note",
+        "content": "body",
+    })
+}
+
+fn pipeline_call() -> serde_json::Value {
+    json!({})
+}
+
+const EXPORT_TOOLS: &[ExportTool] = &[
+    ExportTool {
+        tool: "export_file",
+        advertised: &["content_format", "format"],
+        accepted: &["content_format", "format"],
+        // Nothing: this tool never accepted the spec id `export_format`.
+        accepted_not_advertised: &[],
+        base: export_file_call,
+    },
+    ExportTool {
+        tool: "process_export_pipeline",
+        advertised: &["pipeline_format", "format"],
+        accepted: &["pipeline_format", "format", "export_format"],
+        // SD-02. Deliberately left unadvertised -- see the test doc.
+        accepted_not_advertised: &["export_format"],
+        base: pipeline_call,
+    },
+];
+
+/// Every wire name any export tool in the matrix knows about. Used to pick the
+/// format-related properties out of a served schema whose other properties
+/// (`url`, `output_dir`, ...) are not part of this story.
+fn format_name_universe() -> Vec<&'static str> {
+    EXPORT_TOOLS
+        .iter()
+        .flat_map(|e| e.accepted.iter().copied())
+        .collect()
+}
+
+/// The format-related properties the served schema lists, sorted.
+fn served_format_names(tool: &str) -> Vec<String> {
+    let universe = format_name_universe();
+    let mut names: Vec<String> = advertised_properties(tool)
+        .into_iter()
+        .map(|(k, _)| k)
+        .filter(|p| universe.contains(&p.as_str()))
+        .collect();
+    // Map order is not a contract; sort so the comparison is stable.
+    names.sort();
+    names
+}
+
+/// BC-01: the advertised format properties of each export tool are exactly the
+/// declared set, read from the served router rather than from a table the test
+/// trusts.
+#[test]
+fn export_wire_name_matrix_is_pinned() {
+    for entry in EXPORT_TOOLS {
+        let mut expected: Vec<String> = entry.advertised.iter().map(|s| (*s).to_owned()).collect();
+        expected.sort();
+        assert_eq!(
+            served_format_names(entry.tool),
+            expected,
+            "{}: the served format properties are not the declared set",
+            entry.tool
+        );
+    }
+}
+
+/// Every declared accepted name deserializes on its own, carrying the value the
+/// caller sent.
+///
+/// This is the positive half. A name listed in the matrix and silently rejected
+/// is exactly the drift the matrix exists to catch, and `deny_unknown_fields`
+/// makes an unlisted name fail loudly -- so a name that works here and is
+/// absent from `accepted` is a hole in the table, not a tolerance.
+#[test]
+fn every_declared_export_alias_deserializes_alone() {
+    for entry in EXPORT_TOOLS {
+        for name in entry.accepted {
+            let mut call = (entry.base)();
+            call.as_object_mut()
+                .expect("call is an object")
+                .insert((*name).to_owned(), json!("jsonl"));
+            let ok = match entry.tool {
+                "export_file" => serde_json::from_value::<ExportFileParams>(call.clone()).is_ok(),
+                "process_export_pipeline" => {
+                    serde_json::from_value::<ProcessExportPipelineParams>(call.clone()).is_ok()
+                },
+                other => panic!("no deserializer declared for {other}"),
+            };
+            assert!(ok, "{} must accept `{name}` on its own: {call}", entry.tool);
+        }
+    }
+}
+
+/// The half the audit could not see, and the reason the descriptions above had
+/// to change: two accepted names in one call are a **duplicate-field error**,
+/// not a merge and not a last-wins. Measured here, not assumed.
+///
+/// `export_file` is the sharp case. Its served schema marks `content_format`
+/// `required` and ALSO advertises `format` as an ordinary optional property,
+/// so a client that follows the schema exactly and sets the optional one
+/// alongside the required one gets a hard failure that no schema rule forbids.
+///
+/// **Deferred to #1614.** Every repair is compat-bearing: dropping either
+/// advertised name, or relaxing the struct so duplicates resolve instead of
+/// failing, both change what an existing client can send. The
+/// `deny_unknown_fields` guard this relies on is deliberate -- the module docs
+/// on `params.rs` name it as the defence against typosquat keys -- so loosening
+/// it is not this issue's call.
+#[test]
+fn two_export_format_names_in_one_call_is_a_duplicate_field_error() {
+    for entry in EXPORT_TOOLS {
+        let first = entry.accepted[0];
+        let second = entry.accepted[1];
+        let mut call = (entry.base)();
+        {
+            let object = call.as_object_mut().expect("call is an object");
+            object.insert(first.to_owned(), json!("jsonl"));
+            object.insert(second.to_owned(), json!("jsonl"));
+        }
+        let err = match entry.tool {
+            "export_file" => serde_json::from_value::<ExportFileParams>(call.clone())
+                .expect_err("two names for one field must not silently succeed")
+                .to_string(),
+            "process_export_pipeline" => {
+                serde_json::from_value::<ProcessExportPipelineParams>(call.clone())
+                    .expect_err("two names for one field must not silently succeed")
+                    .to_string()
+            },
+            other => panic!("no deserializer declared for {other}"),
+        };
+        assert!(
+            err.contains("duplicate field"),
+            "{}: sending `{first}` and `{second}` must fail as a duplicate field, got: {err}",
+            entry.tool
+        );
+    }
+}
+
+/// The recorded gap: `export_format` deserializes on
+/// `process_export_pipeline` but is not advertised.
+///
+/// It is listed so the set difference is asserted in one place. If #1614
+/// collapses the three spellings into one, this row is what gets deleted;
+/// until then it is a known, named, tested gap rather than drift. The second
+/// half asserts the reverse direction too: nothing advertised that is not
+/// accepted, which would be a call the schema invites and the server refuses.
+#[test]
+fn unadvertised_export_alias_is_declared_and_still_works() {
+    for entry in EXPORT_TOOLS {
+        let served = served_format_names(entry.tool);
+        for name in entry.accepted_not_advertised {
+            assert!(
+                !served.iter().any(|p| p == name),
+                "{} advertises `{name}` now; move it into `advertised` and drop it \
+                 from accepted_not_advertised",
+                entry.tool
+            );
+        }
+        for name in entry.advertised {
+            assert!(
+                entry.accepted.contains(name),
+                "{} advertises `{name}` but does not accept it",
+                entry.tool
+            );
+        }
+    }
+}
+
+/// The enum behind every spelling is the OptionsSpec's, so the three names
+/// cannot drift apart on WHICH values they take.
+///
+/// `export_formats()` in `params.rs` already derives the closed set from
+/// `export::EXPORT_FORMAT`; this asserts the schemas publish that same set, so
+/// a spec change shows up in the served contract instead of only in the
+/// validator.
+#[test]
+fn every_advertised_export_format_publishes_the_spec_enum() {
+    for entry in EXPORT_TOOLS {
+        for name in entry.advertised {
+            let prop = property(entry.tool, name);
+            // The derive-rendered field (content_format / pipeline_format) is a
+            // bare `string`; only the spec-backed row carries the closed enum.
+            // Where it does, it must be the spec's.
+            if let Some(advertised) = prop.get("enum") {
+                assert_eq!(
+                    advertised,
+                    &json!(["jsonl", "vector", "auto"]),
+                    "{}.{name} must publish the OptionsSpec enum",
+                    entry.tool
                 );
             }
         }

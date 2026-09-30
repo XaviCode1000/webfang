@@ -11,7 +11,7 @@ expression: advertised_pretty(tool)
       "type": "string"
     },
     "content_format": {
-      "description": "Export format: jsonl, vector, auto",
+      "description": "Export format: jsonl, vector, auto\n\nAlso accepted as `format` (#1612, SD-01/BC-01). They are aliases of\none field, not two: sending both is a serde duplicate-field error, so\nthe advertised `format` property must be treated as the alternative\nspelling of this required one, never as an addition to it.",
       "type": "string"
     },
     "filename": {
@@ -20,7 +20,7 @@ expression: advertised_pretty(tool)
     },
     "format": {
       "default": "jsonl",
-      "description": "Export format for RAG pipeline (jsonl, vector, auto) NOTE: Use --content-format for output file format (markdown, text, json)",
+      "description": "Export format (jsonl, vector, auto). Alternative spelling of the required `content_format` property -- send exactly one of the two, never both: they are aliases of a single field, and sending both is a duplicate-field error. The spec id is `export_format`, which this tool does not accept.",
       "enum": [
         "jsonl",
         "vector",

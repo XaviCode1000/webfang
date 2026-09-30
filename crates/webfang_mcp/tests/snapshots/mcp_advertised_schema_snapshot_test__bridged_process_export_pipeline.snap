@@ -14,7 +14,7 @@ expression: advertised_pretty(tool)
   "properties": {
     "format": {
       "default": "jsonl",
-      "description": "Export format for RAG pipeline (jsonl, vector, auto) NOTE: Use --content-format for output file format (markdown, text, json)",
+      "description": "Export format (jsonl, vector, auto). Also accepted as `pipeline_format` and `export_format`; send exactly one of the three, never two -- they are aliases of a single field and sending two is a duplicate-field error.",
       "enum": [
         "jsonl",
         "vector",
@@ -23,7 +23,7 @@ expression: advertised_pretty(tool)
       "type": "string"
     },
     "pipeline_format": {
-      "description": "Export format",
+      "description": "Export format\n\nAlso accepted as `format` and `export_format` (#1612, SD-02). All\nthree are aliases of this one field: sending two of them is a serde\nduplicate-field error, and `export_format` -- the OptionsSpec id --\nis accepted but deliberately not advertised here until the MCP compat\npolicy issue (#1614) decides whether the advertised surface keeps three\nspellings or collapses to one.",
       "type": [
         "string",
         "null"
