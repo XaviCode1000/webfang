@@ -115,6 +115,37 @@ fi
 echo "==> Creating worktree: git worktree add -b $branch $target $base"
 git worktree add -b "$branch" "$target" "$base"
 
+# `git worktree add` does NOT materialise .envrc: the file is gitignored, so the
+# new tree starts without one. That is worse than a missing convenience — the
+# tree then inherits CARGO_TARGET_DIR from the invoking shell, which is main's
+# target dir, and builds a batch worktree straight into it: the exact #1267
+# hazard. From this PR the fast gate also fails closed (exit 2). Bootstrap it
+# here, while we still know the path.
+main_repo="$(dirname "$(git -C "$target" rev-parse --path-format=absolute --git-common-dir)")"
+if [[ ! -f "$target/.envrc" ]]; then
+  if [[ -f "$main_repo/.envrc" ]]; then
+    echo "==> NOTE: $target/.envrc is absent (gitignored, never copied by 'git worktree add')."
+    echo "    Bootstrap it before the fast gate, or this tree inherits main's target dir:"
+    echo "      cd $target"
+    # Written from the tree's own name, never derived by rewriting main's. The old
+    # sed form silently produced a VALID CARGO_TARGET_DIR pointing at main's target
+    # once main moved off 'cargo-target/webfang', so every new worktree would have
+    # inherited a broken isolation policy and only the fast gate would have caught
+    # it, one build later. See AGENTS.md, worktree bootstrap.
+    echo "      TREE=\$(basename \"\$PWD\")"
+    echo "      cat > .envrc <<EOF"
+    echo "      export CARGO_TARGET_DIR=\$HOME/.cache/cargo-target/\$TREE"
+    echo "      export CARGO_INCREMENTAL=0"
+    echo "      unset RUSTC_WRAPPER"
+    echo "      export CARGO_LLVM_COV_TARGET_DIR=\$HOME/.cache/cargo-target/\$TREE-llvm-cov"
+    echo "      EOF"
+    echo "      direnv allow"
+  else
+    echo "    WARNING: no .envrc in $target nor in $main_repo — write one by hand"
+    echo "             (see AGENTS.md § Worktree lifecycle) before building."
+  fi
+fi
+
 failed=""
 for sha in "${shas[@]}"; do
   echo "==> Merging $sha"
@@ -147,9 +178,12 @@ fi
 cat <<EOF
 ==> Batch branch ready: $branch @ $target
 Next steps:
-  1. Fast gate in the new worktree:
+  1. If the bootstrap above was printed, run it (it writes .envrc + direnv allow):
+       cd $target && direnv allow
+  2. Fast gate in the new worktree (fails closed with exit 2 while
+     CARGO_TARGET_DIR is unset — #1677):
        cd $target && bash scripts/ci_fast_gate.sh
-  2. Write CHANGELOG entries there (the ONE place they are written).
-  3. Push + open the batch PR manually (see docs/merge-queue-manual.md).
+  3. Write CHANGELOG entries there (the ONE place they are written).
+  4. Push + open the batch PR manually (see docs/merge-queue-manual.md).
 EOF
 exit 0

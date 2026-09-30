@@ -8,6 +8,7 @@
 #   W-01: el job `notify` de ci.yml usa `if: failure()` / `if: success()` a
 #     nivel de step (su propio estado), nunca abre el tracking issue
 #     "Scheduled CI failed on main" aunque el schedule lleve 10+ semanas rojo.
+#     Ese es un título HISTÓRICO y ya retirado: ver RETIRED_TITLE_CI abajo.
 #   W-02: `CI Gate` no incluye miri* ni test-ai en su `needs:` → verde con
 #     4 jobs en failure. Este observer mira los JOBS reales, no el gate.
 #   W-03/W-04: Bug Discovery recoge un test #[ignore] "kept RED by design"
@@ -21,9 +22,23 @@
 #     Benches + `schedule` diario 07:00 UTC como red de seguridad (si el
 #     evento workflow_run se pierde) + `workflow_dispatch` manual.
 #   - Ramas main/develop solamente.
-#   - Idempotente: UNA issue por fuente (títulos fijos abajo), un comentario
-#     por run fallido, auto-cierre al volver a verde.
+#   - Idempotente: UNA issue por CLAVE (títulos abajo), un comentario por run
+#     fallido, auto-cierre al volver a verde — verde del MISMO origen, nunca
+#     de otro: un verde de `schedule` no cierra el rojo de un `push` ni al
+#     revés (#1712). Con el título constante anterior (`Scheduled ...` para
+#     todo) cualquier verde cerraba cualquier rojo.
+#   - El ORIGEN del run es parte de la clave, no una línea del cuerpo. Es lo
+#     único que impide que dos causas distintas caigan en la misma issue y se
+#     tapen entre sí; por eso se lee del payload y no se supone.
 #   - Etiquetas: `ci-health` + `automated`. Nunca toca issues sin `ci-health`.
+#   - Pendiente, NO se arregla aquí (queda escrito para que no se pierda): el
+#     "on main" del título tampoco es exacto en el camino `workflow_run`, que
+#     salta para los runs de `pull_request` en ramas de feature — a 2026-09-29,
+#     9 de los 12 últimos runs de CI eran `pull_request` y ninguno de main. Con
+#     el origen en el título ese rojo ahora DICE `pull_request` en vez de
+#     "Scheduled", pero sigue colgando de una clave que dice "on main". Meter la
+#     rama en la clave multiplica el espacio de claves y el ruido: es una
+#     decisión de diseño para el maintainer, no parte de este issue.
 #
 # Convention: repo pins actions by tag, so this file follows tags, not SHAs.
 
@@ -57,7 +72,47 @@ env:
   LABEL_KNOWN_FP: known-false-positive
   # Test marcado "kept RED by design / never run in CI" (W-03).
   KNOWN_RED_TEST: sitemap_entry_max_pages_truncates_many_url_fixture
-  TITLE_CI: "Scheduled CI failed on main [ci-health]"
+  # El título NO es decoración: es la CLAVE de lookup. Cada abrir, comentar y
+  # CERRAR hace `gh issue list --search "<título> in:title"`, así que la clave
+  # decide qué issue se abre y — sobre todo — qué issue cierra un run verde.
+  # Un título constante que decía "Scheduled" para un rojo de `push` (y para
+  # los runs de `pull_request` en ramas de feature, que son la mayoría) era una
+  # mentira, y convertía cada verde en un cierre cruzado (#1712).
+  #
+  # {origin} se sustituye en runtime en el paso "Classify run origin". El
+  # espacio a ambos lados del placeholder NO es decorativo: la búsqueda real
+  # `in:title` trata cada palabra como un término (AND), y el origen tiene que
+  # caer como término PROPIO para que `(push)` no pueda encontrar `(schedule)`.
+  # Orígenes con nombre: push | schedule | pull_request | workflow_dispatch.
+  # Cualquier otro valor de la API cae en `other`: conjunto cerrado y acotado,
+  # para que la clave no crezca con cada evento que GitHub añada, y para que un
+  # origen inesperado siga siendo visible en un título en vez de diluirse.
+  TITLE_CI: "CI failed on main ({origin}) [ci-health]"
+  # ── DECISIÓN de migración del título retirado (#1712), paso 3 del issue ──────
+  # Antes: TITLE_CI = "Scheduled CI failed on main [ci-health]", constante.
+  # Ese título ya no debe existir; la clave nueva no lo encuentra, así que una
+  # issue abierta bajo él quedaría huérfana para siempre.
+  # Decisión: NO se auto-cierra, NO se renombra, y NO hay sweep que la barra.
+  # Motivos, con evidencia:
+  #   1. Estado real al aplicar este cambio: CERO issues abiertas con el título
+  #      retirado — `gh issue list --state open --label ci-health` sólo lista
+  #      #1576 (Bug Discovery) y #1697 (sin relación); y
+  #      `gh issue list --state open --search '"Scheduled CI failed on main"
+  #      in:title'` devuelve []. Las 15 históricas están CLOSED. No hay nada
+  #      que reparar hoy, así que la elección es sobre el CASO FUTURO, no
+  #      sobre datos.
+  #   2. Auto-cerrarla exigiría un segundo mensaje de cierre distinto de
+  #      "Green again" (aquí el run nunca volvió a verde: solo cambió la clave),
+  #      es decir una SEGUNDA implementación de close. El guard de deriva de
+  #      scripts/test_ci_health_close.sh (test 4) existe precisamente para
+  #      forbidla, y el helper compartido (scripts/ci-health-close.sh) está
+  #      fuera de la superficie de este cambio.
+  #   3. Renombrarla exige saber el origen del run que la abrió, dato que la
+  #      issue vieja no guarda: renombrar a ciegas fabricaría otra mentira.
+  # En su lugar el paso "Reconcile" la DETECTA y avisa por log una vez al día,
+  # para que un humano la cierre si aparece. Constante usada (no muerta) y
+  # pineada por el harness, para que nadie la borre sin leer esto.
+  RETIRED_TITLE_CI: "Scheduled CI failed on main [ci-health]"
   TITLE_DISCOVERY: "Bug Discovery findings [ci-health]"
   TITLE_BENCH: "Benches nightly failing [ci-health]"
 
@@ -97,6 +152,7 @@ jobs:
           PAYLOAD_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
           PAYLOAD_ID: ${{ github.event.workflow_run.id }}
           PAYLOAD_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          PAYLOAD_RUN_EVENT: ${{ github.event.workflow_run.event }}
         run: |
           set -euo pipefail
           BRANCH="${GITHUB_REF_NAME:-main}"
@@ -111,21 +167,93 @@ jobs:
               echo "conclusion=$PAYLOAD_CONCLUSION"
               echo "run_id=$PAYLOAD_ID"
               echo "run_branch=$PAYLOAD_BRANCH"
+              echo "run_event=$PAYLOAD_RUN_EVENT"
             } >> "$GITHUB_OUTPUT"
-            echo "Observed $PAYLOAD_WORKFLOW #$PAYLOAD_ID -> $PAYLOAD_CONCLUSION (branch $PAYLOAD_BRANCH)"
+            echo "Observed $PAYLOAD_WORKFLOW #$PAYLOAD_ID -> $PAYLOAD_CONCLUSION (branch $PAYLOAD_BRANCH, event $PAYLOAD_RUN_EVENT)"
             exit 0
           fi
           echo "mode=reconcile" >> "$GITHUB_OUTPUT"
           for WF in "CI" "Production Bug Discovery" "Benches"; do
             CONCLUSION="$(gh run list --workflow "$WF" --branch "$BRANCH" --limit 1 --json conclusion --jq '.[0].conclusion // "unknown"')"
             RUNID="$(gh run list --workflow "$WF" --branch "$BRANCH" --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
+            # `event` of the run itself (#1712). The sweep does NOT cause these
+            # runs, so it must not guess their origin — it reads it. Without
+            # this the reconcile path could only ever say "scheduled", which is
+            # how #1675 got closed as a sweep for a run that was a push.
+            RUN_EVENT="$(gh run list --workflow "$WF" --branch "$BRANCH" --limit 1 --json event --jq '.[0].event // "unknown"')"
             KEY="$(echo "$WF" | tr -cd '[:alnum:]')"
             {
               echo "${KEY}_conclusion=$CONCLUSION"
               echo "${KEY}_run=$RUNID"
+              echo "${KEY}_event=$RUN_EVENT"
             } >> "$GITHUB_OUTPUT"
-            echo "$WF -> $CONCLUSION (#$RUNID)"
+            echo "$WF -> $CONCLUSION ($RUN_EVENT, #$RUNID)"
           done
+
+      # The origin is the tracking key (#1712). Runs for every trigger, because
+      # both paths need it: the event path and the reconcile path.
+      - name: Classify run origin (tracking key, #1712)
+        id: origin
+        env:
+          EVENT: ${{ github.event_name }}
+          PAYLOAD_RUN_EVENT: ${{ github.event.workflow_run.event }}
+          LATEST_CI_EVENT: ${{ steps.src.outputs.CI_event }}
+        run: |
+          set -euo pipefail
+          # Two paths, and only one of them gets to be certain:
+          #  - workflow_run: the payload states the origin of the run that just
+          #    finished. That is a fact about the run, not an inference.
+          #  - schedule / workflow_dispatch: this observer did NOT cause the
+          #    runs it looks at, so it must not claim their origin; it reads
+          #    `event` from the run (resolve step above). If that field ever
+          #    comes back empty, the honest answer is "other", not "schedule".
+          case "$EVENT" in
+            workflow_run)
+              raw="$PAYLOAD_RUN_EVENT"
+              via="observed directly, the completed run's own workflow_run event"
+              ;;
+            schedule)
+              raw="$LATEST_CI_EVENT"
+              via="observed indirectly, the 07:00 UTC sweep read the latest CI run instead of causing it"
+              ;;
+            *)
+              raw="$LATEST_CI_EVENT"
+              via="observed indirectly, a manual workflow_dispatch read the latest CI run instead of causing it"
+              ;;
+          esac
+          # Bounded key space: four named origins + `other`. An unbounded
+          # `f"TITLE_CI_{raw}"` would let GitHub's event vocabulary grow the
+          # key space one issue at a time; the whitelist keeps it at 5 and
+          # still names the ones an operator acts on differently.
+          case "$raw" in
+            push|schedule|pull_request|workflow_dispatch) origin="$raw" ;;
+            *) origin="other" ;;
+          esac
+          # An origin-blind template is the #1712 bug wearing a new hat: every
+          # origin would land on ONE key again. Refuse to run rather than
+          # quietly collapse them.
+          case "$TITLE_CI" in
+            *"{origin}"*) ;;
+            *)
+              echo "FATAL: TITLE_CI carries no {origin} placeholder; every origin would share one key (#1712)." >&2
+              exit 1
+              ;;
+          esac
+          title="$(printf '%s' "$TITLE_CI" | sed "s|{origin}|$origin|")"
+          # An unsubstituted placeholder reaching an issue title would be a
+          # silent, permanent key collision: fail the step instead.
+          case "$title" in
+            *"{"* | *"}"*)
+              echo "FATAL: unresolved origin placeholder in title: $title" >&2
+              exit 1
+              ;;
+          esac
+          {
+            echo "ci_origin=$origin"
+            echo "ci_title=$title"
+            echo "note=$via"
+          } >> "$GITHUB_OUTPUT"
+          echo "origin=$origin key=$title"
 
       - name: Fetch failed jobs of triggering run
         id: jobs
@@ -173,17 +301,31 @@ jobs:
           PAYLOAD_ID: ${{ github.event.workflow_run.id }}
           FAILED_JOBS: ${{ steps.jobs.outputs.failed }}
           KNOWN_ONLY: ${{ steps.classify.outputs.known_only }}
+          CI_TITLE: ${{ steps.origin.outputs.ci_title }}
+          CI_ORIGIN: ${{ steps.origin.outputs.ci_origin }}
+          OBS_NOTE: ${{ steps.origin.outputs.note }}
         run: |
           set -euo pipefail
           # shellcheck disable=SC1091
           . "$GITHUB_WORKSPACE/scripts/ci-health-close.sh"
           SERVER="${GITHUB_SERVER_URL:-https://github.com}"
           RUN_URL="$SERVER/$GH_REPO/actions/runs/$PAYLOAD_ID"
+          # open_or_comment <title> <context> <extra> <xlabel>
+          #   title   = tracking key. For CI it is origin-qualified, so a red
+          #             push and a red sweep are two issues and a green run
+          #             only ever closes its own origin (#1712).
+          #   context = the line that makes the issue self-describing: WHICH
+          #             kind of failure this is and how the observer heard
+          #             about it. Every call site passes a non-empty one, so
+          #             the body shape never varies; "" renders a blank
+          #             paragraph, not a missing heading.
+          #   extra   = source-specific detail.
+          #   xlabel  = optional extra label.
           open_or_comment() {
-            title="$1"; extra="$2"; xlabel="$3"
+            title="$1"; context="$2"; extra="$3"; xlabel="$4"
             count="$(gh issue list --state open --search "${title} in:title" --json number --jq 'length')"
             if [ "$count" -eq 0 ]; then
-              body="$(printf '%s\n\nRun: %s\n\n%s\n\nAuto-managed by CI Health Observer.' "$title" "$RUN_URL" "$extra")"
+              body="$(printf '%s\n\n%s\n\nRun: %s\n\n%s\n\nAuto-managed by CI Health Observer.' "$title" "$context" "$RUN_URL" "$extra")"
               if [ -n "$xlabel" ]; then
                 gh issue create --title "$title" --body "$body" --label "$LABEL" --label "$LABEL_AUTO" --label "$xlabel"
               else
@@ -191,7 +333,7 @@ jobs:
               fi
             else
               number="$(gh issue list --state open --search "${title} in:title" --json number --jq '.[0].number')"
-              gh issue comment "$number" --body "$(printf 'Still failing: %s\n\n%s' "$RUN_URL" "$extra")"
+              gh issue comment "$number" --body "$(printf 'Still failing: %s\n\n%s\n\n%s' "$RUN_URL" "$context" "$extra")"
               if [ -n "$xlabel" ]; then
                 gh issue edit "$number" --add-label "$xlabel"
               fi
@@ -208,26 +350,33 @@ jobs:
           fi
           case "$PAYLOAD_WORKFLOW" in
             "CI")
+              # Key carries the origin; the body states it in words. Both come
+              # from the run, never from an assumption about this workflow's
+              # own trigger (#1712).
+              ci_context="Run origin: $CI_ORIGIN ($OBS_NOTE)."
               if [ "$PAYLOAD_CONCLUSION" = "success" ]; then
-                close_mine "$TITLE_CI" "$RUN_URL"
+                # Same-origin close only: close_mine searches by the exact key,
+                # and the key now names the origin. A green `push` cannot
+                # close the issue opened by a red `schedule` (#1712).
+                close_mine "$CI_TITLE" "$RUN_URL"
               else
-                open_or_comment "$TITLE_CI" "Failed jobs: ${FAILED_JOBS:-unknown}. Gate may be green (W-02)." ""
+                open_or_comment "$CI_TITLE" "$ci_context" "Failed jobs: ${FAILED_JOBS:-unknown}. Gate may be green (W-02)." ""
               fi
               ;;
             "Production Bug Discovery")
               if [ "$PAYLOAD_CONCLUSION" = "success" ]; then
                 close_mine "$TITLE_DISCOVERY" "$RUN_URL"
               elif [ "$KNOWN_ONLY" = "true" ]; then
-                open_or_comment "$TITLE_DISCOVERY" "Known FP only (W-03): $KNOWN_RED_TEST kept RED by design." "$LABEL_KNOWN_FP"
+                open_or_comment "$TITLE_DISCOVERY" "Source: Production Bug Discovery, $OBS_NOTE." "Known FP only (W-03): $KNOWN_RED_TEST kept RED by design." "$LABEL_KNOWN_FP"
               else
-                open_or_comment "$TITLE_DISCOVERY" "Findings to triage (W-04). Failed: ${FAILED_JOBS:-unknown}." ""
+                open_or_comment "$TITLE_DISCOVERY" "Source: Production Bug Discovery, $OBS_NOTE." "Findings to triage (W-04). Failed: ${FAILED_JOBS:-unknown}." ""
               fi
               ;;
             "Benches")
               if [ "$PAYLOAD_CONCLUSION" = "success" ]; then
                 close_mine "$TITLE_BENCH" "$RUN_URL"
               else
-                open_or_comment "$TITLE_BENCH" "Nightly failing (W-05, exit 143?). Failed: ${FAILED_JOBS:-unknown}." ""
+                open_or_comment "$TITLE_BENCH" "Source: Benches, $OBS_NOTE." "Nightly failing (W-05, exit 143?). Failed: ${FAILED_JOBS:-unknown}." ""
               fi
               ;;
           esac
@@ -244,20 +393,26 @@ jobs:
           PD_R: ${{ steps.src.outputs.ProductionBugDiscovery_run }}
           BE_C: ${{ steps.src.outputs.Benches_conclusion }}
           BE_R: ${{ steps.src.outputs.Benches_run }}
+          CI_TITLE: ${{ steps.origin.outputs.ci_title }}
+          CI_ORIGIN: ${{ steps.origin.outputs.ci_origin }}
+          OBS_NOTE: ${{ steps.origin.outputs.note }}
         run: |
           set -euo pipefail
           # shellcheck disable=SC1091
           . "$GITHUB_WORKSPACE/scripts/ci-health-close.sh"
           SERVER="${GITHUB_SERVER_URL:-https://github.com}"
           reconcile_one() {
-            title="$1"; concl="$2"; rid="$3"; wname="$4"
+            title="$1"; concl="$2"; rid="$3"; wname="$4"; context="$5"
             url="$SERVER/$GH_REPO/actions/runs/$rid"
             if [ "$concl" = "success" ]; then
+              # Key-scoped close (#1712): only the issue for THIS origin goes
+              # green-and-closed. The sweep therefore still closes what it
+              # opened (same key), and can never tap a red of another origin.
               close_mine "$title" "$url"
             elif [ "$concl" = "failure" ]; then
               count="$(gh issue list --state open --search "${title} in:title" --json number --jq 'length')"
               if [ "$count" -eq 0 ]; then
-                gh issue create --title "$title" --body "$(printf '%s\n\nRun: %s\n\nReconciled latest %s on %s.' "$title" "$url" "$wname" "$BRANCH")" --label "$LABEL" --label "$LABEL_AUTO"
+                gh issue create --title "$title" --body "$(printf '%s\n\n%s\n\nRun: %s\n\nReconciled latest %s on %s.\n\nAuto-managed by CI Health Observer.' "$title" "$context" "$url" "$wname" "$BRANCH")" --label "$LABEL" --label "$LABEL_AUTO"
               fi
             else
               # reconcile: only `failure` opens, only `success` closes.
@@ -265,7 +420,22 @@ jobs:
               echo "$wname: conclusion=$concl, no action."
             fi
           }
-          reconcile_one "$TITLE_CI" "$CI_C" "$CI_R" "CI"
-          reconcile_one "$TITLE_DISCOVERY" "$PD_C" "$PD_R" "Bug Discovery"
-          reconcile_one "$TITLE_BENCH" "$BE_C" "$BE_R" "Benches"
+          # CI gets the origin-qualified key the classify step derived from the
+          # latest CI run's own `event`. Bug Discovery and Benches keep their
+          # single-key titles: one run per source, no origin dimension that an
+          # operator would act on differently.
+          reconcile_one "$CI_TITLE" "$CI_C" "$CI_R" "CI" "Run origin: $CI_ORIGIN ($OBS_NOTE)."
+          reconcile_one "$TITLE_DISCOVERY" "$PD_C" "$PD_R" "Bug Discovery" "Source: Production Bug Discovery, $OBS_NOTE."
+          reconcile_one "$TITLE_BENCH" "$BE_C" "$BE_R" "Benches" "Source: Benches, $OBS_NOTE."
+
+          # Migration watcher for the retired key (#1712). READ-ONLY on purpose:
+          # it detects, it never closes (rationale at RETIRED_TITLE_CI in env).
+          # The sweep runs daily, so a hand-created or half-migrated issue
+          # surfaces here within 24h instead of living forever.
+          RETIRED_OPEN="$(gh issue list --state open --search "${RETIRED_TITLE_CI} in:title" --json number --jq '.[].number' 2>/dev/null || true)"
+          if [ -n "$RETIRED_OPEN" ]; then
+            echo "WARNING: open issue(s) under the RETIRED title (${RETIRED_TITLE_CI}): ${RETIRED_OPEN//$'\n'/, }"
+            echo "  The observer no longer uses that key, so nothing will ever close them."
+            echo "  Close by hand with a comment pointing at the origin-qualified title (see the RETIRED_TITLE_CI comment in this workflow)."
+          fi
 

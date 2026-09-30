@@ -553,7 +553,7 @@ mod tests {
     }
 
     // #289 acceptance tests: the DOM discovery path must honor CrawlerConfig
-    // timeouts. Both build a real wreq client (boring-sys2 FFI), hence not(miri).
+    // timeouts. Both build a real wreq client (btls-sys FFI), hence not(miri).
 
     #[tokio::test]
     #[cfg(not(miri))]

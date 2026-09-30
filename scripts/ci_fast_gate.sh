@@ -80,6 +80,146 @@ done
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$SCRIPT_DIR/..")"
 cd "$ROOT" || exit 1
 
+# --- build-cache policy guard --------------------------------------------------
+# AGENTS.md § worktree bootstrap: every tree builds with CARGO_TARGET_DIR
+# provided by direnv (every tree, main included, points at its own dir).
+# Without it cargo silently falls back to ./target (or crates/*/target),
+# duplicating the whole workspace compile into paths no cleanup step knows
+# about (in-repo audit 2026-09-29: six such dirs, 39G logical). No dry-run
+# carve-out: a lane decision reported from an env that cannot build is
+# itself misleading. Fail-closed.
+if [[ -z "${CARGO_TARGET_DIR:-}" ]]; then
+  echo "error: CARGO_TARGET_DIR is not set — direnv is not loaded for this tree." >&2
+  echo "  fix: run 'direnv allow' once per worktree (see AGENTS.md § worktree bootstrap)," >&2
+  echo "  then re-run this gate from a direnv-loaded shell." >&2
+  exit 2
+fi
+
+# A defined CARGO_TARGET_DIR is not sufficient. A worktree created without a
+# .envrc INHERITS main's value from the shell that launched it, so the check
+# above passes and this tree compiles straight into main's target dir: the
+# #1267 hazard (two trees, same output filenames, last writer wins, E2E runs
+# silently execute the other tree's binary). Measured 2026-09-29 on main's
+# shared target: 46 dead worktrees referenced by live fingerprints, plus one
+# still-running worktree (1613-mcp-error-table) building into it.
+#
+# The comparison is by IDENTITY, not by name. Canonicalising both sides first
+# is load-bearing in both directions:
+#   - basename matching would REJECT a legitimate ~/.cache/cargo-target/x/webfang
+#     that has nothing to do with main;
+#   - basename matching would ACCEPT a symlink pointing at main's cache, which
+#     is the exact failure we are closing.
+# readlink -f resolves a not-yet-existing path too, so a fresh worktree is
+# checked before its target dir is created.
+#
+# Main's shared target comes from main's own .envrc, which is the declared
+# policy for the main tree on this machine. When it cannot be read, this gate
+# CANNOT prove the worktree's target is isolated, so it refuses. Fail-closed is
+# the point: "worktree implies isolated target" has to be an invariant, not a
+# heuristic that silently degrades to a warning depending on whether someone
+# ran the bootstrap first. Blocking worktrees on a machine whose main checkout
+# is not bootstrapped is the correct, actionable failure. The seed store is
+# refused below with the same shape.
+MAIN_ROOT="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")"
+if [[ "$ROOT" != "$MAIN_ROOT" ]]; then
+  MAIN_ENVRC="$MAIN_ROOT/.envrc"
+  MAIN_TARGET=""
+  if [[ -f "$MAIN_ENVRC" ]]; then
+    MAIN_TARGET="$(sed -n 's/^export CARGO_TARGET_DIR=//p' "$MAIN_ENVRC" 2>/dev/null | tail -1)"
+  fi
+  if [[ -z "$MAIN_TARGET" ]]; then
+    if [[ -f "$MAIN_ENVRC" ]]; then
+      WHY="$MAIN_ENVRC exists but declares no CARGO_TARGET_DIR"
+    else
+      WHY="$MAIN_ENVRC is missing"
+    fi
+    echo "error: worktree build isolation cannot be verified." >&2
+    echo "  main checkout is not bootstrapped: $WHY." >&2
+    echo "  without it this gate cannot prove that" >&2
+    echo "    $(readlink -f "${CARGO_TARGET_DIR%/}")" >&2
+    echo "  is not main's own target dir, so it refuses rather than assume." >&2
+    echo "  Cargo itself is fine here; this is a precondition of the workflow." >&2
+    echo "  fix: bootstrap the main checkout, then re-run:" >&2
+    echo "        cd $MAIN_ROOT" >&2
+    echo "        # create .envrc per AGENTS.md § worktree bootstrap, then:" >&2
+    echo "        direnv allow" >&2
+    exit 2
+  elif [[ "$(readlink -f "${CARGO_TARGET_DIR%/}")" == "$(readlink -f "$MAIN_TARGET")" ]]; then
+    echo "error: this worktree's CARGO_TARGET_DIR resolves to main's target dir" >&2
+    echo "  tree:            $ROOT" >&2
+    echo "  CARGO_TARGET_DIR $(readlink -f "${CARGO_TARGET_DIR%/}")" >&2
+    echo "  main's target:   $(readlink -f "$MAIN_TARGET")" >&2
+    echo "  this would compile this tree into main's target dir (#1267)." >&2
+    echo "  fix: give this worktree its own target dir and re-run:" >&2
+    echo "        cd $ROOT" >&2
+    echo "        sed -e 's#cargo-target/$(basename "$MAIN_TARGET")#cargo-target/$(basename "$ROOT")#' \\" >&2
+    echo "            -e 's#^export CARGO_INCREMENTAL=1#export CARGO_INCREMENTAL=0#' \\" >&2
+    echo "            '$MAIN_ROOT/.envrc' > .envrc" >&2
+    echo "        direnv allow" >&2
+    exit 2
+  fi
+fi
+
+# --- seed store guard ---------------------------------------------------------
+# Seeds are read-only REFERENCES, never build outputs. Building into one writes
+# this worktree's workspace units into the very tree every future worktree seeds
+# from — the contamination the seed mechanism exists to prevent, arrived at by
+# the front door instead of by accident.
+#
+# The decision depends on PATH IDENTITY ONLY. Whether the seed is healthy, stale,
+# corrupt, half-written or not a seed at all is deliberately NOT consulted: a
+# rule that inspected the contents could be satisfied by an empty directory, and
+# would need re-arguing every time the store changed. Identity is cheap, total,
+# and cannot be argued with.
+#
+# Canonical identity, never a substring test. Both of these would defeat a
+# textual comparison, and both are rejected:
+#     seeds/../seeds/<key>              normalises to under the store
+#     a symlink pointing at seeds/<key> resolves to under the store
+# while a legitimate ~/.cache/cargo-target/seeds-webfang merely SHARES A PREFIX
+# and is allowed. A custom target directory named "webfang" under an unrelated
+# parent is likewise allowed — the same identity-vs-name rule as the check above.
+#
+# `realpath -m` rather than the `readlink -f` used above, for one reason: it never
+# falls back to returning the input unchanged. `readlink -f` needs all but the
+# last component to exist, and on failure the guard would then compare a raw
+# string against a canonical root — two different kinds of string, which is how a
+# relative path or a `..` sequence slips past. It was not observed failing here:
+# this coreutils resolves every case the suite exercises either way, and an
+# attempt to write a case that separates the two produced none. Kept for the
+# invariant, not on the strength of a demonstrated bug.
+SEEDS_ROOT="${WEBFANG_SEEDS_ROOT:-$HOME/.cache/cargo-target/seeds}"
+# FAIL-CLOSED, not fail-open. The previous version fell back to the raw input when
+# realpath failed, which meant a path that could not be canonicalised was then
+# compared as a plain string against a canonical root — and a path that cannot be
+# classified is precisely the case this guard exists to stop. A guard that
+# degrades to "probably fine" on the one input it cannot understand is not a
+# guard. So: if the identity cannot be established, refuse.
+_canon() {
+  local out
+  if ! out="$(realpath -m -- "$1" 2>/dev/null)" || [ -z "$out" ]; then
+    echo "error: could not canonicalise a path, so isolation cannot be proven." >&2
+    echo "  path:   $1" >&2
+    echo "  refusing rather than comparing an unresolved path against" >&2
+    echo "  the seed store with a string match." >&2
+    exit 2
+  fi
+  printf '%s' "$out"
+}
+TGT_CANON="$(_canon "${CARGO_TARGET_DIR%/}")"
+SEEDS_CANON="$(_canon "$SEEDS_ROOT")"
+if [[ "$TGT_CANON" == "$SEEDS_CANON" || "$TGT_CANON" == "$SEEDS_CANON"/* ]]; then
+  echo "error: CARGO_TARGET_DIR points into the seed store" >&2
+  echo "  CARGO_TARGET_DIR $TGT_CANON" >&2
+  echo "  seed store       $SEEDS_CANON" >&2
+  echo "  a seed is a read-only reference; cargo must never be allowed to" >&2
+  echo "  write into one, or this worktree's units become every future" >&2
+  echo "  worktree's seed." >&2
+  echo "  fix: give this worktree its own target dir, e.g." >&2
+  echo "        $HOME/.cache/cargo-target/$(basename "$ROOT")" >&2
+  exit 2
+fi
+
 # --- step runner (no `set -e`: collect failures, report a summary) ------------
 PASS=0
 FAIL=0
@@ -291,6 +431,20 @@ EOF
     run_step "compatibility harness semantics (offline)" bash scripts/tests/test_check_compatibility.sh
   else
     skip_step "compatibility harness semantics" "no compatibility harness files changed"
+  fi
+  # Path-classifier regression harness (#1707; coverage for #1643): the
+  # `$(...)` NUL-dropping capture collapsed a multi-file diff into one
+  # pseudo-path, which could flip `run_code_jobs` false and cascade-skip every
+  # code lane while CI Gate stayed green. Triggered by either the classifier or
+  # its harness changing — both are `scripts/**`, so a PR touching only one of
+  # them still lands in this CI-ONLY lane. Hermetic (mktemp git trees), no
+  # cargo, <1s — cheap enough that it is never skipped once triggered.
+  # Mirrors the `repo-guards` step of the same
+  # harness in .github/workflows/ci.yml.
+  if grep -Eq '^(scripts/ci_path_classifier\.sh|scripts/ci_path_classifier_test\.sh)$' "$UNION_TMP" 2>/dev/null; then
+    run_step "path classifier harness semantics (offline)" bash scripts/ci_path_classifier_test.sh
+  else
+    skip_step "path classifier harness semantics" "no path classifier files changed"
   fi
 }
 

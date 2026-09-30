@@ -523,7 +523,7 @@ Disallow: /tmp/";
     /// be rejected by the validating resolver the `SsrfGuard` port installs —
     /// proving the site consumes the port instead of hand-wiring (or dropping)
     /// the layers.
-    #[cfg_attr(miri, ignore = "boring-sys2 FFI (wreq Client) not supported by Miri")]
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn fetcher_client_enforces_ssrf_guard_from_the_port() {
         // Env hermeticity (#926): `ValidatingResolver::new()` captures the escape
