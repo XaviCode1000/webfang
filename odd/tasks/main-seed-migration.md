@@ -88,9 +88,17 @@ Runbook written to `odd/tasks/target-quarantine-runbook.md`. The deletion it des
 | `4a7c8d99` | CARGO_INCREMENTAL must not fork the SeedCompatibilityKey |
 | `77d39f08` | the batch bootstrap still taught the sed recipe that silently breaks isolation |
 | `7394afc8` | runbook for reclaiming quarantined target dirs |
+| `58e1591c` | this disposition record |
+| `67530751` | drop the exclusion marker from the hashed key block |
 
-**Reason: the runtime review surface cannot consume a committed base-diff.** Three
-separate routes were attempted against two different lineages and two different
+Manual technical review of `eb20f797`, `4a7c8d99`, `77d39f08` and `7394afc8` was
+performed on the range `4c03aa12..HEAD` and returned OK on all four, with one
+pending item: remove `incremental_not_a_key_input` from the hashed `[key]` block.
+That item was applied in `67530751` and re-verified. Manual review remains a human
+activity recorded here, not a lineage approval.
+
+**Reason: the runtime review surface cannot consume a committed base-diff.** Four
+separate routes were attempted against four different lineages and four different
 targets, reproducing the same result each time:
 
 | Route | Result |
@@ -107,7 +115,8 @@ immutable transport blocks. The review surface covers the uncommitted working tr
 the work-unit-commits discipline requires the work to be committed.
 
 This is a deterministic property of the runtime, not a transient failure and not a
-routing mistake. Three identical reproductions are the evidence.
+routing mistake. Four identical reproductions across four lineages and four targets
+are the evidence, and each was a faithful invocation of the route `inspect` offered.
 
 **No candidate was approved, and the empty lineage is deliberately left as a non-usable
 review attempt with this reason attached.** Marking any of these commits as reviewed on
