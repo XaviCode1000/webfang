@@ -444,6 +444,8 @@ bash scripts/seed_target.sh
 cargo build                                        # cold or seeded; both are correct, and the script says which
 ```
 
+**During normal bootstrap, never delete, clean, reuse, or repoint a build at anything under `~/.cache/cargo-target/quarantine/`.** Quarantine removal is gated by `scripts/quarantine_age.sh` and fresh ownership/use evidence collected at deletion time; the quarantine runbooks are authoritative for that procedure.
+
 > ⚠️ **`.envrc` + `direnv allow` is mandatory per worktree, and is now ENFORCED.** In a **worktree** it points `CARGO_TARGET_DIR` at a per-tree isolated dir (`~/.cache/cargo-target/<tree-name>`), which is what #1267 requires. The cost of isolation depends on whether a compatible seed exists: with one, a worktree builds in a measured 18 s against 162 s cold, because the 639 BoringSSL objects and the heavy dependencies come from the seed; with no compatible seed it pays the full cold build, measured 2 m 23 s for `cargo build --workspace`. Either way that is cheap enough that it must never be used as an argument to share a target dir between concurrent builds (#1267). **There is no shared target dir in this repo any more.** `main` used to keep one, and that single exception is what let 46 dead worktrees accumulate in a 478 G target dir that Cargo cannot attribute by ownership. `main` now has its own `~/.cache/cargo-target/main`, seeded like any other tree.
 >
 > `main` is the one tree that keeps `CARGO_INCREMENTAL=1` while the seed contract pins `0`. Measured cost: the first build over a freshly seeded target spends one extra workspace rebuild (20 s) because the incremental flag changes the fingerprints; every build after that is unaffected, and the 669 BoringSSL C++ objects are reused under either setting. The seed contract deliberately does NOT hash the installation paths, so the same compiler in two places stays the same seed.
@@ -577,6 +579,7 @@ observable behaviour, not cargo's internal layout, and neither should you.
 | `.codegraph/` index | ❌ Per-worktree | `codegraph init` |
 | `codedb.snapshot` + `~/.codedb/projects/<hash>/` | ❌ Per-worktree | `codedb reindex` inside the worktree |
 | Seeds (`~/.cache/cargo-target/seeds/`) | ✅ Shared, read-only | Consumed by `seed_target.sh`; never written by a worktree; `ci_fast_gate.sh` rejects it as a `CARGO_TARGET_DIR` |
+| Quarantine (`~/.cache/cargo-target/quarantine/`) | ⚠️ Deliberate, do not touch | Historical objects explicitly removed from the active build system by rename. This currently contains the former shared `main` target and obsolete seeds. Quarantine contents are not valid active build targets and must not be consumed, republished, or cleaned as part of normal bootstrap. This is a policy rule enforced by this document, not by `ci_fast_gate.sh`, which rejects the seed store but not this one. Deletion is a separate, explicitly authorized operation. Age only makes an object eligible for deletion; it does not authorize deletion. See `odd/tasks/target-quarantine-runbook.md` and `odd/tasks/seed-reclamation-runbook.md`. |
 | Git stash (`refs/stash`) | ⚠️ Shared (DANGER) | **NEVER use `git stash`** |
 
 ### CodeDB/CodeGraph in worktrees
