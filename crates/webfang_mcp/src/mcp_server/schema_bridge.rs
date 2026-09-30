@@ -233,7 +233,15 @@ fn crawl_runtime_default_overrides() -> Vec<(&'static str, DefaultOverride)> {
 /// runtime defaults. Schema truth outranks spec-default propagation: these
 /// overrides adjust what the bridged schema advertises so it matches what the
 /// tool actually does.
+///
+/// `#[non_exhaustive]` (issue #1614): this vocabulary has already grown once in
+/// place — `SetBounds` was added by #1294 — so it is a growing set by
+/// construction. The attribute makes the next one an S1 / minor change instead
+/// of an S2 / major one, and it is free here because the only exhaustive match
+/// is [`apply_default_overrides`], in this crate; `non_exhaustive` binds only
+/// crates outside the defining one. See `docs/src/mcp-public-surface-policy.md`.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum DefaultOverride {
     /// Advertise this JSON value as the property's `"default"`, replacing the
     /// spec-derived default. Used to advertise the RUNTIME-effective default.

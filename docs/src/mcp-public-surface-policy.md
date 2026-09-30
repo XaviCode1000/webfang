@@ -87,6 +87,7 @@ means *fewer requests are accepted* or *more requests mean something different*.
 | A new tool is registered | **S1** | The inventory is append-only within a major. |
 | A tool is removed or renamed | **S2** | Includes moving it behind `cfg(feature)`. |
 | A tool's `description` changes | **S0** | Prose, except where it makes a behavioural claim — see §7. |
+| A **Rust doc comment** on a params type or enum changes | **S0 in intent, wire in fact** | See §3.3. schemars emits the doc comment into the advertised `$defs.<Type>.description`, so it is a wire string, not documentation. |
 | A property is added and is **not** in `required` | **S1** | |
 | A property is added and **is** in `required` | **S2** | Existing requests omit it. |
 | A property is removed | **S2** | Even if the handler still tolerates it: `deny_unknown_fields` is on every params struct, so it becomes a rejection. |
@@ -111,6 +112,23 @@ payloads the promise this policy makes is narrow and honest: **the envelope is
 stable, the body is not versioned.** Handlers that emit `Content::text` with
 ad-hoc JSON are not covered by the manifest and must not be described as
 covered.
+
+### 3.3 A doc comment is not a doc change
+
+Discovered while implementing this issue, and worth stating before somebody
+learns it the expensive way: **schemars copies a type's Rust doc comment into the
+advertised schema** as `$defs.<Type>.description`. Writing a thorough doc
+comment on a type named by a params struct therefore changes what an MCP client
+reads.
+
+The first draft of `#[non_exhaustive]` on `SnapshotFormatParams` carried its
+rationale in the doc comment and failed `mcp_advertised_schema_snapshot_test`
+with a multi-line description diff. The rationale now lives in a `//` comment
+directly above the doc comment, and the doc comment is frozen.
+
+Rule: **a type that appears in an advertised schema keeps its doc comment
+byte-stable.** Put the reasoning next to it, not in it. Types that never reach a
+schema (`Outcome`, `DefaultOverride`) are unconstrained.
 
 ---
 

@@ -1196,9 +1196,23 @@ fn default_true() -> bool {
     true
 }
 
+// Issue #1614: `#[non_exhaustive]` below is part of the MCP public-surface
+// policy (`docs/src/mcp-public-surface-policy.md` §4.1). It is free here
+// because this enum is only ever consumed — deserialized or defaulted — never
+// matched exhaustively outside this crate, and `non_exhaustive` binds only
+// crates outside the defining one.
+//
+// NOTE, and the reason the rationale above is a `//` comment and NOT a doc
+// comment: schemars puts this type's doc comment into the ADVERTISED wire
+// schema as the `$defs.SnapshotFormatParams.description` string. A doc comment
+// is therefore a WIRE change, not documentation — which is why the doc comment
+// below is frozen and the policy check pins it. The same trap applies to every
+// other type named by a params struct's schema.
+
 /// Snapshot serialization formats for `get_accessibility_snapshot` (spec R3).
 #[derive(Deserialize, JsonSchema, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "kebab-case")]
+#[non_exhaustive]
 pub enum SnapshotFormatParams {
     /// Interactive-only `@eN` refs with a `token_estimate` (default).
     #[default]

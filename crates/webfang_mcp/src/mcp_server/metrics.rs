@@ -14,7 +14,17 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 /// Outcome bucket for a scrape event (A1: success/error, NOT raw HTTP codes).
+///
+/// `#[non_exhaustive]` (issue #1614): this set is not complete by design — it
+/// has grown once per new outcome concept (admission control, #1611, adds its
+/// own dispositions), so it is a growing vocabulary. The attribute keeps the
+/// next bucket an S1 / minor change instead of an S2 / major one, and it is
+/// free here: the only exhaustive matches are in this crate (`ScrapeMetrics::
+/// record`, `DefaultOverrides` derivation), and no test crate matches on it,
+/// so `non_exhaustive` binds nobody. See
+/// `docs/src/mcp-public-surface-policy.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum Outcome {
     /// The underlying scraping operation returned `Ok`.
     Success,
