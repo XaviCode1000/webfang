@@ -14,7 +14,8 @@
 use serde_json::{json, Value};
 use webfang_mcp::mcp_server::handlers::build_tool_router;
 use webfang_mcp::mcp_server::params::{
-    ExportFileParams, ProcessExportPipelineParams, ScrapeBatchParams, ScrapeWithOptionsParams,
+    CrawlSiteParams, CrawlWithSitemapParams, ExportFileParams, GetAccessibilitySnapshotParams,
+    ProcessExportPipelineParams, ScrapeBatchParams, ScrapeWithOptionsParams,
 };
 
 /// A field the tool accepts, bounds-checks, advertises -- and never reads.
@@ -496,6 +497,213 @@ fn every_advertised_export_format_publishes_the_spec_enum() {
                     &json!(["jsonl", "vector", "auto"]),
                     "{}.{name} must publish the OptionsSpec enum",
                     entry.tool
+                );
+            }
+        }
+    }
+}
+// ============================================================================
+// BC-09 — the compatibility boundary of every bridged tool
+// ============================================================================
+
+/// The seven bridged tools, each with a deserializer for its params type.
+///
+/// A row without a deserializer would make the probes below silently skip that
+/// tool, which is the exact failure mode the completeness test exists to catch.
+type Deserializer = fn(&Value) -> Result<(), String>;
+
+const BRIDGED_TOOLS: &[(&str, Deserializer)] = &[
+    ("crawl_site", |v| {
+        serde_json::from_value::<CrawlSiteParams>(v.clone())
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }),
+    ("crawl_with_sitemap", |v| {
+        serde_json::from_value::<CrawlWithSitemapParams>(v.clone())
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }),
+    ("scrape_with_options", |v| {
+        serde_json::from_value::<ScrapeWithOptionsParams>(v.clone())
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }),
+    ("export_file", |v| {
+        serde_json::from_value::<ExportFileParams>(v.clone())
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }),
+    ("process_export_pipeline", |v| {
+        serde_json::from_value::<ProcessExportPipelineParams>(v.clone())
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }),
+    ("scrape_batch", |v| {
+        serde_json::from_value::<ScrapeBatchParams>(v.clone())
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }),
+    ("get_accessibility_snapshot", |v| {
+        serde_json::from_value::<GetAccessibilitySnapshotParams>(v.clone())
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }),
+];
+
+/// The served `required` list of a tool, as declared by the schemars derive and
+/// preserved verbatim by the bridge.
+fn required_names(tool: &str) -> Vec<String> {
+    let router = build_tool_router();
+    let route = router.map.get(tool).expect("registered tool");
+    route
+        .attr
+        .input_schema
+        .get("required")
+        .and_then(Value::as_array)
+        .map(|names| {
+            names
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn deserialize_as(tool: &str, value: &Value) -> Result<(), String> {
+    let (_, parse) = BRIDGED_TOOLS
+        .iter()
+        .find(|(name, _)| *name == tool)
+        .unwrap_or_else(|| panic!("{tool} must have a declared deserializer"));
+    parse(value)
+}
+
+/// Every bridged tool is covered here AND by the SD-07 snapshot fixture.
+///
+/// Without this, an eighth bridged tool would be unpinned: the fixture
+/// iterates a constant, and a constant does not notice a new entry in
+/// `schema_bridge::OVERRIDES`. This is what makes the fixture a fixture rather
+/// than a snapshot of whatever happened to exist when it was written.
+#[test]
+fn every_bridged_tool_is_covered_by_this_suite() {
+    for (tool, _) in BRIDGED_TOOLS {
+        assert!(
+            SNAPSHOT_FIXTURE_TOOLS.contains(tool),
+            "{tool} is bridged and declared here, but the SD-07 snapshot fixture does \
+             not list it -- its generated schema would be unpinned"
+        );
+    }
+    for tool in SNAPSHOT_FIXTURE_TOOLS {
+        assert!(
+            BRIDGED_TOOLS.iter().any(|(name, _)| name == tool),
+            "{tool} is in the snapshot fixture but has no deserializer here, so the \
+             unknown-field probe would skip it"
+        );
+    }
+}
+
+/// The seven tools the SD-07 fixture pins. Restated rather than imported
+/// because the fixture's own list is a private const in another test binary;
+/// the fixture test fails independently if its copy drifts from the router.
+const SNAPSHOT_FIXTURE_TOOLS: &[&str] = &[
+    "crawl_site",
+    "crawl_with_sitemap",
+    "scrape_with_options",
+    "export_file",
+    "process_export_pipeline",
+    "scrape_batch",
+    "get_accessibility_snapshot",
+];
+
+/// BC-09's core boundary: **every advertised property is a field the params
+/// struct actually has**, and vice versa for the names serde accepts as
+/// aliases.
+///
+/// `deny_unknown_fields` means an advertised name the struct does not declare
+/// is not a documentation wart — it is a call the schema invites and the
+/// server refuses. That is SD-02's shape in its other direction, and nothing
+/// in the suite caught it there.
+///
+/// The probe sends `{name: null}` and inspects the message. `null` is exactly
+/// the right value for this question because it is wrong for almost every
+/// field: a KNOWN field produces a type complaint, an unknown one produces
+/// ``unknown field `x` ``. No per-field value table is needed, and the check
+/// cannot pass by accident.
+#[test]
+fn every_advertised_property_is_an_accepted_field() {
+    for (tool, _) in BRIDGED_TOOLS {
+        for (name, _) in advertised_properties(tool) {
+            let probe = json!({ name.clone(): Value::Null });
+            if let Err(message) = deserialize_as(tool, &probe) {
+                assert!(
+                    !message.contains("unknown field"),
+                    "{tool} advertises `{name}` but its params struct has no such field: \
+                     {message}. A schema-valid call would be refused."
+                );
+            }
+        }
+    }
+}
+
+/// The other direction of the boundary: every name the served schema lists as
+/// `required` is a field the struct demands.
+///
+/// `required` is emitted by the schemars derive and the bridge deliberately
+/// preserves it, so the risk is not that the bridge writes it wrong -- it is
+/// that nobody checks it still matches the struct. A `required` entry for a
+/// defaulted field makes the client send something it never had to; a missing
+/// one makes the server accept a call it will refuse.
+#[test]
+fn required_properties_are_fields_the_struct_demands() {
+    for (tool, _) in BRIDGED_TOOLS {
+        for name in required_names(tool) {
+            let probe = json!({ name.clone(): Value::Null });
+            if let Err(message) = deserialize_as(tool, &probe) {
+                assert!(
+                    !message.contains("unknown field"),
+                    "{tool} lists `{name}` as required but its params struct has no such \
+                     field: {message}"
+                );
+            }
+        }
+    }
+}
+
+/// The union bound BC-09 names: no advertised numeric property may be looser
+/// than what the tool's own validator enforces.
+///
+/// A bound a client cannot see is a bound it discovers by being rejected
+/// (#1294 called that out for `concurrency`), and a bound looser than the
+/// validator is worse: the server advertises a value and then refuses it. The
+/// two spec-owned numeric properties both publish `minimum`; the comparison is
+/// against the same OptionsSpec entry the bridge renders from, so it cannot
+/// drift without the schema moving too.
+#[test]
+fn numeric_bounds_are_never_looser_than_the_spec() {
+    use webfang_core::domain::options_spec::crawler;
+    for (tool, _) in BRIDGED_TOOLS {
+        for (name, prop) in advertised_properties(tool) {
+            let Some(minimum) = prop.get("minimum").and_then(Value::as_u64) else {
+                continue;
+            };
+            let spec_min = match name.as_str() {
+                "max_pages" => crawler::MAX_PAGES
+                    .json_schema()
+                    .get("minimum")
+                    .and_then(Value::as_u64),
+                "max_depth" => crawler::MAX_DEPTH
+                    .json_schema()
+                    .get("minimum")
+                    .and_then(Value::as_u64),
+                // MCP-only properties carry the derive's floor or an explicit
+                // override; neither is a spec number to compare against.
+                _ => None,
+            };
+            if let Some(spec_min) = spec_min {
+                assert!(
+                    minimum >= spec_min,
+                    "{tool}.{name} advertises minimum {minimum}, looser than the spec's \
+                     {spec_min}: the server would refuse a value it advertised"
                 );
             }
         }
