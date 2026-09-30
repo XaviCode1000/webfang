@@ -73,6 +73,28 @@ impl Default for CategoryLimits {
     }
 }
 
+/// Default byte ceiling for the results ONE session retains across its crawl
+/// run and the export that consumes them (#1611, F7).
+///
+/// The buffer it bounds is a plain `Vec<ScrapedContent>` that a crawl run
+/// REPLACES wholesale, so before this ceiling a single `crawl_site` call with
+/// `max_pages` at its advertised ceiling (100 000) could park ~100 GB of page
+/// content in the process for as long as the session lived — the finding F7
+/// names as "accumulated session results", and the one of its three sites that
+/// neither a request-body cap nor a per-line cap reaches.
+///
+/// 64 MiB is [`MAX_BLOB_LEN`] × 64, i.e. 640× the whole of a page at the
+/// crate's largest legal blob size, and — the property that matters for
+/// compatibility — far above any DEFAULT run: `crawl_site` defaults to 100
+/// pages, which retains well under a megabyte of extracted markdown for a
+/// typical site. The ceiling is therefore reached by a deliberately oversized
+/// run, which is exactly the traffic the bound exists to refuse, and it is
+/// reported as an error naming the budget rather than silently truncated
+/// (see `within_session_budget` in `handlers/scraping.rs`).
+///
+/// [`MAX_BLOB_LEN`]: crate::mcp_server::validation::MAX_BLOB_LEN
+pub const DEFAULT_SESSION_RESULT_BUDGET_BYTES: usize = 64 * 1024 * 1024;
+
 /// Shared state for the MCP server.
 ///
 /// Embeds the Container for dependency injection and provides
@@ -125,6 +147,17 @@ pub struct McpState {
     /// an `.await` (REQ-07). The cheaper Arc-swap snapshot is deferred to
     /// slice 4.
     pub session_results: Arc<Mutex<Vec<webfang_core::domain::ScrapedContent>>>,
+    /// Byte ceiling on [`Self::session_results`] (#1611, F7); see
+    /// [`DEFAULT_SESSION_RESULT_BUDGET_BYTES`].
+    ///
+    /// A [`NonZeroUsize`], like every count/byte limit in this crate: a zero
+    /// budget would mean "no result is ever exportable", which is a
+    /// misconfiguration rather than a mode, and [`Self::with_session_result_budget`]
+    /// is the only way to set it.
+    ///
+    /// Process-shared across clones, because the buffer is NOT: each session
+    /// gets its own buffer and therefore spends its own budget.
+    pub session_result_budget_bytes: NonZeroUsize,
     /// Allowed root directories for absolute `output_dir` and `checkpoint_dir`
     /// paths (#696, #1588).
     ///
@@ -164,6 +197,7 @@ impl Clone for McpState {
                     .unwrap_or_else(|e| e.into_inner())
                     .clone(),
             )),
+            session_result_budget_bytes: self.session_result_budget_bytes,
             allowed_export_roots: Arc::clone(&self.allowed_export_roots),
             obsidian_hermetic: self.obsidian_hermetic.clone(),
             cancel_token: self.cancel_token.clone(),
@@ -232,6 +266,8 @@ impl McpState {
             robots_fetcher,
             metrics: Arc::new(Mutex::new(ScrapeMetrics::default())),
             session_results: Arc::new(Mutex::new(Vec::new())),
+            session_result_budget_bytes: NonZeroUsize::new(DEFAULT_SESSION_RESULT_BUDGET_BYTES)
+                .unwrap_or_else(|| unreachable!("DEFAULT_SESSION_RESULT_BUDGET_BYTES is non-zero")),
             allowed_export_roots: Arc::new(Vec::new()),
             obsidian_hermetic: None,
             cancel_token: CancellationToken::new(),
@@ -250,6 +286,22 @@ impl McpState {
     #[must_use]
     pub fn with_downloader(mut self, downloader: Arc<Downloader>) -> Self {
         self.downloader = Some(downloader);
+        self
+    }
+
+    /// Set the byte ceiling for this session's retained crawl results
+    /// (#1611, F7).
+    ///
+    /// Parity with [`with_downloader`](Self::with_downloader): composition
+    /// roots that retain more than [`DEFAULT_SESSION_RESULT_BUDGET_BYTES`]
+    /// of extracted content per run raise it here, and tests lower it to a
+    /// few bytes so the refusal is reachable without allocating 64 MiB.
+    ///
+    /// A zero budget is refused by the type ([`NonZeroUsize`]), not clamped:
+    /// "retain nothing" is never what an operator means by this knob.
+    #[must_use]
+    pub fn with_session_result_budget(mut self, budget: NonZeroUsize) -> Self {
+        self.session_result_budget_bytes = budget;
         self
     }
 

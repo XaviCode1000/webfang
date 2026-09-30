@@ -415,6 +415,7 @@ failure.**
 | B3.8 | `download_assets` — asset fetch or write failed | none | Yes if transient | Retry; already-downloaded assets are content-addressed. | `mcp_server/handlers/assets.rs:88` |
 | B3.9 | `extract_links` — base-URL resolution failed | none | No | Fix the input HTML or base URL. | `mcp_server/handlers/content.rs:87` |
 | B3.10 | `url_to_file_path` — `OutputPath::from_url` failed | none | No | Fix the URL. | `mcp_server/handlers/url_utils.rs:210` |
+| B3.11 | `crawl_site` / `crawl_with_sitemap` — the run's extracted records exceed the session result budget (64 MiB default), so **nothing** was retained for export (#1611, F7) | none | Yes, with a smaller run | Re-run with fewer `max_pages`, or crawl per section. The text names the budget, the measured size, and how many records were kept vs dropped. | `mcp_server/handlers/scraping.rs` (`within_session_budget`, `session_budget_message`, `store_session_results`) |
 
 The per-class retry policy these texts inherit is
 `docs/error-classification-matrix.md`. The MCP channel

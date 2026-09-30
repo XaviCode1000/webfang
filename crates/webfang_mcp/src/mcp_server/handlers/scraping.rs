@@ -512,8 +512,14 @@ impl McpHandler {
                 // Convert the captured pages BEFORE answering, so a client
                 // that exports right after this call observes exactly this
                 // run's records (same contract as a CLI crawl finishing its
-                // export phase).
-                self.store_session_results(&sink).await;
+                // export phase). A run that blows the session budget (#1611,
+                // F7) is reported as a tool error here rather than answered
+                // as a crawl that silently kept nothing.
+                if let Err(overflow) = self.store_session_results(&sink).await {
+                    return Ok(provenance::neutralized_error(&session_budget_message(
+                        &overflow,
+                    )));
+                }
                 // REQ-01: filter discovered URLs before responding — keep only
                 // seed-host-internal entries; exclusions warn with the URL.
                 let mut urls = Vec::with_capacity(result.urls.len());
@@ -675,8 +681,13 @@ impl McpHandler {
                         // Convert the captured pages BEFORE answering, so
                         // a client that exports right after this call
                         // observes exactly this run's records (same
-                        // contract as `crawl_site`).
-                        self.store_session_results(&sink).await;
+                        // contract as `crawl_site`), including the budget
+                        // refusal (#1611, F7).
+                        if let Err(overflow) = self.store_session_results(&sink).await {
+                            return Ok(provenance::neutralized_error(&session_budget_message(
+                                &overflow,
+                            )));
+                        }
                         tracing::info!("sitemap crawl complete: {} urls found", urls.len());
                         // REQ-01: filter discovered URLs before responding. Sitemap
                         // discovery is host-agnostic — the filter is the gate that
@@ -1022,6 +1033,106 @@ impl McpHandler {
     }
 }
 
+/// `operation` field of every event the session-result budget emits — the
+/// resource it governs (same convention as the session cap's
+/// `SESSION_OPERATION` in `server.rs`).
+const SESSION_RESULT_OPERATION: &str = "mcp.session.results";
+
+/// Bytes one retained record occupies in the session buffer (#1611, F7).
+///
+/// Deliberately a LOWER bound on the record's true footprint, never an
+/// estimate of it: it sums every owned string (plus the assets' recorded file
+/// sizes), so the accounting cannot be defeated by a record that is large in
+/// some field this function forgot. Under-counting is the safe direction for a
+/// bound whose job is to refuse an oversized run, because the ceiling has
+/// three orders of magnitude of headroom over a default crawl.
+fn retained_record_bytes(content: &webfang_core::domain::ScrapedContent) -> usize {
+    let strings = content.title.len()
+        + content.content.len()
+        + content.url.as_str().len()
+        + content.excerpt.as_ref().map_or(0, String::len)
+        + content.author.as_ref().map_or(0, String::len)
+        + content.date.as_ref().map_or(0, String::len)
+        + content.html.as_ref().map_or(0, String::len);
+    let assets: usize = content
+        .assets
+        .iter()
+        .map(|a| a.url.len() + a.local_path.len() + a.size as usize)
+        .sum();
+    strings.saturating_add(assets)
+}
+
+/// Why a run's records were refused by the session budget (#1611, F7).
+///
+/// Carries the numbers a client needs to fix the call — the budget it blew,
+/// how many records were retained, how many were dropped, and how big the run
+/// actually was — because the only useful advice here is "crawl fewer pages",
+/// and that advice is worthless without the size it was measured against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SessionResultOverflow {
+    /// The ceiling that was exceeded.
+    pub budget_bytes: usize,
+    /// Records that fit inside the budget.
+    pub kept: usize,
+    /// Records that did not.
+    pub dropped: usize,
+    /// Bytes the run's records actually occupied.
+    pub total_bytes: usize,
+}
+
+/// Spanish operator-facing sentence for an over-budget run.
+///
+/// Channel B, so it is what an agent reads verbatim (see
+/// `docs/src/mcp-error-contract.md`, row B3.11): it names the budget, says
+/// plainly that NOTHING of this run was retained, and gives the one lever that
+/// actually works — a smaller `max_pages`, or a `crawl_site` per section.
+fn session_budget_message(overflow: &SessionResultOverflow) -> String {
+    format!(
+        "El crawl produjo {} registros ({:.1} MiB) y supera el presupuesto de resultados de sesión de {} bytes: no se retuvo ninguno. \
+         Repita el rastreo con menos páginas (`max_pages`) o exporte por secciones.",
+        overflow.kept + overflow.dropped,
+        overflow.total_bytes as f64 / (1024.0 * 1024.0),
+        overflow.budget_bytes,
+    )
+}
+
+/// Fit one run's records into a session budget, or refuse the whole run
+/// (#1611, F7).
+///
+/// All-or-nothing on purpose. A partial buffer would make the export tools
+/// serve a set that silently disagrees with the crawl they followed, and the
+/// error contract's rule — "if the tool could not produce the answer it
+/// promised, the answer is `isError: true`, never a success whose body
+/// happens to read like a failure" — treats a truncated export as a lost
+/// report, not a smaller one. Refusing the run also keeps the caller from
+/// having to reason about which half survived.
+///
+/// A single record larger than the whole budget is refused too (`kept == 0`),
+/// rather than being admitted as an over-budget exception: a budget that one
+/// record can breach is not a budget.
+pub(crate) fn within_session_budget(
+    records: Vec<webfang_core::domain::ScrapedContent>,
+    budget_bytes: usize,
+) -> Result<Vec<webfang_core::domain::ScrapedContent>, SessionResultOverflow> {
+    let total_bytes: usize = records.iter().map(retained_record_bytes).sum();
+    if total_bytes <= budget_bytes {
+        return Ok(records);
+    }
+    let kept = records
+        .iter()
+        .scan(0usize, |acc, record| {
+            *acc += retained_record_bytes(record);
+            (*acc <= budget_bytes).then_some(())
+        })
+        .count();
+    Err(SessionResultOverflow {
+        budget_bytes,
+        kept,
+        dropped: records.len() - kept,
+        total_bytes,
+    })
+}
+
 impl McpHandler {
     /// Convert this crawl run's captured pages into the session-owned
     /// result set the export tools consume (#1290, P6-2/F-16).
@@ -1039,10 +1150,72 @@ impl McpHandler {
     /// honestly reads as "no hay resultados disponibles para exportar".
     /// Lock discipline follows `metrics` (REQ-07): the synchronous lock is
     /// taken only to swap the vector, never across an `.await`.
+    ///
+    /// # Budget (#1611, F7)
+    ///
+    /// A run whose records do not fit
+    /// [`McpState::session_result_budget_bytes`] is refused as a whole
+    /// ([`within_session_budget`]) and the buffer is EMPTIED rather than left
+    /// holding the previous run: a stale buffer would make the next export
+    /// serve a different crawl than the tool chain the client just ran, which
+    /// is the same "success whose body reads like a failure" shape the error
+    /// contract forbids. The caller turns the error into `isError: true` (see
+    /// `session_budget_message`), so the client learns that the run produced
+    /// nothing exportable instead of discovering it at export time.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SessionResultOverflow`] when the run exceeds the budget.
+    /// Page-extraction failures are NOT errors here: they are logged and
+    /// skipped, exactly as on the CLI batch path.
     async fn store_session_results(
         &self,
         sink: &webfang_core::application::crawler::content_sink::InMemoryContentSink,
-    ) {
+    ) -> Result<(), SessionResultOverflow> {
+        let (results, failures) = self.convert_captured_pages(sink).await;
+        let captured = results.len();
+        let budget = self.state.session_result_budget_bytes.get();
+        let overflow = match within_session_budget(results, budget) {
+            Ok(admitted) => {
+                self.swap_session_results(admitted, captured, failures, false);
+                return Ok(());
+            },
+            Err(overflow) => {
+                tracing::warn!(
+                    operation = SESSION_RESULT_OPERATION,
+                    budget_bytes = overflow.budget_bytes,
+                    total_bytes = overflow.total_bytes,
+                    captured,
+                    failures,
+                    kept = overflow.kept,
+                    dropped = overflow.dropped,
+                    "mcp_session_results_over_budget — refusing the whole run"
+                );
+                overflow
+            },
+        };
+        // The swap happens either way: on refusal the buffer is EMPTIED, so a
+        // later export cannot serve the PREVIOUS run's records as if they were
+        // this one's (see the # Errors note above).
+        self.swap_session_results(Vec::new(), captured, failures, true);
+        Err(overflow)
+    }
+
+    /// Convert every page the crawl captured into its exportable record,
+    /// returning the records and how many pages failed to convert.
+    ///
+    /// Split out of [`Self::store_session_results`] only to keep both halves
+    /// readable: the conversion loop and the budget admission are independent
+    /// concerns, and the loop's per-page failure handling is what pushes the
+    /// combined function past the repo's cognitive-complexity ratchet.
+    ///
+    /// A failed page is logged through the shared `log_scrape_error` path and
+    /// skipped — one bad page never drops the run's good records, exactly as
+    /// on the CLI batch path.
+    async fn convert_captured_pages(
+        &self,
+        sink: &webfang_core::application::crawler::content_sink::InMemoryContentSink,
+    ) -> (Vec<webfang_core::domain::ScrapedContent>, usize) {
         use webfang_core::application::crawler::content_sink::extract_page_content;
         use webfang_core::domain::CorrelationId;
         use webfang_core::infrastructure::observability::log_scrape_error;
@@ -1074,19 +1247,46 @@ impl McpHandler {
                 },
             }
         }
-        let captured = results.len();
+        (results, failures)
+    }
+
+    /// Replace this session's result buffer, under its lock, with whatever the
+    /// run was allowed to keep.
+    ///
+    /// Lock discipline (REQ-07): the guard is taken, swapped and dropped
+    /// entirely inside this synchronous function — no `.await` runs while it
+    /// is held. `refused` selects the event shape, because "cleared" and
+    /// "captured" are different facts and a client reading the trace must not
+    /// have to infer which happened from a missing field.
+    fn swap_session_results(
+        &self,
+        admitted: Vec<webfang_core::domain::ScrapedContent>,
+        captured: usize,
+        failures: usize,
+        refused: bool,
+    ) {
         match self.state.session_results.lock() {
             Ok(mut guard) => {
                 let replaced = guard.len();
-                *guard = results;
-                tracing::info!(captured, replaced, failures, "mcp_session_results_captured");
+                *guard = admitted;
+                if refused {
+                    tracing::warn!(replaced, "mcp_session_results_cleared_on_over_budget");
+                } else {
+                    tracing::info!(captured, replaced, failures, "mcp_session_results_captured");
+                }
             },
             Err(poisoned) => {
                 // Poisoned elsewhere only by a panic mid-swap: recover the
                 // guard and keep the run's records rather than losing them.
                 let mut guard = poisoned.into_inner();
-                *guard = results;
-                tracing::warn!(captured, failures, "mcp_session_results_lock_recovered");
+                let replaced = guard.len();
+                *guard = admitted;
+                tracing::warn!(
+                    captured,
+                    failures,
+                    replaced,
+                    "mcp_session_results_lock_recovered"
+                );
             },
         }
     }
@@ -1348,6 +1548,158 @@ mod tests {
         let tmp = TempDir::new().expect("create temp dir");
         let container = test_support::container(&tmp).await;
         (McpState::new(container), tmp)
+    }
+
+    // ── #1611 F7: the session-result budget ──
+
+    /// Fixture record of a known size class: `content` is the only field that
+    /// varies, so a test can state "three 1 KiB records" and have the byte sum
+    /// be about that.
+    fn budget_record(url: &str, body_bytes: usize) -> webfang_core::domain::ScrapedContent {
+        webfang_core::domain::ScrapedContent {
+            title: "t".to_string(),
+            content: "c".repeat(body_bytes),
+            url: webfang_core::domain::ValidUrl::try_from_url(
+                url::Url::parse(url).expect("valid fixture url"),
+            )
+            .expect("fixture url is https"),
+            excerpt: None,
+            author: None,
+            date: None,
+            html: None,
+            assets: vec![],
+            correlation_id: None,
+            quality_hint: None,
+        }
+    }
+
+    /// The bound the F7 finding names: the buffer a run leaves behind must
+    /// fit the budget, and a run that does not is refused as a WHOLE with the
+    /// numbers a caller needs to shrink it — never truncated into a partial
+    /// export that would read as a complete one.
+    #[test]
+    fn a_run_within_budget_is_retained_whole() {
+        let records = vec![
+            budget_record("https://example.com/a", 1000),
+            budget_record("https://example.com/b", 1000),
+        ];
+        let total: usize = records.iter().map(retained_record_bytes).sum();
+        let admitted =
+            within_session_budget(records, total).expect("a run whose bytes equal the budget fits");
+        assert_eq!(admitted.len(), 2, "an exact fit is admitted, not refused");
+    }
+
+    #[test]
+    fn a_run_over_budget_is_refused_whole_and_reports_the_size() {
+        let records = vec![
+            budget_record("https://example.com/a", 1000),
+            budget_record("https://example.com/b", 1000),
+            budget_record("https://example.com/c", 1000),
+        ];
+        let one = retained_record_bytes(&budget_record("https://example.com/x", 1000));
+        // Room for two records, three were produced.
+        let overflow = within_session_budget(records, one * 2)
+            .expect_err("a run over the budget must be refused");
+        assert_eq!(overflow.budget_bytes, one * 2);
+        assert_eq!(overflow.dropped, 1, "the record that did not fit is named");
+        assert_eq!(overflow.kept, 2, "the records that fitted are counted");
+        assert!(
+            overflow.total_bytes > overflow.budget_bytes,
+            "the measured size is what makes the advice actionable: {overflow:?}"
+        );
+    }
+
+    /// A budget smaller than ONE record still refuses. Without this the bound
+    /// would be advisory exactly when it matters most — a single enormous page
+    /// would be admitted as an over-budget exception.
+    #[test]
+    fn one_record_larger_than_the_budget_is_refused() {
+        let overflow =
+            within_session_budget(vec![budget_record("https://example.com/a", 4096)], 16)
+                .expect_err("an oversize single record must be refused");
+        assert_eq!(overflow.kept, 0);
+        assert_eq!(overflow.dropped, 1);
+    }
+
+    /// The default budget is a real ceiling, not a token one: it must be
+    /// small enough to bound a process and large enough that no default run
+    /// hits it.
+    #[test]
+    fn the_default_session_budget_is_bounded_and_generous() {
+        assert_eq!(
+            crate::mcp_server::state::DEFAULT_SESSION_RESULT_BUDGET_BYTES,
+            64 * 1024 * 1024
+        );
+        // `crawl_site` defaults to 100 pages; 100 × 1 MiB is above the
+        // budget, which is the point — a run of maximally large pages is
+        // refused rather than parked. The common case (tens of KB per page)
+        // sits two orders of magnitude below.
+        let hundred_mib = 100 * 1024 * 1024;
+        assert!(hundred_mib > crate::mcp_server::state::DEFAULT_SESSION_RESULT_BUDGET_BYTES);
+    }
+
+    /// The bound is enforced END TO END through the real capture path: a
+    /// captured page that converts to a record larger than the session budget
+    /// is refused, the buffer is left EMPTY (not holding the previous run), and
+    /// the error carries the numbers. An empty run is the control: it fits any
+    /// budget and must not error, or the bound would refuse honest clients.
+    #[tokio::test]
+    #[cfg_attr(miri, ignore = "Container::new creates HttpClient with btls-sys FFI")]
+    async fn store_session_results_enforces_the_budget_from_the_state() {
+        use webfang_core::application::crawler::content_sink::{
+            CrawlContentSink, InMemoryContentSink,
+        };
+
+        let (state, _tmp) = test_state().await;
+        // Seed the buffer so the "previous run" case is observable. Scoped so
+        // no guard is live across the awaits below.
+        {
+            let mut guard = state
+                .session_results
+                .lock()
+                .expect("fresh session lock is never poisoned");
+            guard.push(budget_record("https://example.com/previous", 16));
+        }
+
+        let state =
+            state.with_session_result_budget(std::num::NonZeroUsize::new(1).expect("non-zero"));
+        let handler = McpHandler::new(state);
+
+        let empty = InMemoryContentSink::new();
+        handler
+            .store_session_results(&empty)
+            .await
+            .expect("an empty run fits any budget");
+
+        let sink = InMemoryContentSink::new();
+        sink.capture("https://example.com/page", ARTICLE_HTML);
+        let overflow = handler
+            .store_session_results(&sink)
+            .await
+            .expect_err("a record over a one-byte budget must be refused");
+        assert_eq!(overflow.budget_bytes, 1);
+        assert_eq!(overflow.kept, 0, "nothing fits a one-byte budget");
+        assert_eq!(overflow.dropped, 1);
+        assert!(
+            handler
+                .state
+                .session_results
+                .lock()
+                .expect("lock")
+                .is_empty(),
+            "a refused run must not leave the previous run's records behind: \
+             an export would then serve a crawl the client never ran"
+        );
+
+        let message = session_budget_message(&overflow);
+        assert!(
+            message.contains("presupuesto"),
+            "the message states what happened: {message}"
+        );
+        assert!(
+            message.contains("max_pages"),
+            "the message names the lever that works: {message}"
+        );
     }
 
     // ── #749 robots.txt gate fixtures (modeled on
