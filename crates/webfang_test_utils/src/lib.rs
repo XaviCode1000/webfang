@@ -24,13 +24,23 @@
 //! | `WEBFANG_DISABLE_SSRF_ENTRY_GUARD` (exact `"1"`) | `webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV` | Literal-IP entry guard (SSRF choke point, #1217) |
 //! | `WEBFANG_DISABLE_SSRF_REDIRECT_GUARD` | `webfang_core::domain::ssrf_guard::DISABLE_REDIRECT_GUARD_ENV` | Client redirect policy's literal-IP stop |
 //! | `WEBFANG_DISABLE_SSRF_RESOLVER` | `webfang_core::domain::ssrf_guard::DISABLE_VALIDATING_RESOLVER_ENV` | Connect-time validating DNS resolver |
-//! | `WEBFANG_DISABLE_SSRF` (presence) | — (literal in `llm_extraction::ssrf_gate`, #703) | LLM base-URL SSRF gate |
+//! | `WEBFANG_DISABLE_SSRF` (presence) | `webfang_core::domain::ssrf_guard::LLM_SSRF_TEST_HATCH_ENV` | LLM base-URL SSRF gate |
 //! | `WEBFANG_MCP_DISABLE_SSRF` (exact `"1"`) | `webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV` (#1348) | MCP entry validator |
 //!
 //! `WEBFANG_MCP_DISABLE_SSRF` disables the MCP layer only for the exact value
 //! `"1"`; every other value leaves it enabled. This does not change the
 //! separate `WEBFANG_DISABLE_SSRF` contract: that variable remains
 //! presence-based for the LLM extraction base-URL SSRF gate.
+//!
+//! #1615 DF-E9: `WEBFANG_DISABLE_SSRF` is no longer a PRODUCTION hatch. Its
+//! read is behind `#[cfg(test)]`, so it disarms the LLM gate only inside this
+//! crate's own unit tests and cannot disarm it in a deployed process at all.
+//! That is the one row in the table above whose scope is narrower than its
+//! "all are test-only — production never sets them" preamble suggests: the
+//! other hatches are production code that a test may set; this one does not
+//! exist in production code. An integration test under `crates/*/tests/` links
+//! `webfang_core` externally and therefore does not see `cfg(test)`, so it
+//! cannot arm this row — it must not need to, and none does.
 //!
 //! # Which hatch may a test arm? (#1308, scoped by #1396)
 //!

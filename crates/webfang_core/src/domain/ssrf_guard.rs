@@ -113,6 +113,21 @@ pub const DISABLE_VALIDATING_RESOLVER_ENV: &str = "WEBFANG_DISABLE_SSRF_RESOLVER
 /// children exempt (see `sanitize_env` in `cli_harness.rs`).
 pub const DISABLE_ENTRY_GUARD_ENV: &str = "WEBFANG_DISABLE_SSRF_ENTRY_GUARD";
 
+/// Test-only escape hatch for the LLM base-URL SSRF gate (#703).
+///
+/// #1615 (DF-E9): this is the one SSRF hatch that is NOT reachable from a
+/// production build. Its read sits behind `#[cfg(test)]` in
+/// [`ssrf_gate`](crate::application::llm_extraction::ssrf_gate), so setting the
+/// variable in a deployed process has no effect — the code that would consult
+/// it is not compiled in. It is re-exported here, next to the other hatches,
+/// so a caller that wants to name it has a canonical name and never a
+/// literal.
+///
+/// The value is still presence-based, and still only inside a test build:
+/// hardening the value check would change behaviour under `cfg(test)` alone,
+/// which is not a production surface and not what the finding was about.
+pub use crate::application::llm_extraction::LLM_SSRF_TEST_HATCH_ENV;
+
 /// Test-only escape hatch for the MCP entry pre-check (layer 1), read by
 /// `webfang_mcp::mcp_server::ssrf` (`is_ssrf_enabled`).
 ///
