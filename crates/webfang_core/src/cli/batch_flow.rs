@@ -272,14 +272,130 @@ async fn flush_batch_sink(sink: &BoundedFileSink) -> Result<(), CliExit> {
     Ok(())
 }
 
+/// File name of the batch capture spool, under the run's persistence root.
+const BATCH_SPOOL_FILE: &str = ".webfang-batch-capture.jsonl";
+
+/// Spanish disclosure for a spool left behind by a run that did not finish
+/// (DF-L1, #1615).
+///
+/// The spool holds EVERY page body the run fetched, verbatim. Deleting it is
+/// best-effort, so a crash — SIGKILL, OOM, panic, power loss — leaves it on
+/// disk with nothing scheduled to remove it. That is a data-residue and
+/// disk-usage problem, not just hygiene, and the operator cannot see a
+/// dotfile they were never told existed. So the leftover is named, sized and
+/// located before it goes.
+const STALE_SPOOL_MESSAGE: &str =
+    "Se encontró un archivo temporal de captura de una ejecución anterior que no finalizó. \
+Contiene el texto completo de las páginas descargadas y se ha eliminado. \
+Bórrelo manualmente si persiste.";
+
+/// Outcome of the startup sweep for a spool left by a previous run.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StaleSpoolSweep {
+    /// Bytes the leftover occupied on disk, for the disclosure.
+    reclaimed_bytes: u64,
+    /// Whether the file was actually removed. A `false` here means the
+    /// disclosure is still owed to the operator, so it is tracked rather than
+    /// inferred.
+    removed: bool,
+}
+
+/// Sweep a batch capture spool left behind by a run that never finished
+/// (DF-L1, #1615).
+///
+/// # Why this runs where it does, and not at every startup
+///
+/// The obvious stronger version — sweep on every CLI start — is unsafe. The
+/// spool path is derived from the persistence root, so two concurrent
+/// `webfang` processes sharing an output directory would have the second one
+/// delete the first one's in-flight spool, turning a recoverable run into a
+/// failed one. Distinguishing them needs a lock or an age heuristic, and both
+/// are worse than the problem.
+///
+/// Sweeping in the batch path, immediately before the same path is truncated,
+/// is safe by construction: the file is about to be overwritten regardless, so
+/// the sweep can only reclaim space and disclose what it reclaimed. It cannot
+/// destroy a live run, and it needs no concurrency reasoning at all.
+///
+/// The residue therefore persists until the next BATCH run, which is stated
+/// here rather than left for an operator to discover. A run that crashes and is
+/// never followed by another batch keeps its spool, and the disclosure tells
+/// them exactly which file to delete.
+///
+/// The size is read BEFORE the unlink, because afterwards there is nothing to
+/// measure — and a disclosure that cannot say how much it reclaimed is a much
+/// weaker prompt to go looking.
+async fn sweep_stale_batch_spool(spool_path: &std::path::Path) -> StaleSpoolSweep {
+    let metadata = match tokio::fs::metadata(spool_path).await {
+        Ok(m) => m,
+        // No leftover is the normal case, not a failure worth reporting.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return StaleSpoolSweep {
+                reclaimed_bytes: 0,
+                removed: true,
+            };
+        },
+        Err(e) => {
+            tracing::debug!(
+                error = %e,
+                spool = %spool_path.display(),
+                "stale batch spool could not be inspected"
+            );
+            return StaleSpoolSweep {
+                reclaimed_bytes: 0,
+                removed: false,
+            };
+        },
+    };
+
+    let reclaimed_bytes = metadata.len();
+    let removed = match tokio::fs::remove_file(spool_path).await {
+        Ok(()) => true,
+        Err(e) => {
+            // The operator still has the file, so the disclosure is still owed.
+            // This is a `warn` and not a `debug` for exactly that reason: the
+            // old code logged removal failure at debug level, which is how a
+            // residue nobody was told about stayed invisible.
+            tracing::warn!(
+                error = %e,
+                spool = %spool_path.display(),
+                user_message = STALE_SPOOL_MESSAGE,
+                "a batch capture spool from an unfinished run could not be removed"
+            );
+            false
+        },
+    };
+
+    if removed {
+        // Disclosed in Spanish for the operator; the structured fields stay
+        // English so the event is queryable in the JSONL trace.
+        tracing::warn!(
+            spool = %spool_path.display(),
+            reclaimed_bytes,
+            user_message = STALE_SPOOL_MESSAGE,
+            "removed a batch capture spool left behind by an unfinished run"
+        );
+    }
+
+    StaleSpoolSweep {
+        reclaimed_bytes,
+        removed,
+    }
+}
+
 /// Create the disk-backed capture sink for a batch run.
 ///
 /// The spool lives under the run's persistence root so it shares the run's
 /// storage budget (and lands inside the vault when `--quick-save` or an
 /// explicit `--vault` redirects the base, #638/#762) and is cleaned up by
-/// [`discard_batch_spool`] once extraction is done.
+/// [`discard_batch_spool`] once extraction is done — or, if the run never
+/// finishes, by [`sweep_stale_batch_spool`] on the next batch run (DF-L1).
 async fn build_batch_sink(opts: &CrawlOptions) -> Result<BoundedFileSink, CliExit> {
-    let spool_path = resolve_persistence_root(opts).join(".webfang-batch-capture.jsonl");
+    let spool_path = resolve_persistence_root(opts).join(BATCH_SPOOL_FILE);
+    // Before anything writes: reclaim and disclose whatever an unfinished run
+    // left. `BoundedFileSink::new` truncates this same path immediately after,
+    // so the sweep is a disclosure of residue rather than a deletion decision.
+    sweep_stale_batch_spool(&spool_path).await;
     // One buffered page per concurrent crawl, plus headroom, keeps the writer
     // from becoming the bottleneck without unbounding memory. The bound derives
     // from the budget model's Operation.batch tier (task 2.5c).
@@ -302,7 +418,10 @@ async fn build_batch_sink(opts: &CrawlOptions) -> Result<BoundedFileSink, CliExi
 
 /// Remove the batch capture spool once its pages have been extracted.
 ///
-/// Best-effort: a leftover spool is noise, not a failure of the run.
+/// Best-effort: a leftover spool is noise, not a failure of the run. If THIS
+/// removal fails, the residue is not invisible either — [`sweep_stale_batch_spool`]
+/// discloses any survivor on the next batch run, which is the same remedy the
+/// crash case gets.
 async fn discard_batch_spool(sink: &BoundedFileSink) {
     if let Err(e) = tokio::fs::remove_file(sink.spool_path()).await {
         tracing::debug!(
@@ -672,6 +791,187 @@ mod tests {
         assert!(
             matches!(exit, CliExit::DataFormatError(_)),
             "expected CliExit::DataFormatError, got {exit:?}"
+        );
+    }
+
+    /// Capture-subscriber harness, so the sweep's DISCLOSURE can be read rather
+    /// than reviewed (DF-L1, #1615).
+    #[derive(Clone)]
+    struct SpoolCaptureWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for SpoolCaptureWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0
+                .lock()
+                .expect("capture buffer lock is never poisoned")
+                .extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Run an async closure under an in-memory `tracing` subscriber and return
+    /// what it logged.
+    async fn capture_logs<F, Fut>(f: F) -> (String, ())
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let subscriber = {
+            let sink = std::sync::Arc::clone(&buf);
+            tracing_subscriber::fmt()
+                .with_writer(move || SpoolCaptureWriter(std::sync::Arc::clone(&sink)))
+                .with_ansi(false)
+                .finish()
+        };
+        // Thread-local default: the sweep runs on this thread, and installing a
+        // global subscriber here would leak into every other test in the crate.
+        let _guard = tracing::subscriber::set_default(subscriber);
+        f().await;
+        let text = String::from_utf8(
+            buf.lock()
+                .expect("capture buffer lock is never poisoned")
+                .clone(),
+        )
+        .expect("tracing writes UTF-8");
+        (text, ())
+    }
+
+    /// Run the sweep and return BOTH its verdict and what it logged.
+    async fn sweep_capturing(spool: &std::path::Path) -> (super::StaleSpoolSweep, String) {
+        let result = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let sink = std::sync::Arc::clone(&result);
+        let path = spool.to_path_buf();
+        let (logs, _) = capture_logs(|| async move {
+            let outcome = super::sweep_stale_batch_spool(&path).await;
+            *sink.lock().expect("result lock is never poisoned") = Some(outcome);
+        })
+        .await;
+        let outcome = result
+            .lock()
+            .expect("result lock is never poisoned")
+            .take()
+            .expect("the closure always records its outcome");
+        (outcome, logs)
+    }
+
+    /// #1615 DF-L1 — a spool left by a run that never finished is reclaimed AND
+    /// disclosed. The residue is the point: it holds every page body the dead
+    /// run fetched, so a fix that deleted it silently would still leave the
+    /// operator unable to know their disk grew.
+    #[tokio::test]
+    async fn a_leftover_spool_is_reclaimed_and_disclosed() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let spool = dir.path().join(super::BATCH_SPOOL_FILE);
+        // Stand in for the dead run's spool: identifiable page bodies.
+        tokio::fs::write(
+            &spool,
+            "{\"url\":\"https://a.example\",\"body\":\"PAGE\"}\n".repeat(64),
+        )
+        .await
+        .expect("seed a leftover spool");
+        let seeded_len = tokio::fs::metadata(&spool).await.expect("size").len();
+        assert!(seeded_len > 0, "the seeded leftover must not be empty");
+
+        let (sweep, logs) = sweep_capturing(&spool).await;
+
+        assert!(sweep.removed, "the leftover must be removed");
+        assert_eq!(
+            sweep.reclaimed_bytes, seeded_len,
+            "the disclosure must size the residue it reclaimed"
+        );
+        assert!(!spool.exists(), "the spool must be gone from disk");
+        assert!(
+            logs.contains(super::STALE_SPOOL_MESSAGE),
+            "the operator must be told their disk held page bodies: {logs}"
+        );
+
+        // And the normal case is silent: no leftover must not cry wolf.
+        let (_quiet_sweep, quiet_logs) = sweep_capturing(&spool).await;
+        assert!(
+            !quiet_logs.contains(super::STALE_SPOOL_MESSAGE),
+            "a run with no leftover must not claim one: {quiet_logs}"
+        );
+    }
+
+    /// The Spanish copy is the operator-facing half and is asserted as text,
+    /// because a disclosure nobody can read is not a disclosure. The structured
+    /// fields stay English so the event is greppable and queryable.
+    #[tokio::test]
+    async fn the_disclosure_names_the_cause_and_the_size() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let spool = dir.path().join(super::BATCH_SPOOL_FILE);
+        tokio::fs::write(&spool, b"residue").await.expect("seed");
+
+        let (_sweep, logs) = sweep_capturing(&spool).await;
+
+        for fragment in [
+            "no finalizó",
+            "texto completo de las páginas",
+            "se ha eliminado",
+        ] {
+            assert!(
+                logs.contains(fragment),
+                "the Spanish disclosure must say {fragment:?}: {logs}"
+            );
+        }
+        assert!(
+            logs.contains("unfinished run"),
+            "the event must be greppable in English: {logs}"
+        );
+        assert!(
+            logs.contains("reclaimed_bytes="),
+            "the reclaimed size must be a queryable field: {logs}"
+        );
+    }
+
+    /// The one case the sweep must NOT absorb silently: a file it could not
+    /// remove. The operator still has the residue, so the disclosure is still
+    /// owed — and the pre-existing removal path logged that at `debug`, which is
+    /// how a residue nobody was told about stayed invisible.
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn a_spool_that_cannot_be_removed_is_still_disclosed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let spool = dir.path().join(super::BATCH_SPOOL_FILE);
+        tokio::fs::write(&spool, b"residue").await.expect("seed");
+        // Make the CONTAINING directory read-only: the file itself stays
+        // writable, so the failure is the unlink rather than the inspection.
+        let mut perms = std::fs::metadata(dir.path())
+            .expect("dir meta")
+            .permissions();
+        perms.set_mode(0o500);
+        std::fs::set_permissions(dir.path(), perms).expect("chmod dir");
+
+        let (sweep, logs) = sweep_capturing(&spool).await;
+
+        // Restore before asserting, so a failure does not leave a locked dir.
+        let mut perms = std::fs::metadata(dir.path())
+            .expect("dir meta")
+            .permissions();
+        perms.set_mode(0o700);
+        std::fs::set_permissions(dir.path(), perms).expect("restore dir");
+
+        assert!(
+            !sweep.removed,
+            "an unremovable spool must be reported as NOT removed"
+        );
+        assert!(
+            spool.exists(),
+            "the residue is still on disk, which is why the disclosure is owed"
+        );
+        assert!(
+            logs.contains("could not be removed"),
+            "a failed removal must be a warn, not a debug nobody sees: {logs}"
+        );
+        assert!(
+            logs.contains(super::STALE_SPOOL_MESSAGE),
+            "the operator must still be told the residue is there: {logs}"
         );
     }
 }
