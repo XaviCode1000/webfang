@@ -153,6 +153,59 @@ Expected result of aborting: nothing is removed. The directory stays in `quarant
 
 ---
 
+## 8. Minimum retention â the eligibility gate
+
+`minimum_quarantine_age` is a **gate, not evidence**. Age only makes a deletion
+*decidable*; fresh evidence decides it. The two never substitute for each other.
+
+```
+quarantine_started_at  +  minimum_quarantine_age  +  fresh deletion-time evidence
+        ↓                                                        ↓
+                        eligible for deletion  ←—————————————–
+```
+
+Two durations, because the cost of being wrong is not comparable:
+
+| Object | Minimum retention | Rationale |
+| :--- | :--- | :--- |
+| Quarantined seeds | **48 hours** | Deliberate cache, identity by key, the consumer can rebuild them with a cold build, and the whole set is small. Two days covers a reasonable operational window without holding 4.4 G of known-incompatible data indefinitely. |
+| Historical `main` target | **7 days** | 478 G, and a target that accumulated state from many worktrees. Seven days covers a normal weekly work/CI cycle and makes the absence of access far stronger evidence than a window of hours. |
+
+The clock starts at **quarantine entry**, not at the object's age. An old `mtime`, an
+old `built_at`, or "it has been untouched for days" are all **not** the gate: a target
+can accumulate 46 dead worktrees over months and be quarantined in an instant, and a
+seed published an hour ago can be quarantined today.
+
+Do not shorten the window because the object already looks old. The counter runs from
+the moment it formally entered quarantine, and nothing else.
+
+### Reproducible eligibility check
+
+```bash
+eligible() {   # $1 = path,  $2 = minimum age in seconds
+  local now start
+  now=$(date +%s); start=$(stat -c %Z "$1")
+  [ $(( now - start )) -ge "$2" ]
+}
+eligible ~/.cache/cargo-target/quarantine/main-shared-478g-20260930 604800   # 7 d
+eligible ~/.cache/cargo-target/quarantine/seeds/<key>.<date>       172800   # 48 h
+```
+
+`ctime` is the right clock here: it moves when the entry is created in its current
+place, which for a rename is exactly the quarantine moment.
+
+### Current eligibility
+
+| Object | `quarantine_started_at` | Minimum | Eligible from |
+| :--- | :--- | :--- | :--- |
+| `main-shared-478g-20260930` | 2026-09-30 01:10 | 7 d | **2026-10-07 01:10** |
+| `seeds/v1-b76756ec52d50dfc.20260930` | 2026-09-30 01:45 | 48 h | **2026-10-02 01:45** |
+| `seeds/v1-4de4a216ec95753d.20260930` | 2026-09-30 01:45 | 48 h | **2026-10-02 01:45** |
+
+**None of the three is eligible yet.** The seeds' *content* is a week old, which is
+what makes them obviously obsolete; their *quarantine age* is under two hours. Those
+are different facts, and only the second one is the gate.
+
 ## 9. Current quarantine state
 
 | Path | Size | Quarantined | Authorised to delete |
