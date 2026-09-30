@@ -113,7 +113,10 @@ pub use application::export_factory::{create_exporter, domain_from_url, process_
 
 // CLI
 pub use cli::{
-    config::{init_logging_dual, is_no_color, should_emit_emoji, ConfigDefaults},
+    config::{
+        init_logging_dual, is_no_color, load_config_defaults, should_emit_emoji, ConfigDefaults,
+        ConfigLoadError,
+    },
     error::{CliError, CliExit},
     summary::ScrapeSummary,
     Args, Commands, Shell,

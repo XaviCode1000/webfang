@@ -158,15 +158,14 @@ fn sanitize_env(mut cmd: Command) -> Command {
     cmd.env("XDG_CACHE_HOME", hermetic_cache_dir());
     // Config gets the same treatment, and for a stronger reason than the
     // cache: the CLI resolves its config file through `WEBFANG_CONFIG`
-    // (`webfang_cli::main::resolve_config_path`), so pointing that at a path
-    // that does not exist means a spawned binary can never read the
-    // developer's real `~/.config/webfang/config.toml` — `ConfigDefaults::load`
-    // would otherwise fall back to `Self::default()` for a file it never saw,
-    // and the run would depend on the operator's machine. A per-test
-    // `.env("WEBFANG_CONFIG", …)` applied after `cmd()` still wins: both
-    // writes land in the inner `std::process::Command` env map, and the last
-    // write for a key is the one applied at spawn.
-    cmd.env("WEBFANG_CONFIG", hermetic_absent_config_file());
+    // (`cli::config::load_config_defaults`), so pointing that at a file that
+    // carries no settings means a spawned binary can never read the
+    // developer's real `~/.config/webfang/config.toml`, and the run cannot
+    // depend on the operator's machine. A per-test `.env("WEBFANG_CONFIG", …)`
+    // applied after `cmd()` still wins: both writes land in the inner
+    // `std::process::Command` env map, and the last write for a key is the one
+    // applied at spawn.
+    cmd.env("WEBFANG_CONFIG", hermetic_empty_config_file());
     cmd
 }
 
@@ -183,21 +182,33 @@ fn hermetic_cache_dir() -> std::path::PathBuf {
     dir
 }
 
-/// A config file path for one spawned-binary invocation that is NEVER
-/// created — the hermetic twin of [`hermetic_cache_dir`].
+/// An EMPTY config file for one spawned-binary invocation — the hermetic twin
+/// of [`hermetic_cache_dir`].
 ///
-/// Cache state is created eagerly because code may observe a missing parent;
-/// this one must stay absent on purpose, because an existing file is exactly
-/// what `ConfigDefaults::load` would read. `strip_poisoned_env` removes the
-/// developer's own `WEBFANG_CONFIG` on the way in, so nothing from outside
-/// the process can land here either.
-fn hermetic_absent_config_file() -> std::path::PathBuf {
+/// This used to hand back a path that was never created, which was safe only
+/// while an explicit `WEBFANG_CONFIG` degraded silently. Since #1659 an
+/// override is a statement of intent: `load_config_defaults` rejects a
+/// relative, missing, or unreadable one instead of falling back to defaults,
+/// so pointing every spawned binary at an absent path would fail every test
+/// in the suite at step 5 of startup.
+///
+/// An empty file is the equivalent that survives the strict contract.
+/// `ConfigDefaults` is `#[serde(default)]`, so empty TOML parses to exactly
+/// the same all-`None` defaults the absent file used to produce — hermetic,
+/// without depending on a fallback the loader no longer offers. The
+/// alternative, pointing at a *valid* config, would leak real settings into
+/// every test; that is why the file is empty rather than representative.
+/// `strip_poisoned_env` removes the developer's own `WEBFANG_CONFIG` on the
+/// way in, so nothing from outside the process can land here either.
+fn hermetic_empty_config_file() -> std::path::PathBuf {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "webfang-test-absent-config-{}-{n}.toml",
+    let path = std::env::temp_dir().join(format!(
+        "webfang-test-empty-config-{}-{n}.toml",
         std::process::id()
-    ))
+    ));
+    std::fs::write(&path, "").expect("create empty hermetic config.toml");
+    path
 }
 
 /// Shared test harness: one mock server + one temp output directory.
