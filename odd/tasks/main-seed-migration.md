@@ -98,10 +98,25 @@ pending item: remove `incremental_not_a_key_input` from the hashed `[key]` block
 That item was applied in `67530751` and re-verified. Manual review remains a human
 activity recorded here, not a lineage approval.
 
-**Reason: the runtime review surface cannot consume a committed base-diff.** Six
-separate routes were attempted against six different lineages and six different
-targets, reproducing the same result each time — including one whose candidate was
-only two documentation files, so the failure is independent of candidate size.
+**Mechanism, stated once so the finding no longer needs a count:**
+
+```
+inspect   exposes a committed base-diff candidate
+start     accepts only ordinary (working-tree) or judgment-day
+transport no supported path binds the projected base-diff to a review
+```
+
+**Reason: the runtime review surface cannot consume a committed base-diff.** Seven
+separate routes were attempted against seven different lineages and seven different
+targets, reproducing the same result each time — across candidates ranging from two
+documentation files to the full seven-file change, so the failure is independent of
+candidate size, and against two different base refs.
+
+Further candidates arising in this work are covered by the same finding; this count
+is not incremented per candidate, because a number that only grows adds churn without
+adding evidence. What settles it is the mechanism, stated below and reproducible:
+`inspect` projects a `base-diff`, and `start` only ever binds a `current-changes`
+target derived from the working tree.
 
 | Route | Result |
 | :--- | :--- |
@@ -117,8 +132,8 @@ immutable transport blocks. The review surface covers the uncommitted working tr
 the work-unit-commits discipline requires the work to be committed.
 
 This is a deterministic property of the runtime, not a transient failure and not a
-routing mistake. Six identical reproductions across six lineages and six targets
-are the evidence, and each was a faithful invocation of the route `inspect` offered.
+routing mistake. Seven identical reproductions, each a faithful invocation of the
+route `inspect` offered, are the evidence.
 
 **No candidate was approved, and the empty lineage is deliberately left as a non-usable
 review attempt with this reason attached.** Marking any of these commits as reviewed on

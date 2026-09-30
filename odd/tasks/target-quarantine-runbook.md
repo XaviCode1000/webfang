@@ -153,6 +153,103 @@ Expected result of aborting: nothing is removed. The directory stays in `quarant
 
 ---
 
+## 8. Minimum retention â the eligibility gate
+
+`minimum_quarantine_age` is a **gate, not evidence**. Age only makes a deletion
+*decidable*; fresh evidence decides it. The two never substitute for each other.
+
+```
+quarantine_started_at  +  minimum_quarantine_age  +  fresh deletion-time evidence
+        ↓                                                        ↓
+                        eligible for deletion  ←—————————————–
+```
+
+Two durations, because the cost of being wrong is not comparable:
+
+| Object | Minimum retention | Rationale |
+| :--- | :--- | :--- |
+| Quarantined seeds | **48 hours** | Deliberate cache, identity by key, the consumer can rebuild them with a cold build, and the whole set is small. Two days covers a reasonable operational window without holding 4.4 G of known-incompatible data indefinitely. |
+| Historical `main` target | **7 days** | 478 G, and a target that accumulated state from many worktrees. Seven days covers a normal weekly work/CI cycle and makes the absence of access far stronger evidence than a window of hours. |
+
+The clock starts at **quarantine entry**, not at the object's age. An old `mtime`, an
+old `built_at`, or "it has been untouched for days" are all **not** the gate: a target
+can accumulate 46 dead worktrees over months and be quarantined in an instant, and a
+seed published an hour ago can be quarantined today.
+
+Do not shorten the window because the object already looks old. The counter runs from
+the moment it formally entered quarantine, and nothing else.
+
+### Reproducible eligibility check
+
+```bash
+scripts/quarantine_age.sh eligible <path> <minimum_age_seconds>
+# 0 eligible · 1 not yet · 2 UNKNOWN — no or unreadable metadata, fail-closed
+```
+
+`quarantine_started_at` is **persisted metadata**, not a filesystem attribute:
+
+| Attribute | What it actually means | Why it is not the clock |
+| :--- | :--- | :--- |
+| `quarantine.meta` → `quarantine_started_at` | when the object formally entered quarantine | **the authority** |
+| `mtime` | when the CONTENT last changed | an old target looks old; a fresh clone of old content does not |
+| `atime` | when it was last read | moves on any traversal, including a `find` |
+| `ctime` | when the INODE last changed state | moves on `chmod`, `chown`, link-count changes, every unrelated mutation |
+
+A rename does set `ctime`, so right after a quarantine the value usually equals the
+quarantine moment. **Usually is not a contract**: a later `chmod` or `chown` moves it,
+and a retention clock that an unrelated permission fix can shift is not a retention
+clock. Verified — forcing `ctime` to 2020 on the quarantined historical target leaves
+its computed age unchanged at 1 h.
+
+Writing the metadata INSIDE the entry, after the rename, is what makes it fail-closed.
+A crash between the two leaves the object quarantined but unrecorded, and an unrecorded
+object is never eligible. The recorded timestamp is also never rewritten implicitly:
+`record` refuses when a `quarantine.meta` already exists, because resetting a running
+clock must be a deliberate act.
+
+### Current eligibility, from the persisted authority
+
+| Object | `quarantine_started_at` | Minimum | Eligible from |
+| :--- | :--- | :--- | :--- |
+| `main-shared-478g-20260930` | 2026-09-30T00:10:55Z | 7 d | **2026-10-07 00:10 UTC** |
+| `seeds/v1-b76756ec52d50dfc.20260930` | 2026-09-30T00:45:58Z | 48 h | **2026-10-02 00:45 UTC** |
+| `seeds/v1-4de4a216ec95753d.20260930` | 2026-09-30T00:45:58Z | 48 h | **2026-10-02 00:45 UTC** |
+
+### The rule, exhaustively
+
+```
+quarantine_started_at absent      ->  NOT ELIGIBLE
+quarantine_started_at unparseable ->  NOT ELIGIBLE
+quarantine_started_at in the future ->  NOT ELIGIBLE
+age < minimum_quarantine_age      ->  NOT ELIGIBLE
+age >= minimum_quarantine_age     ->  ELIGIBLE  (decidable, NOT authorised)
+```
+
+**Age never suffices on its own**, and the last line is the only one that can produce
+`ELIGIBLE`: fresh ownership and use evidence, collected at the moment of deletion, is
+still required. `ELIGIBLE` means *decidable*, not *authorised*.
+
+The three failure modes are not the same thing and are reported differently on purpose.
+A missing record is an incomplete operation, an unparseable one is a corrupt record,
+and a future one is an untrustworthy record — usually a typo, a timezone slip, or a
+machine with a wrong clock. Computed generically the future case would fall through as
+a negative age and print `NOT YET`, which is the right verdict for the wrong reason and
+would tell the operator to wait rather than to look.
+
+**There is no fallback.** A missing, unparseable or future `quarantine_started_at` is
+never resolved from `mtime`, `atime`, `ctime`, a seed's `built_at`, or the directory
+name. Those are diagnostics. A policy with an implicit fallback to them is a policy
+that will quietly measure the wrong thing, and the wrong thing here is "old enough to
+delete 478 GB".
+
+All three were backfilled with `--started-at` at the moment the rename was observed, so
+the value is a deliberate record of a known instant rather than an inference from a
+filesystem attribute. `ctime` is kept as auxiliary evidence in the note, not as the clock.
+
+**None of the three is eligible yet.** The seeds' *content* is a week old, which is
+what makes them obviously obsolete; their *quarantine age* is under two hours. Those
+are different facts, and only the second one is the gate.
+
 ## 9. Current quarantine state
 
 | Path | Size | Quarantined | Authorised to delete |

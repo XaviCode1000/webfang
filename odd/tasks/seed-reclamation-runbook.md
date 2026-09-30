@@ -106,6 +106,29 @@ Permissions must be restored before removal, deliberately and audibly:
 chmod -R u+w "$Q/$KEY" && rm -rf "$Q/$KEY"
 ```
 
+## 6b. Minimum retention â the eligibility gate
+
+`minimum_quarantine_age` for a quarantined seed is **48 hours** from
+`quarantine_started_at`. Full rationale and the two-object table live in
+`target-quarantine-runbook.md` §8; same gate, shorter window, because a seed is
+rebuildable cache and a target dir is not.
+
+`quarantine_started_at` is persisted in `quarantine.meta` inside the entry, and
+`scripts/quarantine_age.sh eligible` reads it. It is deliberately NOT `ctime`, which
+means "last inode state change" and therefore moves on a later `chmod` or `chown`; nor
+`mtime`, nor the seed's `built_at`. An unrecorded or unreadable timestamp is not
+eligible — fail-closed.
+
+The gate is necessary and not sufficient: it makes a deletion *decidable*, and fresh
+ownership/use evidence collected at the moment of deletion is what actually decides
+it. Age never substitutes for that evidence, and an old `built_at` is not the gate —
+a seed published an hour ago can be quarantined today.
+
+| Seed | `quarantine_started_at` | Minimum | Eligible from |
+| :--- | :--- | :--- | :--- |
+| `v1-b76756ec52d50dfc.20260930` | 2026-09-30 01:45 | 48 h | **2026-10-02 01:45** |
+| `v1-4de4a216ec95753d.20260930` | 2026-09-30 01:45 | 48 h | **2026-10-02 01:45** |
+
 ## 7. Current state after the first pass
 
 | Seed | `built_at` | State | Evidence |
