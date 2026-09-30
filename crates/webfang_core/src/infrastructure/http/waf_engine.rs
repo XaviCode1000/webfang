@@ -646,29 +646,40 @@ fn collect_body_evidence(body: &str) -> (Vec<WafEvidence>, bool) {
 /// Whether a body match is a quoted JS/JSON **config-value** occurrence rather
 /// than a served challenge (#781).
 ///
-/// A match is a config string when it fills an ENTIRE double-quoted string that
-/// sits in value position — either preceded by `"key":` / `"key" :` (JSON
-/// object) or by a bare identifier and `=` or `:` (JS assignment). Real
-/// challenge occurrences never take this shape: widget markup
-/// (`class="h-captcha"`, `data-sitekey="..."`) embeds the marker inside a
-/// quoted attribute, script sources (`hcaptcha.com/1/api.js`, `hcaptcha.js`)
-/// carry a path suffix, and challenge prose is unquoted. The filter is
-/// conservative: anything ambiguous stays a genuine match.
-///
-/// Complexity is bounded by a small constant walk around the match start/end —
-/// the Aho-Corasick scan stays the only O(N) pass.
-/// Whether a body match is a quoted JS/JSON **config-value** occurrence rather
-/// than a served challenge (#781).
-///
 /// A match is a config string when it fills an ENTIRE double-quoted string in
 /// the value position of a quoted-key object entry: `"key": "<match>"`. This is
 /// exactly the shape of MediaWiki's captcha config dump
 /// (`"wgConfirmEditCaptchaNeededForGenericEdit": "hcaptcha"`). Real challenge
 /// occurrences never take this shape: widget markup (`class="h-captcha"`,
 /// `data-sitekey="..."`) embeds the marker in an HTML attribute value (preceded
-/// by `=`), script sources (`hcaptcha.com/1/api.js`) carry a URL prefix before
-/// the opening quote, and challenge prose is unquoted. The filter is
-/// conservative: anything ambiguous stays a genuine match.
+/// by `=`, not `:`), script sources (`hcaptcha.com/1/api.js`) carry a URL
+/// prefix before the opening quote, and challenge prose is unquoted. The filter
+/// is conservative: anything ambiguous stays a genuine match.
+///
+/// # Why the JS-assignment shape is deliberately NOT handled (G-24, #1615)
+///
+/// An earlier revision of this comment also promised the JS-assignment shape
+/// (`ident = "hcaptcha"`), and the implementation never grew it. G-24 offers
+/// "implement it or narrow the comment"; the comment is narrowed, and the
+/// reason is a security one rather than a scheduling one:
+///
+/// `ident = "hcaptcha"` and `data-sitekey="abc"` are separated only by spaces
+/// around the `=`. Accepting the JS shape therefore means accepting every HTML
+/// attribute whose value is a bare vendor token — which is precisely how
+/// Cloudflare Turnstile, hCaptcha and reCAPTCHA ship their site keys. Treating
+/// those as "configuration" filters OUT a live challenge marker, and the error
+/// direction is wrong: this filter exists to prevent false POSITIVES, and
+/// widening it buys nothing while risking false NEGATIVES on real challenges.
+///
+/// A whitespace-sensitive rule (`=` must be padded on both sides) would
+/// separate the two in practice, but it is a heuristic about formatting
+/// conventions, and a challenge page that minifies to `data-sitekey="x"` is
+/// already served by the current, stricter rule. Adding the looser rule would
+/// trade a real detection guarantee for a LOW-severity documentation defect.
+///
+/// So the JSON shape is the whole contract, and the comment now says so. If the
+/// JS shape is ever wanted, it needs a rule that cannot also match an
+/// attribute — not a relaxed separator.
 ///
 /// The scan walks a bounded constant number of bytes backwards from the match,
 /// so the Aho-Corasick pass remains the only O(N) walk over the body.
@@ -878,16 +889,46 @@ fn is_5xx(status: Option<u16>) -> bool {
 ///
 /// Returns evidence ONLY when a rule decides to block (so its presence in a
 /// verdict always means "blocked"):
-/// - Rule (a): body > 100KB AND entropy > 5.5 b/B → block if status != 200
-///   (unknown/degraded counts as != 200) OR `has_genuine_fingerprint` — a
-///   Fingerprint in genuine challenge context: a non-config-string body match
-///   (#781 — a quoted JS/JSON config value like `"wgConfirmEdit...":"hcaptcha"`
-///   is NOT genuine) or a control header (active mitigation). This keeps dense
-///   legitimate pages (Wikipedia) from escalating to an obfuscated-WAF block on
-///   HTTP 200.
-/// - Rule (b): body < 1500B AND > 5 `<script>` tags → block if non-2xx OR
-///   (200 + HTML content-type). The 200+HTML case is the "H3 fix" silent
-///   challenge and MUST be kept (`discovery.rs` depends on it).
+/// - Rule (a): body > 100KB AND entropy > 5.5 b/B → block if
+///   `is_t2_blocking_status(status)` (403/429/503/520-529) OR
+///   `has_genuine_fingerprint` — a Fingerprint in genuine challenge context: a
+///   non-config-string body match (#781 — a quoted JS/JSON config value like
+///   `"wgConfirmEdit...":"hcaptcha"` is NOT genuine) or a control header
+///   (active mitigation). This keeps dense legitimate pages (Wikipedia) from
+///   escalating to an obfuscated-WAF block on HTTP 200.
+/// - Rule (b): body < 1500B AND > 5 `<script>` tags → block if
+///   `is_t2_blocking_status(status)` OR (200 + HTML content-type). The
+///   200+HTML case is the "H3 fix" silent challenge and MUST be kept
+///   (`discovery.rs` depends on it).
+///
+/// # Why the status test is a WAF-correlated set, not "not 200" (F8, #1615)
+///
+/// Both rules used to block on `status != Some(200)`, with unknown status
+/// counted as "not 200". That fires on *any* non-200 response: a 404 page from
+/// a large site, a 301 to a canonical URL, a 500 from an origin that is simply
+/// broken. A >100KB high-entropy body is completely ordinary for all three —
+/// modern error pages ship CSS, fonts and JSON — so a site returning a large
+/// 404 was reported as an "Obfuscated WAF" challenge and its content skipped.
+/// The same shape fired in degraded mode, where the caller supplied no status
+/// at all, which also contradicted the documented contract that degraded mode
+/// blocks only on unambiguous challenge markers.
+///
+/// The shared [`is_t2_blocking_status`] is the right predicate because it is
+/// already this repo's statement of "this status correlates with a WAF", and it
+/// is what the Fingerprint tier uses. Both rules now block on that correlation
+/// or on genuine challenge evidence — never on a status merely differing from
+/// 200.
+///
+/// # What is given up, stated plainly
+///
+/// A challenge page served as 500, 502, 418 or 404 is no longer caught by the
+/// entropy heuristic alone. 5xx is excluded because `RES-01` already
+/// established that 5xx bodies are dominated by vendor diagnostic noise, so
+/// blocking there trades a small detection loss for removing a large class of
+/// false positive. A WAF that wants to be caught here still is, on 403/429/503
+/// and 520-529, and any genuine fingerprint or control header still blocks at
+/// any status. A detection loss on an exotic status is the cheaper error than
+/// refusing to crawl a third of the web.
 fn entropy_evidence(
     body: &str,
     ctx: &InspectionContext,
@@ -897,20 +938,29 @@ fn entropy_evidence(
     if body.len() > SUSPICIOUS_SIZE_THRESHOLD {
         let entropy = calculate_entropy(body);
         if entropy > ENTROPY_THRESHOLD {
-            if ctx.status != Some(200) || has_genuine_fingerprint {
+            if is_t2_blocking_status(ctx.status) || has_genuine_fingerprint {
                 return Some(WafEvidence {
                     provider: "Obfuscated WAF",
                     tier: WafTier::Challenge,
-                    matched_pattern: "high-entropy body (>100KB, >5.5 b/B)",
+                    // G-25 / F8: no threshold in the label. This string reaches
+                    // `WafVerdict::evidence_chain`, which the HTTP client, the
+                    // scraper service, the crawler and the MCP tool all pass to
+                    // the user — so `>100KB` and `>5.5 b/B` were a published
+                    // specification of the rule, letting a hostile page tune
+                    // itself just under both. The rule still runs on those
+                    // numbers; it just no longer advertises them.
+                    matched_pattern: "high-entropy body",
                     source: EvidenceSource::Body,
                 });
             }
-            // Informational detection (REQ-WAF-08): high entropy at status 200
-            // without a genuine challenge-context fingerprint is logged, not
-            // blocked.
+            // Informational detection (REQ-WAF-08): high entropy at a status
+            // that does not correlate with a WAF, and without genuine challenge
+            // context, is logged and not blocked.
             tracing::debug!(
                 entropy,
-                "high-entropy body at status 200 without genuine challenge context; not blocking"
+                status = ?ctx.status,
+                "high-entropy body without WAF-correlated status or genuine challenge \
+                 context; not blocking"
             );
         }
     }
@@ -919,17 +969,17 @@ fn entropy_evidence(
     if body.len() < SILENT_CHALLENGE_MAX_BYTES {
         let script_count = body.matches("<script").count();
         if script_count > SILENT_CHALLENGE_MIN_SCRIPTS {
-            let is_2xx = matches!(ctx.status, Some(200..=299));
             let is_html = ctx
                 .content_type
                 .as_deref()
                 .is_some_and(is_html_content_type);
-            // Unknown status (degraded) is treated as non-2xx (conservative).
-            if !is_2xx || (ctx.status == Some(200) && is_html) {
+            if is_t2_blocking_status(ctx.status) || (ctx.status == Some(200) && is_html) {
                 return Some(WafEvidence {
                     provider: "Silent Challenge",
                     tier: WafTier::Challenge,
-                    matched_pattern: "script-density (<1500B, >5 <script>)",
+                    // Same G-25 reasoning as rule (a): the byte count and the
+                    // script count are the rule, not the finding.
+                    matched_pattern: "script-density",
                     source: EvidenceSource::Body,
                 });
             }
@@ -2293,7 +2343,14 @@ mod tests {
 
     #[test]
     fn test_detect_body_by_entropy() {
-        // Create >100KB with high entropy to trigger Shannon entropy detection
+        // Create >100KB with high entropy to trigger Shannon entropy detection.
+        //
+        // #1615 F8: the status used to be absent here, and the rule treated an
+        // unknown status as "not 200", so a large high-entropy body in DEGRADED
+        // mode blocked. Degraded mode has no HTTP context at all, and its
+        // documented contract is that only unambiguous challenge markers block —
+        // a size/entropy heuristic is not one. The detection is still real, so
+        // the row now supplies the status that correlates with a WAF.
         let high_entropy_content: String = (0u8..=255)
             .map(|b| b as char)
             .chain((0u8..=255).map(|b| b as char))
@@ -2302,12 +2359,124 @@ mod tests {
             .cycle()
             .take(104_000)
             .collect();
-        let verdict = WafInspector::inspect(&high_entropy_content, &InspectionContext::default());
+        let ctx = InspectionContext {
+            status: Some(403),
+            ..Default::default()
+        };
+        let verdict = WafInspector::inspect(&high_entropy_content, &ctx);
         assert!(verdict.is_blocked);
         assert_eq!(
             verdict.evidences.first().map(|e| e.provider),
             Some("Obfuscated WAF")
         );
+    }
+
+    /// #1615 F8 — the regression row. A large, high-entropy body is ordinary
+    /// for any modern error or index page, and it used to be reported as an
+    /// "Obfuscated WAF" on every status that was not 200. The statuses below
+    /// are the ones that made the finding expensive: 404 and 301 are routine,
+    /// 500 is a broken origin, and 204 is a successful no-content response.
+    ///
+    /// Each of these previously blocked. None of them is WAF evidence.
+    #[test]
+    fn high_entropy_does_not_block_on_an_ordinary_non_200_status() {
+        let body: String = (0u8..=255)
+            .map(|b| b as char)
+            .cycle()
+            .take(104_000)
+            .collect();
+        for status in [204u16, 301, 404, 410, 418, 500, 502] {
+            let ctx = InspectionContext {
+                status: Some(status),
+                content_type: Some("text/html".to_string()),
+                ..Default::default()
+            };
+            let verdict = WafInspector::inspect(&body, &ctx);
+            assert!(
+                !verdict.is_blocked,
+                "status {status} is not WAF evidence; a {}-byte body must not be \
+                 reported as an obfuscated-WAF challenge (evidences: {:?})",
+                body.len(),
+                verdict
+                    .evidences
+                    .iter()
+                    .map(|e| (e.provider, e.matched_pattern))
+                    .collect::<Vec<_>>()
+            );
+        }
+    }
+
+    /// The same body, degraded. `InspectionContext::default()` carries no
+    /// status, and the documented contract for degraded mode is that only
+    /// unambiguous challenge markers block — so a heuristic must not.
+    #[test]
+    fn high_entropy_does_not_block_in_degraded_mode() {
+        let body: String = (0u8..=255)
+            .map(|b| b as char)
+            .cycle()
+            .take(104_000)
+            .collect();
+        let verdict = WafInspector::inspect(&body, &InspectionContext::default());
+        assert!(
+            !verdict.is_blocked,
+            "degraded mode has no status to correlate, so entropy alone must not \
+             block (evidences: {:?})",
+            verdict
+                .evidences
+                .iter()
+                .map(|e| (e.provider, e.matched_pattern))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// And the WAF-correlated statuses still block, so the row above is a
+    /// false-positive fix and not a disabled rule.
+    #[test]
+    fn high_entropy_still_blocks_on_a_waf_correlated_status() {
+        let body: String = (0u8..=255)
+            .map(|b| b as char)
+            .cycle()
+            .take(104_000)
+            .collect();
+        for status in [403u16, 429, 503, 520, 529] {
+            let ctx = InspectionContext {
+                status: Some(status),
+                ..Default::default()
+            };
+            assert!(
+                WafInspector::inspect(&body, &ctx).is_blocked,
+                "status {status} correlates with a WAF and must still block"
+            );
+        }
+    }
+
+    /// #1615 F8 / G-25 — the rule's thresholds must not be published.
+    ///
+    /// `matched_pattern` reaches the user through `evidence_chain`, so a label
+    /// reading `>100KB` and `>5.5 b/B` was a specification of the rule: a
+    /// hostile page could size and pad itself to sit just under both. The rule
+    /// still runs on those numbers; this row pins that it stops ADVERTISING
+    /// them, and that no number from the constants leaks into the chain.
+    #[test]
+    fn the_evidence_chain_does_not_disclose_the_entropy_thresholds() {
+        let body: String = (0u8..=255)
+            .map(|b| b as char)
+            .cycle()
+            .take(104_000)
+            .collect();
+        let ctx = InspectionContext {
+            status: Some(403),
+            ..Default::default()
+        };
+        let verdict = WafInspector::inspect(&body, &ctx);
+        assert!(verdict.is_blocked, "the rule must still fire");
+        let chain = verdict.evidence_chain();
+        for leak in ["100KB", "100_000", "5.5", "b/B", "1500", ">5"] {
+            assert!(
+                !chain.contains(leak),
+                "the evidence chain discloses the rule's threshold {leak:?}: {chain}"
+            );
+        }
     }
 
     #[test]
@@ -2370,13 +2539,74 @@ mod tests {
 
     #[test]
     fn test_silent_challenge_detection() {
+        // #1615 F8: the 200+HTML arm of rule (b) — the "H3 fix" silent challenge
+        // that `discovery.rs` depends on. The status is stated explicitly
+        // rather than left absent: under the old "unknown counts as non-2xx"
+        // rule this row passed without one, which meant it was really testing
+        // the degraded arm.
         let body = r#"<html><script></script><script></script><script></script><script></script><script></script><script></script></html>"#;
-        let verdict = WafInspector::inspect(body, &InspectionContext::default());
+        let ctx = InspectionContext {
+            status: Some(200),
+            content_type: Some("text/html".to_string()),
+            ..Default::default()
+        };
+        let verdict = WafInspector::inspect(body, &ctx);
         assert!(verdict.is_blocked);
 
         let body = "<html><body><p>Hello</p></body></html>";
-        let verdict = WafInspector::inspect(body, &InspectionContext::default());
+        let verdict = WafInspector::inspect(body, &ctx);
         assert!(!verdict.is_blocked);
+    }
+
+    /// #1615 F8 — the script-density arm of rule (b) had the same "any non-2xx"
+    /// problem as rule (a): a tiny body with several `<script>` tags behind a
+    /// 404 was reported as a silent challenge. Ordinary statuses no longer
+    /// block; the WAF-correlated ones and the 200+HTML case still do.
+    #[test]
+    fn script_density_does_not_block_on_an_ordinary_non_200_status() {
+        let body = r#"<html><script></script><script></script><script></script><script></script><script></script><script></script></html>"#;
+        for status in [204u16, 301, 404, 500, 502] {
+            let ctx = InspectionContext {
+                status: Some(status),
+                content_type: Some("text/html".to_string()),
+                ..Default::default()
+            };
+            assert!(
+                !WafInspector::inspect(body, &ctx).is_blocked,
+                "status {status} is not WAF evidence; a script-dense body must not \
+                 be reported as a silent challenge"
+            );
+        }
+        for status in [403u16, 429, 503, 520] {
+            let ctx = InspectionContext {
+                status: Some(status),
+                content_type: Some("text/html".to_string()),
+                ..Default::default()
+            };
+            assert!(
+                WafInspector::inspect(body, &ctx).is_blocked,
+                "status {status} correlates with a WAF and must still block"
+            );
+        }
+    }
+
+    /// #1615 F8 / G-25 — same non-disclosure row for rule (b)'s label.
+    #[test]
+    fn the_evidence_chain_does_not_disclose_the_script_density_thresholds() {
+        let body = r#"<html><script></script><script></script><script></script><script></script><script></script><script></script></html>"#;
+        let ctx = InspectionContext {
+            status: Some(200),
+            content_type: Some("text/html".to_string()),
+            ..Default::default()
+        };
+        let verdict = WafInspector::inspect(body, &ctx);
+        assert!(verdict.is_blocked);
+        let chain = verdict.evidence_chain();
+        assert!(
+            !chain.contains("1500") && !chain.contains("<script"),
+            "the script-density label must not publish its byte or tag bounds: \
+             {chain}"
+        );
     }
 
     #[test]
