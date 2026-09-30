@@ -70,7 +70,7 @@ fn crawler_config() -> CrawlerConfig {
 /// whenever no JS downloader is injected, so a refusal here is inherited by
 /// every consumer of the port rather than by one call site.
 #[tokio::test]
-async fn static_fetch_port_refuses_forbidden_literals() {
+async fn issue_1615_static_fetch_port_refuses_forbidden_literals() {
     let fetcher = StaticHttpFetcher;
     for host in FORBIDDEN_LITERALS {
         let target = format!("http://{host}/");
@@ -89,7 +89,7 @@ async fn static_fetch_port_refuses_forbidden_literals() {
 /// And the port still fetches a hostname — a guard that refused everything
 /// would pass the row above.
 #[tokio::test]
-async fn static_fetch_port_still_fails_normally_on_a_public_hostname() {
+async fn issue_1615_static_fetch_port_still_fails_normally_on_a_public_hostname() {
     let fetcher = StaticHttpFetcher;
     // No network is required for this row: the point is that the error is a
     // transport error carrying the guard's ABSENCE, not a refusal.
@@ -111,7 +111,7 @@ async fn static_fetch_port_still_fails_normally_on_a_public_hostname() {
 /// so the guard's early return did not change the classification of the parse
 /// failure that preceded it.
 #[tokio::test]
-async fn static_fetch_port_still_reports_an_unparseable_url_as_a_network_error() {
+async fn issue_1615_static_fetch_port_still_reports_an_unparseable_url_as_a_network_error() {
     let fetcher = StaticHttpFetcher;
     let err = fetcher
         .fetch_url("not a url at all", &crawler_config())
@@ -129,7 +129,7 @@ async fn static_fetch_port_still_reports_an_unparseable_url_as_a_network_error()
 /// exactly why it was the one path with no entry guard. The seed here is
 /// operator-shaped, but in the sitemap case a third party supplies the host.
 #[tokio::test]
-async fn dom_discovery_refuses_a_forbidden_literal_seed() {
+async fn issue_1615_dom_discovery_refuses_a_forbidden_literal_seed() {
     for host in ["169.254.169.254", "127.0.0.1", "10.0.0.1"] {
         let seed = format!("http://{host}/");
         let config = CrawlerConfig::new(url::Url::parse(&seed).expect("seed parses"));
@@ -150,7 +150,7 @@ async fn dom_discovery_refuses_a_forbidden_literal_seed() {
 /// nothing noticed it was unguarded. It is guarded now so the next wiring does
 /// not import a bypass, and this row is what proves the guard is there.
 #[tokio::test]
-async fn preflight_check_refuses_a_forbidden_literal() {
+async fn issue_1615_preflight_check_refuses_a_forbidden_literal() {
     for host in ["169.254.169.254", "127.0.0.1"] {
         let url = url::Url::parse(&format!("http://{host}/")).expect("url parses");
         match webfang_core::cli::preflight::preflight_check(&url).await {
@@ -174,7 +174,7 @@ async fn preflight_check_refuses_a_forbidden_literal() {
 /// `DomainError`, and a transport-shaped failure reads as retryable. A
 /// forbidden target must not be retryable, so it is reported as a verdict.
 #[tokio::test]
-async fn url_validator_reports_a_forbidden_literal_as_invalid() {
+async fn issue_1615_url_validator_reports_a_forbidden_literal_as_invalid() {
     let validator = webfang_core::infrastructure::crawler::url_validator::UrlValidator::new()
         .expect("validator builds");
     for host in ["169.254.169.254", "127.0.0.1"] {
@@ -200,7 +200,7 @@ async fn url_validator_reports_a_forbidden_literal_as_invalid() {
 /// leak. With one permit and a refusal, a second acquire would block — so this
 /// row also proves the check runs before the request is built, not after.
 #[tokio::test]
-async fn resource_downloader_refuses_a_forbidden_literal() {
+async fn issue_1615_resource_downloader_refuses_a_forbidden_literal() {
     use webfang_core::infrastructure::crawler::resource_downloader::ResourceDownloader;
 
     let client = wreq::Client::builder().build().expect("test client builds");

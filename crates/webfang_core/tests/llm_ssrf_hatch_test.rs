@@ -30,7 +30,7 @@ use webfang_core::domain::ssrf_guard::LLM_SSRF_TEST_HATCH_ENV;
 /// would reasonably guess those mean "do not disable", and under the old code
 /// each of them disabled the gate exactly like `1` did.
 #[test]
-fn the_llm_ssrf_hatch_does_not_disarm_the_gate_outside_a_test_build() {
+fn issue_1615_the_llm_ssrf_hatch_does_not_disarm_the_gate_outside_a_test_build() {
     for value in ["1", "0", "false", "", "yes", "true", "please"] {
         let _guard = webfang_test_utils::EnvGuard::with(&[(LLM_SSRF_TEST_HATCH_ENV, value)]);
         for host in [
@@ -57,7 +57,7 @@ fn the_llm_ssrf_hatch_does_not_disarm_the_gate_outside_a_test_build() {
 /// unconditional: a hatch that only covered the IP check would still be a
 /// production kill-switch for the scheme half.
 #[test]
-fn the_llm_ssrf_hatch_does_not_reopen_non_http_schemes() {
+fn issue_1615_the_llm_ssrf_hatch_does_not_reopen_non_http_schemes() {
     for value in ["1", "0", "true"] {
         let _guard = webfang_test_utils::EnvGuard::with(&[(LLM_SSRF_TEST_HATCH_ENV, value)]);
         for url in [
@@ -78,7 +78,7 @@ fn the_llm_ssrf_hatch_does_not_reopen_non_http_schemes() {
 /// refusals would pass if the gate simply rejected everything, which is a
 /// different bug.
 #[test]
-fn a_public_llm_base_url_is_still_admitted_with_the_hatch_set() {
+fn issue_1615_a_public_llm_base_url_is_still_admitted_with_the_hatch_set() {
     let _guard = webfang_test_utils::EnvGuard::with(&[(LLM_SSRF_TEST_HATCH_ENV, "1")]);
     let url: url::Url = "https://api.example.com/v1"
         .parse()

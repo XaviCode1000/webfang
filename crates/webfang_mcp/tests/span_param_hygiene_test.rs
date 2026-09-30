@@ -78,7 +78,7 @@ fn signature_after(source: &str, attr_end: usize) -> &str {
 }
 
 #[test]
-fn no_handler_span_records_its_params() {
+fn issue_1615_no_handler_span_records_its_params() {
     let mut checked = 0_usize;
     let mut recorded = 0_usize;
     let mut violations: Vec<String> = Vec::new();
@@ -158,7 +158,7 @@ fn no_handler_span_records_its_params() {
 }
 
 #[test]
-fn the_guard_actually_sees_the_attributes_it_claims_to() {
+fn issue_1615_the_guard_actually_sees_the_attributes_it_claims_to() {
     // A guard that silently scans nothing is worse than no guard: it reports
     // green forever. Pin the count so a refactor that moves the handlers
     // elsewhere fails HERE, with a message naming the move, instead of
