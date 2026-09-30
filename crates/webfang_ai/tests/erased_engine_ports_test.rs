@@ -26,31 +26,26 @@ use webfang_ai::{EmbeddingAdapter, GraniteDomInspector, MiniLmTokenizer};
 use webfang_core::domain::embedding_port::EmbeddingPort;
 use webfang_core::domain::semantic_inspector::{SemanticContext, SemanticInspectorPort};
 
-/// Build a minimal in-memory WordPiece tokenizer — no tokenizer.json file
-/// required. Only needs to EXIST for component construction; the mock engine
-/// never inspects tokens.
-fn in_memory_tokenizer() -> tokenizers::Tokenizer {
-    use tokenizers::models::wordpiece::WordPiece;
-    let vocab = [
-        ("[PAD]".to_string(), 0u32),
-        ("[UNK]".to_string(), 100),
-        ("[CLS]".to_string(), 101),
-        ("[SEP]".to_string(), 102),
-        ("hello".to_string(), 5),
-        ("world".to_string(), 6),
-    ];
-    let model = WordPiece::builder()
-        .vocab(vocab)
-        .unk_token("[UNK]".to_string())
-        .build()
-        .expect("wordpiece model must build from an inline vocab");
-    tokenizers::Tokenizer::new(model)
-}
+// The ONE home of the in-memory tokenizer, shared with the `embedding_adapter`
+// unit tests in `src/infrastructure_ai/embedding_adapter.rs` (#1575). Included by
+// path because a `#[cfg(test)]` module inside the library is invisible to an
+// integration test; see the fixture's module docs for why no dev-dependency
+// crate is used.
+#[path = "../src/infrastructure_ai/ai_test_fixture.rs"]
+mod ai_test_fixture;
+
+use ai_test_fixture::{in_memory_wordpiece_tokenizer, UNLOADABLE_MODEL_PATH};
 
 /// One fixed-latency mock engine, erased exactly the way
 /// `build_engine` returns it for `EngineConfig::Pool { N }`.
 fn erased_mock_engine() -> Arc<dyn InferenceEngine + Send + Sync> {
     Arc::new(MockInferenceEngine::new(Duration::from_millis(1)))
+}
+
+/// A `MiniLmTokenizer` over the shared in-memory WordPiece model, wrapped in
+/// the `Arc` every consumer of a shared engine expects.
+fn in_memory_mini_lm() -> Arc<MiniLmTokenizer> {
+    Arc::new(MiniLmTokenizer::new(in_memory_wordpiece_tokenizer(), 512))
 }
 
 /// The Pool-mode cleaner erases to `SemanticCleanerImpl<dyn InferenceEngine +
@@ -62,7 +57,7 @@ fn pool_cleaner_erases_and_shares_erased_engine() {
 
     let cleaner = SemanticCleanerImpl::from_parts(
         erased_mock_engine(),
-        Arc::new(MiniLmTokenizer::new(in_memory_tokenizer(), 512)),
+        in_memory_mini_lm(),
         ModelConfig::default(),
     );
     assert_erased_cleaner(&cleaner);
@@ -79,7 +74,7 @@ fn pool_cleaner_erases_and_shares_erased_engine() {
 async fn pool_cleaner_serves_vault_embedding_and_tier2_from_one_engine() {
     let cleaner = SemanticCleanerImpl::from_parts(
         erased_mock_engine(),
-        Arc::new(MiniLmTokenizer::new(in_memory_tokenizer(), 512)),
+        in_memory_mini_lm(),
         ModelConfig::default(),
     );
     let (engine, tokenizer) = cleaner.shared_inference();
@@ -132,12 +127,12 @@ fn concrete_single_pool_coerces_into_erased_ports() {
 
     let pool = Arc::new(
         InferencePool::new(
-            std::path::PathBuf::from("/nonexistent/webfang-fake-model.onnx"),
+            std::path::PathBuf::from(UNLOADABLE_MODEL_PATH),
             AiModel::Granite97M,
         )
         .expect("pool creation must succeed even with an unloadable model file"),
     );
-    let tokenizer = Arc::new(MiniLmTokenizer::new(in_memory_tokenizer(), 512));
+    let tokenizer = in_memory_mini_lm();
 
     // No type annotation needed: a concrete `Arc<InferencePool>` value
     // unsized-coerces to `Arc<dyn InferenceEngine + Send + Sync>` at both call
