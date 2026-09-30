@@ -180,6 +180,34 @@ pub fn require_auth_or_explicit_anonymous(
     ))
 }
 
+/// Spanish warning for a routable bind over a plaintext transport (#1611,
+/// G-21).
+///
+/// The transport is plain HTTP with no TLS in this crate, so a non-loopback
+/// bind sends `Authorization: Bearer <token>` — the whole scraper surface's
+/// credential — in cleartext on every request. That is not a rate-limit or a
+/// cap problem: it is a credential on the wire, and no amount of admission
+/// control compensates for it. The honest remediation is a TLS-terminating
+/// reverse proxy (or a tunnel) in front of the process, which is a deployment
+/// decision, so the server's job here is only to say so out loud.
+///
+/// Loopback binds are not warned about: the traffic never leaves the host.
+pub const PLAINTEXT_BIND_WARNING: &str =
+    "El transporte MCP es HTTP sin TLS: el token Bearer viaja en claro por la red. Termine TLS delante del servidor (proxy inverso o túnel) antes de exponerlo fuera de localhost.";
+
+/// The plaintext-transport warning for `bind`, or `None` when the bind is
+/// loopback and the traffic never leaves the host.
+///
+/// Returned rather than logged so the rule is unit-testable without capturing
+/// tracing output, and so the caller can decide how loudly to say it.
+#[must_use]
+pub fn plaintext_bind_warning(bind: SocketAddr) -> Option<&'static str> {
+    if bind.ip().is_loopback() {
+        return None;
+    }
+    Some(PLAINTEXT_BIND_WARNING)
+}
+
 /// Build the Axum router with MCP endpoint and full middleware stack.
 ///
 /// This is the production composition root: it builds the rmcp
@@ -309,6 +337,15 @@ where
             axum::http::StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(options.request_timeout_secs),
         ))
+        // #1611 G-20, deliberately NOT fixed here: this timeout bounds the
+        // REQUEST FUTURE, not a streaming response body. Once rmcp has answered
+        // with an SSE stream, the body keeps flowing past this deadline. The
+        // other half of G-20 — "SSE channels uncapped" — no longer holds on
+        // rmcp 1.8.0: every session/event channel is built with
+        // `SessionConfig::channel_capacity`, which defaults to 16
+        // (`session/local.rs:451,576,1179`). A body-idle timeout would mean
+        // wrapping the response stream, which can cut a legitimate long-running
+        // crawl's event stream; that is a design decision, not a patch.
         .layer(RequestBodyLimitLayer::new(options.body_limit_bytes))
         .layer(TraceLayer::new_for_http())
         // Outermost: applied LAST, so it wraps auth, rate limiting, timeout,
@@ -1731,6 +1768,10 @@ mod tests {
     /// used to START, and a server that starts unauthenticated is the whole
     /// of the vulnerability. Failing here — before the container exists —
     /// turns it into an operator message that names both fixes.
+    /// #1611 G-21 requires the fail-closed startup guard, and #1611 G-18 makes
+    /// it symmetric: anonymous operation is loopback-only, and a routable bind
+    /// additionally gets [`plaintext_bind_warning`] because this transport has
+    /// no TLS and the bearer token would cross the network in cleartext.
     #[test]
     fn require_auth_or_explicit_anonymous_covers_all_three_configurations() {
         let loopback: SocketAddr = "127.0.0.1:8080".parse().unwrap();
@@ -1757,6 +1798,29 @@ mod tests {
                 assert!(msg.contains("--allow-anonymous"), "names the opt-in: {msg}");
             },
             Ok(()) => panic!("a token-less, opt-in-less bind must be refused"),
+        }
+    }
+
+    /// #1611 G-21: a routable bind is warned about, a loopback bind is not —
+    /// the difference is whether the credential can leave the host at all.
+    #[test]
+    fn a_routable_bind_is_warned_about_and_a_loopback_bind_is_not() {
+        for addr in ["127.0.0.1:8080", "[::1]:8080", "localhost:1"] {
+            let Ok(bind) = addr.parse::<SocketAddr>() else {
+                // A name that does not parse as a SocketAddr is not a bind the
+                // binary can produce; `localhost` is covered by the two above.
+                continue;
+            };
+            assert_eq!(plaintext_bind_warning(bind), None, "{addr}");
+        }
+        for addr in ["0.0.0.0:8080", "192.168.1.10:8080"] {
+            let bind: SocketAddr = addr.parse().unwrap();
+            let warning = plaintext_bind_warning(bind)
+                .unwrap_or_else(|| panic!("{addr} must carry the plaintext warning"));
+            assert!(
+                warning.contains("TLS"),
+                "the warning names the fix: {warning}"
+            );
         }
     }
 

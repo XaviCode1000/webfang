@@ -12,8 +12,9 @@ use anyhow::Result;
 use clap::Parser;
 use webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV;
 use webfang_mcp::mcp_server::server::{
-    require_auth_or_explicit_anonymous, start_mcp_server, ServerOptions, DEFAULT_MAX_SESSIONS,
-    DEFAULT_MCP_ADDR, DEFAULT_SESSION_CAP_WINDOW_SECS, MAX_ALLOWED_SESSIONS_CAP,
+    plaintext_bind_warning, require_auth_or_explicit_anonymous, start_mcp_server, ServerOptions,
+    DEFAULT_MAX_SESSIONS, DEFAULT_MCP_ADDR, DEFAULT_SESSION_CAP_WINDOW_SECS,
+    MAX_ALLOWED_SESSIONS_CAP,
 };
 use webfang_mcp::mcp_server::{
     build_container, build_mcp_state, default_dom_inspector, spawn_ai_wiring, McpState,
@@ -206,6 +207,17 @@ async fn main() -> Result<()> {
             user_message = ANONYMOUS_START_WARNING,
             "MCP server starting on loopback with anonymous access explicitly allowed \
              (development mode) — every local process may call every tool"
+        );
+    }
+
+    // #1611 G-21: the transport carries no TLS, so a routable bind sends the
+    // bearer token in cleartext. Said once, here, where the operator is looking
+    // at startup output.
+    if let Some(warning) = plaintext_bind_warning(args.bind) {
+        tracing::warn!(
+            bind = %args.bind,
+            user_message = warning,
+            "MCP server is bound to a non-loopback address over a plaintext transport"
         );
     }
 
