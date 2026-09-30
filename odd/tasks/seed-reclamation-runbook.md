@@ -113,6 +113,12 @@ chmod -R u+w "$Q/$KEY" && rm -rf "$Q/$KEY"
 `target-quarantine-runbook.md` §8; same gate, shorter window, because a seed is
 rebuildable cache and a target dir is not.
 
+`quarantine_started_at` is persisted in `quarantine.meta` inside the entry, and
+`scripts/quarantine_age.sh eligible` reads it. It is deliberately NOT `ctime`, which
+means "last inode state change" and therefore moves on a later `chmod` or `chown`; nor
+`mtime`, nor the seed's `built_at`. An unrecorded or unreadable timestamp is not
+eligible — fail-closed.
+
 The gate is necessary and not sufficient: it makes a deletion *decidable*, and fresh
 ownership/use evidence collected at the moment of deletion is what actually decides
 it. Age never substitutes for that evidence, and an old `built_at` is not the gate —

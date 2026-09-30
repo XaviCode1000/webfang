@@ -182,25 +182,42 @@ the moment it formally entered quarantine, and nothing else.
 ### Reproducible eligibility check
 
 ```bash
-eligible() {   # $1 = path,  $2 = minimum age in seconds
-  local now start
-  now=$(date +%s); start=$(stat -c %Z "$1")
-  [ $(( now - start )) -ge "$2" ]
-}
-eligible ~/.cache/cargo-target/quarantine/main-shared-478g-20260930 604800   # 7 d
-eligible ~/.cache/cargo-target/quarantine/seeds/<key>.<date>       172800   # 48 h
+scripts/quarantine_age.sh eligible <path> <minimum_age_seconds>
+# 0 eligible · 1 not yet · 2 UNKNOWN — no or unreadable metadata, fail-closed
 ```
 
-`ctime` is the right clock here: it moves when the entry is created in its current
-place, which for a rename is exactly the quarantine moment.
+`quarantine_started_at` is **persisted metadata**, not a filesystem attribute:
 
-### Current eligibility
+| Attribute | What it actually means | Why it is not the clock |
+| :--- | :--- | :--- |
+| `quarantine.meta` → `quarantine_started_at` | when the object formally entered quarantine | **the authority** |
+| `mtime` | when the CONTENT last changed | an old target looks old; a fresh clone of old content does not |
+| `atime` | when it was last read | moves on any traversal, including a `find` |
+| `ctime` | when the INODE last changed state | moves on `chmod`, `chown`, link-count changes, every unrelated mutation |
+
+A rename does set `ctime`, so right after a quarantine the value usually equals the
+quarantine moment. **Usually is not a contract**: a later `chmod` or `chown` moves it,
+and a retention clock that an unrelated permission fix can shift is not a retention
+clock. Verified — forcing `ctime` to 2020 on the quarantined historical target leaves
+its computed age unchanged at 1 h.
+
+Writing the metadata INSIDE the entry, after the rename, is what makes it fail-closed.
+A crash between the two leaves the object quarantined but unrecorded, and an unrecorded
+object is never eligible. The recorded timestamp is also never rewritten implicitly:
+`record` refuses when a `quarantine.meta` already exists, because resetting a running
+clock must be a deliberate act.
+
+### Current eligibility, from the persisted authority
 
 | Object | `quarantine_started_at` | Minimum | Eligible from |
 | :--- | :--- | :--- | :--- |
-| `main-shared-478g-20260930` | 2026-09-30 01:10 | 7 d | **2026-10-07 01:10** |
-| `seeds/v1-b76756ec52d50dfc.20260930` | 2026-09-30 01:45 | 48 h | **2026-10-02 01:45** |
-| `seeds/v1-4de4a216ec95753d.20260930` | 2026-09-30 01:45 | 48 h | **2026-10-02 01:45** |
+| `main-shared-478g-20260930` | 2026-09-30T00:10:55Z | 7 d | **2026-10-07 00:10 UTC** |
+| `seeds/v1-b76756ec52d50dfc.20260930` | 2026-09-30T00:45:58Z | 48 h | **2026-10-02 00:45 UTC** |
+| `seeds/v1-4de4a216ec95753d.20260930` | 2026-09-30T00:45:58Z | 48 h | **2026-10-02 00:45 UTC** |
+
+All three were backfilled with `--started-at` at the moment the rename was observed, so
+the value is a deliberate record of a known instant rather than an inference from a
+filesystem attribute. `ctime` is kept as auxiliary evidence in the note, not as the clock.
 
 **None of the three is eligible yet.** The seeds' *content* is a week old, which is
 what makes them obviously obsolete; their *quarantine age* is under two hours. Those
