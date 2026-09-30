@@ -248,7 +248,28 @@ the scheme allow-list is the only reachable cause and the precise slug is the tr
 | # | Condition | Code | Retriable | Agent should | Source |
 | :-: | :--- | :-: | :-: | :--- | :-: |
 | A18 | Unknown JSON-RPC method (e.g. a tool name that is not registered) | `-32601` | No | Call a name from `tools/list`. | rmcp; not constructed here — `mcp_server/server.rs:166-177`, pinned by `tests/mcp_transport_contract_test.rs:138` |
-| A19 | A panic escapes the HTTP request path | `-32603` body, HTTP 500 | No | Report it. The tool-level panic path (B1) is the one that keeps the session alive. | `mcp_server/server.rs:262-284` (`jsonrpc_panic_response`) |
+| A19 | A panic escapes the HTTP request path | `-32603` body, HTTP 500 | No | Report it. The body echoes the JSON-RPC `id` the client sent whenever one can be recovered (see the rules below). The tool-level panic path (B1) is the one that keeps the session alive. | `mcp_server/panic_containment.rs` (`jsonrpc_internal_error_response`), outermost backstop in `mcp_server/server.rs` (`jsonrpc_panic_response`) |
+
+#### Which `id` a contained panic echoes
+
+The `-32603` body always carries an `id`, and what it carries is a stated
+rule, not a best effort. Both containment layers share one response builder, so
+the shape never depends on which layer caught the panic.
+
+| `id` echoed | when | rule id |
+| :--- | :--- | :--- |
+| the parsed `id` member | POST body is an object with an `id` member | `envelope` |
+| `null` | the object closed with no `id` member (a JSON-RPC notification) | `notification` |
+| `null` | the object sent `"id": null` explicitly | `null_id` |
+| `null` | the body is a top-level array (a JSON-RPC batch) | `batch` |
+| `null` | non-JSON, empty, a bare scalar, a non-POST request, or an unreadable body | `not_a_request` |
+| `null` | the envelope did not close inside the 64 KiB scan window | `scan_window` |
+
+A `null` id is recorded on the `jsonrpc.id_source` span field
+(`mcp_jsonrpc_panic_containment`), so "the client sent a batch" is
+distinguishable from "the body was garbage" in the trace. `null` never means
+the mapping failed: the code is `-32603` either way. Source of truth:
+`crates/webfang_mcp/src/mcp_server/panic_containment.rs`.
 
 ---
 
@@ -511,7 +532,7 @@ live listener.
 | T6 | `Accept` missing both `application/json` and `text/event-stream` | `406` | No | Fix the request headers. | rmcp `StreamableHttpService`; matrix at `mcp_server/server.rs:166-173` |
 | T7 | `Content-Type` not `application/json`, or the body is not JSON-RPC 2.0 | `415` | No | Fix the request. | rmcp; same matrix |
 | T8 | Non-`initialize` request with no `mcp-session-id` | `422` | No | Complete the handshake first. | rmcp; same matrix |
-| T9 | Panic on the HTTP request path | `500` + JSON-RPC `-32603` body | No | Report it. | `mcp_server/server.rs:262-284` |
+| T9 | Panic on the HTTP request path | `500` + JSON-RPC `-32603` body | No | Report it. The body echoes the JSON-RPC `id` when one is recoverable; see the id rules above. | `mcp_server/panic_containment.rs` |
 
 Layer order matters for reading this: the session cap is the **innermost** gate, so a
 request rejected `401` or shed `429` upstream never consumes a session slot
