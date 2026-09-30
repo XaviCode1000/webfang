@@ -27,13 +27,29 @@ landed and needs nothing from this branch:
 | XP-P-05 `:` → NTFS ADS in the **crawler/export download path** | **FIXED here** — `sanitize_filename_component` never had the ADS rule; only the MCP validator got it |
 | XP-P-06 trailing dot/space in the download path | **FIXED here** — same gap |
 | Windows-invalid set `< > " \| ? *` in the download path | **FIXED here** — same gap, not separately named in the issue |
-| XP-C-03 ungated `#!/bin/sh` preflight fixtures | **FIXED here** |
+| XP-P-07 the synthesized fallback name skipped the 255-byte cap | **FIXED here** — `<host>_<hash>.<ext>` reaches ~266 bytes for a max-length host |
+| XP-C-03 ungated `#!/bin/sh` preflight fixtures | **ALREADY CLOSED — the finding is wrong** (see below) |
 | XP-S-02 Windows CTRL_CLOSE/LOGOFF/SHUTDOWN | **BLOCKED** — needs a Win32 dependency (see below) |
 | XP-K-03 Windows console codepage | **BLOCKED** — same reason |
 | XP-F-06 codesign / notarization | **BLOCKED** — needs Apple credentials + a maintainer secret |
 | G-8 relative `output_dir` exempt from the root gate | deliberately untouched — it is the documented #696 contract, and #1588's design is out of bounds here |
 | G-9 `process_export_pipeline` bypasses the gate | deliberately untouched — already surfaced by the #769 startup warn; closing it is a design change |
 | `autotuning.rs` `~/.webfang/crawl.db` | deliberately untouched — `.webfang` is a *legacy layout*, not a divergence from `domain::paths`; routing it through the helper relocates a user's database |
+| `vault_detector.rs` `dirs::home_dir()`/`dirs::config_dir()` | deliberately untouched — outside the finding's named scope, and these read **Obsidian's** config location, not webfang's XDG policy |
+
+## XP-C-03 is a false positive (verified, not assumed)
+
+Every `#!/bin/sh` fixture that is actually EXECUTED is already `#[cfg(unix)]`-gated:
+`write_obscura_with_version`, `write_chrome_like`, `version_probe_reports_normal_exit_and_output`,
+`version_probe_kills_a_wedged_binary_at_the_deadline`, and the four `hybrid_version_*` tests.
+
+The ungated `#!/bin/sh` writes belong to tests that either never spawn the file
+(`resolve_executable_in_path_finds_file_in_path_entries`, `first_existing_in_dirs_*`) or assert
+only `.is_ok()` outcomes that hold *identically* when the spawn fails — the version probe degrading
+to "unknown → warning" is precisely the pass path. `hybrid_binary_found_on_path_ok` in particular
+exercises the Windows PATH resolution that XP-S-04 added; gating it would delete real Windows
+coverage for zero benefit. No change made, on purpose.
+
 
 ## Why the three BLOCKED rows are blocked and not "attempted anyway"
 
@@ -53,6 +69,21 @@ All three need something this worker is forbidden to add:
 
 ## Tasks
 
-1. Harden `sanitize_filename_component` (ADS, Windows-invalid set, trailing dot/space).
-2. `cfg(unix)`-gate the shell-script preflight fixtures.
-3. Verify: `cargo check`, strict clippy, `fmt --check`, `cargo doc`, focused nextest.
+1. Harden `sanitize_filename_component` (ADS, Windows-invalid set, trailing dot/space). → `45c13ef7`
+2. `cfg(unix)`-gate the shell-script preflight fixtures. → **no change; finding already closed**
+3. Cap the synthesized fallback filename at the component limit. → `547b31f0`
+4. Verify: `cargo check`, strict clippy, `fmt --check`, `cargo doc`, full `webfang_core` nextest. → all green
+
+## Commits
+
+| sha | subject |
+| --- | --- |
+| `45c13ef7` | `fix(exporter): neutralize NTFS hazards in derived download filenames` |
+| `547b31f0` | `fix(exporter): cap the synthesized fallback name at the component limit` |
+
+## Merge note
+
+**No `.github/` file was touched**, so this branch carries none of the `ci.yml` merge-conflict
+exposure the mission warned about (#1607 token scoping, #1616 concurrency greps). Nothing to
+sequence.
+
