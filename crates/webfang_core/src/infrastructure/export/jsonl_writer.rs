@@ -9,7 +9,7 @@
 //! - **Torn-tail recovery**: on start the file tail is scanned for a half-
 //!   written last line; invalid trailing bytes are truncated back to the last
 //!   valid newline (warn! carries both byte counts) and a content-hash index
-//!   (`checksum_sha256` per line) is built from the surviving lines.
+//!   ([`CHECKSUM_FIELD`] per line) is built from the surviving lines.
 //! - **Flush barrier**: [`JsonlSession::flush`] awaits a oneshot ack that the
 //!   writer sends only AFTER the OS-level flush returns \u2014 this ack IS the D3
 //!   step-1 durability barrier.
@@ -25,6 +25,8 @@ use std::sync::{Arc, Mutex};
 
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
+
+use super::CHECKSUM_FIELD;
 
 /// Ack channel used by [`LineMsg::FlushAnd`]: the writer resolves it after
 /// flushing the file.
@@ -198,6 +200,12 @@ fn closed_writer_error(_: tokio::sync::mpsc::error::SendError<LineMsg>) -> io::E
 ///
 /// Bytes after the final newline never got their terminator, so they cannot be
 /// a durable line regardless of content \u2014 truncate them and say how many.
+///
+/// M3 (#1617): truncation is a destructive rewrite, and the `None` branch
+/// below wipes the WHOLE file, so both branches back up the pre-truncation
+/// bytes first. Before this, a torn tail was the one destructive rewrite in
+/// the export pipeline with no recovery at all: once the file was reopened for
+/// append, the truncated records were gone.
 fn recover_torn_tail(path: &Path) -> io::Result<()> {
     if !path.exists() {
         return Ok(());
@@ -207,6 +215,11 @@ fn recover_torn_tail(path: &Path) -> io::Result<()> {
         Some(last_newline) => {
             let trailing = data.len() - (last_newline + 1);
             if trailing > 0 {
+                crate::application::resume::preserve_abandoned_bytes(
+                    path,
+                    &data,
+                    "jsonl_torn_tail_truncated",
+                );
                 let f = OpenOptions::new().write(true).open(path)?;
                 f.set_len((last_newline + 1) as u64)?;
                 warn!(
@@ -220,6 +233,11 @@ fn recover_torn_tail(path: &Path) -> io::Result<()> {
             // No newline at all: either empty, or one unterminated line that
             // cannot be durable \u2014 unterminated means not durable.
             if !data.is_empty() {
+                crate::application::resume::preserve_abandoned_bytes(
+                    path,
+                    &data,
+                    "jsonl_unterminated_file_wiped",
+                );
                 fs::write(path, b"")?;
                 warn!(
                     truncated_bytes = data.len(),
@@ -231,24 +249,44 @@ fn recover_torn_tail(path: &Path) -> io::Result<()> {
     Ok(())
 }
 
-/// Build the content-hash index (`checksum_sha256` per line) from surviving
+/// Build the content-hash index ([`CHECKSUM_FIELD`] per line) from surviving
 /// valid lines \u2014 the same contract `CommitSession` uses for promotion.
+///
+/// A line that parses as a JSON object but carries no [`CHECKSUM_FIELD`] is the
+/// signature of a renamed writer: the old code skipped it, so a rename emptied
+/// the index and `--resume` re-drove every already-committed page with nothing
+/// in the logs to say why. Those lines are now counted and reported (#1617,
+/// D3), so the failure stays visible even when the compatibility test does not
+/// cover the exact file at hand.
 fn build_hash_index(path: &Path) -> io::Result<HashSet<String>> {
     let mut index = HashSet::new();
     if !path.exists() {
         return Ok(index);
     }
     let data = fs::read_to_string(path)?;
+    let mut without_checksum = 0usize;
     for line in data.lines() {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
-        if let Some(hash) = value
-            .get("checksum_sha256")
+        match value
+            .get(CHECKSUM_FIELD)
             .and_then(serde_json::Value::as_str)
         {
-            index.insert(hash.to_owned());
+            Some(hash) => {
+                index.insert(hash.to_owned());
+            },
+            None => without_checksum += 1,
         }
+    }
+    if without_checksum > 0 {
+        warn!(
+            lines_without_checksum = without_checksum,
+            indexed = index.len(),
+            field = CHECKSUM_FIELD,
+            path = %path.display(),
+            "JSONL lines carry no checksum field; resume dedup will re-drive them (writer/reader field-name mismatch?)"
+        );
     }
     Ok(index)
 }
@@ -382,6 +420,28 @@ mod tests {
         assert_eq!(final_content, expected);
     }
 
+    /// #1617 (D3): a line that parses as JSON but lacks [`CHECKSUM_FIELD`] is the
+    /// signature of a renamed writer. It must produce an EMPTY index (the
+    /// honest answer) AND be counted, so the emptiness is attributable in the
+    /// logs instead of looking like a clean file.
+    #[tokio::test]
+    async fn renamed_checksum_field_empties_the_index_instead_of_silently_filling_it() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("renamed.jsonl");
+        // Same shape as a real export line, with the field name changed.
+        let mut content = String::new();
+        for n in 1..=3 {
+            content.push_str(&format!("{{\"n\":{n},\"content_hash\":\"hash-{n}\"}}\n"));
+        }
+        fs::write(&path, &content).expect("seed renamed-writer file");
+
+        let (_session, index) = JsonlSession::open(&path).expect("open succeeds");
+        assert!(
+            index.is_empty(),
+            "no line carries CHECKSUM_FIELD, so no line may be indexed"
+        );
+    }
+
     #[tokio::test]
     async fn clean_file_is_not_modified_by_open_scan() {
         let dir = tempfile::TempDir::new().expect("temp dir");
@@ -396,9 +456,47 @@ mod tests {
             pristine,
             "a fully valid file must not be touched by recovery"
         );
+        assert!(
+            !crate::application::resume::backup_sibling(&path).exists(),
+            "a clean file must not produce a .bak — only a destructive rewrite backs up"
+        );
         assert_eq!(
             index,
             HashSet::from(["hash-1".to_string(), "hash-2".to_string()])
+        );
+    }
+
+    /// M3 (#1617): truncating a torn tail destroys bytes. The `.bak` is the
+    /// only way back to the pre-truncation file once the output is reopened
+    /// for append, so recovery must not be a one-way door. Also pins that the
+    /// backup keeps the artifact's own extension (`out.jsonl.bak`).
+    #[tokio::test]
+    async fn torn_tail_recovery_backs_up_the_pre_truncation_bytes() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("out.jsonl");
+        let mut initial = String::new();
+        initial.push_str(&valid_line(1));
+        initial.push('\n');
+        initial.push_str(r#"{"n":2,"checksum_sha256":"partial"#);
+        fs::write(&path, &initial).expect("seed torn file");
+
+        let (_session, _index) = JsonlSession::open(&path).expect("open recovers torn tail");
+
+        let backup = crate::application::resume::backup_sibling(&path);
+        assert_eq!(
+            backup.file_name().and_then(|n| n.to_str()),
+            Some("out.jsonl.bak"),
+            "the backup keeps the artifact's own extension"
+        );
+        assert_eq!(
+            fs::read_to_string(&backup).expect("read backup"),
+            initial,
+            "the .bak must carry the exact pre-truncation bytes"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).expect("read recovered"),
+            format!("{}\n", valid_line(1)),
+            "the live file is still truncated back to the last newline"
         );
     }
 

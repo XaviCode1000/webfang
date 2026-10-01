@@ -80,6 +80,55 @@ pub(crate) fn load_preserving(store: &dyn RecordStorePort) -> DomainRecords {
     store.load_or_init()
 }
 
+/// The `.bak` sibling path for `path`, preserving the artifact's extension.
+///
+/// `state.json` -> `state.json.bak`, `export.jsonl` -> `export.jsonl.bak`,
+/// no-extension -> `<name>.bak`. Extending the EXISTING extension rather than
+/// replacing it keeps every artifact recognizable by eye, which is the whole
+/// point of leaving a copy behind.
+#[must_use]
+pub(crate) fn backup_sibling(path: &std::path::Path) -> std::path::PathBuf {
+    match path.extension().and_then(std::ffi::OsStr::to_str) {
+        Some(ext) => path.with_extension(format!("{ext}.bak")),
+        None => path.with_extension("bak"),
+    }
+}
+
+/// Preserve abandoned state bytes as a `.bak` sibling BEFORE a destructive
+/// rewrite can destroy them (M3, #1617).
+///
+/// This is the *second* entry point of the backup policy and the one that
+/// closes the asymmetry the upgrade audit found: #1587 taught two version
+/// discard paths to back up, but every OTHER path that drops bytes a previous
+/// run wrote — an integrity failure, an unreadable envelope, a torn tail — did
+/// not. Each of those is the same shape as the version discard: the reader
+/// refuses the file, the caller starts fresh, and the next save renames a new
+/// file over the old one. Backing up at that decision point is the only place
+/// where the original bytes are still provably the ones on disk.
+///
+/// `bytes` are passed explicitly rather than re-read from disk: the caller
+/// holds the exact rejected bytes, and re-reading would race a concurrent
+/// writer into copying the REPLACEMENT instead of what was just rejected.
+///
+/// Best-effort, same contract as [`preserve_pre_migration_backup`]: a backup
+/// failure is logged, never fatal, and an existing backup is kept as-is so the
+/// FIRST abandoned bytes win over later ones.
+pub(crate) fn preserve_abandoned_bytes(path: &std::path::Path, bytes: &[u8], stage: &'static str) {
+    let backup = backup_sibling(path);
+    if backup.exists() {
+        return;
+    }
+    if let Err(e) = std::fs::write(&backup, bytes) {
+        tracing::warn!(
+            path = %path.display(),
+            backup = %backup.display(),
+            stage,
+            error = %e,
+            "abandoned state backup failed; the bytes on disk may be lost on the next save"
+        );
+    }
+}
+
 /// Preserve a pre-migration state file as a `.bak` sibling (#1587).
 ///
 /// Stale-version discards return a fresh state while the old file is still on
@@ -93,7 +142,7 @@ pub(crate) fn load_preserving(store: &dyn RecordStorePort) -> DomainRecords {
 /// is kept as-is so the FIRST (pre-migration) bytes win over later
 /// fresh-version writes.
 pub(crate) fn preserve_pre_migration_backup(path: &std::path::Path) {
-    let backup = path.with_extension("json.bak");
+    let backup = backup_sibling(path);
     if backup.exists() {
         return;
     }
@@ -166,6 +215,62 @@ mod tests {
     fn run_id_display_matches_inner() {
         let id = RunId::new();
         assert_eq!(id.to_string(), id.as_str());
+    }
+
+    // --- M3 (#1617): one backup policy, every destructive rewrite --------
+
+    /// The `.bak` sibling EXTENDS the artifact's own extension. `state.json`
+    /// -> `state.json.bak` is the shape #1587 established and every existing
+    /// assertion depends on it; a `.jsonl` output must not collapse to
+    /// `.json.bak` and lose its artifact identity on the way.
+    #[test]
+    fn backup_sibling_extends_the_existing_extension() {
+        let cases = [
+            ("state.json", "state.json.bak"),
+            ("export.jsonl", "export.jsonl.bak"),
+            (
+                "crawl_checkpoint_ab12.json",
+                "crawl_checkpoint_ab12.json.bak",
+            ),
+            ("noext", "noext.bak"),
+        ];
+        for (input, expected) in cases {
+            let got = backup_sibling(std::path::Path::new(input));
+            assert_eq!(
+                got.file_name().and_then(std::ffi::OsStr::to_str),
+                Some(expected),
+                "backup sibling of {input}"
+            );
+        }
+    }
+
+    /// `preserve_abandoned_bytes` writes the caller's rejected bytes verbatim
+    /// — never a re-read of the live file — and never clobbers a backup that
+    /// already holds the FIRST abandoned bytes.
+    #[test]
+    fn preserve_abandoned_bytes_writes_rejected_bytes_once() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = dir.path().join("abandoned.json");
+        std::fs::write(&path, b"replacement bytes a concurrent writer produced").unwrap();
+
+        // The caller passes the bytes it rejected, which differ from what is
+        // on disk right now; the backup must carry the CALLER's bytes.
+        preserve_abandoned_bytes(&path, b"rejected bytes", "corrupt");
+
+        let backup = backup_sibling(&path);
+        assert_eq!(
+            std::fs::read_to_string(&backup).unwrap(),
+            "rejected bytes",
+            "backup must carry the exact rejected bytes, not a re-read"
+        );
+
+        // A second abandonment must not overwrite the first backup.
+        preserve_abandoned_bytes(&path, b"later rejected bytes", "unsupported_version");
+        assert_eq!(
+            std::fs::read_to_string(&backup).unwrap(),
+            "rejected bytes",
+            "the first abandoned bytes must win over later ones"
+        );
     }
 
     // --- triangulation: randomized status mix through the gate -----------

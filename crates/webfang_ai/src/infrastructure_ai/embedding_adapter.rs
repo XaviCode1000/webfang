@@ -196,47 +196,30 @@ impl EmbeddingPort for EmbeddingAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::infrastructure_ai::cache_config::AiModel;
+    use crate::infrastructure_ai::ai_test_fixture::in_memory_wordpiece_tokenizer;
+    use crate::infrastructure_ai::inference_engine::MockInferenceEngine;
 
     fn assert_send<T: Send>() {}
     fn assert_sync<T: Sync>() {}
 
-    /// Build a minimal in-memory WordPiece tokenizer — no tokenizer.json file
-    /// required. Only needs to EXIST for adapter construction; the embedding_dim
-    /// tests never invoke tokenization.
-    fn in_memory_tokenizer() -> tokenizers::Tokenizer {
-        use tokenizers::models::wordpiece::WordPiece;
-        // `WordPieceBuilder::vocab` accepts `Into<AHashMap>`; an array of tuples
-        // converts directly (avoids a std HashMap → AHashMap mismatch).
-        let vocab = [
-            ("[PAD]".to_string(), 0u32),
-            ("[UNK]".to_string(), 100),
-            ("[CLS]".to_string(), 101),
-            ("[SEP]".to_string(), 102),
-            ("hello".to_string(), 5),
-            ("world".to_string(), 6),
-        ];
-        let model = WordPiece::builder()
-            .vocab(vocab)
-            .unk_token("[UNK]".to_string())
-            .build()
-            .expect("wordpiece model must build from an inline vocab");
-        tokenizers::Tokenizer::new(model)
-    }
-
-    /// Adapter backed by a model path that cannot build a session (workers
-    /// fail async but the pool still reports its configured dimension) and an
-    /// in-memory tokenizer — no ONNX model download, fully deterministic.
+    /// Adapter over a fixed-latency mock engine and an in-memory tokenizer — no
+    /// ONNX model, no worker threads, fully deterministic.
+    ///
+    /// The mock reports the same 384-dim output as `AiModel::Granite97M`, which
+    /// is all these tests assert. #1575 switched this fixture off the
+    /// unloadable-model `InferencePool` it used to build: the pool spawns a
+    /// worker thread per instance purely so a test can read a dimension, and
+    /// that setup was a byte-for-byte copy of the one in
+    /// `tests/erased_engine_ports_test.rs`. The pool's own configured dimension
+    /// stays covered by the `inference_engine` unit tests, and the concrete-pool
+    /// path through this adapter stays covered by the integration suite, which
+    /// needs the concrete type to prove unsized coercion.
     fn fake_adapter() -> EmbeddingAdapter {
-        let pool = Arc::new(
-            InferencePool::new(
-                std::path::PathBuf::from("/nonexistent/webfang-fake-model.onnx"),
-                AiModel::Granite97M,
-            )
-            .expect("pool creation must succeed even with an unloadable model file"),
-        );
-        let tokenizer = Arc::new(MiniLmTokenizer::new(in_memory_tokenizer(), 512));
-        EmbeddingAdapter::new(pool, tokenizer)
+        let engine: Arc<dyn InferenceEngine + Send + Sync> = Arc::new(MockInferenceEngine::new(
+            std::time::Duration::from_millis(1),
+        ));
+        let tokenizer = Arc::new(MiniLmTokenizer::new(in_memory_wordpiece_tokenizer(), 512));
+        EmbeddingAdapter::new(engine, tokenizer)
     }
 
     #[test]
@@ -248,7 +231,11 @@ mod tests {
     #[test]
     fn test_embedding_dim_returns_384() {
         let adapter = fake_adapter();
-        assert_eq!(adapter.embedding_dim(), 384, "Granite-97M must report 384d");
+        assert_eq!(
+            adapter.embedding_dim(),
+            384,
+            "the engine's Granite-97M output dim must report 384d"
+        );
     }
 
     #[test]

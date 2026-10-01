@@ -350,6 +350,11 @@ fn verify_and_parse_checkpoint(data: &[u8], path: &Path) -> Option<CrawlCheckpoi
         if let Some(state) = migrate_legacy_checkpoint(data, path) {
             return Some(state);
         }
+        // M3 (#1617): a checksum mismatch is an abandoned-bytes decision, not
+        // a discard decision, so it never reached the `.bak` policy #1587 put
+        // on the version gate. The caller starts fresh and the next save
+        // renames over this file; back up the exact rejected bytes first.
+        crate::application::resume::preserve_abandoned_bytes(path, data, "checkpoint_crc_mismatch");
         warn!(
             "checkpoint CRC32 mismatch: stored={:#x}, computed={:#x}",
             stored_checksum, computed_checksum
@@ -357,7 +362,7 @@ fn verify_and_parse_checkpoint(data: &[u8], path: &Path) -> Option<CrawlCheckpoi
         return None;
     }
 
-    deserialize_checkpoint(payload, path).and_then(|state| accept_version(state, path))
+    deserialize_checkpoint(payload, data, path).and_then(|state| accept_version(state, path))
 }
 
 /// Try to read a legacy pure-JSON checkpoint (no CRC32 header), returning
@@ -395,7 +400,15 @@ fn accept_version(state: CrawlCheckpoint, path: &Path) -> Option<CrawlCheckpoint
 }
 
 /// Deserialize a CRC32-verified payload, logging a warning on failure.
-fn deserialize_checkpoint(payload: &[u8], path: &Path) -> Option<CrawlCheckpoint> {
+///
+/// `file_bytes` is the whole on-disk file (CRC header included), not the
+/// payload: the `.bak` sibling #1617 (M3) has to preserve the exact bytes a
+/// later `save()` will rename over.
+fn deserialize_checkpoint(
+    payload: &[u8],
+    file_bytes: &[u8],
+    path: &Path,
+) -> Option<CrawlCheckpoint> {
     match serde_json::from_slice::<CrawlCheckpoint>(payload) {
         Ok(state) => {
             info!(
@@ -408,6 +421,11 @@ fn deserialize_checkpoint(payload: &[u8], path: &Path) -> Option<CrawlCheckpoint
             Some(state)
         },
         Err(e) => {
+            crate::application::resume::preserve_abandoned_bytes(
+                path,
+                file_bytes,
+                "checkpoint_deserialize_failed",
+            );
             warn!("checkpoint deserialization failed: {e}");
             None
         },
@@ -686,6 +704,37 @@ mod tests {
         assert_eq!(stored, computed);
     }
 
+    /// M3 (#1617): a CRC32 mismatch abandons the file the same way a stale
+    /// version does — the caller starts fresh and the next `save` renames over
+    /// it — so it must leave the same `.bak` behind. Before this, only the
+    /// version gate backed up, and an integrity failure was a silent
+    /// one-way door for every byte the checksum covered.
+    #[test]
+    fn crc32_mismatch_preserves_bak_before_the_rewrite() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("checkpoint.json");
+
+        let store = BincodeCheckpoint::new();
+        store.save(&sample_checkpoint(), &path).unwrap();
+
+        // Tamper with a single payload byte: the checksum no longer matches,
+        // and the file is not a legacy pure-JSON checkpoint either.
+        let mut data = fs::read(&path).unwrap();
+        let last = data.len() - 1;
+        data[last] ^= 0xFF;
+        fs::write(&path, &data).unwrap();
+
+        assert!(store.load(&path).is_none(), "corrupt checkpoint is refused");
+
+        let backup = crate::application::resume::backup_sibling(&path);
+        assert!(backup.exists(), "CRC32 failure must leave a .bak sibling");
+        assert_eq!(
+            fs::read(&backup).unwrap(),
+            data,
+            "the .bak must carry the exact rejected bytes"
+        );
+    }
+
     #[test]
     fn atomic_rename_removes_tmp_on_failure() {
         // Create a read-only directory to force rename failure
@@ -819,7 +868,7 @@ mod tests {
         let store = BincodeCheckpoint::new();
         assert!(store.load(&path).is_none());
 
-        let backup = path.with_extension("json.bak");
+        let backup = crate::application::resume::backup_sibling(&path);
         assert!(
             backup.exists(),
             "pre-migration checkpoint must be preserved as .bak"

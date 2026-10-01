@@ -21,7 +21,33 @@
 #   - Trigger `workflow_run` (completed) sobre CI, Production Bug Discovery y
 #     Benches + `schedule` diario 07:00 UTC como red de seguridad (si el
 #     evento workflow_run se pierde) + `workflow_dispatch` manual.
-#   - Ramas main/develop solamente.
+#   - Alcance (#1714): sólo se observa CI de la LÍNEA PRINCIPAL. La condición
+#     que decide está en el `if:` del job `observe` y se evalúa contra el
+#     ORIGEN y la RAMA de la CORRIDA OBSERVADA, nunca contra los de este
+#     workflow. Antes era:
+#
+#       github.ref == main || github.ref == develop || event_name == workflow_run
+#
+#     y las dos primeras cláusulas NO filtraban nada en la ruta `workflow_run`:
+#     en ese evento GITHUB_REF es la rama por defecto del repo, así que la
+#     primera ya era cierta para TODA corrida observada — 11 de las últimas 20
+#     observadas eran `pull_request` de feature branches, y 9 issues históricas
+#     de este observer salieron de ahí (#1657, #1660, #1663, #1671, #1675,
+#     #1685, #1686, #1699, #1705). La tercera cláusula (la que la issue
+#     señalaba) era redundante en el caso bueno; la que de verdad dejaba pasar
+#     todo era la primera. Por eso el filtro nuevo NO puede mirar `github.ref`
+#     en esa ruta: tiene que mirar el payload.
+#
+#     Predicado de alcance (una sola fuente de verdad por ruta):
+#       evento workflow_run -> en alcance <=> head_branch ∈ {main, develop}
+#                                         ∧ event ≠ pull_request
+#       cualquier otro      -> en alcance <=> github.ref ∈ {main, develop}
+#     Un PR mergeado dispara el `push` a su rama destino, así que la cobertura
+#     de la línea principal NO se pierde: lo que se pierde es la duplicación de
+#     un rojo que GitHub ya muestra en la pestaña del PR (y que, si el PR está
+#     rojo, tampoco sobrevive al merge a main). El barrido diario tiene su
+#     propia copia del predicado, dentro de `reconcile_one` — se evalúa sobre
+#     la corrida QUE EL BARRIDO LEE, no sobre la que lo disparó.
 #   - Idempotente: UNA issue por CLAVE (títulos abajo), un comentario por run
 #     fallido, auto-cierre al volver a verde — verde del MISMO origen, nunca
 #     de otro: un verde de `schedule` no cierra el rojo de un `push` ni al
@@ -31,14 +57,6 @@
 #     único que impide que dos causas distintas caigan en la misma issue y se
 #     tapen entre sí; por eso se lee del payload y no se supone.
 #   - Etiquetas: `ci-health` + `automated`. Nunca toca issues sin `ci-health`.
-#   - Pendiente, NO se arregla aquí (queda escrito para que no se pierda): el
-#     "on main" del título tampoco es exacto en el camino `workflow_run`, que
-#     salta para los runs de `pull_request` en ramas de feature — a 2026-09-29,
-#     9 de los 12 últimos runs de CI eran `pull_request` y ninguno de main. Con
-#     el origen en el título ese rojo ahora DICE `pull_request` en vez de
-#     "Scheduled", pero sigue colgando de una clave que dice "on main". Meter la
-#     rama en la clave multiplica el espacio de claves y el ruido: es una
-#     decisión de diseño para el maintainer, no parte de este issue.
 #
 # Convention: repo pins actions by tag, so this file follows tags, not SHAs.
 
@@ -121,7 +139,47 @@ jobs:
     name: Observe and reconcile tracking issues
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || github.event_name == 'workflow_run' }}
+    # ── SCOPE GATE (#1714) ───────────────────────────────────────────────────
+    # Predicado (única fuente de verdad de la ruta evento):
+    #   workflow_run -> head_branch ∈ {main, develop} ∧ event ≠ pull_request
+    #   otro evento  -> github.ref ∈ {refs/heads/main, refs/heads/develop}
+    # En la ruta workflow_run `github.ref` es la rama por defecto del repo
+    # (GitHub la pone ahí para este evento), así que un gate basado en
+    # `github.ref` deja pasar TODA corrida observada: por eso el predicado
+    # mira el payload de la corrida observada, no el de este workflow.
+    #
+    # DECIDIDO: el job se reporta `skipped`, no `success`.
+    #   - `skipped`: el job no arranca. Es el significado nativo de "esta
+    #     corrida no es de tu alcance", el conclusion del workflow queda
+    #     neutro (nunca un verde falso sobre trabajo hecho) y el filtro es UN
+    #     booleano auditable en un solo lugar: un paso nuevo que se añada
+    #     después sigue debajo del gate, así que no puede reintroducir el
+    #     ruido por descuido.
+    #   - `success` (aceptar el evento y salir temprano en un paso) se
+    #     descartó a propósito: obligaría a que CADA paso posterior quedara
+    #     condicionado al output del paso que se niega a actuar, y el "no
+    #     hice nada" se volvería indistinguible de "revisé y no encontré nada"
+    #     — que es exactamente el modo de fallo que escondió #1712 y #1633.
+    #     El coste de `skipped` es que no queda log del descarte; se acepta
+    #     porque el skip es visible en la UI del workflow y el barrido diario
+    #     (schedule) no pasa por acá.
+    if: >-
+      ${{
+        (
+          github.event_name == 'workflow_run'
+          && github.event.workflow_run.event != 'pull_request'
+          && (
+            github.event.workflow_run.head_branch == 'main'
+            || github.event.workflow_run.head_branch == 'develop'
+          )
+        ) || (
+          github.event_name != 'workflow_run'
+          && (
+            github.ref == 'refs/heads/main'
+            || github.ref == 'refs/heads/develop'
+          )
+        )
+      }}
     steps:
       # The upsert/reconcile steps source scripts/ci-health-close.sh from the
       # repo tree. Without a checkout $GITHUB_WORKSPACE is empty on the
@@ -292,6 +350,11 @@ jobs:
           fi
 
       - name: Upsert tracking issue for triggering run
+        # Scope is already decided by the job gate above: this step can only
+        # ever see a run whose head_branch is main/develop and whose event is
+        # not pull_request. It is NOT re-checked here on purpose — a second
+        # copy of the predicate would be a second thing to drift (#1714 closed
+        # the event path at the gate, and the harness pins that gate's shape).
         if: github.event_name == 'workflow_run'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -393,6 +456,9 @@ jobs:
           PD_R: ${{ steps.src.outputs.ProductionBugDiscovery_run }}
           BE_C: ${{ steps.src.outputs.Benches_conclusion }}
           BE_R: ${{ steps.src.outputs.Benches_run }}
+          CI_E: ${{ steps.src.outputs.CI_event }}
+          PD_E: ${{ steps.src.outputs.ProductionBugDiscovery_event }}
+          BE_E: ${{ steps.src.outputs.Benches_event }}
           CI_TITLE: ${{ steps.origin.outputs.ci_title }}
           CI_ORIGIN: ${{ steps.origin.outputs.ci_origin }}
           OBS_NOTE: ${{ steps.origin.outputs.note }}
@@ -402,7 +468,25 @@ jobs:
           . "$GITHUB_WORKSPACE/scripts/ci-health-close.sh"
           SERVER="${GITHUB_SERVER_URL:-https://github.com}"
           reconcile_one() {
-            title="$1"; concl="$2"; rid="$3"; wname="$4"; context="$5"
+            title="$1"; concl="$2"; rid="$3"; wname="$4"; context="$5"; run_event="$6"
+            # SCOPE GATE, sweep path (#1714) — el mismo predicado del `if:` del
+            # job, aplicado a la corrida SOBRE LA QUE el sweep va a actuar. El
+            # sweep no causó esa corrida, así que tiene que releer su `event`
+            # y no suponerlo: `gh run list --branch main` devuelve la última
+            # corrida de CI cuyo head_branch sea `main`, y eso incluye las
+            # corridas de `pull_request` de un PR abierto desde una rama
+            # llamada `main` (caso normal en un fork). Sin este guard el
+            # barrido reintroduce por la puerta de atrás lo que el gate de
+            # arriba acaba de cerrar. Se aplica a las TRES fuentes, no sólo a
+            # CI: la regla es "una corrida de PR no genera issue de este
+            # observer", y no depende de qué workflow la produjo.
+            #
+            # Cierra también por el mismo motivo: un verde de PR no es la
+            # señal verde de la línea principal.
+            if [ "$run_event" = "pull_request" ]; then
+              echo "$wname: latest run on $BRANCH is a pull_request run — out of scope, no issue opened and none closed (#1714)."
+              return 0
+            fi
             url="$SERVER/$GH_REPO/actions/runs/$rid"
             if [ "$concl" = "success" ]; then
               # Key-scoped close (#1712): only the issue for THIS origin goes
@@ -424,9 +508,9 @@ jobs:
           # latest CI run's own `event`. Bug Discovery and Benches keep their
           # single-key titles: one run per source, no origin dimension that an
           # operator would act on differently.
-          reconcile_one "$CI_TITLE" "$CI_C" "$CI_R" "CI" "Run origin: $CI_ORIGIN ($OBS_NOTE)."
-          reconcile_one "$TITLE_DISCOVERY" "$PD_C" "$PD_R" "Bug Discovery" "Source: Production Bug Discovery, $OBS_NOTE."
-          reconcile_one "$TITLE_BENCH" "$BE_C" "$BE_R" "Benches" "Source: Benches, $OBS_NOTE."
+          reconcile_one "$CI_TITLE" "$CI_C" "$CI_R" "CI" "Run origin: $CI_ORIGIN ($OBS_NOTE)." "$CI_E"
+          reconcile_one "$TITLE_DISCOVERY" "$PD_C" "$PD_R" "Bug Discovery" "Source: Production Bug Discovery, $OBS_NOTE." "$PD_E"
+          reconcile_one "$TITLE_BENCH" "$BE_C" "$BE_R" "Benches" "Source: Benches, $OBS_NOTE." "$BE_E"
 
           # Migration watcher for the retired key (#1712). READ-ONLY on purpose:
           # it detects, it never closes (rationale at RETIRED_TITLE_CI in env).

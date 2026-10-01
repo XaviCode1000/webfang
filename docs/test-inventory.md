@@ -33,6 +33,22 @@ Stale roadmap claim "7 sitemap tests ignored" is **false**. Reality:
 
 Matrix: [`COMPATIBILITY-MATRIX.md`](../COMPATIBILITY-MATRIX.md).
 
+## Enforced compatibility gates (#1617)
+
+The catalog above answers "what is ignored"; this section answers "what FAILS when the migration contract
+is broken", because a documented contract nothing enforces is the defect. None of these tests are
+ignored — they run in the ordinary suite and are listed here so the contract's enforcement is
+discoverable from the same document as its `#[ignore]` budget.
+
+| Contract | Gate | File |
+| :--- | :--- | :--- |
+| SQLite schema version | `setup_schema_stamps_the_schema_version_marker`, `setup_schema_refuses_a_foreign_schema_version_without_writing`, `setup_schema_adopts_an_unversioned_database` | `infrastructure/persistence/sqlite.rs` |
+| Backup symmetry before every destructive rewrite | `preserve_abandoned_bytes_writes_rejected_bytes_once`, `backup_sibling_extends_the_existing_extension`, `unsupported_version_preserves_a_bak_before_the_downgrade_rewrite`, `corrupt_envelope_preserves_a_bak_before_the_rewrite`, `crc32_mismatch_preserves_bak_before_the_rewrite`, `torn_tail_recovery_backs_up_the_pre_truncation_bytes` | `application/resume.rs`, `infrastructure/export/{record_store,jsonl_writer}.rs`, `application/crawler/checkpoint.rs` |
+| JSONL checksum field name pinned | `serialized_uses_the_pinned_checksum_field_name`, `renamed_checksum_field_empties_the_index_instead_of_silently_filling_it` | `infrastructure/export/jsonl_exporter.rs`, `jsonl_writer.rs` |
+
+Adding or removing any of them does NOT change this file's counts — the `#[ignore]` budget and this
+table are independent by design, and `scripts/check_ignored_guard.sh` enforces only the former.
+
 ## Full catalog (43 rows)
 
 Rows are keyed by **file + identifier**, never by line number — inserting code above an ignored

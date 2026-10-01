@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+
+### 🔧 Fixed
+
+- Degrade ConfigDefaults::load silently on any IO error ([#1739](https://github.com/XaviCode1000/webfang/pull/1739))
+- Path and filename validation written for POSIX, wrong on NTFS/APFS ([#1741](https://github.com/XaviCode1000/webfang/pull/1741))
+- CI health Observer opens tracking issues for pull_request runs ([#1742](https://github.com/XaviCode1000/webfang/pull/1742))
+- Enforce the compat migration contract with version markers and backup-first rewrites ([#1745](https://github.com/XaviCode1000/webfang/pull/1745))
+- Sign and attest release artifacts with keyless cosign ([#1747](https://github.com/XaviCode1000/webfang/pull/1747))
+
+### 🏗️ Architecture Improvements
+
+- Extract batch, discovery and exit-code phases from the orchestrator ([#1750](https://github.com/XaviCode1000/webfang/pull/1750))
+
+### ⚡ Performance
+
+- Profile AI phases with a real model — the mock overestimated inference ~6x ([#1744](https://github.com/XaviCode1000/webfang/pull/1744))
+
+### 🧪 Testing
+
+- Deduplicate the AI test fixture — the ratchet regains teeth ([#1740](https://github.com/XaviCode1000/webfang/pull/1740))
+
+### 📖 Documentation
+
+- Document the real install and uninstall path ([#1743](https://github.com/XaviCode1000/webfang/pull/1743))
+- State the branch-topology check is enforcing, not warn-only ([#1751](https://github.com/XaviCode1000/webfang/pull/1751))
+
 ## [2.4.2] - 2026-09-30
 
 

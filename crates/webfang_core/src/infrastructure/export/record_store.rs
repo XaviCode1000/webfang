@@ -356,27 +356,58 @@ impl RecordStore {
             path: path.to_path_buf(),
             source,
         })?;
-        let envelope: serde_json::Value =
-            serde_json::from_slice(&bytes).map_err(|_| RecordStoreError::Corrupt {
-                path: path.to_path_buf(),
-            })?;
+        let envelope: serde_json::Value = match serde_json::from_slice(&bytes) {
+            Ok(envelope) => envelope,
+            Err(_) => {
+                crate::application::resume::preserve_abandoned_bytes(
+                    path,
+                    &bytes,
+                    "record_store_corrupt_envelope",
+                );
+                return Err(RecordStoreError::Corrupt {
+                    path: path.to_path_buf(),
+                });
+            },
+        };
         match envelope
             .get("version")
             .and_then(serde_json::Value::as_u64)
             .unwrap_or(1) as u32
         {
             CURRENT_VERSION => {
-                let file: StoreFile =
-                    serde_json::from_value(envelope).map_err(|_| RecordStoreError::Corrupt {
-                        path: path.to_path_buf(),
-                    })?;
+                let file: StoreFile = match serde_json::from_value(envelope) {
+                    Ok(file) => file,
+                    Err(_) => {
+                        crate::application::resume::preserve_abandoned_bytes(
+                            path,
+                            &bytes,
+                            "record_store_corrupt_records",
+                        );
+                        return Err(RecordStoreError::Corrupt {
+                            path: path.to_path_buf(),
+                        });
+                    },
+                };
                 Ok(Self::validate_and_quarantine(file.records, path))
             },
             1 => self.migrate_v1(path, &bytes),
-            found => Err(RecordStoreError::UnsupportedVersion {
-                path: path.to_path_buf(),
-                found,
-            }),
+            found => {
+                // M3 (#1617): the DOWNGRADE rewrite. `load_or_init` turns this
+                // error into a fresh store, and the next `update()` renames a
+                // new file over this one — so the newer schema's bytes are
+                // destroyed by the older binary that refused them. The v1->v2
+                // upgrade above is backup-first; this direction had no backup at
+                // all, which is exactly the asymmetry the audit named.
+                crate::application::resume::preserve_abandoned_bytes(
+                    path,
+                    &bytes,
+                    "record_store_unsupported_version",
+                );
+                Err(RecordStoreError::UnsupportedVersion {
+                    path: path.to_path_buf(),
+                    found,
+                })
+            },
         }
     }
 
@@ -1107,6 +1138,48 @@ mod tests {
             store.state_path().exists(),
             "original file left untouched for forensics"
         );
+    }
+
+    /// M3 (#1617): the refusal to read a NEWER version is the downgrade
+    /// direction, and `load_or_init` turns it into a fresh store whose next
+    /// `save` renames over the live file. The v1->v2 upgrade has been
+    /// backup-first since SC5; this direction had no backup at all. Without
+    /// this, the older binary destroys the newer binary's records on the very
+    /// run that reported them unreadable.
+    #[test]
+    fn unsupported_version_preserves_a_bak_before_the_downgrade_rewrite() {
+        let (_dir, store) = temp_store("downgrade.test");
+        let future = r#"{"version":99,"records":{}}"#;
+        fs::write(store.state_path(), future).unwrap();
+
+        let _ = store.load_or_init();
+
+        let backup = crate::application::resume::backup_sibling(&store.state_path());
+        assert!(
+            backup.exists(),
+            "the downgrade rewrite must leave a .bak sibling"
+        );
+        assert_eq!(
+            fs::read_to_string(&backup).unwrap(),
+            future,
+            "the .bak must carry the exact bytes the load refused"
+        );
+    }
+
+    /// The same symmetry on the unreadable-envelope side: corrupt JSON is
+    /// abandoned too, so the next save would otherwise destroy it silently.
+    #[test]
+    fn corrupt_envelope_preserves_a_bak_before_the_rewrite() {
+        let (_dir, store) = temp_store("corrupt-bak.test");
+        let garbage = b"{{{{not json";
+        fs::write(store.state_path(), garbage).unwrap();
+
+        let _ = store.load_or_init();
+
+        let path = store.state_path();
+        let backup = crate::application::resume::backup_sibling(&path);
+        assert!(backup.exists(), "corrupt envelope must leave a .bak");
+        assert_eq!(fs::read(&backup).unwrap(), garbage);
     }
 
     #[test]

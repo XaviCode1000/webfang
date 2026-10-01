@@ -30,6 +30,28 @@ const WINDOWS_RESERVED: &[&str] = &[
 /// convention of `UrlPath::to_safe_filename_with_format` (`CON` → `CON_safe`).
 const RESERVED_SAFE_SUFFIX: &str = "_safe";
 
+/// Characters that cannot survive a Windows path component.
+///
+/// The first six are outright illegal on Windows (`Win32` naming rules). `:` is
+/// the dangerous one (XP-P-05, issue #1608): on NTFS it is not rejected but
+/// reinterpreted as the ALTERNATE DATA STREAM separator, so
+/// `Content-Disposition: filename="report.txt:hidden"` creates a **0-byte**
+/// `report.txt` whose real content lives in a stream — the operation reports
+/// success and the download silently vanishes.
+///
+/// These are SUBSTITUTED rather than rejected: the input here is server-
+/// controlled (Content-Disposition / URL path) and the function must return a
+/// usable name, so it neutralizes instead of failing.
+const WINDOWS_INVALID_COMPONENT_CHARS: &[char] = &['<', '>', '"', '|', '?', '*', ':'];
+
+/// Replacement for every character in [`WINDOWS_INVALID_COMPONENT_CHARS`].
+///
+/// `_` is already legal on every supported filesystem, so substituting it needs
+/// no second rule. Distinct inputs can collide after substitution (`a:b` and
+/// `a_b`); the downloader layer's existing collision resolution and the
+/// hash-suffix path below own disambiguation, exactly as they do for long names.
+const INVALID_CHAR_REPLACEMENT: char = '_';
+
 /// True when the STEM of `name` (everything before the FIRST `.`) matches a
 /// Windows reserved device name, ASCII case-insensitively.
 ///
@@ -115,6 +137,22 @@ pub fn parse_content_disposition(value: &str) -> Option<String> {
 /// appended so the derived name is creatable on Windows hosts. The check
 /// runs BEFORE the length cap, so a suffixed name over the cap still goes
 /// through the hash-truncation path.
+///
+/// Windows-illegal characters (XP-P-05, issue #1608): every character in
+/// `WINDOWS_INVALID_COMPONENT_CHARS` — including the NTFS
+/// alternate-data-stream `:` — is substituted with `INVALID_CHAR_REPLACEMENT`
+/// so a server-supplied name can never create a stream or an uncreatable file.
+/// Previously only the MCP boundary rejected these; the crawler/export
+/// download path (Content-Disposition and URL-derived names) passed them
+/// straight through, which is where the 0-byte-main-stream outcome lived.
+///
+/// Windows trailing dot/space (XP-P-06, issue #1608): NTFS silently trims
+/// both, so `report.` and `report` are the SAME file there while being two on
+/// Linux. Trimming here makes both platforms agree instead of producing a
+/// name that collides only after the export crosses a filesystem boundary.
+///
+/// Ordering is load-bearing: neutralize chars, THEN trim, THEN the reserved
+/// stem check (`CON.` must become `CON_safe`, not `CON._safe`), THEN the cap.
 #[must_use]
 pub fn sanitize_filename_component(name: &str) -> Option<String> {
     // Remove control characters first (NUL included): they cannot appear in
@@ -126,7 +164,13 @@ pub fn sanitize_filename_component(name: &str) -> Option<String> {
         .rfind(|segment| !segment.is_empty() && *segment != "." && *segment != "..")
         .map(str::to_string)?;
 
-    let mut candidate = candidate;
+    let candidate = neutralize_windows_invalid_chars(&candidate);
+    let candidate = trim_windows_trailing_dots_and_spaces(&candidate);
+    if candidate.is_empty() {
+        return None;
+    }
+
+    let mut candidate = candidate.to_string();
     if is_windows_reserved(&candidate) {
         candidate.push_str(RESERVED_SAFE_SUFFIX);
     }
@@ -160,6 +204,33 @@ pub fn sanitize_filename_component(name: &str) -> Option<String> {
     debug_assert!(truncated.len() <= MAX_FILENAME_LEN);
 
     (!truncated.is_empty()).then_some(truncated)
+}
+
+/// Substitute every Windows-illegal component character with
+/// [`INVALID_CHAR_REPLACEMENT`] (XP-P-05).
+fn neutralize_windows_invalid_chars(name: &str) -> String {
+    if !name.contains(WINDOWS_INVALID_COMPONENT_CHARS) {
+        return name.to_string();
+    }
+    name.chars()
+        .map(|c| {
+            if WINDOWS_INVALID_COMPONENT_CHARS.contains(&c) {
+                INVALID_CHAR_REPLACEMENT
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// Trim the trailing dots and spaces NTFS discards on its own (XP-P-06).
+///
+/// Borrowed, not allocated: the callers only need the view, and a name made
+/// entirely of trim-able characters yields an empty slice, which the caller
+/// turns into `None` (nothing safe remains — `...` is not a creatable file on
+/// any supported platform).
+fn trim_windows_trailing_dots_and_spaces(name: &str) -> &str {
+    name.trim_end_matches(['.', ' '])
 }
 
 /// Contain an untrusted name inside its parent directory (#1125).
@@ -201,6 +272,13 @@ pub fn confine_filename_component(raw: &str, fallback: &str) -> String {
 /// content-type fallback (`<host>_<path-hash>.<ext>`). `content_disposition`
 /// is the raw header value or `None` when absent — callers pass
 /// `page.headers.get("content-disposition")` directly.
+///
+/// Every branch returns a name that went through
+/// [`sanitize_filename_component`], including the synthesized fallback: a
+/// host can be up to 253 bytes (RFC 1035 §2.3.4), so
+/// `<host>_<8 hex>.<ext>` reaches ~266 bytes and would be rejected by ext4's
+/// 255-byte component limit (XP-P-07). The fallback used to skip the cap
+/// entirely, so an over-long host produced a name the filesystem refuses.
 pub fn derive_filename_from_content_disposition(
     content_disposition: Option<&str>,
     url: &Url,
@@ -226,7 +304,8 @@ pub fn derive_filename_from_content_disposition(
         }
     }
 
-    // Fallback: generate filename from content type
+    // Fallback: `<host>_<path-hash>.<ext>`, with the HOST capped so the whole
+    // component fits MAX_FILENAME_LEN (XP-P-07).
     let ext = match content_type {
         ct if ct.contains("application/pdf") => "pdf",
         ct if ct.contains("application/zip") => "zip",
@@ -248,7 +327,41 @@ pub fn derive_filename_from_content_disposition(
         path.hash(&mut hasher);
         format!("{:x}", hasher.finish())
     };
-    format!("{}_{}.{ext}", host.replace('.', "_"), &path_hash[..8])
+    // Last-resort length cap on the name we synthesize ourselves: a host can be
+    // up to 253 bytes (RFC 1035 §2.3.4), so `<host>_<8 hex>.<ext>` reaches ~266
+    // bytes and ext4 rejects components over 255 with ENAMETOOLONG. The
+    // fallback used to skip the cap entirely.
+    //
+    // Only the HOST is truncated, never the whole name: the generic
+    // hash-truncation path in `sanitize_filename_component` replaces the tail,
+    // which would silently drop the extension and leave the caller unable to
+    // tell a zip from a png. `_` and hex and a dotted extension are already
+    // legal on Windows, so no other rewriting rule applies to this shape.
+    let host: String = host.replace('.', "_");
+    let hash8 = &path_hash[..8];
+    // "_" + hash8 + "." + ext, in bytes.
+    let tail_len = 1 + hash8.len() + 1 + ext.len();
+    let host = truncate_on_char_boundary(&host, MAX_FILENAME_LEN.saturating_sub(tail_len));
+    format!("{host}_{hash8}.{ext}")
+}
+
+/// Truncate `value` to at most `max_bytes` bytes without splitting a UTF-8
+/// character. A `max_bytes` of 0 yields an empty string.
+fn truncate_on_char_boundary(value: &str, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value.to_string();
+    }
+    let mut out = String::with_capacity(max_bytes);
+    let mut used = 0usize;
+    for c in value.chars() {
+        let char_len = c.len_utf8();
+        if used + char_len > max_bytes {
+            break;
+        }
+        out.push(c);
+        used += char_len;
+    }
+    out
 }
 
 /// Sanitize a parsed Content-Disposition filename, logging when the value is
@@ -349,5 +462,147 @@ mod tests {
         let once = confine_filename_component("CON", "export");
         assert_eq!(once, "CON_safe");
         assert_eq!(confine_filename_component(&once, "export"), once);
+    }
+
+    // --- NTFS hazards in the DOWNLOAD path (issue #1608, XP-P-05/XP-P-06) ---
+    //
+    // The MCP boundary (mcp_server/validation.rs) already rejected these; the
+    // crawler/export download path did not, and it is the one fed by
+    // server-controlled Content-Disposition and URL-path names.
+
+    #[test]
+    fn sanitize_substitutes_ntfs_alternate_data_stream_colon() {
+        // XP-P-05: `:` must never survive into a component — on NTFS it opens
+        // a stream and leaves the main file 0 bytes.
+        assert_eq!(
+            sanitize_filename_component("report.txt:hidden"),
+            Some("report.txt_hidden".to_string())
+        );
+        assert_eq!(
+            sanitize_filename_component("a:b:c"),
+            Some("a_b_c".to_string())
+        );
+        // A bare ADS-style name that reduces to nothing usable returns None so
+        // the caller falls through to the next derivation source.
+        assert_eq!(sanitize_filename_component(":"), Some("_".to_string()));
+    }
+
+    #[test]
+    fn sanitize_substitutes_windows_invalid_charset() {
+        // Illegal on Windows, ordinary bytes on Linux — the exact asymmetry
+        // that made derived exports non-portable.
+        assert_eq!(
+            sanitize_filename_component("a<b>c|d?e*f"),
+            Some("a_b_c_d_e_f".to_string())
+        );
+        assert_eq!(
+            sanitize_filename_component("informe \"final\".pdf"),
+            Some("informe _final_.pdf".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_trims_windows_trailing_dots_and_spaces() {
+        // XP-P-06: NTFS trims these silently, so accepting them creates a name
+        // that collides with the trimmed form only after the filesystem is
+        // crossed. Trimming makes both platforms agree.
+        assert_eq!(
+            sanitize_filename_component("report."),
+            Some("report".to_string())
+        );
+        assert_eq!(
+            sanitize_filename_component("report  "),
+            Some("report".to_string())
+        );
+        // Order is load-bearing: a reserved stem is checked AFTER trimming, so
+        // `CON.` must yield `CON_safe`, never `CON._safe`.
+        assert_eq!(
+            sanitize_filename_component("CON."),
+            Some("CON_safe".to_string())
+        );
+        // Nothing creatable remains.
+        assert_eq!(sanitize_filename_component("..."), None);
+        assert_eq!(sanitize_filename_component("   "), None);
+        // Mid-name dots and spaces are untouched.
+        assert_eq!(
+            sanitize_filename_component("a.b c"),
+            Some("a.b c".to_string())
+        );
+    }
+
+    #[test]
+    fn sanitize_ntfs_neutralization_is_idempotent() {
+        // Every neutralized form must survive a second pass unchanged —
+        // otherwise a re-sanitized name keeps drifting (the #1125 idempotence
+        // contract applied to the new rules).
+        for raw in ["report.txt:hidden", "a<b>c", "report.", "CON.", "Nul:ads"] {
+            let once = sanitize_filename_component(raw)
+                .unwrap_or_else(|| panic!("'{raw}' must stay usable"));
+            let twice = sanitize_filename_component(&once)
+                .unwrap_or_else(|| panic!("'{once}' must stay usable"));
+            assert_eq!(once, twice, "'{raw}' is not idempotent");
+        }
+    }
+
+    #[test]
+    fn derive_filename_neutralizes_ntfs_hazards_from_content_disposition() {
+        // End-to-end over the server-controlled input that actually carries the
+        // hazard, not just the primitive.
+        let url = url::Url::parse("https://example.com/download").expect("url");
+        let derived = derive_filename_from_content_disposition(
+            Some(r#"attachment; filename="informe.txt:oculto""#),
+            &url,
+            "text/plain",
+        );
+        assert_eq!(derived, "informe.txt_oculto");
+        assert!(
+            !derived.contains(':'),
+            "an ADS colon must never reach the filesystem: {derived}"
+        );
+    }
+
+    #[test]
+    fn derive_filename_caps_the_synthesized_fallback_at_the_component_limit() {
+        // XP-P-07: a 253-byte host (the RFC 1035 maximum) plus `_<8 hex>.<ext>`
+        // reaches ~266 bytes, which ext4 rejects with ENAMETOOLONG. The
+        // fallback used to skip the cap entirely.
+        let long_host = format!("{}.example.com", "a".repeat(240));
+        let url = url::Url::parse(&format!("https://{long_host}/")).expect("root url");
+        let derived = derive_filename_from_content_disposition(None, &url, "application/zip");
+        assert!(
+            derived.len() <= MAX_FILENAME_LEN,
+            "fallback name must respect the {MAX_FILENAME_LEN}-byte component cap, got {} bytes",
+            derived.len()
+        );
+        // The whole point of truncating the HOST instead of the whole name:
+        // the hash and the extension must survive, or the caller cannot tell a
+        // zip from a png.
+        assert!(
+            derived.ends_with(".zip"),
+            "the extension must survive truncation, got: {derived}"
+        );
+        let hash_and_ext = &derived[derived.len() - 13..];
+        assert!(
+            hash_and_ext.starts_with('_')
+                && hash_and_ext[1..9].chars().all(|c| c.is_ascii_hexdigit()),
+            "the path hash must survive truncation, got: {derived}"
+        );
+    }
+
+    #[test]
+    fn derive_filename_keeps_short_fallbacks_byte_identical() {
+        // The cap must not perturb an ordinary host: this is the shape every
+        // existing snapshot and test depends on.
+        let url = url::Url::parse("https://example.com/").expect("url");
+        let derived = derive_filename_from_content_disposition(None, &url, "application/pdf");
+        assert!(derived.starts_with("example_com_"), "got: {derived}");
+        assert!(derived.ends_with(".pdf"), "got: {derived}");
+        assert_eq!(derived.len(), "example_com_".len() + 8 + ".pdf".len());
+        assert!(
+            derived["example_com_".len()..derived.len() - ".pdf".len()]
+                .chars()
+                .all(|c| c.is_ascii_hexdigit()),
+            "the hash segment must be 8 hex chars, got: {derived}"
+        );
     }
 }

@@ -33,7 +33,11 @@ use crate::domain::persistence::{
     DomainRecords, LastError, RawRecord, RecordStoreError, RecordStorePort,
 };
 use crate::domain::record_transition;
-use crate::domain::{entities::ExportFormat, exporter::ExporterError, Exporter, ExporterConfig};
+use crate::domain::{
+    entities::ExportFormat,
+    exporter::{ExporterError, CHECKSUM_FIELD},
+    Exporter, ExporterConfig,
+};
 
 /// Per-run resume/commit context handed to the export functions (D5 seams).
 ///
@@ -544,22 +548,42 @@ fn fresh_discovered(
     Some(Stateful::<RawRecord, crate::domain::page_state::Discovered>::new(record))
 }
 
+/// Rebuild the resume dedup index from an existing output file.
+///
+/// The field name comes from the pinned [`CHECKSUM_FIELD`] constant (#1617,
+/// D3), not from a string literal at this site: three sites read this name and
+/// a rename in one of them would empty the index with no error. Lines that
+/// parse but carry no checksum are counted and reported, so a mismatch between
+/// the writer and the readers is visible instead of silent.
 fn build_content_hash_index(path: &std::path::Path) -> HashSet<String> {
     let Ok(bytes) = std::fs::read_to_string(path) else {
         return HashSet::new();
     };
     let mut index = HashSet::new();
     let mut lines = 0usize;
+    let mut without_checksum = 0usize;
     for line in bytes.lines() {
         if line.trim().is_empty() {
             continue;
         }
         lines += 1;
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
-            if let Some(hash) = value.get("checksum_sha256").and_then(|h| h.as_str()) {
-                index.insert(hash.to_string());
+            match value.get(CHECKSUM_FIELD).and_then(|h| h.as_str()) {
+                Some(hash) => {
+                    index.insert(hash.to_string());
+                },
+                None => without_checksum += 1,
             }
         }
+    }
+    if without_checksum > 0 {
+        tracing::warn!(
+            file = %path.display(),
+            lines,
+            lines_without_checksum = without_checksum,
+            field = CHECKSUM_FIELD,
+            "output lines carry no checksum field; resume dedup will re-drive them (writer/reader field-name mismatch?)"
+        );
     }
     info!(file = %path.display(), lines, hashes = index.len(), "indexed output file for resume dedup");
     index

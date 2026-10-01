@@ -5,9 +5,15 @@
 //! pragmas (`journal_mode=WAL`, `synchronous=NORMAL`, `cache_size=-4000`) are
 //! applied via a `post_create` pool hook so **every** pooled connection honours
 //! the spec's "each connection MUST use WAL-mode pragmas" requirement.
+//!
+//! [`SCHEMA_VERSION`] is the persisted version marker: a SQLite `user_version`
+//! this build stamps on create and refuses to open when it does not recognize
+//! (#1617, M4/D4).
 
 pub mod fingerprint;
 pub mod sqlite;
 
 pub use fingerprint::SqliteFingerprintRepository;
-pub use sqlite::{create_memory_pool, create_pool, setup_schema, SqliteVectorRepository};
+pub use sqlite::{
+    create_memory_pool, create_pool, setup_schema, SqliteVectorRepository, SCHEMA_VERSION,
+};

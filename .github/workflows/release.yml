@@ -9,6 +9,23 @@
 # Enforced by check_release_provenance.sh at preflight (L1.1–L1.3), build checkout
 # (L1.1 re-asserted via validated_commit output), and publish (L1.4 TOCTOU).
 # Tag protection ruleset (L1.5) verified by ruleset subcommand.
+#
+# Authenticity Invariant (issue #1607, SC-02/SC-04/SC-05/SC-15/SC-16/SC-17):
+#   Every published asset is covered by a REAL SLSA provenance attestation
+#   (`attest`) and a KEYLESS cosign signature (`sign`), and `publish` REFUSES to
+#   create the release unless every one of those signatures verifies against a
+#   pinned certificate identity before `gh release create` runs. The provenance
+#   table in the release notes is NOT the attestation — it documents the L1
+#   invariant above; the attestations live in the GitHub attestations API and in
+#   the `.sigstore.json` bundles published next to each asset.
+#
+# Job graph (each job holds the minimum permission its own steps need):
+#   preflight ──> build (matrix) ──> checksums ──┐
+#                                                 ├──> attest ──> sign ──┐
+#                                                 └───────────────────────┴──> publish
+# `attest` needs `build` for the archives and `checksums` for the manifest;
+# `sign` needs `attest` so the SBOM and the notice bundle — produced there — are
+# signed too; `publish` needs `sign` so it has the bundles to verify.
 
 name: Release
 
@@ -195,17 +212,122 @@ jobs:
           # cross job; native jobs fall back to host `strip`.
           ${STRIP:-strip} target/${{ matrix.target }}/release/webfang
 
-      - name: Compress (Unix)
-        if: runner.os != 'Windows'
+      # SC-04: reproducibility. SOURCE_DATE_EPOCH is derived from the COMMITTER
+      # date of the VALIDATED commit — the one timestamp in this job that is a
+      # property of the source rather than of the machine or the clock.
+      # Everything downstream that could embed "now" is then pinned to it.
+      - name: Derive SOURCE_DATE_EPOCH
+        id: epoch
+        env:
+          VALIDATED_COMMIT: ${{ needs.preflight.outputs.validated_commit }}
         run: |
-          cd target/${{ matrix.target }}/release
-          tar czf ../../../webfang-${{ matrix.target }}.tar.gz webfang
+          set -euo pipefail
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct "$VALIDATED_COMMIT")"
+          if ! [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]]; then
+            echo "::error::no se pudo derivar SOURCE_DATE_EPOCH del commit validado '$VALIDATED_COMMIT'" >&2
+            exit 1
+          fi
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" >> "$GITHUB_OUTPUT"
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
 
-      - name: Compress (Windows)
-        if: runner.os == 'Windows'
+      # GNU tar is REQUIRED, not preferred: the normalization flags below are
+      # GNU-only, and bsdtar — which is what `tar` is on macOS — accepts some of
+      # them with different meanings. Homebrew's gnu-tar is keg-only, so both
+      # candidate directories are probed before giving up. A silent bsdtar
+      # fallback would produce an archive that LOOKS normalized and is not, so
+      # the probe is fail-closed.
+      - name: Locate GNU tar
+        if: runner.os != 'Windows'
+        id: gnutars
         run: |
-          cd target/${{ matrix.target }}/release
-          7z a ../../../webfang-${{ matrix.target }}.zip webfang.exe
+          set -euo pipefail
+          if tar --sort=name --help >/dev/null 2>&1; then
+            echo "command=tar" >> "$GITHUB_OUTPUT"
+            echo "GNU tar available as 'tar'."
+            exit 0
+          fi
+          if command -v gtar >/dev/null 2>&1 && gtar --sort=name --help >/dev/null 2>&1; then
+            echo "command=gtar" >> "$GITHUB_OUTPUT"
+            echo "GNU tar available as 'gtar'."
+            exit 0
+          fi
+          if command -v brew >/dev/null 2>&1; then
+            PREFIX="$(brew --prefix)"
+            for d in "$PREFIX/opt/gnu-tar/libexec/gnubin" "$PREFIX/opt/gnu-tar/bin"; do
+              if [ -x "$d/gtar" ] && "$d/gtar" --sort=name --help >/dev/null 2>&1; then
+                echo "command=$d/gtar" >> "$GITHUB_OUTPUT"
+                echo "GNU tar found keg-only at $d/gtar."
+                exit 0
+              fi
+            done
+          fi
+          echo "::error::no se encontró GNU tar. En macOS el 'tar' del sistema es bsdtar y no implementa --sort/--mtime/--format=gnu igual que GNU tar; instálalo con 'brew install gnu-tar'. No se continúa con un bsdtar silencioso: produciría un archivo aparentemente normalizado que no lo está." >&2
+          exit 1
+
+      # SC-04: normalized tar. --format=gnu (not pax) is load-bearing: the pax
+      # format records owner NAMES, atime/ctime and nanosecond mtimes, none of
+      # which are properties of the source. --owner=0/--group=0 with
+      # --numeric-owner zero the ids, and --sort=name fixes the order so readdir
+      # order cannot leak in.
+      - name: Compress (Unix, normalized)
+        if: runner.os != 'Windows'
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.SOURCE_DATE_EPOCH }}
+          TAR: ${{ steps.gnutars.outputs.command }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          cd "target/$TARGET/release"
+          # `| gzip -n -9`, not `tar -czf`. Measured: `tar -czf` is already
+          # clock-free (GNU gzip writes MTIME=0 when it reads a pipe), so -n is
+          # not about the clock — it guarantees the ORIGINAL FILE NAME is never
+          # recorded, and -9 makes the compression level explicit instead of
+          # leaving it to whichever default the runner image's gzip ships.
+          "$TAR" \
+            --sort=name \
+            --mtime="@$SOURCE_DATE_EPOCH" \
+            --owner=0 --group=0 \
+            --numeric-owner \
+            --format=gnu \
+            -cf - webfang \
+            | gzip -n -9 > "../../../webfang-$TARGET.tar.gz"
+
+      # SC-04: the Windows archive used to be built with `7z`, which is not a
+      # pinned input of this repository, is not present on every runner image,
+      # and stamps wall-clock time, host uid/gid and host permission bits into
+      # every entry. Replaced with a writer whose output is a pure function of
+      # its input. The artifact NAME is unchanged — scripts/ensure-release.sh
+      # and the release notes both depend on it.
+      - name: Compress (Windows, deterministic)
+        if: runner.os == 'Windows'
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.SOURCE_DATE_EPOCH }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          bash scripts/make-deterministic-zip.sh \
+            "webfang-$TARGET.zip" \
+            "target/$TARGET/release/webfang.exe"
+
+      # Assert the normalization invariants ON the artifact that is about to be
+      # published. A regression in the steps above fails the release here rather
+      # than shipping an archive nobody can reproduce. See the script header for
+      # the honest boundary: this asserts the CONTAINER, not byte-identical
+      # rebuilds of the enclosed Windows binary.
+      - name: Assert archive reproducibility invariants
+        env:
+          SOURCE_DATE_EPOCH: ${{ steps.epoch.outputs.SOURCE_DATE_EPOCH }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          # RUNNER_OS is an env var the runner already exports, so this branch
+          # needs no GitHub expression expansion inside a shell block — the same
+          # rule the change-scope step was fixed for.
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            bash scripts/check_archive_reproducibility.sh "webfang-$TARGET.zip"
+          else
+            bash scripts/check_archive_reproducibility.sh "webfang-$TARGET.tar.gz"
+          fi
 
       - name: Upload artifact
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
@@ -243,11 +365,206 @@ jobs:
           path: artifacts/SHA256SUMS.txt
 
   # ============================================================================
-  # PUBLISH: L1.4 TOCTOU re-read + Create GitHub Release with attestation
+  # ATTEST: real SLSA build provenance + SBOM (SC-16, SC-05)
+  # ============================================================================
+  # A Markdown table in the release body is not a provenance attestation: anyone
+  # who can edit the release body can edit the table, and it attests nothing a
+  # consumer can check. `actions/attest-build-provenance` instead mints a signed
+  # in-toto statement over each artifact's digest, uploads it to the GitHub
+  # attestations API, and a consumer verifies it with `gh attestation verify`
+  # without trusting this pipeline at all.
+  #
+  # `id-token: write` is what makes the attestation keyless: the OIDC token
+  # proves *this workflow, at this ref, in this repo* to sigstore, which returns
+  # a short-lived certificate. `attestations: write` is the API scope. Nothing
+  # else is granted, and `contents: read` exists only for the checkout.
+  # ============================================================================
+  attest:
+    name: Attest provenance + SBOM
+    needs: [build, checksums, preflight]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      # scripts/generate-sbom.sh and scripts/generate-third-party-notices.sh
+      # must be the bytes preflight approved (re-asserts L1.1, same reason the
+      # build job checks out the validated commit).
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          ref: ${{ needs.preflight.outputs.validated_commit }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      # `cargo metadata` needs cargo, and the checked-out rust-toolchain.toml
+      # pins 1.88.0 — the same rev the build job installs, rather than
+      # `@stable`, so the SBOM is generated by the toolchain that built the
+      # artifacts. No target is needed: nothing is compiled here.
+      - uses: dtolnay/rust-toolchain@688313b0823df1393bcebb1b4add0438a6d36884
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          path: artifacts
+          # Two globs, not one: the archives come from the `build` matrix and
+          # SHA256SUMS.txt from the separate `checksums` artifact. A single
+          # `webfang-*` pattern would silently omit the manifest, and the
+          # manifest is the artifact `subject-checksums` reads.
+          pattern: |
+            webfang-*
+            checksums
+          merge-multiple: true
+
+      # `attest-build-provenance` also accepts `subject-checksums`, which reads
+      # SHA256SUMS.txt and attests EVERY entry it names in one statement. That
+      # is strictly better than globbing here: the manifest is the artifact the
+      # consumer is told to check first, so attesting it means the manifest
+      # itself is covered.
+      - name: Attest build provenance (SLSA)
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8
+        with:
+          subject-checksums: artifacts/SHA256SUMS.txt
+
+      - name: Generate SBOM (SPDX 2.3, both lockfiles)
+        env:
+          # Derived here, from the SAME validated commit the archives were
+          # stamped with, rather than threaded through a matrix job's outputs
+          # (whose values are last-writer-wins across the four build legs).
+          # It makes the SBOM's `creationInfo.created` and
+          # `documentNamespace` a property of the commit, so re-running the
+          # generator is a no-op diff — which is what makes the signed SBOM
+          # meaningful rather than decorative.
+          VALIDATED_COMMIT: ${{ needs.preflight.outputs.validated_commit }}
+        run: |
+          set -euo pipefail
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct "$VALIDATED_COMMIT")"
+          if ! [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]]; then
+            echo "::error::no se pudo derivar SOURCE_DATE_EPOCH del commit validado '$VALIDATED_COMMIT'" >&2
+            exit 1
+          fi
+          export SOURCE_DATE_EPOCH
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
+          bash scripts/generate-sbom.sh artifacts/webfang.spdx.json
+
+      - name: Generate third-party notices
+        run: |
+          set -euo pipefail
+          bash scripts/generate-third-party-notices.sh artifacts/THIRD_PARTY_NOTICES.txt
+
+      # `actions/attest` is used directly with its `sbom-path` input rather than
+      # through `actions/attest-sbom`, because that action is DEPRECATED: its own
+      # README states it "is being deprecated in favor of actions/attest" and
+      # that "all of the existing action inputs are compatible with the
+      # actions/attest interface", and its action.yml is now a thin wrapper that
+      # prints `::warning::actions/attest-sbom has been deprecated` and delegates.
+      # Pinning a deprecated shim in the pipeline whose whole purpose is
+      # attestation integrity would be the wrong trade; the replacement takes
+      # the identical `sbom-path` and produces the identical attestation.
+      - name: Attest the SBOM
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26
+        with:
+          subject-checksums: artifacts/SHA256SUMS.txt
+          sbom-path: artifacts/webfang.spdx.json
+
+      - name: Upload attestable metadata
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+        with:
+          name: attest-metadata
+          # The archives are re-downloaded by `sign` from the build artifacts;
+          # only the two files produced HERE travel, so the metadata artifact
+          # cannot shadow an archive with a different byte sequence.
+          path: |
+            artifacts/webfang.spdx.json
+            artifacts/THIRD_PARTY_NOTICES.txt
+
+  # ============================================================================
+  # SIGN: keyless cosign signature for every published asset (SC-15)
+  # ============================================================================
+  # KEYLESS, and the reason is concrete rather than stylistic: a long-lived
+  # signing key needs a maintainer-held secret that cannot be provisioned from
+  # inside this repository, so a key-pair design could not actually be landed.
+  # Keyless needs no secret: `id-token: write` proves this workflow at this ref
+  # to sigstore, the certificate comes from the GitHub Actions OIDC issuer, and
+  # the trust anchor is the public Rekor transparency log.
+  #
+  # The consequence, stated honestly: the signing identity is a WORKFLOW PATH,
+  # not a person. A consumer verifies
+  #   https://github.com/XaviCode1000/webfang/.github/workflows/release.yml@refs/tags/vX.Y.Z
+  # — which is a real, checkable boundary, and is pinned by the
+  # --certificate-identity-regexp in scripts/verify-release-signatures.sh.
+  #
+  # SHA256SUMS.txt is signed like everything else, and that is the SC-15 fix: the
+  # manifest is signed by a job that did not produce it, so it is evidence rather
+  # than a tautology. `needs: [attest]` also means the SBOM and the notice
+  # bundle get signed, so no published asset is left unsigned.
+  # ============================================================================
+  sign:
+    name: Sign every published asset (keyless)
+    needs: [attest]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          path: artifacts
+          # Same two globs as the `attest` job — `webfang-*` alone omits the
+          # `checksums` artifact and therefore SHA256SUMS.txt.
+          pattern: |
+            webfang-*
+            checksums
+          merge-multiple: true
+
+      - name: Download attestable metadata
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: attest-metadata
+          path: artifacts
+
+      # Version-pinned via `cosign-release` so a cosign release cannot change
+      # the CLI contract (`sign-blob --bundle`) underneath a pinned action.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        with:
+          cosign-release: v3.0.6
+
+      - name: Sign every asset
+        run: |
+          set -euo pipefail
+          # Sorted so the signing order is a property of the file names, not of
+          # readdir, and so a partially-signed run is reproducible from the log.
+          mapfile -t assets < <(
+            cd artifacts
+            ls -1 webfang-*.tar.gz webfang-*.zip SHA256SUMS.txt webfang.spdx.json THIRD_PARTY_NOTICES.txt 2>/dev/null \
+              | LC_ALL=C sort
+          )
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "::error::no hay assets que firmar: una release sin firmas es exactamente el defecto que este paso cierra" >&2
+            exit 1
+          fi
+          for asset in "${assets[@]}"; do
+            [ -f "artifacts/$asset" ] || { echo "::error::falta artifacts/$asset" >&2; exit 1; }
+            cosign sign-blob --yes --bundle "artifacts/$asset.sigstore.json" "artifacts/$asset"
+            echo "signed: $asset"
+          done
+          echo "signed ${#assets[@]} assets"
+
+      - name: Upload assets and signature bundles
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+        with:
+          name: signed-assets
+          path: artifacts/*
+
+  # ============================================================================
+  # PUBLISH: L1.4 TOCTOU re-read + VERIFY SIGNATURES + Create GitHub Release
   # ============================================================================
   publish:
     name: L1 Publish + Release
-    needs: [build, checksums, preflight]
+    needs: [build, checksums, preflight, sign]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -262,11 +579,59 @@ jobs:
           fetch-tags: true
           persist-credentials: false
 
-      - name: Download all artifacts
+      - name: Download signed assets
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         with:
           path: artifacts
-          merge-multiple: true
+          # ONLY the `sign` job's artifact, not every artifact of the run. That
+          # artifact is the single authoritative copy of what gets published —
+          # archives, SHA256SUMS.txt, SBOM, notices and every `.sigstore.json`
+          # bundle — so verification and publication read the same bytes.
+          # Pulling the build artifacts in as well would put two copies of each
+          # archive in one directory and make "which one was verified" ambiguous.
+          name: signed-assets
+
+      # Version-pinned to the same release as the `sign` job, so a bundle
+      # written by one cosign is read by the same one. cosign's bundle format
+      # and `verify-blob` flags are the contract here.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        with:
+          cosign-release: v3.0.6
+
+      # SC-17: the release VERIFIES a signature before it exists. This step is
+      # the difference between a pipeline that signs artifacts and a pipeline
+      # that can prove it published the artifacts it signed. It runs BEFORE
+      # `gh release create`, and it is fail-closed on every branch: a missing
+      # cosign, a missing bundle, an invalid signature, a foreign identity, or
+      # an empty asset list all block the release.
+      - name: Verify signatures
+        env:
+          # Stated here, at the point of use, so a reviewer reading this workflow
+          # sees the identity that is being trusted. It is the release workflow
+          # of this repository at a VERSION TAG — not a branch, not another
+          # workflow, not another repository.
+          RELEASE_CERT_IDENTITY_REGEXP: '^https://github\.com/XaviCode1000/webfang/\.github/workflows/release\.yml@refs/tags/v[0-9].*$'
+        run: |
+          set -euo pipefail
+          mapfile -t assets < <(
+            cd artifacts
+            ls -1 webfang-*.tar.gz webfang-*.zip SHA256SUMS.txt webfang.spdx.json THIRD_PARTY_NOTICES.txt 2>/dev/null \
+              | LC_ALL=C sort
+          )
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "::error::no hay assets que verificar antes de publicar" >&2
+            exit 1
+          fi
+          # Every published asset is verified — not a hand-picked subset. The
+          # list is derived from the same glob the release notes and
+          # scripts/ensure-release.sh use, so an asset that ships is an asset
+          # that was signed and an asset whose signature was checked.
+          to_verify=()
+          for asset in "${assets[@]}"; do
+            to_verify+=("artifacts/$asset")
+          done
+          bash scripts/verify-release-signatures.sh "${to_verify[@]}"
 
       # L1.4 TOCTOU re-read: re-resolve the tag server-side and compare
       # against the validated commit from preflight. Any drift blocks.
@@ -370,9 +735,37 @@ jobs:
             echo "| L1 Gate | \`check_release_provenance.sh preflight | ruleset | publish\` |"
             echo "| Ruleset | \`release-tags-immutable\` (update + deletion blocked) |"
           } > /tmp/release-notes.md
+          # The asset list is derived, not transcribed: a hardcoded second copy
+          # of the matrix's target names would be free to drift, and a name that
+          # exists only in one place is a name that silently stops shipping.
+          # `*.sigstore.json` is deliberately NOT in the main list — the bundles
+          # are uploaded in the second call below, so the primary asset list
+          # never contains a signature for itself.
+          mapfile -t assets < <(
+            cd artifacts
+            ls -1 webfang-*.tar.gz webfang-*.zip SHA256SUMS.txt webfang.spdx.json THIRD_PARTY_NOTICES.txt 2>/dev/null \
+              | LC_ALL=C sort
+          )
+          if [ "${#assets[@]}" -eq 0 ]; then
+            echo "::error::no hay assets que publicar" >&2
+            exit 1
+          fi
+          upload=()
+          for asset in "${assets[@]}"; do
+            upload+=("artifacts/$asset")
+          done
+          # No GitHub expression is expanded into this shell block: the flag
+          # arrives as an env var, so the shell decides what to pass, not the
+          # expression engine (the same rule the change-scope step follows).
+          prerelease_args=()
+          if [ "$PRERELEASE" = "true" ]; then
+            prerelease_args+=(--prerelease)
+          fi
           gh release create "$TAG" \
             --title "WebFang $TAG" \
             --notes-file /tmp/release-notes.md \
-            artifacts/webfang-* \
-            artifacts/SHA256SUMS.txt \
-            ${{ needs.preflight.outputs.prerelease == 'true' && '--prerelease' || '' }}
+            "${upload[@]}" \
+            "${prerelease_args[@]}"
+          # Bundles last, and separately, so the asset list `gh` receives for
+          # the release body is exactly the list that was verified above.
+          gh release upload "$TAG" artifacts/*.sigstore.json --clobber

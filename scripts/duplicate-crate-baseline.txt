@@ -1,0 +1,86 @@
+# duplicate-crate-baseline.txt — the accepted set of duplicate-crate warnings
+# for the WebFang workspace (issue #1607, SC-06 "fail closed for duplicates").
+#
+# WHY THIS FILE EXISTS. cargo-deny 0.20.2 has no `duplicate` key in [bans], so
+# deny.toml cannot make duplicate versions a hard error. This file is the
+# missing fail-closed knob: scripts/check_advisory_policy.sh reads it and FAILS
+# whenever `cargo deny check bans` reports a crate that is not listed here.
+#
+# THE CONTRACT IS DESCENDING, NOT ABSOLUTE. Every name below is an ACCEPTED
+# duplicate that a reviewer has already looked at; 52 of them, and most of them
+# are not accidents at all. The intentional ones are documented in AGENTS.md
+# under "Crate version conflicts (DO NOT unify)":
+#   dashmap      5.x (via governor) + 6.x (direct) — both needed
+#   selectors    0.35 (legible) / 0.37 (lol_html) / 0.38 (scraper) — all three
+#   windows-sys  five major versions pulled by winreg, ring, rustls, rustix, keyring
+# The rest are transitive collisions inside the dependency graph.
+#
+# HOW TO UPDATE IT. Never raise this list to make a gate go green.
+#   * A NEW name appears  -> the build is telling you a dependency now ships two
+#     versions. Fix the cause (bump, unify, or accept it deliberately) and only
+#     then add the name here in a commit that says why.
+#   * A name DISAPPEARS  -> good news: the graph converged. Delete the line.
+#     scripts/check_advisory_policy.sh reports stale lines as a warning (not a
+#     failure) precisely so the removal can be reviewed on its own; the ratchet
+#     is enforced in one direction only.
+#   * Cargo.lock changes  -> regenerate with the exact command below and review
+#     the diff as a dependency-graph change, not as a config change:
+#         bash scripts/check_advisory_policy.sh --print-duplicates > scripts/duplicate-crate-baseline.txt
+#
+# FORMAT: one crate name per line, sorted, no version numbers. Lines starting
+# with '#' and blank lines are ignored. A duplicated line is itself an error.
+#
+# Generated from `cargo deny check bans` on Cargo.lock at workspace version
+# 2.4.1 (2026-09-30, issue #1607).
+async-channel
+base64
+block-buffer
+chacha20
+console
+cpufeatures
+crypto-common
+cssparser
+cssparser-macros
+dashmap
+digest
+dirs
+dirs-sys
+event-listener
+foldhash
+getrandom
+hashbrown
+heck
+html5ever
+indicatif
+linux-raw-sys
+lru
+markup5ever
+markup5ever_rcdom
+r-efi
+rand
+rand_chacha
+rand_core
+redox_users
+rustc-hash
+rustix
+secrecy
+selectors
+sha2
+shlex
+syn
+tendril
+thiserror
+thiserror-impl
+toml
+windows-core
+windows-sys
+windows-targets
+windows_aarch64_gnullvm
+windows_aarch64_msvc
+windows_i686_gnu
+windows_i686_gnullvm
+windows_i686_msvc
+windows_x86_64_gnu
+windows_x86_64_gnullvm
+windows_x86_64_msvc
+xml5ever

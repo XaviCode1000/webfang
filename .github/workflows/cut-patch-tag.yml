@@ -10,6 +10,24 @@ name: Cut patch tag (manual)
 # same restriction that stranded v2.1.1 (#1478). The hand-off is therefore an
 # explicit workflow_dispatch below, the pattern release-plz.yml uses.
 # release.yml's preflight re-verifies Cargo.toml == tag as defense in depth.
+#
+# SC-21 (issue #1607): this file used to be ONE job under a workflow-level
+# `permissions: {contents: write, actions: write}`, and it needed both — the tag
+# step pushes a ref, the dispatch step calls the Actions API. A job cannot hold
+# two permission sets: `permissions:` is one block per job, applied to every step
+# in it, so "write to contents for the push, write to actions for the dispatch,
+# nothing else anywhere" is not expressible in a single job. It is exactly
+# expressible in two, which is what this file now is:
+#
+#   tag       -> contents: write   (the only step that writes is `git push`)
+#   dispatch  -> actions: write    (the only step that writes is `gh workflow run`)
+#
+# Neither job holds the other's scope, the two run on separate runners, and the
+# tag SHA crosses the boundary as a job OUTPUT — so the dispatch cannot be
+# confused with the push, and a regression that made the dispatch job reach for
+# the git object store fails visibly instead of quietly re-acquiring contents
+# write. `needs:` is also the honest encoding of the order: the dispatch is
+# meaningless without a pushed tag.
 on:
   workflow_dispatch:
     inputs:
@@ -22,13 +40,16 @@ on:
         required: true
         type: string
 
-permissions:
-  contents: write
-  actions: write # required to dispatch release.yml
-
 jobs:
+  # Job 1 of 2 — the ONLY holder of `contents: write` in this file.
   tag:
+    name: Cut and push the annotated tag
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.TAG }}
+      expected_sha: ${{ steps.tag.outputs.EXPECTED_SHA }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -62,16 +83,40 @@ jobs:
           git -c user.name='github-actions[bot]' -c user.email='bot@github.com' \
             tag -a "v$INPUT_VERSION" -m "chore: Release package webfang_core version $INPUT_VERSION"
           git push origin "v$INPUT_VERSION"
-          # Capture the commit SHA for L1 expected_sha (dereference annotated tag)
+          # Capture the commit SHA for L1 expected_sha (dereference annotated tag).
+          # Both values cross into job 2 as job OUTPUTS, not as a shared
+          # workspace: the dispatch job has no checkout and no contents scope, so
+          # this output is the only channel by which the SHA can reach it.
           EXPECTED_SHA=$(git rev-parse "v$INPUT_VERSION^{commit}")
+          echo "TAG=v$INPUT_VERSION" >> "$GITHUB_OUTPUT"
           echo "EXPECTED_SHA=$EXPECTED_SHA" >> "$GITHUB_OUTPUT"
+
+  # Job 2 of 2 — the ONLY holder of `actions: write` in this file, and it holds
+  # no `contents` scope at all: it never touches the git object store, so there
+  # is nothing here for a compromised step to rewrite.
+  dispatch:
+    name: Dispatch release.yml for the new tag
+    needs: [tag]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write # required to create the workflow_dispatch run
+    steps:
       - name: Dispatch release.yml for the new tag
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG: "v${{ inputs.version }}"
-          EXPECTED_SHA: ${{ steps.tag.outputs.EXPECTED_SHA }}
+          TAG: ${{ needs.tag.outputs.tag }}
+          EXPECTED_SHA: ${{ needs.tag.outputs.expected_sha }}
         run: |
           set -euo pipefail
+          # Defensive: a job output that failed to propagate must block the
+          # dispatch, not produce `gh workflow run -f tag=` against a tag that
+          # was never resolved. release.yml's preflight would catch the empty
+          # expected_sha too, but it would burn a whole release pipeline run to
+          # do it.
+          if [[ -z "$TAG" || -z "$EXPECTED_SHA" ]]; then
+            echo "::error::el job 'tag' no propagó TAG/EXPECTED_SHA (tag='${TAG}', expected_sha='${EXPECTED_SHA}') — no se despacha" >&2
+            exit 1
+          fi
           # Dispatch via workflow_dispatch WITHOUT --ref. release.yml's preflight
           # will re-verify L1.1..L1.3 against the expected_sha input.
           gh workflow run release.yml \
