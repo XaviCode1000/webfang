@@ -173,6 +173,7 @@ mkdir -p "$FIXTURE/scripts"
 cp "$REPO_ROOT/scripts/release-plz-tags.sh" \
    "$REPO_ROOT/scripts/release-tag-trust.sh" \
    "$REPO_ROOT/scripts/ensure-release.sh" \
+   "$REPO_ROOT/scripts/sweep-releases.sh" \
    "$REPO_ROOT/scripts/reconcile-releases.sh" "$FIXTURE/scripts/"
 
 COMPLETE_ASSETS="$STATE/assets-v9.9.9"
@@ -407,3 +408,16 @@ if (( FAIL > 0 )); then
   exit 1
 fi
 echo "OK: retry and sweep tag-selection behave as specified."
+
+# ─── Squash-merge coverage rides on this CI step ────────────────────────────
+# scripts/test_release_squash_dispatch.sh (webfang#1674) proves the immediate
+# dispatch path on the same fixtures and fake `gh` this harness uses. It is
+# invoked from here rather than from a new .github/workflows/ci.yml step so the
+# coverage lands without a second edit of ci.yml; this step is the single CI
+# entry point for the release hand-off semantics. Both files also run standalone:
+#   bash scripts/test_release_squash_dispatch.sh
+echo "--- squash-merge dispatch harness (webfang#1674)"
+if ! bash "$REPO_ROOT/scripts/test_release_squash_dispatch.sh"; then
+  echo "FAILED: test_release_squash_dispatch.sh (squash-merged Release PR dispatch)"
+  exit 1
+fi

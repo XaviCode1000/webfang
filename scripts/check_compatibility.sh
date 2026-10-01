@@ -64,6 +64,31 @@ decode_core_feature_args() {
   while IFS= read -r w; do CORE_FEATURE_ARGS+=("$w"); done < <(core_feature_args "$flags")
 }
 
+# Path of the `webfang` binary this combo's `start_build` just produced.
+# CARGO_TARGET_DIR is honoured exactly as scripts/gen-cli-reference.sh does —
+# that is the convention every shell consumer in this repo already follows, not
+# a third one. The hardcoded ./target/debug/webfang was wrong in the exact
+# context this harness is designed to run in: per-worktree target-dir isolation
+# (#1267) puts the build in ~/.cache/cargo-target/<tree>, so the probes looked
+# for a binary that has never existed there and reported "exit 127 / command not
+# found" — a resolution failure dressed up as a contract failure (#1698).
+# Unset keeps the previous relative behaviour (cargo's own default, ./target).
+webfang_bin() {
+  printf '%s\n' "${CARGO_TARGET_DIR:-target}/debug/webfang"
+}
+
+# True when the resolved binary is missing or not executable. Reported as its
+# own message so a resolution/never-built binary is never confused with a
+# contract violation by whoever reads the log.
+require_webfang_bin() {
+  local bin
+  bin="$(webfang_bin)"
+  if [ ! -x "$bin" ]; then
+    echo "FAIL $1: binary not built at $bin (resolved from CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-<unset>})" >&2
+    return 1
+  fi
+}
+
 # Run a command with its output captured; on success return 0 (output
 # discarded), on failure print the last 40 lines to stderr and return the
 # command's OWN exit status. Keeps CI logs small while staying fail-closed.
@@ -113,10 +138,13 @@ start_build() {
 
 help_check() {
   local name="$1"
-  echo "  [--help] $name"
-  ./target/debug/webfang --help >/dev/null
+  local bin
+  bin="$(webfang_bin)"
+  echo "  [--help] $name ($bin)"
+  if ! require_webfang_bin "--help $name"; then return 1; fi
+  "$bin" --help >/dev/null
   local rc=$?
-  if [ "$rc" -ne 0 ]; then echo "FAIL --help $name exit $rc" >&2; return 1; fi
+  if [ "$rc" -ne 0 ]; then echo "FAIL --help $name exit $rc (binary: $bin)" >&2; return 1; fi
 }
 
 crawl_check() {
@@ -210,13 +238,12 @@ failure_path_check() {
   local expected_vectors
   expected_vectors=$(expected_vectors_exit "$flags")
   decode_core_feature_args "$flags"
-  if [ ! -x "./target/debug/webfang" ]; then
-    echo "FAIL failure-path $name: binary not built at ./target/debug/webfang" >&2
-    return 1
-  fi
+  local bin
+  bin="$(webfang_bin)"
+  if ! require_webfang_bin "failure-path $name"; then return 1; fi
   local probe_out="" rc=0
   set +e
-  probe_out=$(./target/debug/webfang --output-vectors vectors-compat.tmp --url https://example.com 2>&1)
+  probe_out=$("$bin" --output-vectors vectors-compat.tmp --url https://example.com 2>&1)
   rc=$?
   set -e
   if [ "$rc" -ne "$expected_vectors" ]; then
@@ -404,6 +431,18 @@ self_test() {
   for combo in ai full ai,persistence ai,persistence,chromium; do
     self_test_eq "expected_vectors_exit $combo" "65" "$(expected_vectors_exit "$combo")"
   done
+
+  # Binary resolution: honour CARGO_TARGET_DIR, fall back to ./target (#1698).
+  # Asserted on the VALUE, so a future edit that reintroduces a hardcoded
+  # relative path is caught by the self-test rather than by a lost build.
+  # The `unset` runs inside the command substitution's subshell, so it cannot
+  # leak into the rest of the self-test.
+  self_test_eq "webfang_bin with CARGO_TARGET_DIR unset" "target/debug/webfang" \
+    "$(unset CARGO_TARGET_DIR; webfang_bin)"
+  self_test_eq "webfang_bin with external CARGO_TARGET_DIR" "/home/x/.cache/cargo-target/tree/debug/webfang" \
+    "$(CARGO_TARGET_DIR=/home/x/.cache/cargo-target/tree webfang_bin)"
+  self_test_eq "webfang_bin with empty CARGO_TARGET_DIR" "target/debug/webfang" \
+    "$(CARGO_TARGET_DIR='' webfang_bin)"
 
   # run_logged returns the command's own status, and still tails the output.
   rc=0; run_logged true || rc=$?
