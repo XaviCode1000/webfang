@@ -105,6 +105,18 @@ pub mod content_pruner;
 
 pub mod granite_dom_inspector;
 
+/// Shared AI test fixture (#1575) — the in-memory WordPiece tokenizer used by
+/// this crate's unit tests AND, via `#[path = "ai_test_fixture.rs"]`, by
+/// `tests/erased_engine_ports_test.rs`.
+///
+/// `#[cfg(test)]` is load-bearing, not decoration: an integration test links a
+/// library compiled WITHOUT `cfg(test)`, so this declaration gives the library's
+/// own unit tests the fixture while the integration test supplies its own
+/// `#[path]` include. Neither path reaches a production build. See the module's
+/// own docs for why no dev-dependency crate hosts it instead.
+#[cfg(test)]
+mod ai_test_fixture;
+
 // Re-exports for convenience (Modules 1-2)
 pub use cache_config::{AiModel, DEFAULT_MODEL_FILE, DEFAULT_MODEL_REPO, DEFAULT_MODEL_SHA256};
 
