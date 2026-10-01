@@ -730,8 +730,8 @@ If you detect you operated outside your assigned worktree, or `git stash pop` ap
 ### Validity status (read first — this section phases in)
 
 - **ACTIVE today:** `main` as the only development line; tags `v*` from `main`; `release.yml` preflight (RC vs stable channel + `tag == Cargo.toml` fail-fast); `support.json` + `SUPPORT.md` (2.1 STABLE, 2.0 EOL); process labels (`release:cut`, `support:create`, `support:extended`, `breaking:*`, `migration:*`); the agent routing below.
-- **WARN-ONLY today:** the branch-topology check in `pr-validation.yml` reports misrouted PRs without failing (`continue-on-error`). Read its output; do not rely on it as a gate yet.
-- **NOT YET:** no `release/*` or `support/*` branch exists. Do not create one speculatively — support lines are materialized on demand (see below), never "just in case". Enforcement (removing `continue-on-error`) lands separately after the soak.
+- **ENFORCING today:** the branch-topology check is a **required gate**, not a warning. `scripts/check-topology.sh` runs as the step `Validate branch topology (enforcing)` inside the job `Validate PR metadata` in `pr-validation.yml`, with **no `continue-on-error`** — enforcement landed in #1502 (`d4f8fa79`, 2026-09-21), which also extended the conventional-branch regex to admit `hotfix/*`, `release/*` and `support/*` so no enforced arm is dead on arrival. `Validate PR metadata` is in the required status-check list for `main`, so a misrouted PR fails a required check within seconds and is unmergeable. Plan the base branch **before** opening the PR; never retarget an open PR onto another working branch (see "No stacked PRs in this repo" below).
+- **NOT YET:** no `release/*` or `support/*` branch exists. Do not create one speculatively — support lines are materialized on demand (see below), never "just in case".
 
 ### Mental model: version first, branch second
 
@@ -829,7 +829,7 @@ Run inside a `chore/support-*` branch (base `main`); mutations travel by normal 
 | `eol-line.sh X.Y` | Declare EOL (deletes branch remote+local, marks entry) |
 | `render-support-md.sh` | Regenerate `SUPPORT.md` (agent commits both files; CI verifies diff only) |
 | `bump-support-patch.sh X.Y.Z [pr#]` | Manual patch bump with release-contract checks (see above) |
-| `check-topology.sh` | Head-prefix → base validation (CI warn-only until enforcement) |
+| `check-topology.sh` | Head-prefix → base validation. **Required gate** — invoked as step `Validate branch topology (enforcing)` by `pr-validation.yml`; the script itself is policy-agnostic, so the enforcement lives entirely in that step |
 
 ### Merge Queue (durable statement, not environment-dependent)
 
@@ -1142,6 +1142,53 @@ The script:
 
 Do NOT rely on `--auto`: it never accepts in this repo configuration. If a future PR
 needs auto-merge (e.g. transferring the repo to an organization with rulesets), revisit.
+
+### No stacked PRs in this repo — slice large changes sequentially
+
+**A stacked/chained PR cannot be merged here, and the gate rejects it in seconds.**
+`scripts/check-topology.sh` admits exactly these head-prefix → base pairs:
+
+| Head prefix | Allowed base |
+| :--- | :--- |
+| `hotfix/*` | `support/*` |
+| `fix/*` | `main`, `release/*` |
+| `feat/*` `refactor/*` `perf/*` `docs/*` `test/*` `chore/*` `style/*` `build/*` `ci/*` `revert/*` | `main` only |
+| `release/*` `support/*` `release-plz-*` `dependabot/*` `renovate/*` | exempt (own flow) |
+
+There is therefore **no head prefix whose base may be another working branch**. Both
+strategies the `chained-pr` skill offers are structurally impossible here:
+
+- *"Stacked PRs to main"* — the skill's own diagram requires slice *N+1* to be built on
+  slice *N* and retargeted onto it. A `fix/*` slice retargeted onto a `fix/*` parent is
+  rejected: `fix/* debe apuntar a main o release/X.Y, no a <parent>`.
+- *"Feature Branch Chain"* — the tracker branch is a `feat/*` head whose base must be
+  `main`, and every child PR targets the tracker or its parent. The first child already
+  violates the table above.
+
+**Observed, not theoretical.** PR #1665 (`fix/mcp-session-cap`, stacked on #1664's
+`fix/mcp-session-cap-design`) failed the required check ~15 s after the run started, with
+the annotation `fix/* debe apuntar a main o release/X.Y, no a fix/mcp-session-cap-design`.
+It was closed; the change was rebuilt against the new `main` and merged as #1672.
+
+**The mechanism that does work is sequential delivery:**
+
+1. Ship slice 1 as an ordinary PR based on `main`; merge it.
+2. Rebase or rebuild slice 2 from the **new** `main` — `git rebase origin/main` on a fresh
+   branch, or cherry-pick the slice commits — and open it based on `main`.
+3. Repeat. Each PR is a normal one-work-unit PR; reviewability is preserved because the
+   slices are separate, not because they are stacked.
+
+**Do not let the harness skill override the repo gate.** `chained-pr` activates on
+"PRs over 400 lines, stacked PRs, review slices" and proposes a tracker branch or a
+retarget. In this repo the 400-line concern is real and the stacked answer is wrong: the
+equivalent control is the **sequential** pattern above, plus `work-unit-commits` so each
+slice is already a self-contained commit. If a large change genuinely cannot be split
+into slices that each land on `main`, that is a maintainer decision (a policy change to
+`check-topology.sh` or an explicit exception), not something to discover at PR time.
+
+**Never retarget an open PR onto a working branch to "make the diff small".** That is the
+single move that turned a healthy PR into an unmergeable one in the #1664/#1665/#1672
+sequence. Rebasing onto `main` and opening a new branch is always available and always legal.
 
 ### Batch merge of multiple green PRs (avoid N× CI re-runs)
 
