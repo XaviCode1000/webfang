@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::pin::Pin;
 
 use deadpool_sqlite::{Config, Hook, HookError, Manager, Pool, Runtime};
+use rusqlite::Connection;
 
 use crate::domain::note_repository::{IndexedNoteMeta, NoteChunkVector, NoteRepository};
 use crate::domain::repository::VectorRepository;
@@ -75,6 +76,68 @@ CREATE TABLE IF NOT EXISTS note_chunks (\
 );\
 CREATE INDEX IF NOT EXISTS idx_note_chunks_note ON note_chunks(note_id);\
 CREATE INDEX IF NOT EXISTS idx_notes_path ON notes(path);";
+
+// ============================================================================
+// Schema version marker (M4/D4, #1617)
+// ============================================================================
+
+/// The SQLite `user_version` this build writes, and the only one it opens.
+///
+/// This is the version marker the upgrade audit found missing. Before it, the
+/// schema version of a database could only be *inferred* — `bytes_to_f32_vec`
+/// decided a stored vector was corrupt purely because its BLOB length was not
+/// a multiple of four, which is indistinguishable from a file written by a
+/// build with a different column layout. `PRAGMA user_version` is SQLite's own
+/// on-disk 32-bit header slot: it travels with the file, needs no table, and no
+/// DDL can drop it.
+///
+/// The gate is deliberately REFUSE, not migrate. There is no migration
+/// mechanism in this crate and inventing one is a design change, not a defect
+/// fix, so a database whose marker is not ours fails closed BEFORE any DDL
+/// runs — the file is never opened for writing by a build that does not
+/// understand it. The one tolerated case is `0`: a database written before the
+/// marker existed, or a fresh one. Its schema is by construction the one this
+/// module's DDL creates idempotently, so it is adopted rather than refused.
+///
+/// Bump this only together with a migration, and only after that migration
+/// exists — a bump without one turns every existing database into a refusal.
+pub const SCHEMA_VERSION: i64 = 1;
+
+/// Verify the on-disk schema marker, and stamp a fresh database.
+///
+/// `0` means unversioned — a brand-new file, or one written by a pre-marker
+/// build. Both carry the schema [`SCHEMA_DDL`] creates idempotently, so the
+/// marker is stamped and the caller proceeds. Any OTHER value is a database
+/// this build must not write to, and the call fails with a Spanish message
+/// naming both versions rather than corrupting rows it cannot interpret.
+///
+/// # Errors
+///
+/// [`ScraperError::Persistence`] when the marker belongs to another schema
+/// version, or when the pragma cannot be read or written.
+pub(crate) fn enforce_schema_version(conn: &Connection) -> Result<(), ScraperError> {
+    let found: i64 = conn
+        .query_row("PRAGMA user_version", [], |row| row.get(0))
+        .map_err(|e| ScraperError::persistence(format!("leer user_version: {e}")))?;
+
+    if found != 0 && found != SCHEMA_VERSION {
+        return Err(ScraperError::persistence(format!(
+            "base de datos con versión de esquema {found}, incompatible con la versión {SCHEMA_VERSION} \
+             de webfang; actualizá webfang o usá una base de datos distinta \
+             (nunca se modifica una base desconocida)"
+        )));
+    }
+
+    if found == SCHEMA_VERSION {
+        return Ok(());
+    }
+
+    // `PRAGMA user_version` takes a literal, not a bound parameter. The value
+    // is an `i64` const, so interpolation here cannot inject SQL — formatting
+    // an integer is total.
+    conn.execute_batch(&format!("PRAGMA user_version = {SCHEMA_VERSION};"))
+        .map_err(|e| ScraperError::persistence(format!("escribir user_version: {e}")))
+}
 
 // ============================================================================
 // Pool construction
@@ -191,16 +254,30 @@ impl SqliteVectorRepository {
     ///
     /// The DDL is idempotent (`CREATE ... IF NOT EXISTS`), so calling it on an
     /// already-initialized database is a safe no-op.
+    ///
+    /// The [`SCHEMA_VERSION`] gate runs FIRST, before any DDL: a database
+    /// stamped by another schema version is refused without being opened for
+    /// writing at all (M4/D4, #1617).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ScraperError::Persistence`] if the schema marker belongs to
+    /// another version, or if the DDL batch fails.
     pub async fn setup_schema(pool: &Pool) -> Result<(), ScraperError> {
         let conn = pool
             .get()
             .await
             .map_err(|e| ScraperError::persistence(format!("obtener conexión del pool: {e}")))?;
-        conn.interact(|c| c.execute_batch(SCHEMA_DDL))
-            .await
-            .map_err(|e| ScraperError::persistence(format!("ddl (interact): {e}")))?
-            .map_err(|e| ScraperError::persistence(format!("ddl schema: {e}")))?;
-        Ok(())
+        conn.interact(|c| {
+            // Gate before DDL: refusing after the tables were created would
+            // mean this build had already written to a file it cannot read.
+            enforce_schema_version(c)?;
+            c.execute_batch(SCHEMA_DDL)
+                .map_err(|e| ScraperError::persistence(format!("ddl schema: {e}")))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| ScraperError::persistence(format!("ddl (interact): {e}")))?
     }
 }
 
@@ -224,6 +301,18 @@ fn f32_slice_to_bytes(v: &[f32]) -> Vec<u8> {
 /// Deserialize little-endian bytes back to `Vec<f32>`.
 ///
 /// Validates the BLOB length is a multiple of 4; returns a
+/// Decode a stored embedding BLOB back into `f32`s.
+///
+/// The length check is the LAST line of defence, not the schema's version
+/// detection. A BLOB whose length is not a multiple of four proves corruption
+/// and nothing more; before the [`SCHEMA_VERSION`] marker (#1617, M4/D4) this
+/// check was the ONLY way a database's schema state could be judged, so a file
+/// written by a build with a different column layout was indistinguishable
+/// from a damaged one. A mismatched database is now refused at open, long
+/// before a single BLOB is read.
+///
+/// # Errors
+///
 /// [`ScraperError::Persistence`] with a Spanish message on corruption (frozen
 /// decision #4: no separate `StorageError` enum — maps to the existing
 /// Display-based `Persistence(String)` variant).
@@ -778,6 +867,92 @@ mod tests {
         async fn test_setup_schema_creates_resources_table() {
             let (_dir, pool) = fresh_pool(4).await;
             assert_eq!(master_count(&pool, "table", "resources").await, 1);
+        }
+
+        // ================================================================
+        // #1617 M4/D4 — the persisted schema version marker
+        // ================================================================
+
+        /// The marker is real: a fresh database carries it, and it survives a
+        /// reopen. Without this, `PRAGMA user_version` on a SQLite file is
+        /// indistinguishable from a field nothing reads — which is exactly the
+        /// defect D5 describes for `metadata_version`.
+        #[tokio::test]
+        async fn setup_schema_stamps_the_schema_version_marker() {
+            let (_dir, pool) = fresh_pool(4).await;
+            assert_eq!(
+                pragma_int(&pool, "user_version").await,
+                SCHEMA_VERSION,
+                "a fresh database must be stamped with the current schema version"
+            );
+            // Idempotent second pass must neither fail nor re-stamp.
+            SqliteVectorRepository::setup_schema(&pool)
+                .await
+                .expect("re-setup is a no-op");
+            assert_eq!(pragma_int(&pool, "user_version").await, SCHEMA_VERSION);
+        }
+
+        /// A database stamped by ANOTHER schema version is refused, and — the
+        /// part that matters — refused BEFORE the DDL runs. If the tables were
+        /// created first, this build would already have written to a file it
+        /// cannot read, which is the corruption the marker exists to prevent.
+        #[tokio::test]
+        async fn setup_schema_refuses_a_foreign_schema_version_without_writing() {
+            let (dir, pool) = fresh_pool(4).await;
+            let db_path = dir.path().join("crawl.db");
+            assert!(db_path.exists(), "fresh_pool materializes the DB file");
+
+            {
+                let conn = pool.get().await.expect("get");
+                conn.interact(|c| {
+                    c.execute_batch("PRAGMA user_version = 99; DROP TABLE resources;")
+                })
+                .await
+                .expect("interact")
+                .expect("seed foreign version");
+            }
+            assert_eq!(pragma_int(&pool, "user_version").await, 99);
+
+            let err = SqliteVectorRepository::setup_schema(&pool)
+                .await
+                .expect_err("a foreign schema version must fail closed");
+            let msg = err.to_string();
+            assert!(
+                msg.contains("99") && msg.contains(&SCHEMA_VERSION.to_string()),
+                "the refusal must name both versions: {msg}"
+            );
+            assert!(
+                master_count(&pool, "table", "resources").await == 0,
+                "the gate must run BEFORE the DDL: a refused database is never written to"
+            );
+            assert_eq!(
+                pragma_int(&pool, "user_version").await,
+                99,
+                "a refused database keeps its own marker"
+            );
+        }
+
+        /// An unversioned database (0) is ADOPTED, not refused: that is every
+        /// database written before this marker existed, and refusing them
+        /// would make the marker a breaking change for all existing installs.
+        #[tokio::test]
+        async fn setup_schema_adopts_an_unversioned_database() {
+            let (dir, pool) = fresh_pool(4).await;
+            {
+                let conn = pool.get().await.expect("get");
+                conn.interact(|c| c.execute_batch("PRAGMA user_version = 0;"))
+                    .await
+                    .expect("interact")
+                    .expect("reset marker");
+            }
+            assert_eq!(pragma_int(&pool, "user_version").await, 0);
+
+            SqliteVectorRepository::setup_schema(&pool)
+                .await
+                .expect("an unversioned database must be adopted");
+            assert_eq!(pragma_int(&pool, "user_version").await, SCHEMA_VERSION);
+            assert_eq!(master_count(&pool, "table", "resources").await, 1);
+            drop(dir);
         }
 
         #[tokio::test]

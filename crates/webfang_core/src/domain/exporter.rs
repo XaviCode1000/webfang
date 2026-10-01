@@ -16,6 +16,36 @@ use thiserror::Error;
 use crate::domain::crawler_port::filename::confine_filename_component;
 use crate::domain::entities::{DocumentChunkUnvalidated, DocumentChunkValidated, ExportFormat};
 
+/// The persisted JSONL field name carrying the content checksum — pinned,
+/// load-bearing (#1617, D3).
+///
+/// This lives in the domain, not in the exporter that writes it, because the
+/// contract is read by code on the OTHER side of the layer boundary: the
+/// application layer rebuilds the resume dedup index from an existing output
+/// file, and `infrastructure::export::jsonl_writer` reads it when opening a
+/// session for append. Pinning the name in the exporter would make those
+/// readers import `infrastructure` outward, which ADR-0010 forbids — the
+/// dependency direction is not negotiable, and the field name is exactly the
+/// kind of cross-layer contract the domain is for.
+///
+/// Three sites read this name off disk: the JSONL exporter WRITES it (as the
+/// serde name of `WebfangMetadata::checksum_sha256`), and
+/// `jsonl_writer::build_hash_index` plus the application's `CommitSession` READ
+/// it. A rename of the Rust field would leave the readers skipping every line
+/// and returning an empty index with `Ok`: `--resume` would re-drive every
+/// already-committed page and nothing in the logs would say why.
+///
+/// `serde(rename)` takes a string literal, not a const, so this cannot be the
+/// single source of truth on the write side. It is the pinned READ contract
+/// plus the thing the exporter's
+/// `serialized_uses_the_pinned_checksum_field_name` test asserts the writer
+/// against — that pair is what makes it a gate rather than a comment.
+///
+/// Deliberately separate from #1595, which covers `extra_metadata` KEY ORDER
+/// being process-dependent (a serialization determinism problem); this is a
+/// field-rename compatibility problem.
+pub const CHECKSUM_FIELD: &str = "checksum_sha256";
+
 /// Errors that can occur during export operations
 #[derive(Error, Debug)]
 pub enum ExporterError {

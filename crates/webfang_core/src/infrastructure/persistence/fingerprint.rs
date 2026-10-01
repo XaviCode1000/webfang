@@ -48,20 +48,30 @@ impl SqliteFingerprintRepository {
 
     /// Create the `extraction_fingerprints` table if missing.
     ///
+    /// The database is SHARED with the vector repository, so this runs the
+    /// same [`crate::infrastructure::persistence::sqlite::SCHEMA_VERSION`] gate
+    /// before its DDL: a database stamped by another schema version must be
+    /// refused at every entry point, not just the one that happens to own the
+    /// vector tables (M4/D4, #1617).
+    ///
     /// # Errors
     ///
-    /// Returns [`ScraperError::Persistence`] if the DDL batch fails.
+    /// Returns [`ScraperError::Persistence`] if the schema marker belongs to
+    /// another version, or if the DDL batch fails.
     pub async fn setup_schema(&self) -> Result<(), ScraperError> {
         let conn = self
             .pool
             .get()
             .await
             .map_err(|e| ScraperError::persistence(format!("obtener conexión SQLite: {e}")))?;
-        conn.interact(|c| c.execute_batch(FINGERPRINT_DDL))
-            .await
-            .map_err(|e| ScraperError::persistence(format!("ddl fingerprint (interact): {e}")))?
-            .map_err(|e| ScraperError::persistence(format!("ddl fingerprint: {e}")))?;
-        Ok(())
+        conn.interact(|c| {
+            super::sqlite::enforce_schema_version(c)?;
+            c.execute_batch(FINGERPRINT_DDL)
+                .map_err(|e| ScraperError::persistence(format!("ddl fingerprint: {e}")))?;
+            Ok(())
+        })
+        .await
+        .map_err(|e| ScraperError::persistence(format!("ddl fingerprint (interact): {e}")))?
     }
 }
 
