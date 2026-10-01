@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.4.3] - 2026-10-01
+
+
+### 🔧 Fixed
+
+- Deny await_holding_lock in the three lock-holding modules that lacked it
+- Neutralize NTFS hazards in derived download filenames
+- Cap the synthesized fallback name at the component limit
+- An unreadable config must not degrade silently, and an explicit override must exist
+
+### 🧪 Testing
+
+- Add real-model AI phase profile bench
 
 ### 🔧 Fixed
 
