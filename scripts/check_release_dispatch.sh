@@ -38,6 +38,7 @@ CUT_PATCH_YML="$REPO_ROOT/.github/workflows/cut-patch-tag.yml"
 RECONCILE_YML="$REPO_ROOT/.github/workflows/release-reconcile.yml"
 ENSURE_SH="$REPO_ROOT/scripts/ensure-release.sh"
 RECONCILE_SH="$REPO_ROOT/scripts/reconcile-releases.sh"
+SWEEP_SH="$REPO_ROOT/scripts/sweep-releases.sh"
 
 for f in "$RELEASE_PLZ_YML" "$RELEASE_YML" "$CUT_PATCH_YML"; do
   [[ -f "$f" ]] || {
@@ -164,10 +165,16 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────
 PREDICATE="scripts/release-plz-tags.sh"
 VERIFIER_SH="$REPO_ROOT/scripts/verify-release-tag.sh"
-if grep -qF -- "$PREDICATE" "$RELEASE_PLZ_YML" && [[ -f "$VERIFIER_SH" ]] && grep -qF -- "$PREDICATE" "$VERIFIER_SH"; then
+# The dispatcher's trust predicate is now reached through the shared sweep core
+# (webfang#1674), so the dispatcher counts as a consumer of the predicate when
+# it runs the core and the core reads the predicate. Asserting the string in
+# release-plz.yml alone would have failed on a correct file.
+if grep -qF -- "sweep-releases.sh" "$RELEASE_PLZ_YML" \
+   && [[ -f "$SWEEP_SH" ]] && grep -qF -- "$PREDICATE" "$SWEEP_SH" \
+   && [[ -f "$VERIFIER_SH" ]] && grep -qF -- "$PREDICATE" "$VERIFIER_SH"; then
   step "one trust predicate used by dispatcher + verifier" "ok"
 else
-  echo "::error::check_release_dispatch: $PREDICATE is not consumed by BOTH the dispatcher (release-plz.yml) and the verifier (scripts/verify-release-tag.sh). A duplicated trust predicate drifts, and the two would then disagree about which tags are safe to release."
+  echo "::error::check_release_dispatch: the dispatcher does not reach $PREDICATE. Either release-plz.yml does not run the shared sweep core, scripts/sweep-releases.sh does not read the predicate, or scripts/verify-release-tag.sh does not. A duplicated trust predicate drifts, and the two would then disagree about which tags are safe to release."
   step "one trust predicate used by dispatcher + verifier" "MISSING"
   FAIL=1
 fi
@@ -194,12 +201,26 @@ else
   FAIL=1
 fi
 
-if [[ -f "$RECONCILE_SH" ]] && grep -qF -- "$PREDICATE" "$RECONCILE_SH" \
-   && grep -qF -- '--all' "$RECONCILE_SH"; then
+if [[ -f "$RECONCILE_SH" ]] && grep -qF -- "$PREDICATE" "$SWEEP_SH" \
+   && grep -qF -- '--all' "$SWEEP_SH"; then
   step "sweep uses the shared trust predicate (--all)" "ok"
 else
-  echo "::error::check_release_dispatch: scripts/reconcile-releases.sh does not sweep via $PREDICATE --all. A sweep over raw tag history would dispatch human tags too (v1.0.0 has no Release), publishing binaries built from unrelated code."
+  echo "::error::check_release_dispatch: the shared sweep core (scripts/sweep-releases.sh) does not resolve candidates via $PREDICATE --all. A sweep over raw tag history would dispatch human tags too (v1.0.0 has no Release), publishing binaries built from unrelated code."
   step "sweep uses the shared trust predicate (--all)" "MISSING"
+  FAIL=1
+fi
+
+# The backstop must be a thin wrapper over the SAME core the immediate path
+# runs, not a second copy of the candidate loop. That is the whole reason the
+# core exists: two callers resolving candidates independently is what let the
+# immediate path green-light a squash-merged Release PR (webfang#1674) while
+# the reconciler knew the tag had no binaries.
+if [[ -f "$RECONCILE_SH" ]] && grep -qF -- "sweep-releases.sh" "$RECONCILE_SH" \
+   && grep -qF -- "sweep-releases.sh" "$RELEASE_PLZ_YML"; then
+  step "backstop + immediate path share one sweep core" "ok"
+else
+  echo "::error::check_release_dispatch: both the reconciliation backstop (scripts/reconcile-releases.sh) and the immediate dispatcher (.github/workflows/release-plz.yml) must run scripts/sweep-releases.sh. Two copies of the candidate loop drift, and that drift is the measured webfang#1674 defect: the immediate path resolved with 'git tag --points-at HEAD', found nothing after a squash merge, and reported a 0-second success with no binaries."
+  step "backstop + immediate path share one sweep core" "MISSING"
   FAIL=1
 fi
 
@@ -209,21 +230,45 @@ fi
 # fail-closed that would leave every incomplete historical release
 # permanently binary-less (webfang#1540).
 # shellcheck disable=SC2016  # intentional: match the literal $expected_sha
-# token as written in reconcile-releases.sh, not an expanded value.
-if [[ -f "$RECONCILE_SH" ]] \
-   && grep -qF -- 'git rev-parse "refs/tags/' "$RECONCILE_SH" \
-   && grep -qE -- 'ensure-release\.sh".*\$expected_sha|ensure-release\.sh".*\$EXPECTED_SHA' "$RECONCILE_SH"; then
+# token as written in sweep-releases.sh, not an expanded value.
+if [[ -f "$SWEEP_SH" ]] \
+   && grep -qF -- 'git rev-parse "refs/tags/' "$SWEEP_SH" \
+   && grep -qE -- 'ensure-release\.sh".*\$expected_sha|ensure-release\.sh".*\$EXPECTED_SHA' "$SWEEP_SH"; then
   step "sweep resolves and passes expected_sha (L1.1 Shape 2)" "ok"
 else
-  echo "::error::check_release_dispatch: scripts/reconcile-releases.sh must resolve the tag commit via git rev-parse \"refs/tags/<tag>^{commit}\" and pass it as the second argument to ensure-release.sh. Without expected_sha the default-branch dispatch fails closed at L1.1 Identity (webfang#1540)."
+  echo "::error::check_release_dispatch: scripts/sweep-releases.sh must resolve the tag commit via git rev-parse \"refs/tags/<tag>^{commit}\" and pass it as the second argument to ensure-release.sh. Without expected_sha the default-branch dispatch fails closed at L1.1 Identity (webfang#1540)."
   step "sweep resolves and passes expected_sha (L1.1 Shape 2)" "MISSING"
   FAIL=1
 fi
 
-if [[ -f "$ENSURE_SH" ]] && grep -qF -- 'bash scripts/ensure-release.sh' "$RELEASE_PLZ_YML"; then
+# The false green (webfang#1674): a run that found nothing to do must never be
+# an unremarkable exit 0, and a run that is genuinely broken must not be one
+# either. Asserted as structure, because that is what a rewrite can drop: the
+# HEAD-scoped lookup that produced the 0-candidate case, the visible skip, and
+# the hard error for a release commit whose tag does not exist.
+if grep -vE '^[[:space:]]*#' "$RELEASE_PLZ_YML" | grep -qF -- '--points-at HEAD'; then
+  echo "::error::check_release_dispatch: release-plz.yml's dispatcher still performs a 'git tag --points-at HEAD' lookup. That lookup is HEAD-scoped and finds nothing when a Release PR is merged by squash — the tag stays on the pre-squash commit — which is the measured webfang#1674 false green (job success in 6 s, zero release.yml runs). Candidate resolution belongs in scripts/sweep-releases.sh over the shared trust predicate."
+  step "dispatcher is not HEAD-scoped (squash-safe)" "HEAD-SCOPED"
+  FAIL=1
+elif [[ -f "$SWEEP_SH" ]] \
+  && grep -qF -- '::notice title=Release dispatch' "$SWEEP_SH" \
+  && grep -qF -- 'GITHUB_STEP_SUMMARY' "$SWEEP_SH" \
+  && grep -qF -- 'head_is_release_commit' "$SWEEP_SH"; then
+  step "no-op is a visible skip; untagged release commit is red" "ok"
+else
+  echo "::error::check_release_dispatch: scripts/sweep-releases.sh must announce a no-op run as a visible skip (a ::notice:: annotation plus a GITHUB_STEP_SUMMARY entry) and must exit 1 when HEAD is a release commit but history holds no trusted tag. A silent exit 0 over a sweep that found nothing is the false green of webfang#1674 — worse than a red, because it fires no alert."
+  step "no-op is a visible skip; untagged release commit is red" "MISSING"
+  FAIL=1
+fi
+
+# shellcheck disable=SC2016  # intentional: the $REPO_ROOT here is the literal
+# token as written in sweep-releases.sh, not a value expanded by the guard.
+if [[ -f "$ENSURE_SH" ]] \
+   && grep -qE 'bash "?\$REPO_ROOT/scripts/ensure-release\.sh|bash scripts/ensure-release\.sh' "$SWEEP_SH" \
+   && grep -qF -- "sweep-releases.sh" "$RELEASE_PLZ_YML"; then
   step "dispatcher delegates to the shared dispatch helper" "ok"
 else
-  echo "::error::check_release_dispatch: the dispatcher no longer goes through scripts/ensure-release.sh. The expected-asset list, the idempotency check and the bounded retry would then exist in two places and drift, so one of the two paths could dispatch without retrying."
+  echo "::error::check_release_dispatch: the dispatcher no longer reaches scripts/ensure-release.sh through scripts/sweep-releases.sh. The expected-asset list, the idempotency check and the bounded retry would then exist in two places and drift, so one of the two paths could dispatch without retrying."
   step "dispatcher delegates to the shared dispatch helper" "MISSING"
   FAIL=1
 fi
