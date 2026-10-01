@@ -53,3 +53,16 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 ai = ["dep:ort", "dep:tokenizers"]
+
+# ---------------------------------------------------------------------------
+# Benchmarks. Own `main` (`harness = false`), NOT criterion: criterion is not
+# a dev-dependency of this crate, adding one is out of scope (#1618), and the
+# AI path needs a real ORT session plus a real model file — which a
+# timing-only criterion group cannot express anyway. Gated on the `ai`
+# feature, so the nightly `cargo bench --locked` lane (no --all-features)
+# builds a no-op binary and measures nothing (#1618 PERF-EVID-2).
+# ---------------------------------------------------------------------------
+[[bench]]
+name = "ai_phase_profile"
+path = "benches/ai_phase_profile.rs"
+harness = false
