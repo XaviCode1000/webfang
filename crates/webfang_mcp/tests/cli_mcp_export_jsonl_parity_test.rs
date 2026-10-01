@@ -234,7 +234,15 @@ async fn start_server() -> (String, tokio::task::JoinHandle<()>, tempfile::TempD
         .expect("container creation failed");
 
     let state = McpState::new(container);
-    let app = build_mcp_router(state, &ServerOptions::default());
+    let app = build_mcp_router(
+        state,
+        &ServerOptions {
+            // #1611 G-18: anonymous operation is an explicit opt-in now,
+            // and this suite is one of the places that makes it.
+            allow_anonymous: true,
+            ..Default::default()
+        },
+    );
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr: SocketAddr = listener.local_addr().unwrap();

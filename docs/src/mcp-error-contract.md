@@ -415,6 +415,7 @@ failure.**
 | B3.8 | `download_assets` — asset fetch or write failed | none | Yes if transient | Retry; already-downloaded assets are content-addressed. | `mcp_server/handlers/assets.rs:88` |
 | B3.9 | `extract_links` — base-URL resolution failed | none | No | Fix the input HTML or base URL. | `mcp_server/handlers/content.rs:87` |
 | B3.10 | `url_to_file_path` — `OutputPath::from_url` failed | none | No | Fix the URL. | `mcp_server/handlers/url_utils.rs:210` |
+| B3.11 | `crawl_site` / `crawl_with_sitemap` — the run's extracted records exceed the session result budget (64 MiB default), so **nothing** was retained for export (#1611, F7) | none | Yes, with a smaller run | Re-run with fewer `max_pages`, or crawl per section. The text names the budget, the measured size, and how many records were kept vs dropped. | `mcp_server/handlers/scraping.rs` (`within_session_budget`, `session_budget_message`, `store_session_results`) |
 
 The per-class retry policy these texts inherit is
 `docs/error-classification-matrix.md`. The MCP channel
@@ -524,19 +525,27 @@ live listener.
 
 | # | Condition | Status | Retriable | Agent should | Source |
 | :-: | :--- | :-: | :-: | :-: | :-: |
-| T1 | Missing / malformed / wrong bearer token | `401` | No | Fix the `Authorization` header. | `mcp_server/auth.rs:38-60` |
-| T2 | Rate-limit quota exceeded | `429` | Yes, after backoff | Slow down. | `mcp_server/server.rs:298-312` |
+| T1 | Missing / malformed / wrong bearer token, **and** the server's own fail-closed default: no token configured and anonymous operation not explicitly enabled (#1611, G-18) | `401` | No | Fix the `Authorization` header — or, if the server was started without a token, know that the operator must set one (`--auth-token` / `WEBFANG_MCP_AUTH_TOKEN`) or opt in to `--allow-anonymous` on loopback. A `401` with no token configured is a SERVER configuration state, not a wrong guess: the binary refuses to start in that state unless the opt-in is present. | `mcp_server/auth.rs`, `require_auth_or_explicit_anonymous` in `mcp_server/server.rs` |
+| T2 | Rate-limit quota exceeded | `429` + `Retry-After` | Yes, after backoff | Slow down for the advertised number of seconds. The quota is **per credential** (keyed), so another caller's traffic does not consume yours. | `mcp_server/server.rs` (`rate_limit_middleware`, `rate_key`) |
 | T3 | Session-admission cap exceeded | `429` | Yes, after the window | Slow down. Bounded by `--max-sessions` / `--session-cap-window-secs`. | `mcp_server/server.rs:629-677` |
-| T4 | Request took longer than `--request-timeout-secs` | `408` | Yes | Retry. | `mcp_server/server.rs:222-224` |
+| T4 | Request took longer than `--request-timeout-secs` | `408` | Yes | Retry. Note what it bounds: the request FUTURE, not a streaming body — once an SSE stream is answering, events keep flowing past this deadline (the accepted residual half of #1611 G-20; the "SSE channels uncapped" half no longer holds on rmcp 1.8.0, whose session/event channels are built at `SessionConfig::channel_capacity` = 16). | `mcp_server/server.rs` (`TimeoutLayer`) |
 | T5 | Body over `--body-limit-bytes` | `413` | No | Shrink the payload. | `mcp_server/server.rs:225` |
 | T6 | `Accept` missing both `application/json` and `text/event-stream` | `406` | No | Fix the request headers. | rmcp `StreamableHttpService`; matrix at `mcp_server/server.rs:166-173` |
 | T7 | `Content-Type` not `application/json`, or the body is not JSON-RPC 2.0 | `415` | No | Fix the request. | rmcp; same matrix |
 | T8 | Non-`initialize` request with no `mcp-session-id` | `422` | No | Complete the handshake first. | rmcp; same matrix |
 | T9 | Panic on the HTTP request path | `500` + JSON-RPC `-32603` body | No | Report it. The body echoes the JSON-RPC `id` when one is recoverable; see the id rules above. | `mcp_server/panic_containment.rs` |
 
-Layer order matters for reading this: the session cap is the **innermost** gate, so a
-request rejected `401` or shed `429` upstream never consumes a session slot
-(`mcp_server/server.rs:205-215`).
+Layer order matters for reading this, and #1611 F5 changed it. Outermost to
+innermost: panic backstop → tracing → body limit → timeout → **auth** →
+**rate limit** → session cap → id-echoing panic containment → the rmcp
+service. Two properties follow, and each is pinned by a test rather than by a
+comment:
+
+- A request refused `401` (no or wrong token) never reaches the rate limiter,
+  so an unauthenticated flood cannot spend the authenticated caller's quota and
+  lock the operator out of its own server.
+- A request refused `401` or shed `429` never consumes a session slot, so the
+  session cap measures sessions rather than rejections.
 
 ---
 

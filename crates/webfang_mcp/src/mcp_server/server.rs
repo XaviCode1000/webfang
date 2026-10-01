@@ -17,9 +17,8 @@ use axum::http::{header, HeaderValue, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::{middleware, Router};
 use governor::{
-    clock::DefaultClock,
-    state::{InMemoryState, NotKeyed},
-    Quota, RateLimiter as GovernorLimiter,
+    clock::Clock, clock::DefaultClock, state::keyed::HashMapStateStore, Quota,
+    RateLimiter as GovernorLimiter,
 };
 use rmcp::transport::streamable_http_server::{
     session::local::LocalSessionManager, tower::StreamableHttpService,
@@ -53,8 +52,23 @@ pub struct ServerOptions {
     /// Maximum burst size for rate limiting (default: 20, matching the
     /// `webfang-mcp` HTTP binary's `--burst` default).
     pub rate_burst: u32,
-    /// Expected Bearer token. When `None`, auth is disabled.
+    /// Expected Bearer token. When `None`, requests are REFUSED unless
+    /// [`Self::allow_anonymous`] is set — see that field.
     pub auth_token: Option<String>,
+    /// Serve requests that carry no valid token, with no token configured
+    /// (#1611, G-18).
+    ///
+    /// `false` by default: an unset credential is a refusal, not a mode. The
+    /// old default made "bind loopback, configure nothing" — the shipped
+    /// configuration — mean "every process that can reach the socket may use
+    /// every scraper tool", and that is a fail-open default for a security
+    /// boundary. Opting in is one flag, and the HTTP binary prints a warning
+    /// when it is used.
+    ///
+    /// Ignored when [`Self::auth_token`] is set: a configured token is always
+    /// required. Anonymous mode is a LOCALHOST development affordance, and
+    /// [`require_auth_for_external_bind`] keeps it off any routable bind.
+    pub allow_anonymous: bool,
     /// Maximum number of session-creating requests admitted inside one
     /// [`Self::session_cap_window_secs`] window (default: 64, see
     /// [`DEFAULT_MAX_SESSIONS`]). Enforced by the session admission cap; see
@@ -93,6 +107,9 @@ impl Default for ServerOptions {
             rate_per_second: 10,
             rate_burst: 20,
             auth_token: None,
+            // Fail-closed (#1611, G-18): the shipped default must not be
+            // "anyone who can reach the socket".
+            allow_anonymous: false,
             max_sessions: nz(DEFAULT_MAX_SESSIONS),
             session_cap_window_secs: nz_secs(DEFAULT_SESSION_CAP_WINDOW_SECS),
         }
@@ -111,6 +128,11 @@ impl Default for ServerOptions {
 /// Returns a user-facing Spanish error naming the bind address when `bind`
 /// is non-loopback and no auth token is present, pointing the operator at
 /// `--auth-token` / `WEBFANG_MCP_AUTH_TOKEN`.
+///
+/// #1611 G-18 extends the guard: with the fail-closed default there is a
+/// second way to fail fast, so the two are stated in one place and named
+/// together — see [`require_auth_or_explicit_anonymous`], which is what the
+/// binary calls. This function remains the non-loopback rule on its own.
 pub fn require_auth_for_external_bind(bind: SocketAddr, token_present: bool) -> anyhow::Result<()> {
     if !bind.ip().is_loopback() && !token_present {
         return Err(anyhow::anyhow!(
@@ -118,6 +140,72 @@ pub fn require_auth_for_external_bind(bind: SocketAddr, token_present: bool) -> 
         ));
     }
     Ok(())
+}
+
+/// Fail-fast guard for the fail-closed default (#1611, G-18).
+///
+/// Three configurations start, and exactly one does not:
+///
+/// - a token is configured — authenticated operation, any bind;
+/// - no token, but the operator explicitly accepted anonymous operation on a
+///   LOOPBACK bind — the development mode;
+/// - no token and no opt-in, or anonymous operation on a routable bind —
+///   refused before the container exists, in Spanish, naming both fixes.
+///
+/// Failing here rather than at request time is the point: a server that starts
+/// and then answers `401` to everything looks like a broken deployment, while
+/// this message says which of two knobs is missing.
+///
+/// # Errors
+///
+/// Returns a user-facing Spanish error naming the bind address and the two
+/// ways to start a token-bearing server.
+pub fn require_auth_or_explicit_anonymous(
+    bind: SocketAddr,
+    token_present: bool,
+    allow_anonymous: bool,
+) -> anyhow::Result<()> {
+    if token_present {
+        return Ok(());
+    }
+    if allow_anonymous {
+        // Anonymous mode stays a loopback affordance (REQ-06): the moment the
+        // socket is routable, "no credential" is not a development convenience.
+        return require_auth_for_external_bind(bind, false);
+    }
+    Err(anyhow::anyhow!(
+        "No se puede iniciar el servidor MCP en {bind} sin token de autenticación ni con --allow-anonymous. \
+         Defina --auth-token o WEBFANG_MCP_AUTH_TOKEN, o use --allow-anonymous (o WEBFANG_MCP_ALLOW_ANONYMOUS) \
+         solo en loopback."
+    ))
+}
+
+/// Spanish warning for a routable bind over a plaintext transport (#1611,
+/// G-21).
+///
+/// The transport is plain HTTP with no TLS in this crate, so a non-loopback
+/// bind sends `Authorization: Bearer <token>` — the whole scraper surface's
+/// credential — in cleartext on every request. That is not a rate-limit or a
+/// cap problem: it is a credential on the wire, and no amount of admission
+/// control compensates for it. The honest remediation is a TLS-terminating
+/// reverse proxy (or a tunnel) in front of the process, which is a deployment
+/// decision, so the server's job here is only to say so out loud.
+///
+/// Loopback binds are not warned about: the traffic never leaves the host.
+pub const PLAINTEXT_BIND_WARNING: &str =
+    "El transporte MCP es HTTP sin TLS: el token Bearer viaja en claro por la red. Termine TLS delante del servidor (proxy inverso o túnel) antes de exponerlo fuera de localhost.";
+
+/// The plaintext-transport warning for `bind`, or `None` when the bind is
+/// loopback and the traffic never leaves the host.
+///
+/// Returned rather than logged so the rule is unit-testable without capturing
+/// tracing output, and so the caller can decide how loudly to say it.
+#[must_use]
+pub fn plaintext_bind_warning(bind: SocketAddr) -> Option<&'static str> {
+    if bind.ip().is_loopback() {
+        return None;
+    }
+    Some(PLAINTEXT_BIND_WARNING)
 }
 
 /// Build the Axum router with MCP endpoint and full middleware stack.
@@ -192,10 +280,11 @@ where
 {
     let service = tower::ServiceExt::map_response(service, into_axum_response);
 
-    let rate_limiter = build_rate_limiter(options);
     let auth_state = AuthState {
         expected_token: options.auth_token.clone().map(Arc::from),
+        allow_anonymous: options.allow_anonymous,
     };
+    let rate_limiter = build_rate_limiter(options, &auth_state);
     let session_cap = Arc::new(SessionCap::new(
         options.max_sessions,
         Duration::from_secs(options.session_cap_window_secs.get()),
@@ -228,15 +317,35 @@ where
             session_cap,
             session_cap_middleware,
         ))
-        .layer(middleware::from_fn_with_state(auth_state, validate_auth))
+        // #1611 F5: the rate limiter is mounted INSIDE authentication — the
+        // `.layer(auth)` call below it wraps this one. That ordering is the
+        // fix, not a detail: a request with no or a wrong bearer token is
+        // answered `401` here, before it can spend a single cell of the
+        // legitimate operator's quota, so an unauthenticated flood can no
+        // longer lock the operator out of its own server by exhausting the
+        // shared budget. What this stack used to do — charge the quota first,
+        // then check the token — inverted both halves of that.
         .layer(middleware::from_fn_with_state(
             rate_limiter,
             rate_limit_middleware,
         ))
+        // Auth wraps the rate limiter, the session cap and the id-echoing
+        // panic layer; see the F5 note above for why the order is this way
+        // round.
+        .layer(middleware::from_fn_with_state(auth_state, validate_auth))
         .layer(TimeoutLayer::with_status_code(
             axum::http::StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(options.request_timeout_secs),
         ))
+        // #1611 G-20, deliberately NOT fixed here: this timeout bounds the
+        // REQUEST FUTURE, not a streaming response body. Once rmcp has answered
+        // with an SSE stream, the body keeps flowing past this deadline. The
+        // other half of G-20 — "SSE channels uncapped" — no longer holds on
+        // rmcp 1.8.0: every session/event channel is built with
+        // `SessionConfig::channel_capacity`, which defaults to 16
+        // (`session/local.rs:451,576,1179`). A body-idle timeout would mean
+        // wrapping the response stream, which can cut a legitimate long-running
+        // crawl's event stream; that is a design decision, not a patch.
         .layer(RequestBodyLimitLayer::new(options.body_limit_bytes))
         .layer(TraceLayer::new_for_http())
         // Outermost: applied LAST, so it wraps auth, rate limiting, timeout,
@@ -294,30 +403,161 @@ fn jsonrpc_panic_response(payload: Box<dyn Any + Send + 'static>) -> Response {
 
 /// Build a `governor` rate limiter from [`ServerOptions`].
 ///
-/// A direct (unkeyed) limiter applies one global quota across all requests.
-fn build_rate_limiter(
-    options: &ServerOptions,
-) -> Arc<GovernorLimiter<NotKeyed, InMemoryState, DefaultClock>> {
+/// # Keyed, not direct (#1611, F5)
+///
+/// The finding was a `NotKeyed` limiter: ONE quota shared by every caller,
+/// with no way to tell a noisy client from a well-behaved one. `Keyed` gives
+/// each identity its own token bucket, so the quota is per caller.
+///
+/// `auth_enabled` decides whether a request's own `Authorization` header is
+/// allowed to choose the key (see [`rate_key`]): with auth configured, only
+/// the exact expected token can reach this limiter at all, so the key space is
+/// one entry; with auth disabled, every request shares the anonymous entry and
+/// a client cannot mint new buckets by inventing headers. That is what keeps
+/// the keyed map from reintroducing the unbounded-map shape F6 just closed,
+/// and it is asserted by a test rather than assumed.
+fn build_rate_limiter(options: &ServerOptions, auth_state: &AuthState) -> KeyedRateLimiter {
     let per_second = NonZeroU32::new(options.rate_per_second).unwrap_or(NonZeroU32::MIN);
     let burst = NonZeroU32::new(options.rate_burst).unwrap_or(NonZeroU32::MIN);
     let quota = Quota::per_second(per_second).allow_burst(burst);
-    Arc::new(GovernorLimiter::direct(quota))
+    KeyedRateLimiter {
+        limiter: Arc::new(GovernorLimiter::<
+            RateKey,
+            HashMapStateStore<RateKey>,
+            DefaultClock,
+        >::hashmap(quota)),
+        auth_enabled: auth_state.expected_token.is_some(),
+        // One clock instance for the whole router: measuring how long a shed
+        // client must wait needs a "now" in the limiter's own time type, and
+        // building one per request would cost more than the check it serves.
+        clock: Arc::new(DefaultClock::default()),
+    }
 }
 
-/// Rate limiting middleware — rejects requests exceeding the quota with 429.
+/// The keyed limiter this stack mounts: one token bucket per [`rate_key`].
+type RateLimiter = GovernorLimiter<RateKey, HashMapStateStore<RateKey>, DefaultClock>;
+
+/// The rate limiter plus the one fact about the request context `governor`
+/// cannot hold for itself: whether authentication is configured.
+///
+/// Carried here rather than inside the limiter because governor's type is
+/// foreign — a wrapper is what lets the middleware ask the question the
+/// [`rate_key`] rule depends on without re-reading `ServerOptions`.
+#[derive(Clone)]
+struct KeyedRateLimiter {
+    limiter: Arc<RateLimiter>,
+    auth_enabled: bool,
+    clock: Arc<DefaultClock>,
+}
+
+impl KeyedRateLimiter {
+    /// Charge `key` one cell, or report how long until one frees.
+    fn check(&self, key: &RateKey) -> Result<(), Duration> {
+        self.limiter
+            .check_key(key)
+            .map_err(|not_until| not_until.wait_time_from(self.clock.now()))
+    }
+
+    /// How many distinct buckets exist — the number whose bound must be
+    /// asserted, not assumed (see [`rate_key`]).
+    #[cfg(test)]
+    fn tracked_keys(&self) -> usize {
+        self.limiter.len()
+    }
+}
+
+/// Key a request is charged to: a 64-bit fingerprint of the credential that
+/// authenticated it.
+///
+/// Never the token itself. `InMemoryState` entries live for the life of the
+/// process, so a map keyed by bearer tokens would keep every credential the
+/// server ever accepted in memory; a fingerprint keeps the bucket identity and
+/// drops the secret. A fingerprint collision would merge two clients' buckets,
+/// which costs fairness and nothing else — and with a single configured token
+/// (`AuthState::expected_token` matches exactly one value) there is only one
+/// key in practice anyway.
+type RateKey = u64;
+
+/// Key every token-less request shares when authentication is disabled.
+///
+/// A named constant rather than the fingerprint of the empty string so the
+/// anonymous bucket is recognisable in a debugger and cannot collide with a
+/// real token's fingerprint by accident.
+const ANONYMOUS_RATE_KEY: RateKey = 0;
+
+/// Which bucket this request is charged to.
+///
+/// `auth_enabled` mirrors [`AuthState::expected_token`]: with auth configured,
+/// a request that reaches the rate limiter has already presented THE expected
+/// token (auth is mounted outside it), so keying on the presented value is
+/// safe AND the key space collapses to that one token. With auth disabled, the
+/// presented header is attacker-controlled and is deliberately ignored —
+/// otherwise a client could mint an unbounded number of buckets and get a
+/// fresh full quota with every invented header, turning the bound into a
+/// no-op (the same "unbounded map" shape F6 closed for sessions).
+fn rate_key(auth_enabled: bool, auth_header: Option<&str>) -> RateKey {
+    if !auth_enabled {
+        return ANONYMOUS_RATE_KEY;
+    }
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    auth_header.unwrap_or_default().hash(&mut hasher);
+    hasher.finish()
+}
+
+/// `operation` field of every event the rate limiter emits — the resource it
+/// governs (same convention as the session cap's `SESSION_OPERATION`).
+const RATE_LIMIT_OPERATION: &str = "mcp.request.rate_limit";
+
+/// Round a wait up to whole seconds for a `Retry-After` header, never below 1.
+///
+/// Shared with the session cap so both shed responses state the same rule:
+/// `Retry-After` is an integer number of seconds, and rounding a sub-second
+/// remainder DOWN would invite the client back while the limiter still refuses
+/// it, turning an honest retry into a second 429.
+fn retry_after_secs(wait: Duration) -> u64 {
+    let rounded_up = u64::from(wait.subsec_nanos() > 0) + wait.as_secs();
+    rounded_up.max(1)
+}
+
+/// Rate limiting middleware — rejects requests exceeding the quota with 429
+/// plus a `Retry-After` (#1611, F5).
+///
+/// The header is the one thing a shed client is told, and it is computable
+/// exactly: `governor` returns the instant the next cell frees. The body stays
+/// empty for the same reason the session cap's does — load shedding is an
+/// HTTP-layer answer, and a JSON-RPC envelope here would only invite an agent
+/// to parse it as a protocol error.
+///
+/// The middleware now answers `Response` rather than `Result<_, StatusCode>`
+/// because the shed answer needs a header the status alone cannot carry.
 async fn rate_limit_middleware(
-    State(limiter): State<Arc<GovernorLimiter<NotKeyed, InMemoryState, DefaultClock>>>,
+    State(limiter): State<KeyedRateLimiter>,
     request: axum::http::Request<axum::body::Body>,
     next: middleware::Next,
-) -> Result<impl axum::response::IntoResponse, axum::http::StatusCode> {
-    match limiter.check() {
-        Ok(()) => Ok(next.run(request).await),
-        Err(_not_until) => {
+) -> Response {
+    // `build_rate_limiter` captured whether auth is configured at compose
+    // time; the limiter itself carries no view of the request, so the same
+    // rule is applied here.
+    let auth_enabled = limiter.auth_enabled;
+    let auth_header = request
+        .headers()
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok());
+    let key = rate_key(auth_enabled, auth_header);
+
+    match limiter.check(&key) {
+        Ok(()) => next.run(request).await,
+        Err(wait) => {
+            let retry_after = retry_after_secs(wait);
             tracing::warn!(
+                operation = RATE_LIMIT_OPERATION,
                 remote = %request.uri().path(),
+                wait_ms = wait.as_millis() as u64,
+                retry_after_secs = retry_after,
                 "rate limit exceeded — rejecting with 429"
             );
-            Err(axum::http::StatusCode::TOO_MANY_REQUESTS)
+            shed_response(retry_after)
         },
     }
 }
@@ -588,8 +828,7 @@ impl SessionCap {
         let remaining = self
             .window
             .saturating_sub(now.saturating_duration_since(oldest));
-        let rounded_up = u64::from(remaining.subsec_nanos() > 0) + remaining.as_secs();
-        Some(rounded_up.max(1))
+        Some(retry_after_secs(remaining))
     }
 
     /// Slots currently held — test-only view, without pruning.
@@ -803,7 +1042,13 @@ mod tests {
 
         let app = build_mcp_router_with_service(
             tower::service_fn(panicking_route),
-            &ServerOptions::default(),
+            &ServerOptions {
+                // #1611 G-18: the stack is fail-closed by default, so a test
+                // that mounts a service directly has to say it wants anonymous
+                // operation — same opt-in production gets from --allow-anonymous.
+                allow_anonymous: true,
+                ..Default::default()
+            },
         );
         let request = axum::http::Request::builder()
             .method(Method::POST)
@@ -1033,6 +1278,14 @@ mod tests {
         assert_eq!(opts.rate_per_second, 10);
         assert_eq!(opts.rate_burst, 20);
         assert!(opts.auth_token.is_none());
+        // #1611 G-18: the shipped default is fail-CLOSED. Pinned here because
+        // every integration suite that drives a token-less router has to opt
+        // in explicitly, and a flipped default would fail all of them at once
+        // — this row is what makes that flip loud rather than mysterious.
+        assert!(
+            !opts.allow_anonymous,
+            "no token configured must not mean anonymous access"
+        );
         assert_eq!(opts.max_sessions.get(), DEFAULT_MAX_SESSIONS);
         assert_eq!(
             opts.session_cap_window_secs.get(),
@@ -1250,6 +1503,9 @@ mod tests {
             }),
             &ServerOptions {
                 max_sessions: NonZeroUsize::new(1).expect("one is non-zero"),
+                // #1611 G-18: token-less by default means fail-closed, so a
+                // test that mounts a service directly states the opt-in.
+                allow_anonymous: true,
                 ..Default::default()
             },
         );
@@ -1321,9 +1577,16 @@ mod tests {
             rate_burst: 5,
             ..Default::default()
         };
-        let limiter = build_rate_limiter(&opts);
+        let limiter = build_rate_limiter(
+            &opts,
+            &AuthState {
+                expected_token: None,
+                allow_anonymous: false,
+            },
+        );
+        let key = ANONYMOUS_RATE_KEY;
         for _ in 0..5 {
-            assert!(limiter.check().is_ok());
+            assert!(limiter.check(&key).is_ok());
         }
     }
 
@@ -1334,12 +1597,116 @@ mod tests {
             rate_burst: 2,
             ..Default::default()
         };
-        let limiter = build_rate_limiter(&opts);
+        let limiter = build_rate_limiter(
+            &opts,
+            &AuthState {
+                expected_token: None,
+                allow_anonymous: false,
+            },
+        );
+        let key = ANONYMOUS_RATE_KEY;
         // Exhaust the burst capacity
-        assert!(limiter.check().is_ok());
-        assert!(limiter.check().is_ok());
+        assert!(limiter.check(&key).is_ok());
+        assert!(limiter.check(&key).is_ok());
         // Third request should be rejected
-        assert!(limiter.check().is_err());
+        assert!(limiter.check(&key).is_err());
+    }
+
+    // ------------------------------------------------------------------
+    // F5 keyed rate limiter, inside auth (#1611)
+    // ------------------------------------------------------------------
+
+    fn limiter_with_auth(
+        rate_per_second: u32,
+        burst: u32,
+        token: Option<&str>,
+    ) -> KeyedRateLimiter {
+        build_rate_limiter(
+            &ServerOptions {
+                rate_per_second,
+                rate_burst: burst,
+                ..Default::default()
+            },
+            &AuthState {
+                expected_token: token.map(Arc::from),
+                // Irrelevant to a rate limiter: with no token configured
+                // every request shares the anonymous bucket anyway.
+                allow_anonymous: false,
+            },
+        )
+    }
+
+    /// The keyed property itself: one caller's exhausted quota must NOT shed
+    /// another caller. This is the whole of F5 — a `NotKeyed` limiter had
+    /// exactly one bucket, so a noisy client spent everyone's budget.
+    #[test]
+    fn rate_limit_buckets_are_per_credential() {
+        let limiter = limiter_with_auth(1, 1, Some("secret"));
+        let noisy = rate_key(true, Some("Bearer secret"));
+        let quiet = rate_key(true, Some("Bearer another-secret"));
+
+        assert!(limiter.check(&noisy).is_ok(), "first call fits the burst");
+        assert!(
+            limiter.check(&noisy).is_err(),
+            "the noisy caller exhausts its own bucket"
+        );
+        assert!(
+            limiter.check(&quiet).is_ok(),
+            "a different credential must keep its own full budget"
+        );
+        assert_eq!(
+            limiter.tracked_keys(),
+            2,
+            "one bucket per credential, and no more"
+        );
+    }
+
+    /// The bound on the key space, asserted rather than assumed. With auth
+    /// DISABLED the presented header is attacker-controlled, so keying on it
+    /// would let a client mint a fresh full quota per invented header — an
+    /// unbounded map of buckets, i.e. the F6 shape one layer over. Every
+    /// header therefore lands in the single anonymous bucket.
+    #[test]
+    fn an_invented_header_cannot_mint_a_bucket_when_auth_is_disabled() {
+        let limiter = limiter_with_auth(1, 1, None);
+        for i in 0..50 {
+            let key = rate_key(false, Some(&format!("Bearer invented-{i}")));
+            assert_eq!(key, ANONYMOUS_RATE_KEY, "the header is ignored");
+            let _ = limiter.check(&key);
+        }
+        assert_eq!(
+            limiter.tracked_keys(),
+            1,
+            "token-less traffic must occupy exactly one bucket"
+        );
+    }
+
+    /// The mirror image: with auth configured, distinct credentials are
+    /// distinct buckets — and the fingerprint is not the token itself, so a
+    /// key cannot be read back as a secret.
+    #[test]
+    fn with_auth_configured_the_credential_picks_the_bucket() {
+        let one = rate_key(true, Some("Bearer secret"));
+        let two = rate_key(true, Some("Bearer secret"));
+        let other = rate_key(true, Some("Bearer other"));
+        assert_eq!(one, two, "the same credential is the same bucket");
+        assert_ne!(one, other, "different credentials never share a bucket");
+        assert!(
+            !ANONYMOUS_RATE_KEY.to_string().contains("secret"),
+            "a key is a fingerprint, never the token"
+        );
+    }
+
+    /// `Retry-After` must be a whole number of seconds, at least 1 — rounding
+    /// a sub-second wait DOWN invites the client back into a second 429.
+    #[test]
+    fn retry_after_rounds_up_and_never_says_zero() {
+        assert_eq!(retry_after_secs(Duration::ZERO), 1);
+        assert_eq!(retry_after_secs(Duration::from_millis(1)), 1);
+        assert_eq!(retry_after_secs(Duration::from_millis(999)), 1);
+        assert_eq!(retry_after_secs(Duration::from_secs(1)), 1);
+        assert_eq!(retry_after_secs(Duration::from_millis(1_001)), 2);
+        assert_eq!(retry_after_secs(Duration::from_secs(30)), 30);
     }
 
     #[tokio::test]
@@ -1393,6 +1760,68 @@ mod tests {
     fn require_auth_non_loopback_with_token_is_ok() {
         let bind: SocketAddr = "0.0.0.0:8080".parse().unwrap();
         assert!(require_auth_for_external_bind(bind, true).is_ok());
+    }
+
+    /// #1611 G-18: the fail-closed startup guard, all three cases.
+    ///
+    /// The third is the regression row for the finding: "no token, no opt-in"
+    /// used to START, and a server that starts unauthenticated is the whole
+    /// of the vulnerability. Failing here — before the container exists —
+    /// turns it into an operator message that names both fixes.
+    /// #1611 G-21 requires the fail-closed startup guard, and #1611 G-18 makes
+    /// it symmetric: anonymous operation is loopback-only, and a routable bind
+    /// additionally gets [`plaintext_bind_warning`] because this transport has
+    /// no TLS and the bearer token would cross the network in cleartext.
+    #[test]
+    fn require_auth_or_explicit_anonymous_covers_all_three_configurations() {
+        let loopback: SocketAddr = "127.0.0.1:8080".parse().unwrap();
+        let routable: SocketAddr = "0.0.0.0:8080".parse().unwrap();
+
+        // A token always starts, on any bind.
+        assert!(require_auth_or_explicit_anonymous(loopback, true, false).is_ok());
+        assert!(require_auth_or_explicit_anonymous(routable, true, false).is_ok());
+        assert!(require_auth_or_explicit_anonymous(routable, true, true).is_ok());
+
+        // The explicit opt-in is the development mode, and stays local.
+        assert!(require_auth_or_explicit_anonymous(loopback, false, true).is_ok());
+        assert!(
+            require_auth_or_explicit_anonymous(routable, false, true).is_err(),
+            "anonymous operation on a routable bind is still refused (REQ-06)"
+        );
+
+        // The shipped default: no token and no opt-in does not start.
+        match require_auth_or_explicit_anonymous(loopback, false, false) {
+            Err(e) => {
+                let msg = e.to_string();
+                assert!(msg.contains("127.0.0.1:8080"), "names the bind: {msg}");
+                assert!(msg.contains("--auth-token"), "names the token: {msg}");
+                assert!(msg.contains("--allow-anonymous"), "names the opt-in: {msg}");
+            },
+            Ok(()) => panic!("a token-less, opt-in-less bind must be refused"),
+        }
+    }
+
+    /// #1611 G-21: a routable bind is warned about, a loopback bind is not —
+    /// the difference is whether the credential can leave the host at all.
+    #[test]
+    fn a_routable_bind_is_warned_about_and_a_loopback_bind_is_not() {
+        for addr in ["127.0.0.1:8080", "[::1]:8080", "localhost:1"] {
+            let Ok(bind) = addr.parse::<SocketAddr>() else {
+                // A name that does not parse as a SocketAddr is not a bind the
+                // binary can produce; `localhost` is covered by the two above.
+                continue;
+            };
+            assert_eq!(plaintext_bind_warning(bind), None, "{addr}");
+        }
+        for addr in ["0.0.0.0:8080", "192.168.1.10:8080"] {
+            let bind: SocketAddr = addr.parse().unwrap();
+            let warning = plaintext_bind_warning(bind)
+                .unwrap_or_else(|| panic!("{addr} must carry the plaintext warning"));
+            assert!(
+                warning.contains("TLS"),
+                "the warning names the fix: {warning}"
+            );
+        }
     }
 
     // ------------------------------------------------------------------

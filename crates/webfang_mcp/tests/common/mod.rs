@@ -110,25 +110,45 @@ pub async fn serve_on_random_port(app: axum::Router) -> (String, tokio::task::Jo
     (base_url, handle)
 }
 
+/// Ephemeral DI container over the default test configuration. NOTE:
+/// `Container::new` creates real HTTP clients (wreq) and a real service layer.
+/// This is intentional for integration tests — the container is ephemeral and
+/// scoped to the test, so real infrastructure gives confidence that the MCP
+/// server works end-to-end with the actual application state.
+async fn test_container() -> Container {
+    let config = Config::default();
+    Container::new(config.crawler, config.scraper)
+        .await
+        .expect("container creation failed")
+}
+
+/// The token-less test preset (#1611 G-18): authentication is fail-closed by
+/// default, so every harness that drives a token-less router states the
+/// opt-in once, here. Production gets the same choice from `--allow-anonymous`.
+pub fn anonymous_server_options() -> ServerOptions {
+    ServerOptions {
+        allow_anonymous: true,
+        ..Default::default()
+    }
+}
+
+/// Start the real MCP router with explicit [`ServerOptions`] on a random
+/// loopback port. The general form every starter in this module presets —
+/// call it directly when a suite needs a token, a quota, or any other
+/// non-default option.
+pub async fn start_server_with_options(
+    options: ServerOptions,
+) -> (String, tokio::task::JoinHandle<()>) {
+    let app = build_mcp_router(McpState::new(test_container().await), &options);
+    serve_on_random_port(app).await
+}
+
 /// Start a test MCP server on a random port and return the base URL.
-///
-/// NOTE: `Container::new` creates real HTTP clients (wreq) and a real service
-/// layer. This is intentional for integration tests — the container is
-/// ephemeral and scoped to the test, so real infrastructure gives confidence
-/// that the MCP server works end-to-end with the actual application state.
 pub async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
     // Disable SSRF protection for tests (uses 127.0.0.1 for wiremock)
     init_ssrf_disabled();
 
-    let config = Config::default();
-    let container = Container::new(config.crawler, config.scraper)
-        .await
-        .expect("container creation failed");
-    let state = McpState::new(container);
-
-    let app = build_mcp_router(state, &ServerOptions::default());
-
-    serve_on_random_port(app).await
+    start_server_with_options(anonymous_server_options()).await
 }
 
 /// Start a test MCP server on a random port. Pass `Some(downloader)` to inject
@@ -142,16 +162,13 @@ pub async fn start_server(
     // layer-2 rationale and the ENV_LOCK serialization (issue #1126).
     arm_wiremock_hatches();
 
-    let config = Config::default();
-    let container = Container::new(config.crawler, config.scraper)
-        .await
-        .expect("container creation failed");
+    let container = test_container().await;
     let state = match downloader {
         Some(d) => McpState::new(container).with_downloader(d),
         None => McpState::new(container),
     };
 
-    let app = build_mcp_router(state, &ServerOptions::default());
+    let app = build_mcp_router(state, &anonymous_server_options());
 
     serve_on_random_port(app).await
 }
@@ -225,7 +242,7 @@ pub async fn start_seeded_server(
     // `arm_wiremock_hatches` (issue #1126).
     arm_wiremock_hatches();
 
-    let app = build_mcp_router(state, &ServerOptions::default());
+    let app = build_mcp_router(state, &anonymous_server_options());
 
     let (base_url, handle) = serve_on_random_port(app).await;
 
@@ -247,15 +264,7 @@ pub async fn start_test_server_ssrf_enabled() -> (String, tokio::task::JoinHandl
     webfang_test_utils::env_remove(webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV);
     webfang_test_utils::env_remove(webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV);
 
-    let config = Config::default();
-    let container = Container::new(config.crawler, config.scraper)
-        .await
-        .expect("container creation failed");
-    let state = McpState::new(container);
-
-    let app = build_mcp_router(state, &ServerOptions::default());
-
-    serve_on_random_port(app).await
+    start_server_with_options(anonymous_server_options()).await
 }
 
 /// JSON-RPC 2.0 standard error code for "Invalid params".
@@ -283,6 +292,56 @@ pub fn mcp_request(method: &str, params: Value) -> Value {
     })
 }
 
+/// The `Accept` value a spec-compliant MCP client must send: rmcp answers 406
+/// to anything naming neither media type.
+pub const MCP_ACCEPT: &str = "application/json, text/event-stream";
+
+/// A well-formed `initialize` body — the request that creates a session.
+/// `client_name` only identifies the caller in server logs; pass the suite's
+/// name.
+pub fn initialize_body(client_name: &str) -> Value {
+    mcp_request(
+        "initialize",
+        json!({
+            "protocolVersion": "2024-11-05",
+            "capabilities": {},
+            "clientInfo": { "name": client_name, "version": "1.0.0" }
+        }),
+    )
+}
+
+/// One POST to `/mcp` with an optional bearer token, returning
+/// `(status, retry-after, mcp-session-id)`. A header the response does not
+/// carry comes back as `None`, so suites that don't exercise rate limiting
+/// or sessions just ignore the slots they don't need.
+pub async fn post_mcp(
+    client: &Client,
+    base_url: &str,
+    body: &Value,
+    token: Option<&str>,
+) -> (u16, Option<String>, Option<String>) {
+    let mut request = client
+        .post(format!("{base_url}/mcp"))
+        .header("Content-Type", "application/json")
+        .header("Accept", MCP_ACCEPT);
+    if let Some(token) = token {
+        request = request.header("Authorization", format!("Bearer {token}"));
+    }
+    let resp = request
+        .json(body)
+        .send()
+        .await
+        .expect("request should be sent");
+    let status = resp.status().as_u16();
+    let header = |name: &str| {
+        resp.headers()
+            .get(name)
+            .and_then(|v| v.to_str().ok())
+            .map(String::from)
+    };
+    (status, header("retry-after"), header("mcp-session-id"))
+}
+
 /// Extract the first JSON-RPC object from an SSE (`data: ` prefixed) or direct
 /// JSON response body.
 pub fn extract_json(body: &str) -> Option<Value> {
@@ -308,18 +367,11 @@ pub fn redact_path(text: &str, dir: &std::path::Path) -> String {
 /// Initialize an MCP session (initialize + notifications/initialized) and
 /// return the session ID.
 pub async fn init_session(client: &Client, base_url: &str) -> String {
-    let init_body = mcp_request(
-        "initialize",
-        json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": { "name": "export-test", "version": "1.0.0" }
-        }),
-    );
+    let init_body = initialize_body("export-test");
     let resp = client
         .post(format!("{base_url}/mcp"))
         .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
+        .header("Accept", MCP_ACCEPT)
         .json(&init_body)
         .send()
         .await
@@ -334,7 +386,7 @@ pub async fn init_session(client: &Client, base_url: &str) -> String {
     let _ = client
         .post(format!("{base_url}/mcp"))
         .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
+        .header("Accept", MCP_ACCEPT)
         .header("mcp-session-id", &session_id)
         .json(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
         .send()
@@ -355,7 +407,7 @@ pub async fn call_tool(
     let resp = client
         .post(format!("{base_url}/mcp"))
         .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
+        .header("Accept", MCP_ACCEPT)
         .header("mcp-session-id", session_id)
         .json(&body)
         .send()

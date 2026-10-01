@@ -1135,7 +1135,19 @@ jobs:
       - name: Validate MCP handshake
         timeout-minutes: 2
         run: |
-          ./target/debug/webfang-mcp &
+          # #1611 G-18: the fail-closed default must REFUSE to start with no
+          # token and no explicit opt-in — smoke-testing the refusal itself.
+          if ./target/debug/webfang-mcp 2>err.log; then
+            echo "token-less server started: fail-closed default regressed"
+            exit 1
+          fi
+          grep -q "allow-anonymous" err.log || {
+            echo "token-less refusal did not name the fix:"; cat err.log; exit 1
+          }
+          echo "token-less server refused to start (fail-closed OK)"
+
+          # The development mode is an explicit opt-in on a loopback bind.
+          ./target/debug/webfang-mcp --allow-anonymous &
           MCP_PID=$!
           for _ in $(seq 1 15); do
             if curl -sf --max-time 2 http://127.0.0.1:8080/mcp -X POST \
