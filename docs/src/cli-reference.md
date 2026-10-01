@@ -78,9 +78,23 @@ differs from `XDG_CONFIG_HOME` in two ways worth knowing:
   reads no env var at all. Until `WEBFANG_CONFIG` existed, a Windows install
   could not be redirected to a config file by env at all.
 
-A missing file is not an error: webfang falls back to its defaults, so
-`WEBFANG_CONFIG` pointing at a nonexistent path is safe and means "use
-defaults".
+A **missing** file at the platform path is not an error: webfang falls back to
+its defaults, because a fresh install has no config yet.
+
+That tolerance stops at an explicit `WEBFANG_CONFIG`. Once you name a file,
+webfang holds you to it — the run stops with exit code **78** (configuration
+error) and a message naming the path, instead of quietly running with
+defaults. A typo in a config path used to be indistinguishable from a
+successful run.
+
+| `WEBFANG_CONFIG` | Result |
+| --- | --- |
+| unset, or empty | Platform lookup; a missing file means defaults |
+| absolute path to a readable, valid TOML file | Used |
+| relative path | Rejected, exit 78 |
+| path does not exist | Rejected, exit 78 |
+| unreadable — wrong permissions, or a directory | Rejected, exit 78 |
+| not valid TOML | Rejected, exit 78 |
 
 Two edge cases matter because this variable is usually set from a script or a
 service unit rather than typed:
@@ -88,11 +102,12 @@ service unit rather than typed:
 - An **empty** value counts as unset. `WEBFANG_CONFIG= webfang ...` behaves
   exactly like not setting the variable at all, so a script that exports it
   before it has a value falls back to the platform lookup instead of failing.
-- A **relative** path is resolved against the current working directory of the
-  process, not against your home directory. That is predictable in an
-  interactive shell and arbitrary under a daemon or service manager, whose
-  working directory is whatever the supervisor chose. Use an absolute path
-  there.
+- A **relative** path is rejected rather than resolved. It used to be resolved
+  against the current working directory of the process, not against your home
+  directory — predictable in an interactive shell, and arbitrary under a daemon
+  or service manager, whose working directory is whatever the supervisor chose.
+  The same variable could therefore name a different file depending on who
+  started the process, which is why an absolute path is now required.
 
 ```bash
 WEBFANG_CONFIG=/etc/webfang/config.toml webfang https://example.com

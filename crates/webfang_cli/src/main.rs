@@ -13,7 +13,7 @@
 //!     |
 //!     ├─→ Args::try_parse()           ← CLI parsing
 //!     ├─→ handle_completions()        ← Subcommand handling
-//!     ├─→ ConfigDefaults::load()      ← TOML config
+//!     ├─→ load_config_defaults()       ← TOML config
 //!     ├─→ preflight::normalize()      ← Config merge
 //!     ├─→ init_logging_dual()         ← stderr-only tracing
 //!     └─→ orchestrator::run()         ← Full pipeline
@@ -31,7 +31,7 @@ use webfang_ai::{ModelConfig, SemanticCleanerImpl, SemanticError};
 #[cfg(feature = "adaptive-selectors")]
 use webfang_core::application::adaptive_engine::{AdaptiveSelectorEngine, AdaptiveSelectorOptions};
 use webfang_core::application::crawl_options::CrawlOptions;
-use webfang_core::cli::config::{resolve_config_path, ConfigDefaults};
+use webfang_core::cli::config::{load_config_defaults, resolve_config_path, ConfigDefaults};
 use webfang_core::cli::error::CliExit;
 use webfang_core::cli::preflight;
 use webfang_core::cli::preflight::ArgSources;
@@ -90,9 +90,13 @@ async fn __main() -> CliExit {
         return exit;
     }
 
-    // 5. Load config file (graceful: missing file = defaults)
-    let config_path = resolve_config_path();
-    let config_defaults = ConfigDefaults::load(&config_path);
+    // 5. Load config file. The platform default may be absent (silent
+    //    defaults); an explicit WEBFANG_CONFIG must be usable or the run stops
+    //    here — a typo must not read as "ran with your config" (#1659).
+    let config_defaults = match load_config_defaults() {
+        Ok(config) => config,
+        Err(e) => return CliExit::ConfigError(e.to_string()),
+    };
 
     // 5b. Nothing to validate: `--url`/positional are parsed into hardened
     // `ValidUrl` at the argv boundary (#1239), so an invalid or
