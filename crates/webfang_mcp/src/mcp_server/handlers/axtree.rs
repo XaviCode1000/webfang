@@ -209,6 +209,9 @@ mod tests {
     use super::*;
 
     #[cfg(not(feature = "chromium"))]
+    use crate::mcp_server::handlers::test_support::{self, result_text};
+
+    #[cfg(not(feature = "chromium"))]
     use crate::mcp_server::state::McpState;
     #[cfg(not(feature = "chromium"))]
     use rmcp::handler::server::wrapper::Parameters;
@@ -216,12 +219,6 @@ mod tests {
     use serial_test::serial;
     #[cfg(not(feature = "chromium"))]
     use tempfile::TempDir;
-    #[cfg(not(feature = "chromium"))]
-    use webfang_core::di::Container;
-    #[cfg(not(feature = "chromium"))]
-    use webfang_core::domain::config::ScraperConfig;
-    #[cfg(not(feature = "chromium"))]
-    use webfang_core::domain::CrawlerConfig;
 
     /// Test helper: build an `McpUrl` from a KNOWN-VALID http(s) string.
     #[cfg(not(feature = "chromium"))]
