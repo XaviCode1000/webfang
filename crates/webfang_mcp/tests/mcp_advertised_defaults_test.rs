@@ -34,12 +34,13 @@ use serde_json::{json, Map, Value};
 use webfang_core::config::Config;
 use webfang_core::di::{Container, ContainerExt};
 use webfang_core::domain::config::ScraperConfig;
+use webfang_mcp::mcp_server::handlers::build_tool_router;
 use webfang_mcp::mcp_server::handlers::scraping::SCRAPE_BATCH_DEFAULT_CONCURRENCY;
 use webfang_mcp::mcp_server::params::{
     ScrapeBatchParams, CONCURRENCY_MAX, CONCURRENCY_MIN, URLS_MAX,
 };
 use webfang_mcp::mcp_server::schema_bridge::{
-    default_overrides_for_tool, merged_input_schema, SCRAPE_BATCH_PROPERTIES,
+    apply_default_overrides, default_overrides_for_tool, merged_input_schema,
 };
 use webfang_mcp::mcp_server::McpHandler;
 
@@ -48,6 +49,31 @@ const TOOL: &str = "scrape_batch";
 
 /// The property the issue is about.
 const CONCURRENCY: &str = "concurrency";
+
+/// The root cause, pinned as a test instead of left as a comment.
+///
+/// The four `*_input_schema()` helpers the router calls are the only thing
+/// standing between the override table and the wire. Re-applying the table to
+/// the SERVED properties must therefore be a no-op; when a helper passes `&[]`
+/// instead of `default_overrides_for_tool(tool)`, this is the assertion that
+/// fails, and it names the tool and the property.
+#[test]
+fn served_properties_already_carry_the_override_table() {
+    let mut served = production_properties();
+    let overrides = default_overrides_for_tool(TOOL);
+    assert!(
+        !overrides.is_empty(),
+        "{TOOL} is the tool this suite is about; an empty override table means the \
+         production constants were moved and this suite is checking nothing"
+    );
+    let before = served.clone();
+    apply_default_overrides(&mut served, &overrides);
+    assert_eq!(
+        before, served,
+        "{TOOL}: the served schema does not match its own advertised-default \
+         override table — a bridge helper is not passing its overrides"
+    );
+}
 
 /// The `scrape_batch` array parameter under the F7 admission cap (#1611).
 const URLS: &str = "urls";
@@ -65,18 +91,33 @@ fn runtime_default_concurrency() -> u64 {
     ScraperConfig::default().scraper_concurrency as u64
 }
 
-/// scrape_batch's input schema exactly as production renders it: bridge tables plus
-/// the tool's advertised-default overrides, through the shared code path
-/// (mirrors `merged_with_overrides` in `options_spec_parity_test.rs`).
+/// scrape_batch's input schema exactly as a client is served it.
+///
+/// This is the ROUTER's emitted `inputSchema` (`build_tool_router` — tool
+/// derives plus `apply_overrides`), not a re-merge through
+/// `merged_input_schema` (#1612, BC-09). The re-merge was the gap: it
+/// applied `default_overrides_for_tool` by hand, so it stayed green while
+/// the four `*_input_schema()` helpers the router actually calls passed `&[]`
+/// and dropped every override on the floor. `scrape_batch` then served
+/// `concurrency` with the derive's `minimum: 0` and no `default` — the exact
+/// NS-04 lie this suite exists to prevent, still published.
+///
+/// The bridge keeps its own invariant test for the merge itself
+/// (`every_bridged_tool_applies_its_own_default_overrides`,
+/// `schema_bridge::tests`); this side pins the served bytes, so a helper that
+/// stops passing its overrides cannot pass here either.
 ///
 /// Returns the `properties` object, not the schema root — the root also carries
 /// `$defs`/`required`/`type`, and scanning that instead would silently check nothing
 /// (measured: the first run of this suite reported zero prose defaults for exactly
 /// this reason).
 fn production_properties() -> Map<String, Value> {
-    let overrides = default_overrides_for_tool(TOOL);
-    let merged = merged_input_schema::<ScrapeBatchParams>(SCRAPE_BATCH_PROPERTIES, &overrides);
-    properties_of(&merged)
+    let router = build_tool_router();
+    let route = router
+        .map
+        .get(TOOL)
+        .unwrap_or_else(|| panic!("{TOOL} must be registered in the tool router"));
+    properties_of(route.attr.input_schema.as_ref())
 }
 
 /// The `properties` object of a rendered input schema.

@@ -82,9 +82,31 @@ pub const CRAWL_WITH_SITEMAP_PROPERTIES: &[SpecProperty] = &[
 ];
 
 /// `scrape_with_options`: every parameter overlaps the crawler spec group.
+///
+/// `max_pages` carries a per-tool description override (SD-03, #1612). The
+/// handler copies it into `ScraperConfig` and
+/// `scraper_service::scrape_with_config` never reads it — the one-page use
+/// case this tool serves has nothing to count. Bounds stay enforced
+/// (1..=100_000 from `crawler::MAX_PAGES`), so the advertisement says the
+/// field is inert rather than pretending it is a control.
+///
+/// **Deferred to #1614 (compat policy), deliberately not done here:**
+/// removing `max_pages` from this tool's advertised schema, or rejecting a
+/// value above 1, is a breaking change for MCP consumers and is that issue's
+/// call. This table states the decision so the next reader inherits it
+/// instead of re-deriving it.
 pub const SCRAPE_WITH_OPTIONS_PROPERTIES: &[SpecProperty] = &[
     prop("url", &crawler::URL),
-    prop("max_pages", &crawler::MAX_PAGES),
+    SpecProperty {
+        name: "max_pages",
+        spec: &crawler::MAX_PAGES,
+        description_override: Some(
+            "Accepted and bounds-checked (1-100000), but it has no effect here: this tool \
+             fetches exactly the `url` you give it and never discovers or follows links, so \
+             every call returns one page. To crawl more than one page use crawl_site or \
+             crawl_with_sitemap.",
+        ),
+    },
     prop("selector", &crawler::SELECTOR),
     prop("download_images", &crawler::DOWNLOAD_IMAGES),
     prop("download_documents", &crawler::DOWNLOAD_DOCUMENTS),
@@ -93,7 +115,34 @@ pub const SCRAPE_WITH_OPTIONS_PROPERTIES: &[SpecProperty] = &[
 
 /// `export_file`: only `format` overlaps (`export::EXPORT_FORMAT`; wire name
 /// differs from the spec id `export_format`). Path/blob params are MCP-only.
-pub const EXPORT_FILE_PROPERTIES: &[SpecProperty] = &[prop("format", &export::EXPORT_FORMAT)];
+///
+/// **SD-01 / BC-01 (#1612), decided as far as it can be here.** Three names
+/// are in play and they are not three fields:
+///
+/// | name | where it comes from | advertised |
+/// |---|---|---|
+/// | `content_format` | the params struct, and `required` in the derive | yes |
+/// | `format` | this bridge row, mapped from spec id `export_format` | yes |
+/// | `export_format` | the OptionsSpec id, which nothing accepts on this tool | no |
+///
+/// Collapsing the two advertised spellings into one is a *removal* from the
+/// advertised schema and belongs to #1614, so neither is removed here. What
+/// this row does is stop the bridge from advertising `format` as if it were an
+/// extra field: the override says it is the alternative spelling of the
+/// required `content_format`, and that sending both is a duplicate-field
+/// error. Measured, not assumed -- `serde_json::from_value` on
+/// `{"content_format": …, "format": …}` fails with
+/// ``duplicate field `content_format` ``.
+pub const EXPORT_FILE_PROPERTIES: &[SpecProperty] = &[SpecProperty {
+    name: "format",
+    spec: &export::EXPORT_FORMAT,
+    description_override: Some(
+        "Export format (jsonl, vector, auto). Alternative spelling of the required \
+         `content_format` property -- send exactly one of the two, never both: they are \
+         aliases of a single field, and sending both is a duplicate-field error. The spec \
+         id is `export_format`, which this tool does not accept.",
+    ),
+}];
 
 /// `process_export_pipeline`: `url` and `format` overlap their spec entries.
 /// The `url` row carries a per-tool description override (issue #948 F6) —
@@ -108,19 +157,51 @@ pub const PROCESS_EXPORT_PIPELINE_PROPERTIES: &[SpecProperty] = &[
             "Optional URL to scrape before exporting. Omit to skip scraping and run the export stage on previously-saved content.",
         ),
     },
-    prop("format", &export::EXPORT_FORMAT),
+    SpecProperty {
+        name: "format",
+        spec: &export::EXPORT_FORMAT,
+        // SD-02 (#1612): the params accept `pipeline_format`, `format` AND
+        // `export_format`; the schema advertised two of the three. The third
+        // is NOT added here: a third advertised spelling next to the other
+        // two is a wider target for a client that sends two of them and eats
+        // a duplicate-field error. Declaring the accepted set in prose fixes
+        // the discoverability gap without widening the surface, and whether
+        // the set stays at three is #1614's compat decision.
+        description_override: Some(
+            "Export format (jsonl, vector, auto). Also accepted as `pipeline_format` and \
+             `export_format`; send exactly one of the three, never two -- they are aliases \
+             of a single field and sending two is a duplicate-field error.",
+        ),
+    },
 ];
 
 /// `scrape_batch`: the `ignore_robots` field overlaps `crawler::GROUP`
 /// (issue #948 coverage gap — the tool was registered in WU3 without
 /// a bridge table). Other params (`urls`, `concurrency`) are MCP-only
 /// and stay on the schemars derive. `single_page` overlaps the spec too
-/// (AUDIT-02 P6-4 CLI `--single-page` parity). `delay_ms` overlaps the
-/// spec too (RC-1 slice 4, G2 pacing parity — the SAME token-bucket
-/// cadence the CLI `--delay-ms` drives).
+/// (AUDIT-02 P6-4 CLI `--single-page` parity) and carries a per-tool
+/// description override (SD-04, #1612): the handler never reads it, so
+/// the advertisement says so. `delay_ms` overlaps the spec too (RC-1
+/// slice 4, G2 pacing parity — the SAME token-bucket cadence the CLI
+/// `--delay-ms` drives).
+///
+/// **Deferred to #1614 (compat policy), deliberately not done here:** removing
+/// `single_page` from the advertised schema, or turning `single_page: false`
+/// into a rejection, are both breaking changes for MCP consumers. The
+/// alternative — adding a crawl-expansion mode to `scrape_batch` so the flag
+/// acquires a meaning — is a feature, not a schema fix, and belongs to
+/// whichever issue takes it.
 pub const SCRAPE_BATCH_PROPERTIES: &[SpecProperty] = &[
     prop("ignore_robots", &crawler::IGNORE_ROBOTS),
-    prop("single_page", &crawler::SINGLE_PAGE),
+    SpecProperty {
+        name: "single_page",
+        spec: &crawler::SINGLE_PAGE,
+        description_override: Some(
+            "Accepted for CLI --single-page parity, but it has no effect here: \
+             scrape_batch already scrapes exactly one page per input URL and never expands \
+             into linked pages, so there is no crawl mode for it to disable.",
+        ),
+    },
     prop("delay_ms", &crawler::DELAY_MS),
 ];
 
@@ -395,21 +476,28 @@ fn scrape_with_options_input_schema() -> Arc<Map<String, Value>> {
 }
 
 fn export_file_input_schema() -> Arc<Map<String, Value>> {
-    merged_input_schema::<ExportFileParams>(EXPORT_FILE_PROPERTIES, &[])
+    let overrides = default_overrides_for_tool("export_file");
+    merged_input_schema::<ExportFileParams>(EXPORT_FILE_PROPERTIES, &overrides)
 }
 
 fn process_export_pipeline_input_schema() -> Arc<Map<String, Value>> {
-    merged_input_schema::<ProcessExportPipelineParams>(PROCESS_EXPORT_PIPELINE_PROPERTIES, &[])
+    let overrides = default_overrides_for_tool("process_export_pipeline");
+    merged_input_schema::<ProcessExportPipelineParams>(
+        PROCESS_EXPORT_PIPELINE_PROPERTIES,
+        &overrides,
+    )
 }
 
 fn scrape_batch_input_schema() -> Arc<Map<String, Value>> {
-    merged_input_schema::<ScrapeBatchParams>(SCRAPE_BATCH_PROPERTIES, &[])
+    let overrides = default_overrides_for_tool("scrape_batch");
+    merged_input_schema::<ScrapeBatchParams>(SCRAPE_BATCH_PROPERTIES, &overrides)
 }
 
 fn get_accessibility_snapshot_input_schema() -> Arc<Map<String, Value>> {
+    let overrides = default_overrides_for_tool("get_accessibility_snapshot");
     merged_input_schema::<GetAccessibilitySnapshotParams>(
         GET_ACCESSIBILITY_SNAPSHOT_PROPERTIES,
-        &[],
+        &overrides,
     )
 }
 
@@ -508,19 +596,40 @@ mod tests {
         assert_eq!(schema["properties"]["max_pages"]["default"], json!(100));
     }
 
-    /// Proof: `export_file`'s advertised `format` property is rendered
-    /// byte-consistently from `export::EXPORT_FORMAT`, not from the schemars
-    /// derive.
+    /// Proof: `export_file`'s advertised `format` property is rendered from
+    /// `export::EXPORT_FORMAT`, not from the schemars derive.
+    ///
+    /// Since SD-01/BC-01 (#1612) the row carries a per-tool
+    /// `description_override`, so "byte-consistently" now means every
+    /// dimension the SSOT owns — `type`, the closed `enum`, and `default` —
+    /// while `description` is the bridge's, by design (#948 F6).
     #[test]
     fn export_file_advertises_spec_enum_byte_consistently() {
         let schema = export_file_input_schema();
-        assert_eq!(
-            schema["properties"]["format"],
-            export::EXPORT_FORMAT.json_schema(),
-            "format must be the SSOT rendering (enum variants, default, help text)"
+        let rendered = &schema["properties"]["format"];
+        let expected = export::EXPORT_FORMAT.json_schema();
+
+        for dimension in ["type", "enum", "default"] {
+            assert_eq!(
+                rendered[dimension], expected[dimension],
+                "format.{dimension} must be the SSOT rendering"
+            );
+        }
+        assert_ne!(
+            rendered["description"], expected["description"],
+            "the per-tool override must replace the spec help, which reads as a CLI \
+             flag that does not exist on this tool"
         );
+        assert!(
+            rendered["description"]
+                .as_str()
+                .expect("description")
+                .contains("content_format"),
+            "the override must name the alias it is an alternative spelling of"
+        );
+
         // Override-path proof: the pre-bridge derive had a different shape
-        // (no closed enum / spec default), so equality above cannot be an
+        // (no closed enum / spec default), so the equality above cannot be an
         // accident of the derive.
         let derived = raw_derived::<ExportFileParams>();
         assert_ne!(
@@ -589,6 +698,57 @@ mod tests {
         // The un-overridden derive advertises max_pages WITHOUT any bound:
         let derived = &raw_derived::<CrawlSiteParams>()["properties"]["max_pages"];
         assert!(derived.get("maximum").is_none());
+    }
+
+    /// Proof (#1612, BC-09): every bridged tool's router schema carries its
+    /// OWN advertised-default overrides.
+    ///
+    /// Measured red before this invariant existed: `export_file`,
+    /// `process_export_pipeline`, `scrape_batch` and
+    /// `get_accessibility_snapshot` all called
+    /// `merged_input_schema::<P>(PROPS, &[])`, silently dropping the table
+    /// `default_overrides_for_tool` builds for them. `scrape_batch` therefore
+    /// published `concurrency` with the derive's `minimum: 0` and no
+    /// `default` at all, and `delay_ms` with the CLI's 1000 ms while the
+    /// handler runs unthrottled — the #1294 NS-04 and RC-1 G2 fixes, dead on
+    /// the wire.
+    ///
+    /// The existing suites missed it because they re-merged the schema
+    /// themselves with the overrides supplied by hand, so they asserted the
+    /// intent rather than the served bytes. The check here is that applying
+    /// the table to what the ROUTER emits changes nothing: idempotence is the
+    /// property "the helper passed its overrides", and it needs no
+    /// per-tool expectation to stay true as the table grows.
+    #[test]
+    fn every_bridged_tool_applies_its_own_default_overrides() {
+        let router = handlers::build_tool_router();
+        for (tool_name, schema_fn) in OVERRIDES {
+            let overrides = default_overrides_for_tool(tool_name);
+            if overrides.is_empty() {
+                continue;
+            }
+            let route = router
+                .map
+                .get(*tool_name)
+                .unwrap_or_else(|| panic!("{tool_name} must be registered"));
+            let served = Value::Object(route.attr.input_schema.as_ref().clone());
+            assert_eq!(
+                served,
+                as_value(&schema_fn()),
+                "{tool_name}: the router must serve exactly what its bridge fn builds"
+            );
+            let mut props = match served.get("properties") {
+                Some(Value::Object(map)) => map.clone(),
+                other => panic!("{tool_name}: input schema must carry properties, got {other:?}"),
+            };
+            let before = props.clone();
+            apply_default_overrides(&mut props, &overrides);
+            assert_eq!(
+                before, props,
+                "{tool_name}: the served schema does not already carry its own \
+                 advertised-default overrides"
+            );
+        }
     }
 
     /// Proof: the router wiring actually swaps in the bridge schema — the
@@ -765,6 +925,12 @@ mod tests {
     /// Proof (AUDIT-02 P6-4): `scrape_batch` advertises `single_page`
     /// through the spec entry — CLI `--single-page` parity — with the F5
     /// nullability promotion for the `Option<bool>` field.
+    ///
+    /// Since SD-04 (#1612) the row also carries a per-tool description
+    /// override, because the handler never reads the field: the spec's
+    /// generic `--single-page` help reads as a control this tool offers.
+    /// The type and default still come from the spec; the description is
+    /// the truth about the handler, which is what the override is for.
     #[test]
     fn scrape_batch_single_page_renders_through_spec_entry() {
         let schema = scrape_batch_input_schema();
@@ -776,8 +942,17 @@ mod tests {
             json!(["boolean", "null"]),
             "single_page (Option<bool>) must advertise a nullable type"
         );
-        assert_eq!(rendered["description"], expected["description"]);
         assert_eq!(rendered["default"], expected["default"]);
+        assert_ne!(
+            rendered["description"], expected["description"],
+            "the per-tool override must replace the spec help, or SD-04's no-op \
+             field is advertised as a control"
+        );
+        let description = rendered["description"].as_str().expect("description");
+        assert!(
+            description.contains("no effect"),
+            "the override must say the field is inert, got: {description}"
+        );
     }
 
     /// Proof (issue #948 coverage gap): `get_accessibility_snapshot` now

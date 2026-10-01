@@ -1,0 +1,65 @@
+---
+source: crates/webfang_mcp/tests/mcp_advertised_schema_snapshot_test.rs
+expression: advertised_pretty(tool)
+---
+{
+  "$defs": {
+    "McpUrl": {
+      "format": "uri",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "download_documents": {
+      "default": false,
+      "description": "Download documents from the page",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "download_images": {
+      "default": false,
+      "description": "Download images from the page",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "ignore_robots": {
+      "default": false,
+      "description": "Skip robots.txt enforcement",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "max_pages": {
+      "description": "Accepted and bounds-checked (1-100000), but it has no effect here: this tool fetches exactly the `url` you give it and never discovers or follows links, so every call returns one page. To crawl more than one page use crawl_site or crawl_with_sitemap.",
+      "maximum": 100000,
+      "minimum": 1,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "selector": {
+      "default": "body",
+      "description": "CSS selector for content extraction",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "url": {
+      "description": "URL to scrape (required unless using a subcommand)",
+      "type": "string"
+    }
+  },
+  "required": [
+    "url"
+  ],
+  "type": "object"
+}

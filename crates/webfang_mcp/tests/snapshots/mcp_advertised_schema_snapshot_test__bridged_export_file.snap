@@ -1,0 +1,43 @@
+---
+source: crates/webfang_mcp/tests/mcp_advertised_schema_snapshot_test.rs
+expression: advertised_pretty(tool)
+---
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "content": {
+      "description": "Content to export (written to the output file)",
+      "type": "string"
+    },
+    "content_format": {
+      "description": "Export format: jsonl, vector, auto\n\nAlso accepted as `format` (#1612, SD-01/BC-01). They are aliases of\none field, not two: sending both is a serde duplicate-field error, so\nthe advertised `format` property must be treated as the alternative\nspelling of this required one, never as an addition to it.",
+      "type": "string"
+    },
+    "filename": {
+      "description": "Filename (without extension)",
+      "type": "string"
+    },
+    "format": {
+      "default": "jsonl",
+      "description": "Export format (jsonl, vector, auto). Alternative spelling of the required `content_format` property -- send exactly one of the two, never both: they are aliases of a single field, and sending both is a duplicate-field error. The spec id is `export_format`, which this tool does not accept.",
+      "enum": [
+        "jsonl",
+        "vector",
+        "auto"
+      ],
+      "type": "string"
+    },
+    "output_dir": {
+      "description": "Output directory path",
+      "type": "string"
+    }
+  },
+  "required": [
+    "output_dir",
+    "filename",
+    "content_format",
+    "content"
+  ],
+  "type": "object"
+}

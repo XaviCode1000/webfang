@@ -1,0 +1,55 @@
+---
+source: crates/webfang_mcp/tests/mcp_advertised_schema_snapshot_test.rs
+expression: advertised_pretty(tool)
+---
+{
+  "$defs": {
+    "McpUrl": {
+      "format": "uri",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "max_depth": {
+      "default": 3,
+      "description": "Maximum depth to crawl (0 = only seed URL)",
+      "maximum": 10,
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "max_pages": {
+      "default": 100,
+      "description": "Maximum pages to scrape",
+      "maximum": 100000,
+      "minimum": 1,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "sitemap_url": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/McpUrl"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Optional explicit sitemap URL"
+    },
+    "url": {
+      "description": "URL to scrape (required unless using a subcommand)",
+      "type": "string"
+    }
+  },
+  "required": [
+    "url"
+  ],
+  "type": "object"
+}

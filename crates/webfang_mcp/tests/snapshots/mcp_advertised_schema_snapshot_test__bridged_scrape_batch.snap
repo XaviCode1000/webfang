@@ -1,0 +1,63 @@
+---
+source: crates/webfang_mcp/tests/mcp_advertised_schema_snapshot_test.rs
+expression: advertised_pretty(tool)
+---
+{
+  "$defs": {
+    "McpUrl": {
+      "format": "uri",
+      "type": "string"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "concurrency": {
+      "default": 3,
+      "description": "Concurrency limit. When omitted the tool applies the advertised `default`\n(#1294 NS-04: the number used to live only in this sentence, and it was\nwrong — the machine-readable default in the bridge is the single source).",
+      "format": "uint",
+      "maximum": 64,
+      "minimum": 1,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "delay_ms": {
+      "default": 0,
+      "description": "Delay between requests in milliseconds",
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "ignore_robots": {
+      "default": false,
+      "description": "Skip robots.txt enforcement",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "single_page": {
+      "default": false,
+      "description": "Accepted for CLI --single-page parity, but it has no effect here: scrape_batch already scrapes exactly one page per input URL and never expands into linked pages, so there is no crawl mode for it to disable.",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
+    "urls": {
+      "description": "List of URLs to scrape — each parsed+hardened at the boundary (#1116).\n\nBounded by the advertised `maxItems` (#1611 F7): that machine-readable\nkeyword, rendered from [`URLS_MAX`] by the derive below, is the single\nsource for the bound — validator and schema read the same constant, and\nthis sentence states no number of its own, exactly like `concurrency`\nand its `default` (#1294 NS-04). Oversize batches are split across\ncalls, or served by `crawl_site`.",
+      "items": {
+        "$ref": "#/$defs/McpUrl"
+      },
+      "maxItems": 100,
+      "type": "array"
+    }
+  },
+  "required": [
+    "urls"
+  ],
+  "type": "object"
+}

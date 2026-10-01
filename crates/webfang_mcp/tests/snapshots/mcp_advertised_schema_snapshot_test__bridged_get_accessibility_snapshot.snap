@@ -1,0 +1,56 @@
+---
+source: crates/webfang_mcp/tests/mcp_advertised_schema_snapshot_test.rs
+expression: advertised_pretty(tool)
+---
+{
+  "$defs": {
+    "McpUrl": {
+      "format": "uri",
+      "type": "string"
+    },
+    "SnapshotFormatParams": {
+      "description": "Snapshot serialization formats for `get_accessibility_snapshot` (spec R3).",
+      "oneOf": [
+        {
+          "const": "compact",
+          "description": "Interactive-only `@eN` refs with a `token_estimate` (default).",
+          "type": "string"
+        },
+        {
+          "const": "playwright-mcp",
+          "description": "Playwright MCP AXSnapshot format — not implemented yet.",
+          "type": "string"
+        }
+      ]
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "format": {
+      "$ref": "#/$defs/SnapshotFormatParams",
+      "description": "Snapshot format (default: compact)"
+    },
+    "interactive_only": {
+      "default": true,
+      "description": "Emit only interactive nodes (default: true)",
+      "type": "boolean"
+    },
+    "selector": {
+      "default": "body",
+      "description": "CSS selector for content extraction",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "url": {
+      "$ref": "#/$defs/McpUrl",
+      "description": "URL to snapshot (must start with http:// or https://)"
+    }
+  },
+  "required": [
+    "url"
+  ],
+  "type": "object"
+}

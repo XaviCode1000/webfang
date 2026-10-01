@@ -869,6 +869,11 @@ pub struct ExportFileParams {
     /// Filename (without extension)
     pub filename: String,
     /// Export format: jsonl, vector, auto
+    ///
+    /// Also accepted as `format` (#1612, SD-01/BC-01). They are aliases of
+    /// one field, not two: sending both is a serde duplicate-field error, so
+    /// the advertised `format` property must be treated as the alternative
+    /// spelling of this required one, never as an addition to it.
     #[serde(alias = "format")]
     pub content_format: String,
     /// Content to export (written to the output file)
@@ -1124,6 +1129,13 @@ pub struct ProcessExportPipelineParams {
     /// URL to scrape and export
     pub url: Option<McpUrl>,
     /// Export format
+    ///
+    /// Also accepted as `format` and `export_format` (#1612, SD-02). All
+    /// three are aliases of this one field: sending two of them is a serde
+    /// duplicate-field error, and `export_format` -- the OptionsSpec id --
+    /// is accepted but deliberately not advertised here until the MCP compat
+    /// policy issue (#1614) decides whether the advertised surface keeps three
+    /// spellings or collapses to one.
     #[serde(alias = "format", alias = "export_format")]
     pub pipeline_format: Option<String>,
 }
