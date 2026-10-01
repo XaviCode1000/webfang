@@ -298,6 +298,22 @@ jobs:
       # never reads or writes this repository.
       - name: Path classifier semantics harness
         run: bash scripts/ci_path_classifier_test.sh
+      # Semantics harness for the compatibility harness (#1635, #1698): proves
+      # on stub cargo/webfang binaries that the per-combo probes stay
+      # fail-closed AND resolve the binary through CARGO_TARGET_DIR. The
+      # resolution case is the one that matters most here: the harness used to
+      # run a hardcoded ./target/debug/webfang, so in every worktree — all of
+      # which build into ~/.cache/cargo-target/<tree> under the isolated
+      # target-dir policy (#1267) — it reported "exit 127, command not found"
+      # and read as a contract violation (#1698). Until this step existed the
+      # assertions ran nowhere in CI: scripts/ci_fast_gate.sh wires them only
+      # into its CI-ONLY lane, while a change to these scripts lands in the
+      # CODE lane, so the suite was effectively local-only. Same reasoning as
+      # the classifier harness above — a regression here reds a `needs:` of
+      # `gate` instead of passing unnoticed. Pure bash over mktemp fixtures:
+      # no cargo, no network, no build.
+      - name: Compatibility harness semantics harness
+        run: bash scripts/tests/test_check_compatibility.sh
       # Regression guard for #836: block-scalar nesting bugs in workflow YAML
       # (steps swallowed into a `run: |` block) stay valid YAML and only fail
       # at runtime post-merge (#833→#835). actionlint + shellcheck catch them
