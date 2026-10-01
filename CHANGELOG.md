@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-10-01
+
+
+### 🎉 Added
+
+- Echo the caller's JSON-RPC id in a contained panic
+
+### 🏗️ Architecture Improvements
+
+- Dedupe test scaffolding under the shared harness ([#1613](https://github.com/XaviCode1000/webfang/pull/1613))
+
+### 🔧 Fixed
+
+- Separate SSRF policy, DNS, and caller-input failures
+- Report serialization and URI-dispatch failures as tool errors
+- Give every rejection a stable machine-readable reason
+- Complete the reason taxonomy and republish the contract table
+- Gate the axtree test_support import like its users
+
+### 🧪 Testing
+
+- Pin the rmcp error-channel mapping on a real transport
 ## [2.4.3] - 2026-10-01
 
 
