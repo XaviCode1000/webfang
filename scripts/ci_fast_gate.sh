@@ -581,6 +581,10 @@ lane_fmt_and_guards() {
     bash scripts/check_ignored_guard.sh
   run_guard "ignored-test guard semantics harness (#1328)" scripts/test_ignored_guard.sh \
     bash scripts/test_ignored_guard.sh
+  run_guard "concurrency lint gate (#1616 CC-L1/CC-L2)" scripts/check_concurrency_lints.sh \
+    bash scripts/check_concurrency_lints.sh
+  run_guard "concurrency lint semantics harness (#1616)" scripts/test_concurrency_lints.sh \
+    bash scripts/test_concurrency_lints.sh
   # Phase 3: same guard as the docs lane — blocking here because every
   # surrounding repo-guard step is blocking (fail-closed on findings,
   # warn-skip only when the script itself is absent).

@@ -4,6 +4,13 @@
 //! tokio::sync::Semaphore instances to limit concurrent operations
 //! per tool category, protecting the 8GB RAM / HDD hardware.
 
+//! This module is a semaphore registry: every shared handle is an `Arc` clone
+//! or an atomically-read field, and the only `Mutex`es are the metrics and
+//! session-result slots whose guards are dropped before any await. This deny
+//! fails the build if a future edit ever holds a `std` lock guard across an
+//! `.await` in this module (#1616 CC-S1).
+#![deny(clippy::await_holding_lock)]
+
 use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

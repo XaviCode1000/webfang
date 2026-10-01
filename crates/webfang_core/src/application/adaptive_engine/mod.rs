@@ -123,7 +123,10 @@ impl AdaptiveSelectorEngine {
         semantic: Option<Arc<dyn SemanticInspectorPort>>,
         options: AdaptiveSelectorOptions,
     ) -> Self {
-        let semaphore = Arc::new(Semaphore::new(options.max_concurrent_inference));
+        // `max(1)`: a zero-permit inference semaphore parks every adaptive
+        // repair forever, and `max_concurrent_inference` is a plain `usize`
+        // that deserializes from config, so 0 is representable (#1616 CC-L2).
+        let semaphore = Arc::new(Semaphore::new(options.max_concurrent_inference.max(1)));
         Self {
             inspector,
             semantic,

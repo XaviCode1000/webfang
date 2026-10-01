@@ -16,6 +16,13 @@
 //! - **Deterministic drain**: dropping all senders or calling
 //!   [`JsonlSession::close`] drains every queued message before one final
 //!   flush; no orphaned buffered bytes survive.
+//!
+//! The writer thread drains a bounded channel; no guard may cross the awaits
+//! that receive, flush, or acknowledge a message. This deny fails the build if a
+//! future edit ever holds a `std` lock guard across an `.await` in this module
+//! (#1616 CC-S1).
+
+#![deny(clippy::await_holding_lock)]
 
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
