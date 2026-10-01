@@ -25,9 +25,20 @@ on:
     branches:
       - main
 
-permissions:
-  contents: write
-  pull-requests: write
+# SC-03/SC-21 (issue #1607): the workflow-level `contents: write` +
+# `pull-requests: write` block is GONE. It was the widest grant in the file and
+# it was inherited by every job, so a job that needed only `contents: read` ran
+# with write anyway: workflow-level permissions are the DEFAULT for a job whose
+# own `permissions:` omits a scope, never a floor. Every job below now declares
+# its own block, so each grant is visible at the job that uses it and a future
+# job added without a `permissions:` key gets the repository default (none)
+# instead of silently inheriting write.
+#
+# `release-plz-release` also lost its `pull-requests: read`: it runs
+# `release-plz release` in git_only mode with `git_release_enable = false`, so
+# the tag push is its entire product and it reads no pull request. Reading more
+# than the step uses is still a grant, and a grant nobody asked for is the thing
+# this change is removing.
 
 env:
   CARGO_TERM_COLOR: always
@@ -42,7 +53,6 @@ jobs:
     if: ${{ github.repository_owner == 'XaviCode1000' }}
     permissions:
       contents: write
-      pull-requests: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
