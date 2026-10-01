@@ -23,7 +23,12 @@
 //!   regression this issue is about;
 //! - the panic payload never reaches the client;
 //! - the HTTP-layer mapping is deterministic, in-process, and needs no
-//!   listener (contract for `CatchPanicLayer::custom`).
+//!   listener (contract for `CatchPanicLayer::custom`);
+//! - a contained panic echoes the CALLER'S JSON-RPC id when the envelope
+//!   carries one (#1646), and says `null` by an explicit rule when it does not —
+//!   never losing the `-32603` mapping itself in either case;
+//! - the id-recovering layer is byte-lossless: the service behind it still sees
+//!   the ORIGINAL body, including whatever was not consumed.
 //!
 //! Run with: `cargo nextest run -p webfang_mcp --features mcp --test mcp_panic_containment_test`
 
@@ -378,58 +383,84 @@ async fn session_survives_a_panicking_tool_call() {
 // Contract — the HTTP-layer mapping (no listener, no network, deterministic)
 // ===========================================================================
 
-/// The outermost `CatchPanicLayer` turns a panic on the HTTP request path into
-/// a JSON-RPC `-32603` document over HTTP 500, instead of tower-http's default
-/// EMPTY 500 (which an agent reads as a dead transport).
+/// A request that the `/mcp` service panics on, carrying an arbitrary body.
 ///
-/// Driven with `tower::ServiceExt::oneshot` against the REAL stack built by
-/// `build_mcp_router_with_service`, so this pins the production mapping and not
-/// a replica of it. The panicking service stands in for the `/mcp` service.
-#[tokio::test]
-async fn panic_on_the_http_path_maps_to_a_jsonrpc_error_body() {
+/// Used by every transport-level case below, so all of them are driven through
+/// the same seam and the same service — a difference in the answer can only
+/// come from the body, which is the variable under test.
+fn panicking_service_app() -> axum::Router {
     async fn panicking_route(
         _request: axum::http::Request<axum::body::Body>,
     ) -> Result<axum::response::Response, Infallible> {
         panic!("{PANIC_MARKER}: deliberate HTTP-path panic");
     }
 
-    let app = build_mcp_router_with_service(
+    build_mcp_router_with_service(
         tower::service_fn(panicking_route),
         &ServerOptions::default(),
-    );
+    )
+}
+
+/// POST `body` to `/mcp` on the real stack and return
+/// `(status, content-type, parsed, text)`.
+async fn post_body(
+    app: axum::Router,
+    body: axum::body::Body,
+) -> (u16, Option<String>, Value, String) {
     let request = axum::http::Request::builder()
+        .method(axum::http::Method::POST)
         .uri("/mcp")
-        .body(axum::body::Body::empty())
+        .header(axum::http::header::CONTENT_TYPE, "application/json")
+        .body(body)
         .expect("valid request");
 
     let response = app
         .oneshot(request)
         .await
-        .expect("CatchPanicLayer turns the panic into a response, not a dead service");
+        .expect("the containment layer turns the panic into a response, not a dead service");
+
+    let status = response.status().as_u16();
+    let content_type = response
+        .headers()
+        .get(axum::http::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("body reads");
+    let text = String::from_utf8_lossy(&bytes).to_string();
+    let parsed: Value = serde_json::from_str(&text).expect("mapped body is JSON");
+    (status, content_type, parsed, text)
+}
+
+/// A POST that panics on the `/mcp` service is mapped to a JSON-RPC `-32603`
+/// document over HTTP 500, instead of tower-http's default EMPTY 500 (which an
+/// agent reads as a dead transport) — and it echoes the id the client actually
+/// sent, so the failure is correlatable (#1646).
+///
+/// Driven with `tower::ServiceExt::oneshot` against the REAL stack built by
+/// `build_mcp_router_with_service`, so this pins the production mapping and not
+/// a replica of it. The panicking service stands in for the `/mcp` service.
+#[tokio::test]
+async fn panic_on_the_http_path_maps_to_a_jsonrpc_error_body() {
+    let envelope = r#"{"jsonrpc":"2.0","id":"pc4-probe-7","method":"tools/list","params":{}}"#;
+    let (status, content_type, parsed, text) =
+        post_body(panicking_service_app(), axum::body::Body::from(envelope)).await;
 
     assert_eq!(
-        response.status(),
-        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+        status, 500,
         "a contained HTTP-path panic must be a 500, not a dropped connection"
     );
     assert_eq!(
-        response
-            .headers()
-            .get(axum::http::header::CONTENT_TYPE)
-            .and_then(|v| v.to_str().ok()),
+        content_type.as_deref(),
         Some("application/json"),
         "the contained-panic body must be JSON, so the client can parse it"
     );
-
-    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("body reads");
-    let text = String::from_utf8_lossy(&body).to_string();
-    let parsed: Value = serde_json::from_str(&text).expect("mapped body is JSON");
     assert_eq!(parsed["jsonrpc"], "2.0");
-    assert!(
-        parsed["id"].is_null(),
-        "a panic on the request path has no request id to echo: {parsed}"
+    assert_eq!(
+        parsed["id"], "pc4-probe-7",
+        "a contained panic must echo the id the client sent, or the client \
+         cannot correlate the failure with its own call: {parsed}"
     );
     assert_eq!(
         parsed["error"]["code"], -32603,
@@ -448,9 +479,109 @@ async fn panic_on_the_http_path_maps_to_a_jsonrpc_error_body() {
     );
 }
 
+/// The documented `null`-id rules, each of which must still answer `-32603`.
+///
+/// Without the code assertion, a stack that mapped EVERYTHING to a `null` id
+/// would pass these three — and `null` would silently start meaning "the
+/// mapping broke" instead of "there was no id to echo".
+///
+/// Table-driven over the three bodies, so the rules stay published in one
+/// place: a batch (top-level array), a non-JSON body, and a single request with
+/// no `id` member (a JSON-RPC notification).
+#[tokio::test]
+async fn bodies_without_a_recoverable_id_answer_null_id_and_still_map() {
+    let cases = [
+        (
+            "batch",
+            r#"[{"jsonrpc":"2.0","id":1,"method":"tools/list"}]"#,
+        ),
+        ("non-JSON", "this is not JSON at all"),
+        (
+            "no id member",
+            r#"{"jsonrpc":"2.0","method":"notifications/x"}"#,
+        ),
+    ];
+
+    for (label, body) in cases {
+        let (status, _content_type, parsed, text) =
+            post_body(panicking_service_app(), axum::body::Body::from(body)).await;
+
+        assert_eq!(status, 500, "case {label} must still be a 500: {text}");
+        assert!(
+            parsed["id"].is_null(),
+            "case {label} has no single recoverable id, so the answer is null \
+             BY RULE — not because the mapping failed: {parsed}"
+        );
+        assert_eq!(
+            parsed["error"]["code"], -32603,
+            "case {label} must still map to JSON-RPC Internal error: {parsed}"
+        );
+    }
+}
+
+/// A service that ECHOES its body must receive the ORIGINAL bytes.
+///
+/// The id-recovering layer reads the body to find the id, so the failure mode
+/// this rules out is a layer that consumes the body and hands the inner service
+/// a truncated one — which would break every real tool call while leaving the
+/// panic tests green. Driven through the real stack with `oneshot`.
+#[tokio::test]
+async fn the_inner_service_still_receives_the_whole_body() {
+    async fn echo_route(
+        request: axum::http::Request<axum::body::Body>,
+    ) -> Result<axum::response::Response, Infallible> {
+        let bytes = axum::body::to_bytes(request.into_body(), usize::MAX)
+            .await
+            .expect("inner service reads the body");
+        Ok(axum::response::Response::new(axum::body::Body::from(bytes)))
+    }
+
+    let payload =
+        r#"{"jsonrpc":"2.0","id":"pc4-echo-1","method":"tools/list","params":{"cursor":null}}"#;
+    let bodies = vec![
+        // One frame: nothing to re-chain beyond the prefix.
+        axum::body::Body::from(payload),
+        // Two frames: the layer will consume the first and must replay it in
+        // front of the unread second one, or the service sees a truncated
+        // envelope.
+        axum::body::Body::from_stream(futures::stream::iter(vec![
+            Ok::<axum::body::Bytes, Infallible>(axum::body::Bytes::copy_from_slice(
+                &payload.as_bytes()[..40],
+            )),
+            Ok(axum::body::Bytes::copy_from_slice(
+                &payload.as_bytes()[40..],
+            )),
+        ])),
+    ];
+
+    for body in bodies {
+        let app =
+            build_mcp_router_with_service(tower::service_fn(echo_route), &ServerOptions::default());
+        let request = axum::http::Request::builder()
+            .method(axum::http::Method::POST)
+            .uri("/mcp")
+            .body(body)
+            .expect("valid request");
+
+        let response = app.oneshot(request).await.expect("service answers");
+        assert_eq!(response.status(), 200);
+        let echoed = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body reads");
+        assert_eq!(
+            echoed.as_ref(),
+            payload.as_bytes(),
+            "the inner service must see the ORIGINAL body, byte for byte"
+        );
+    }
+}
+
 /// Triangulation: a well-behaved service on the same seam is NOT rewritten
 /// into an error body. Without this, a stack that mapped EVERY response to
 /// `-32603` would satisfy the test above.
+///
+/// Also pins that a non-POST request (rmcp's `GET` SSE stream and `DELETE`
+/// session teardown) is left completely alone by the id-recovering layer.
 #[tokio::test]
 async fn non_panicking_service_passes_through_unchanged() {
     async fn ok_route(

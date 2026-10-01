@@ -32,8 +32,8 @@ use tower_http::trace::TraceLayer;
 use tracing::info;
 
 use super::auth::{validate_auth, AuthState};
+use super::panic_containment::{self, IdSource, RecoveredRequestId};
 use super::panic_hook::setup_panic_hook;
-use super::render_panic_payload;
 use super::state::McpState;
 use super::McpHandler;
 
@@ -203,10 +203,24 @@ where
 
     Router::new()
         .nest_service(MCP_ENDPOINT_PATH, service)
-        // Innermost layer, applied FIRST: `.layer()` wraps what is already
-        // there, so this is the LAST gate a request meets. Auth, the rate
-        // limiter, the timeout and the body limit have all answered by now —
-        // which is the security property that matters here: a request rejected
+        // Innermost of all, applied FIRST: `.layer()` wraps what is already
+        // there, so this is the LAST gate a request meets. It is where the
+        // body is finally readable, and a panic raised at or below the nested
+        // service is answered here with the CALLER'S OWN JSON-RPC id (#1646)
+        // instead of a `null` the client cannot correlate — which is the whole
+        // reason it sits here and not above.
+        //
+        // Inside the other gates is deliberate, and the security property is
+        // the same one the session cap below is mounted for: auth, the rate
+        // limiter, the timeout and the body limit have all answered by now, so
+        // a request rejected 401 (no/invalid token) or shed 429 by the rate
+        // limiter never has its body buffered here, and can therefore neither
+        // exhaust the session budget of the legitimate operator nor make an
+        // unauthenticated flood pay for a body read.
+        .layer(middleware::from_fn(
+            panic_containment::jsonrpc_panic_containment,
+        ))
+        // Next innermost, applied second: the session cap. A request rejected
         // 401 (no/invalid token) or shed 429 by the rate limiter can never
         // consume a session slot, so an unauthenticated flood cannot exhaust
         // the session budget of the legitimate operator.
@@ -226,10 +240,12 @@ where
         .layer(RequestBodyLimitLayer::new(options.body_limit_bytes))
         .layer(TraceLayer::new_for_http())
         // Outermost: applied LAST, so it wraps auth, rate limiting, timeout,
-        // body limit, tracing and the nested service. Any panic still escaping
-        // an inner layer becomes a JSON-RPC error body instead of tearing the
-        // connection down. A tool-handler panic is contained one level deeper,
-        // in `McpHandler::call_tool` (#1611, F2).
+        // body limit, tracing and the nested service. It is the backstop for
+        // panics raised ABOVE the id-echoing layer, where no body has been
+        // read at all and the id is `null` by the documented rule in
+        // `panic_containment` — a rule, not a silent fallback. A
+        // tool-handler panic is contained one level deeper, in
+        // `McpHandler::call_tool` (#1611, F2).
         .layer(CatchPanicLayer::custom(jsonrpc_panic_response))
 }
 
@@ -240,16 +256,7 @@ fn into_axum_response<R: IntoResponse>(response: R) -> Response {
     response.into_response()
 }
 
-/// JSON-RPC `Internal error` code (JSON-RPC 2.0 spec) — what a contained panic
-/// maps to.
-const JSONRPC_INTERNAL_ERROR: i64 = -32603;
-
-/// User-facing (Spanish) body of a contained panic. Fixed text: the panic
-/// payload may embed request data, so it goes to the trace, never to the client.
-const PANIC_HTTP_ERROR: &str =
-    "Error interno del servidor MCP contenido. La petición falló de forma inesperada.";
-
-/// Map a panic raised anywhere on the HTTP request path to a JSON-RPC
+/// Map a panic raised ANYWHERE on the HTTP request path to a JSON-RPC
 /// `-32603` error body (HTTP 500, `application/json`).
 ///
 /// Named (not a closure) so the contract is unit-testable: the mapping is the
@@ -260,27 +267,29 @@ const PANIC_HTTP_ERROR: &str =
 /// A named `fn` is also what satisfies
 /// [`CatchPanicLayer::custom`]: the handler must be `FnMut + Clone`, so a
 /// closure would have to be written as an explicitly cloneable wrapper.
+///
+/// # The id it echoes is `null`, and that is a rule
+///
+/// This is the OUTERMOST backstop. By the time it runs, auth, rate limiting,
+/// the timeout, the body limit and
+/// [`panic_containment::jsonrpc_panic_containment`] have all already answered,
+/// and a panic that reaches here was raised in one of them — which is to say
+/// before (or without) any request body being read. There is no envelope in
+/// scope, so the id is `null` **by an explicit documented rule**, not by a
+/// silent fallback: the alternative would be buffering a body for every
+/// rejected request, and an unauthenticated flood would then be able to make
+/// the server read bodies it is about to refuse.
+///
+/// The recoverable case is handled one layer in, by
+/// [`panic_containment::jsonrpc_panic_containment`], which reads the POST
+/// body, recovers the id, and answers a contained panic with that id (#1646).
+/// Both paths share one response builder, so the shape a client sees never
+/// depends on which layer caught the panic.
 fn jsonrpc_panic_response(payload: Box<dyn Any + Send + 'static>) -> Response {
-    tracing::error!(
-        panic.payload = %render_panic_payload(payload.as_ref()),
-        "MCP request panicked — mapped to a JSON-RPC -32603 response"
-    );
-
-    let body = serde_json::json!({
-        "jsonrpc": "2.0",
-        "id": serde_json::Value::Null,
-        "error": {
-            "code": JSONRPC_INTERNAL_ERROR,
-            "message": PANIC_HTTP_ERROR,
-        },
-    });
-
-    (
-        StatusCode::INTERNAL_SERVER_ERROR,
-        [(header::CONTENT_TYPE, "application/json")],
-        body.to_string(),
+    panic_containment::jsonrpc_internal_error_response(
+        RecoveredRequestId::unrecoverable(IdSource::NotARequest),
+        payload.as_ref(),
     )
-        .into_response()
 }
 
 /// Build a `governor` rate limiter from [`ServerOptions`].
@@ -767,7 +776,9 @@ async fn shutdown_signal(token: CancellationToken) {
 
 #[cfg(test)]
 mod tests {
+    use super::panic_containment::{JSONRPC_INTERNAL_ERROR, PANIC_HTTP_ERROR};
     use super::*;
+    use crate::mcp_server::render_panic_payload;
     use webfang_core::config::Config;
     use webfang_core::di::{Container, ContainerExt};
 
@@ -775,6 +786,11 @@ mod tests {
     /// the whole stack panic-safe in-process: a service that panics on the HTTP
     /// request path, driven through the REAL stack with `oneshot` (no
     /// listener, no sleep, no network).
+    ///
+    /// A POST carrying a real envelope, because that is the case #1646 is
+    /// about: the contained panic must answer with the CALLER'S id. A GET
+    /// with an empty body would have proved only the `null` rule, which the
+    /// direct-handler test below already pins.
     #[tokio::test]
     async fn panic_on_the_http_path_is_mapped_by_the_real_stack() {
         use tower::ServiceExt;
@@ -790,8 +806,11 @@ mod tests {
             &ServerOptions::default(),
         );
         let request = axum::http::Request::builder()
+            .method(Method::POST)
             .uri("/mcp")
-            .body(axum::body::Body::empty())
+            .body(axum::body::Body::from(
+                r#"{"jsonrpc":"2.0","id":"pc4-probe-7","method":"tools/list"}"#,
+            ))
             .expect("valid request");
 
         let response = app
@@ -806,6 +825,10 @@ mod tests {
         let text = String::from_utf8_lossy(&body);
         let parsed: serde_json::Value = serde_json::from_slice(&body).expect("mapped body is JSON");
         assert_eq!(parsed["error"]["code"], JSONRPC_INTERNAL_ERROR);
+        assert_eq!(
+            parsed["id"], "pc4-probe-7",
+            "a panic at or below the service must echo the caller's id: {parsed}"
+        );
         assert!(
             !text.contains("HTTP request path"),
             "the panic payload must not leak through the stack: {text}"
@@ -1383,6 +1406,12 @@ mod tests {
     /// The payload is a secret-shaped string on purpose: it must not appear
     /// anywhere in the answer. The trace owns the payload, the client owns a
     /// sentence.
+    ///
+    /// This is the OUTER backstop, driven directly, so it pins the documented
+    /// `null` id rule (no body was read, so there is no envelope to echo) —
+    /// the recoverable case belongs to
+    /// `panic_containment::jsonrpc_panic_containment` and is pinned through
+    /// the real stack above and in the integration suite.
     #[tokio::test]
     async fn panic_mapping_answers_jsonrpc_internal_error_without_payload() {
         let response =
@@ -1407,7 +1436,7 @@ mod tests {
         assert_eq!(parsed["jsonrpc"], "2.0");
         assert!(
             parsed["id"].is_null(),
-            "an unknown request has no id: {parsed}"
+            "the OUTER backstop reads no body, so the id is null by rule: {parsed}"
         );
         assert_eq!(parsed["error"]["code"], JSONRPC_INTERNAL_ERROR);
         assert_eq!(parsed["error"]["message"], PANIC_HTTP_ERROR);
