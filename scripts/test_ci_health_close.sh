@@ -13,6 +13,11 @@
 #      `schedule` are two issues, and a green run closes only its own origin.
 #      The same key still yields ONE issue for repeated failures of that
 #      origin, and the reconcile sweep still closes what it opened.
+#  4. the SCOPE predicate (#1714): a run that is not main-line CI never
+#     reaches an issue. On the event path that is the job-level `if:` (the job
+#     is skipped, so no step can open anything at all); on the sweep path it is
+#     the guard inside reconcile_one, because the sweep reads the run's own
+#     `event` and would otherwise walk in through the back door.
 #
 # This harness does NOT hardcode the title any more. It reads TITLE_CI and
 # RETIRED_TITLE_CI out of the workflow, and it EXTRACTS the real code out of
@@ -407,20 +412,20 @@ check "same-origin repeat failure -> exactly one extra comment" "1" \
 # 8. The reconcile path keeps its own contract (issue criterion 2): the sweep
 #    opens on failure, never duplicates, and closes only its own origin's green.
 reset_all
-run_ci_health reconcile "$TITLE_PUSH" "failure" "900" "CI" "Run origin: push (observed indirectly)."
+run_ci_health reconcile "$TITLE_PUSH" "failure" "900" "CI" "Run origin: push (observed indirectly)." "push"
 REC_NUM="$(number_for "$TITLE_PUSH")"
 check "reconcile: a red latest run opens the origin-qualified issue" "1" "$(issue_count)"
 check "reconcile: that issue is keyed by push" "$TITLE_PUSH" "$(cut -f2 "$STATE/issues")"
-run_ci_health reconcile "$TITLE_PUSH" "failure" "901" "CI" "Run origin: push (observed indirectly)."
+run_ci_health reconcile "$TITLE_PUSH" "failure" "901" "CI" "Run origin: push (observed indirectly)." "push"
 check "reconcile: repeated red does not duplicate" "1" "$(issue_count)"
-run_ci_health reconcile "$TITLE_SCHEDULE" "success" "902" "CI" "Run origin: schedule (observed indirectly)."
+run_ci_health reconcile "$TITLE_SCHEDULE" "success" "902" "CI" "Run origin: schedule (observed indirectly)." "schedule"
 check "reconcile: a green of ANOTHER origin closes nothing" "0" "$(closed_count)"
 check "reconcile: the red it did not cause stays OPEN" "no" "$(is_closed "$REC_NUM")"
-run_ci_health reconcile "$TITLE_PUSH" "success" "903" "CI" "Run origin: push (observed indirectly)."
+run_ci_health reconcile "$TITLE_PUSH" "success" "903" "CI" "Run origin: push (observed indirectly)." "push"
 check "reconcile: same-origin green still closes (criterion preserved)" "$REC_NUM" "$(closed_list)"
 check "reconcile: close comment names the run" "Green again: https://github.com/owner/repo/actions/runs/903" \
   "$(closed_comment "$REC_NUM")"
-run_ci_health reconcile "$TITLE_PUSH" "cancelled" "904" "CI" "Run origin: push (observed indirectly)."
+run_ci_health reconcile "$TITLE_PUSH" "cancelled" "904" "CI" "Run origin: push (observed indirectly)." "push"
 check "reconcile: a non terminal conclusion opens nothing and closes nothing" "1" "$(issue_count)"
 check "reconcile: no extra close from a non terminal conclusion" "1" "$(closed_count)"
 
@@ -449,6 +454,60 @@ check "sweep reads the run's own event field" "yes" \
 # shellcheck disable=SC2016  # the literal ${RETIRED_TITLE_CI} is the pattern
 check "retired key watched, never auto-closed" "yes" \
   "$(grep -qF '${RETIRED_TITLE_CI} in:title' "$WORKFLOW" && echo yes || echo no)"
+
+# 10. SCOPE (#1714). Two paths could open an issue for a pull_request run and
+#     BOTH must be closed. The event path is closed at the job gate, so the
+#     behavior to prove here is structural: the gate exists, it is on the JOB
+#     (a step gate would leave the checkout and the label bootstrap running),
+#     it is stated in terms of the OBSERVED run's payload, and the clause that
+#     let everything through is gone. The sweep path is executable code, so it
+#     is executed.
+echo "== 10. scope gate (#1714) =="
+GATE_PULL_CLAUSE="github.event.workflow_run.event != 'pull_request'"
+# NOTE: the two line probes below must tolerate "no match" WITHOUT tripping
+# `set -e`/`pipefail`: a harness that crashes on the regression it is meant to
+# report is worse than no harness. Each probe yields an empty string and the
+# checks then report FAIL themselves.
+GATE_LINE="$(awk -v c="$GATE_PULL_CLAUSE" 'index($0, c) { print NR; exit }' "$WORKFLOW" || true)"
+STEPS_LINE="$(awk '/^    steps:/ { print NR; exit }' "$WORKFLOW" || true)"
+check "job gate rejects pull_request-origin runs" "1" \
+  "$([[ -n "$GATE_LINE" ]] && echo 1 || echo 0)"
+check "gate is on the JOB, above every step" "yes" \
+  "$([[ -n "$GATE_LINE" && -n "$STEPS_LINE" && "$GATE_LINE" -lt "$STEPS_LINE" ]] && echo yes || echo no)"
+check "gate reads the OBSERVED run's branch, not only its event" "2" \
+  "$(grep -cE "github\.event\.workflow_run\.head_branch == '(main|develop)'" "$WORKFLOW")"
+# The leak: an OR'd `event_name == 'workflow_run'` (or a github.ref-only gate)
+# on the workflow_run path admits every observed run, because GITHUB_REF is
+# the default branch for that event.
+check "no unconditional workflow_run clause left in the gate" "" \
+  "$(grep -nF "|| github.event_name == 'workflow_run'" "$WORKFLOW" || true)"
+check "the leak clause is gone from the gate too" "" \
+  "$(grep -nF "github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' || " "$WORKFLOW" || true)"
+# sweep path: reconcile_one refuses a pull_request run, open AND close.
+reset_all
+printf '51\t%s\tci-health,automated\n' "$TITLE_PUSH" >"$STATE/issues"
+out="$(run_ci_health reconcile "$TITLE_PUSH" "success" "910" "CI" "Run origin: pull_request (observed indirectly)." "pull_request" 2>&1 || true)"
+check "sweep: a green pull_request run closes NOTHING" "0" "$(closed_count)"
+check "sweep: the main-line red it did not cause stays OPEN" "no" "$(is_closed 51)"
+check "sweep: out-of-scope decision is logged, not silent" "yes" \
+  "$([[ "$out" == *"out of scope"* ]] && echo yes || echo no)"
+out="$(run_ci_health reconcile "$TITLE_PUSH" "failure" "911" "CI" "Run origin: pull_request (observed indirectly)." "pull_request" 2>&1 || true)"
+check "sweep: a red pull_request run opens NOTHING" "1" "$(issue_count)"
+check "sweep: still no close after the red pull_request run" "0" "$(closed_count)"
+# The same source in scope must still work, otherwise the guard is a blanket
+# mute rather than a scope filter.
+run_ci_health reconcile "$TITLE_PUSH" "success" "912" "CI" "Run origin: push (observed indirectly)." "push"
+check "sweep: an in-scope green still closes (guard is a filter, not a mute)" "51" "$(closed_list)"
+# The Bug Discovery / Benches call sites must pass the run's own event too, or
+# the guard is CI-only and the same door stays open for the other two sources.
+# shellcheck disable=SC2016  # the literal $TITLE_CI-style names are the pattern
+check "every reconcile call site passes the run's own event" "3" \
+  "$(grep -cE 'reconcile_one "\$[A-Z_]+" "\$[A-Z_]+" "\$[A-Z_]+" "[^"]+" ".*" "\$[A-Z_]+"' "$WORKFLOW")"
+# shellcheck disable=SC2016  # the literal $6 is the workflow's positional arg
+check "reconcile_one takes the run event as a parameter" "yes" \
+  "$(grep -qF 'run_event="$6"' "$WORKFLOW" && echo yes || echo no)"
+check "sweep reads each run's own event field (one call, all three sources)" "1" \
+  "$(grep -cF -- '--json event --jq' "$WORKFLOW")"
 
 echo "test_ci_health_close: PASS=$PASS FAIL=$FAIL"
 if (( FAIL > 0 )); then
