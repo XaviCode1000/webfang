@@ -10,6 +10,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### 🔧 Fixed
 
+- Resolve the webfang binary through CARGO_TARGET_DIR in the compatibility harness ([#1746](https://github.com/XaviCode1000/webfang/pull/1746))
+- Dispatch the tag of a squash-merged Release PR ([#1749](https://github.com/XaviCode1000/webfang/pull/1749))
+- Fail the support-line drift gate closed and make the render check read-only ([#1752](https://github.com/XaviCode1000/webfang/pull/1752))
 - Degrade ConfigDefaults::load silently on any IO error ([#1739](https://github.com/XaviCode1000/webfang/pull/1739))
 - Path and filename validation written for POSIX, wrong on NTFS/APFS ([#1741](https://github.com/XaviCode1000/webfang/pull/1741))
 - CI health Observer opens tracking issues for pull_request runs ([#1742](https://github.com/XaviCode1000/webfang/pull/1742))
