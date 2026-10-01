@@ -43,22 +43,13 @@
 
 #![cfg(feature = "mcp")]
 
-use serde_json::{json, Value};
+use serde_json::json;
 use wreq::Client;
 
 mod common;
-use common::{call_tool, init_session, is_tool_error, tool_text};
-
-/// JSON-RPC 2.0 standard error code for "Invalid params".
-const JSONRPC_INVALID_PARAMS: i64 = -32602;
-
-/// The JSON-RPC `error.code` of a parsed response, or `None` when the response
-/// carries no top-level `error` member (the tool-error channel).
-fn error_code(resp: &Value) -> Option<i64> {
-    resp.get("error")
-        .and_then(|e| e.get("code"))
-        .and_then(|c| c.as_i64())
-}
+use common::{
+    call_tool, error_code, init_session, is_tool_error, tool_text, JSONRPC_INVALID_PARAMS,
+};
 
 // ============================================================================
 // Row A1 — argument deserialization (`McpUrl` `#[serde(try_from = "String")]`,

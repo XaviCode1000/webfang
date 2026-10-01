@@ -258,6 +258,21 @@ pub async fn start_test_server_ssrf_enabled() -> (String, tokio::task::JoinHandl
     serve_on_random_port(app).await
 }
 
+/// JSON-RPC 2.0 standard error code for "Invalid params".
+///
+/// Shared by the suites that assert on rejection envelopes (`params_rejection`,
+/// `mcp_ssrf_error_class`, `mcp_error_channel_mapping`) so the constant has one
+/// definition instead of one per file.
+pub const JSONRPC_INVALID_PARAMS: i64 = -32602;
+
+/// The JSON-RPC `error.code` of a parsed response, or `None` when the response
+/// carries no top-level `error` member (the tool-error channel).
+pub fn error_code(resp: &Value) -> Option<i64> {
+    resp.get("error")
+        .and_then(|e| e.get("code"))
+        .and_then(|c| c.as_i64())
+}
+
 /// Build a JSON-RPC request body for MCP protocol.
 pub fn mcp_request(method: &str, params: Value) -> Value {
     json!({

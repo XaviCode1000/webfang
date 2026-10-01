@@ -24,25 +24,20 @@
 #![cfg(feature = "mcp")]
 
 use serde_json::{json, Value};
-use std::net::SocketAddr;
-use tokio::net::TcpListener;
-use tokio::task::JoinHandle;
 use wreq::Client;
 
-use webfang_core::config::Config;
-use webfang_core::di::Container;
-use webfang_mcp::mcp_server::server::build_mcp_router;
-use webfang_mcp::mcp_server::server::ServerOptions;
-use webfang_mcp::mcp_server::state::McpState;
-
 // Session/tool-call JSON-RPC helpers live in the shared harness (`tests/common`).
-// Imported by name (not `use common::*`) so this file's own `start_test_server`
-// cannot be shadowed by — or collide with — `common::start_test_server`.
+// The starter is `common::start_test_server_ssrf_enabled`: the SSRF guard is
+// LEFT ON and the disarm env vars are actively removed (issue #1126), so an
+// ambient `WEBFANG_MCP_DISABLE_SSRF=1` exported by a shared CI/parent
+// environment cannot disarm the guard either. Swapping in a disarming starter
+// would silently change what is being asserted (every refusal here would
+// vanish and the tests would pass for the wrong reason).
 mod common;
-use common::{call_tool, init_session};
+use common::{
+    call_tool, error_code, init_session, start_test_server_ssrf_enabled, JSONRPC_INVALID_PARAMS,
+};
 
-/// JSON-RPC "Invalid params".
-const JSONRPC_INVALID_PARAMS: i64 = -32602;
 /// JSON-RPC "Internal error".
 const JSONRPC_INTERNAL_ERROR: i64 = -32603;
 
@@ -57,59 +52,6 @@ const DNS_REASONS: &[&str] = &["dns_resolution_failed", "dns_no_addresses"];
 /// RFC 2606 reserved TLD: guaranteed never to resolve, so this fixture is a
 /// deterministic infrastructure failure without reaching any real host.
 const UNRESOLVABLE_URL: &str = "http://nonexistent-host-1613.invalid/";
-
-// ============================================================================
-// Harness — the starter stays local (see its note); the JSON-RPC helpers come
-// from `tests/common/mod.rs`.
-// ============================================================================
-
-/// Start a test MCP server with the SSRF guard LEFT ON.
-///
-/// Deliberately NOT `common::start_test_server`: that one disarms the
-/// wiremock-loopback SSRF hatches, and this suite exists precisely to observe
-/// the guard's refusals — swapping in the disarming starter would silently
-/// change what is being asserted (every refusal here would vanish and the tests
-/// would pass for the wrong reason). The hatches are actively REMOVED rather
-/// than merely left untouched, so an ambient `WEBFANG_MCP_DISABLE_SSRF=1`
-/// exported by a shared CI/parent environment cannot disarm the guard either.
-async fn start_test_server() -> (String, JoinHandle<()>) {
-    use webfang_core::domain::ssrf_guard::{DISABLE_ENTRY_GUARD_ENV, WEBFANG_MCP_DISABLE_SSRF_ENV};
-
-    webfang_test_utils::env_remove(WEBFANG_MCP_DISABLE_SSRF_ENV);
-    webfang_test_utils::env_remove(DISABLE_ENTRY_GUARD_ENV);
-
-    let config = Config::default();
-    let container = Container::new(config.crawler, config.scraper)
-        .await
-        .expect("container creation failed");
-    let state = McpState::new(container);
-    let app = build_mcp_router(state, &ServerOptions::default());
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr: SocketAddr = listener.local_addr().unwrap();
-    let base_url = format!("http://{addr}");
-
-    let handle = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-
-    // Wait for the server to accept TCP connections instead of a fixed sleep.
-    for _ in 0..20 {
-        if tokio::net::TcpStream::connect(&addr).await.is_ok() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-
-    (base_url, handle)
-}
-
-/// The JSON-RPC `error.code`, if the envelope carries a protocol error.
-fn error_code(resp: &Value) -> Option<i64> {
-    resp.get("error")
-        .and_then(|e| e.get("code"))
-        .and_then(Value::as_i64)
-}
 
 /// The JSON-RPC `error.data.reason` slug, if present.
 fn error_reason(resp: &Value) -> Option<&str> {
@@ -147,7 +89,7 @@ fn assert_class(resp: &Value, code: i64, reason: &str, context: &str) {
 /// from a caller-input rejection, which shares the same code.
 #[tokio::test]
 async fn loopback_literal_is_policy_refusal_with_reason_slug() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -198,7 +140,7 @@ async fn hostname_resolving_to_loopback_is_policy_refusal_with_reason_slug() {
         "precondition: every `localhost` answer must be a forbidden address, got: {resolved:?}"
     );
 
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -236,7 +178,7 @@ async fn hostname_resolving_to_loopback_is_policy_refusal_with_reason_slug() {
 /// resolver's mood.
 #[tokio::test]
 async fn unresolvable_host_is_infrastructure_failure_with_reason_slug() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -282,7 +224,7 @@ async fn unresolvable_host_is_infrastructure_failure_with_reason_slug() {
 /// the taxonomy, so it carries `field` AND `reason`.
 #[tokio::test]
 async fn params_validation_rejection_keeps_field_tag_data() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 

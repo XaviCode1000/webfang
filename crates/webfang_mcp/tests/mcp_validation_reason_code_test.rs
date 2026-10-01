@@ -44,6 +44,17 @@ use common::{call_tool, init_session, is_tool_error, tool_text};
 /// rejection is the cap and nothing else.
 const MAX_BLOB_LEN_PLUS_1: usize = 1_048_577;
 
+/// Arrange a fresh MCP session: start the server, open a client, init a
+/// session. The returned `JoinHandle` MUST stay bound in the caller (the
+/// server dies when the handle is dropped) — hence the tuple, not three
+/// separate values.
+async fn arranged() -> (String, Client, String, tokio::task::JoinHandle<()>) {
+    let (base_url, handle) = common::start_test_server().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+    (base_url, client, session_id, handle)
+}
+
 /// `error.data` of a JSON-RPC error response, or a panic naming the whole
 /// response. The `data` member is where EC-08's contract lives, so a missing
 /// one is a finding, not a skip.
@@ -106,9 +117,7 @@ fn validate_url_body(resp: &Value) -> Value {
 /// and it travels it through the very same `require_*` funnel.
 #[tokio::test]
 async fn unsupported_scheme_rejection_carries_field_and_reason() {
-    let (base_url, _handle) = common::start_test_server().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
+    let (base_url, client, session_id, _handle) = arranged().await;
 
     let resp = call_tool(
         &client,
@@ -147,9 +156,7 @@ async fn unsupported_scheme_rejection_carries_field_and_reason() {
 /// agent can tell what to DO (shorten it)".
 #[tokio::test]
 async fn oversize_blob_rejection_carries_too_long() {
-    let (base_url, _handle) = common::start_test_server().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
+    let (base_url, client, session_id, _handle) = arranged().await;
 
     let resp = call_tool(
         &client,
@@ -184,9 +191,7 @@ async fn oversize_blob_rejection_carries_too_long() {
 /// `require_range_u64`, so it is the bound that carries the slug today.
 #[tokio::test]
 async fn numeric_bound_rejection_carries_out_of_range() {
-    let (base_url, _handle) = common::start_test_server().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
+    let (base_url, client, session_id, _handle) = arranged().await;
 
     let resp = call_tool(
         &client,
@@ -220,9 +225,7 @@ async fn numeric_bound_rejection_carries_out_of_range() {
 /// `valid` boolean is the only thing that decides the answer.
 #[tokio::test]
 async fn validate_url_non_http_scheme_is_a_success_shaped_diagnostic() {
-    let (base_url, _handle) = common::start_test_server().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
+    let (base_url, client, session_id, _handle) = arranged().await;
 
     let resp = call_tool(
         &client,
@@ -282,9 +285,7 @@ async fn validate_url_non_http_scheme_is_a_success_shaped_diagnostic() {
 /// is exactly what the coarse taxonomy exists to tell apart.
 #[tokio::test]
 async fn validate_url_unparseable_reports_malformed() {
-    let (base_url, _handle) = common::start_test_server().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
+    let (base_url, client, session_id, _handle) = arranged().await;
 
     let resp = call_tool(
         &client,
@@ -319,9 +320,7 @@ async fn validate_url_unparseable_reports_malformed() {
 /// contains-check would not notice a field being REMOVED).
 #[tokio::test]
 async fn validate_url_valid_body_keeps_its_exact_field_set() {
-    let (base_url, _handle) = common::start_test_server().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
+    let (base_url, client, session_id, _handle) = arranged().await;
 
     let resp = call_tool(
         &client,

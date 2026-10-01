@@ -252,46 +252,16 @@ mod tests {
     }
 
     use super::*;
-    use crate::mcp_server::state::McpState;
+    use crate::mcp_server::handlers::test_support::{result_text, test_handler};
+
     use rmcp::handler::server::wrapper::Parameters;
-    use rmcp::model::CallToolResult;
+
     use tempfile::TempDir;
-    use webfang_core::di::Container;
-    use webfang_core::domain::config::ScraperConfig;
-    use webfang_core::domain::CrawlerConfig;
 
     /// Build an `McpHandler` backed by a real `Container` (no network, no MCP
     /// server). The temp dir is returned so it stays alive for the test.
-    async fn test_handler() -> (McpHandler, TempDir) {
-        let tmp = TempDir::new().expect("create temp dir");
-        let crawler_config =
-            CrawlerConfig::new(url::Url::parse("https://example.com").expect("valid url"));
-        let scraper_config = ScraperConfig {
-            output_dir: tmp.path().to_path_buf(),
-            ..Default::default()
-        };
-        let container = Container::new(crawler_config, scraper_config)
-            .await
-            .expect("create container");
-        let state = McpState::new(container);
-        (McpHandler::new(state), tmp)
-    }
-
     /// Extract the first `content[0].text` from a `CallToolResult` (mirrors the
     /// MCP transport serialization used by the integration harness).
-    fn result_text(result: &CallToolResult) -> String {
-        serde_json::to_value(result)
-            .ok()
-            .and_then(|v| v.get("content").and_then(|c| c.as_array()).cloned())
-            .and_then(|arr| arr.first().cloned())
-            .and_then(|first| {
-                first
-                    .get("text")
-                    .and_then(|t| t.as_str())
-                    .map(str::to_owned)
-            })
-            .unwrap_or_default()
-    }
 
     #[tokio::test]
     async fn clean_html_removes_scripts() {

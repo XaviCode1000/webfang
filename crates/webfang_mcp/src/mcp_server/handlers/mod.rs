@@ -20,6 +20,11 @@ pub mod scraping;
 pub mod security;
 pub mod url_utils;
 
+/// Test-only fixtures shared by the per-handler unit-test modules. Compiled
+/// only under `cfg(test)`; never part of the release surface.
+#[cfg(test)]
+pub(crate) mod test_support;
+
 /// Build the combined ToolRouter from all 9 category modules.
 ///
 /// After combining the category routers, the schema bridge overrides the
