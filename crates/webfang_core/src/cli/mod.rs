@@ -4,12 +4,15 @@
 
 /// CLI argument definitions using clap derive macros.
 pub mod args;
+pub mod batch_flow;
 pub mod commands;
 pub mod completions;
 pub mod config;
 pub mod crash_points;
+pub mod discovery_phase;
 pub mod elastic;
 pub mod error;
+pub mod exit_codes;
 pub mod export_flow;
 /// LLM provider startup wiring (`--extract-with-llm`, §8b DEBE expiry).
 pub mod llm_wire;
