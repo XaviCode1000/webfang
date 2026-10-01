@@ -25,18 +25,10 @@
 #![cfg(feature = "mcp")]
 
 mod common;
-use common::{mcp_request, serve_on_random_port};
+use common::{initialize_body, post_mcp, start_server_with_options};
 
-use serde_json::{json, Value};
-use webfang_core::config::Config;
-use webfang_core::di::Container;
-use webfang_mcp::mcp_server::server::{build_mcp_router, ServerOptions};
-use webfang_mcp::mcp_server::state::McpState;
+use webfang_mcp::mcp_server::server::ServerOptions;
 use wreq::Client;
-
-/// The `Accept` value a spec-compliant MCP client must send (rmcp answers 406
-/// to anything that names neither media type).
-const MCP_ACCEPT: &str = "application/json, text/event-stream";
 
 /// The only token this server accepts; the "noisy" and "quiet" callers below
 /// differ by whether they present it.
@@ -48,59 +40,13 @@ const TOKEN: &str = "f5-integration-token";
 /// requests — a limiter that is never exceeded in the suite is an unverified
 /// limiter.
 async fn start_server_with_token() -> (String, tokio::task::JoinHandle<()>) {
-    let options = ServerOptions {
+    start_server_with_options(ServerOptions {
         auth_token: Some(TOKEN.to_string()),
         rate_per_second: 1,
         rate_burst: 2,
         ..Default::default()
-    };
-    let config = Config::default();
-    let container = Container::new(config.crawler, config.scraper)
-        .await
-        .expect("container creation failed");
-    let app = build_mcp_router(McpState::new(container), &options);
-    serve_on_random_port(app).await
-}
-
-/// A well-formed `initialize` body — the request that creates a session.
-fn initialize_body() -> Value {
-    mcp_request(
-        "initialize",
-        json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": { "name": "rate-limit-test", "version": "1.0.0" }
-        }),
-    )
-}
-
-/// One POST to `/mcp`, returning `(status, retry-after, session-id)`.
-async fn post(
-    client: &Client,
-    base_url: &str,
-    body: &Value,
-    token: Option<&str>,
-) -> (u16, Option<String>, Option<String>) {
-    let mut request = client
-        .post(format!("{base_url}/mcp"))
-        .header("Content-Type", "application/json")
-        .header("Accept", MCP_ACCEPT);
-    if let Some(token) = token {
-        request = request.header("Authorization", format!("Bearer {token}"));
-    }
-    let resp = request
-        .json(body)
-        .send()
-        .await
-        .expect("request should be sent");
-    let status = resp.status().as_u16();
-    let header = |name: &str| {
-        resp.headers()
-            .get(name)
-            .and_then(|v| v.to_str().ok())
-            .map(String::from)
-    };
-    (status, header("retry-after"), header("mcp-session-id"))
+    })
+    .await
 }
 
 /// The load-bearing property of the reorder: a flood of requests carrying NO
@@ -113,11 +59,23 @@ async fn an_unauthenticated_flood_spends_none_of_the_operators_quota() {
     let client = Client::new();
 
     for _ in 0..5 {
-        let (status, _, _) = post(&client, &base_url, &initialize_body(), None).await;
+        let (status, _, _) = post_mcp(
+            &client,
+            &base_url,
+            &initialize_body("rate-limit-test"),
+            None,
+        )
+        .await;
         assert_eq!(status, 401, "an anonymous request is refused, not served");
     }
 
-    let (status, _, session) = post(&client, &base_url, &initialize_body(), Some(TOKEN)).await;
+    let (status, _, session) = post_mcp(
+        &client,
+        &base_url,
+        &initialize_body("rate-limit-test"),
+        Some(TOKEN),
+    )
+    .await;
     assert_eq!(
         status, 200,
         "the operator must still be served after an unauthenticated flood"
@@ -136,17 +94,23 @@ async fn a_wrong_token_is_refused_without_spending_quota() {
     let client = Client::new();
 
     for _ in 0..5 {
-        let (status, _, _) = post(
+        let (status, _, _) = post_mcp(
             &client,
             &base_url,
-            &initialize_body(),
+            &initialize_body("rate-limit-test"),
             Some("not-the-token"),
         )
         .await;
         assert_eq!(status, 401, "a wrong credential is refused");
     }
 
-    let (status, _, _) = post(&client, &base_url, &initialize_body(), Some(TOKEN)).await;
+    let (status, _, _) = post_mcp(
+        &client,
+        &base_url,
+        &initialize_body("rate-limit-test"),
+        Some(TOKEN),
+    )
+    .await;
     assert_eq!(status, 200, "the flood spent nothing");
 }
 
@@ -161,8 +125,13 @@ async fn an_over_quota_caller_is_shed_with_429_and_retry_after() {
     let mut shed = Vec::new();
     let mut served_with_session = 0usize;
     for _ in 0..6 {
-        let (status, retry_after, session) =
-            post(&client, &base_url, &initialize_body(), Some(TOKEN)).await;
+        let (status, retry_after, session) = post_mcp(
+            &client,
+            &base_url,
+            &initialize_body("rate-limit-test"),
+            Some(TOKEN),
+        )
+        .await;
         match status {
             429 => shed.push(retry_after),
             200 => {
@@ -208,7 +177,13 @@ async fn a_shed_request_allocates_no_session() {
 
     let mut saw_shed = false;
     for _ in 0..6 {
-        let (status, _, session) = post(&client, &base_url, &initialize_body(), Some(TOKEN)).await;
+        let (status, _, session) = post_mcp(
+            &client,
+            &base_url,
+            &initialize_body("rate-limit-test"),
+            Some(TOKEN),
+        )
+        .await;
         if status == 429 {
             saw_shed = true;
             assert!(

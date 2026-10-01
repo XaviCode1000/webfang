@@ -24,77 +24,18 @@
 #![cfg(feature = "mcp")]
 
 mod common;
-use common::{mcp_request, serve_on_random_port};
+use common::{initialize_body, mcp_request, post_mcp, start_server_with_options, MCP_ACCEPT};
 
-use serde_json::{json, Value};
-use webfang_core::config::Config;
-use webfang_core::di::Container;
-use webfang_mcp::mcp_server::server::{build_mcp_router, ServerOptions};
-use webfang_mcp::mcp_server::state::McpState;
+use serde_json::json;
+use webfang_mcp::mcp_server::server::ServerOptions;
 use wreq::Client;
 
-/// The `Accept` value a spec-compliant MCP client must send (rmcp answers 406
-/// to anything naming neither media type).
-const MCP_ACCEPT: &str = "application/json, text/event-stream";
-
 const TOKEN: &str = "g18-integration-token";
-
-/// Start the real router with the given authentication configuration.
-async fn start_server_with_options(
-    options: ServerOptions,
-) -> (String, tokio::task::JoinHandle<()>) {
-    let config = Config::default();
-    let container = Container::new(config.crawler, config.scraper)
-        .await
-        .expect("container creation failed");
-    let app = build_mcp_router(McpState::new(container), &options);
-    serve_on_random_port(app).await
-}
 
 /// The shipped default, spelled out rather than inherited: this is exactly what
 /// an operator gets for running the binary with no flags.
 async fn start_default_server() -> (String, tokio::task::JoinHandle<()>) {
     start_server_with_options(ServerOptions::default()).await
-}
-
-/// A well-formed `initialize` body — the request that creates a session.
-fn initialize_body() -> Value {
-    mcp_request(
-        "initialize",
-        json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": { "name": "auth-test", "version": "1.0.0" }
-        }),
-    )
-}
-
-/// One POST to `/mcp`, returning `(status, session-id)`.
-async fn post(
-    client: &Client,
-    base_url: &str,
-    body: &Value,
-    token: Option<&str>,
-) -> (u16, Option<String>) {
-    let mut request = client
-        .post(format!("{base_url}/mcp"))
-        .header("Content-Type", "application/json")
-        .header("Accept", MCP_ACCEPT);
-    if let Some(token) = token {
-        request = request.header("Authorization", format!("Bearer {token}"));
-    }
-    let resp = request
-        .json(body)
-        .send()
-        .await
-        .expect("request should be sent");
-    let status = resp.status().as_u16();
-    let session = resp
-        .headers()
-        .get("mcp-session-id")
-        .and_then(|v| v.to_str().ok())
-        .map(String::from);
-    (status, session)
 }
 
 /// The finding's regression row: with no token configured and no opt-in, a
@@ -105,7 +46,8 @@ async fn the_default_configuration_refuses_every_request() {
     let (base_url, _handle) = start_default_server().await;
     let client = Client::new();
 
-    let (status, session) = post(&client, &base_url, &initialize_body(), None).await;
+    let (status, _, session) =
+        post_mcp(&client, &base_url, &initialize_body("auth-test"), None).await;
     assert_eq!(
         status, 401,
         "a token-less default must refuse, not serve: {status}"
@@ -117,10 +59,10 @@ async fn the_default_configuration_refuses_every_request() {
 
     // Presenting an arbitrary credential changes nothing: there is nothing
     // configured to compare it against.
-    let (status, _) = post(
+    let (status, _, _) = post_mcp(
         &client,
         &base_url,
-        &initialize_body(),
+        &initialize_body("auth-test"),
         Some("guessed-token"),
     )
     .await;
@@ -138,7 +80,8 @@ async fn the_explicit_opt_in_restores_token_less_operation() {
     .await;
     let client = Client::new();
 
-    let (status, session) = post(&client, &base_url, &initialize_body(), None).await;
+    let (status, _, session) =
+        post_mcp(&client, &base_url, &initialize_body("auth-test"), None).await;
     assert_eq!(status, 200, "the opted-in development mode must serve");
     assert!(session.is_some(), "and it must be a real session");
 }
@@ -156,10 +99,16 @@ async fn a_configured_token_is_required_even_with_the_opt_in() {
     .await;
     let client = Client::new();
 
-    let (status, _) = post(&client, &base_url, &initialize_body(), None).await;
+    let (status, _, _) = post_mcp(&client, &base_url, &initialize_body("auth-test"), None).await;
     assert_eq!(status, 401, "no header, no service — opt-in or not");
 
-    let (status, session) = post(&client, &base_url, &initialize_body(), Some(TOKEN)).await;
+    let (status, _, session) = post_mcp(
+        &client,
+        &base_url,
+        &initialize_body("auth-test"),
+        Some(TOKEN),
+    )
+    .await;
     assert_eq!(status, 200, "the configured token still works");
     assert!(session.is_some());
 }
@@ -177,7 +126,13 @@ async fn an_established_session_still_needs_the_token_on_every_request() {
     .await;
     let client = Client::new();
 
-    let (status, session) = post(&client, &base_url, &initialize_body(), Some(TOKEN)).await;
+    let (status, _, session) = post_mcp(
+        &client,
+        &base_url,
+        &initialize_body("auth-test"),
+        Some(TOKEN),
+    )
+    .await;
     assert_eq!(status, 200);
     let session_id = session.expect("an authenticated initialize returns a session");
 

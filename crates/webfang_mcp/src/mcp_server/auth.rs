@@ -124,16 +124,27 @@ mod tests {
             ))
     }
 
+    /// One GET to `/test` with an optional header, returning only the status:
+    /// the middleware's observable contract is the status code.
+    async fn status_of(app: axum::Router, header: Option<(&str, &str)>) -> StatusCode {
+        let mut builder = Request::builder().uri("/test");
+        if let Some((name, value)) = header {
+            builder = builder.header(name, value);
+        }
+        let req = builder.body(Body::empty()).unwrap();
+        app.oneshot(req).await.unwrap().status()
+    }
+
     /// #1611 G-18: the shipped default — no token, no opt-in — REFUSES. This
     /// is the regression row for the finding itself: it used to return 200
     /// here, which is what made "loopback by default" mean "open to anything
     /// that can reach the socket".
     #[tokio::test]
     async fn refuses_every_request_when_no_token_is_configured_and_none_was_asked_for() {
-        let app = app_with_auth(None, false);
-        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            status_of(app_with_auth(None, false), None).await,
+            StatusCode::UNAUTHORIZED
+        );
     }
 
     /// A bearer header does not buy a way in when nothing is configured to
@@ -141,14 +152,14 @@ mod tests {
     /// wrong.
     #[tokio::test]
     async fn a_presented_token_is_still_refused_when_none_is_configured() {
-        let app = app_with_auth(None, false);
-        let req = Request::builder()
-            .uri("/test")
-            .header("Authorization", "Bearer anything")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            status_of(
+                app_with_auth(None, false),
+                Some(("Authorization", "Bearer anything"))
+            )
+            .await,
+            StatusCode::UNAUTHORIZED
+        );
     }
 
     /// The opt-in restores the development mode, and ONLY on its own: it is
@@ -156,49 +167,49 @@ mod tests {
     /// never mean "the configured token is optional".
     #[tokio::test]
     async fn passes_when_anonymous_operation_was_explicitly_allowed() {
-        let app = app_with_auth(None, true);
-        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            status_of(app_with_auth(None, true), None).await,
+            StatusCode::OK
+        );
     }
 
     #[tokio::test]
     async fn a_configured_token_is_required_even_when_anonymous_is_allowed() {
-        let app = app_with_auth(Some(Arc::from("secret")), true);
-        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            status_of(app_with_auth(Some(Arc::from("secret")), true), None).await,
+            StatusCode::UNAUTHORIZED
+        );
     }
 
     #[tokio::test]
     async fn rejects_missing_auth_header() {
-        let app = app_with_token(Some(Arc::from("secret")));
-        let req = Request::builder().uri("/test").body(Body::empty()).unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            status_of(app_with_token(Some(Arc::from("secret"))), None).await,
+            StatusCode::UNAUTHORIZED
+        );
     }
 
     #[tokio::test]
     async fn rejects_wrong_token() {
-        let app = app_with_token(Some(Arc::from("secret")));
-        let req = Request::builder()
-            .uri("/test")
-            .header("Authorization", "Bearer wrong")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            status_of(
+                app_with_token(Some(Arc::from("secret"))),
+                Some(("Authorization", "Bearer wrong"))
+            )
+            .await,
+            StatusCode::UNAUTHORIZED
+        );
     }
 
     #[tokio::test]
     async fn accepts_correct_token() {
-        let app = app_with_token(Some(Arc::from("secret")));
-        let req = Request::builder()
-            .uri("/test")
-            .header("Authorization", "Bearer secret")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            status_of(
+                app_with_token(Some(Arc::from("secret"))),
+                Some(("Authorization", "Bearer secret"))
+            )
+            .await,
+            StatusCode::OK
+        );
     }
 }
