@@ -15,6 +15,14 @@
 //! - `\n` terminator enables corruption detection and manual inspection
 //! - Size prefix enables O(1) random access via index offset
 //! - Sequential append → HDD-friendly sequential write (~120MB/s)
+//!
+//! The background writer runs on the blocking pool, so the `DashMap` index and
+//! the `AtomicBool` error flag are the only shared state on the hot path — and
+//! neither is a guard that may be held across an await. This deny fails the
+//! build if a future edit ever holds a `std` lock guard across an `.await` in
+//! this module (#1616 CC-S1).
+
+#![deny(clippy::await_holding_lock)]
 
 use std::future::Future;
 use std::io::Write;

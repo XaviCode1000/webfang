@@ -872,11 +872,17 @@ impl Container {
     /// (`ram_budget / max_resource`), a single multi-byte chunk could request
     /// more permits than exist and `acquire_many` would enqueue a partial grant
     /// and wait forever (unbounded), hanging the pipeline.
+    ///
+    /// The `max(1)` is a separate, equally fatal guard (#1616 CC-L2): a
+    /// zero-permit semaphore does not merely starve one oversized chunk, it
+    /// parks *every* acquire in the ingestion path forever, with no timeout able
+    /// to tell it from slow work. A RAM budget of 0 is representable in config,
+    /// so it is clamped here rather than trusted.
     #[must_use]
     pub(crate) fn build_ingestion_semaphore_permits(ram_budget_bytes: u64) -> usize {
         usize::try_from(ram_budget_bytes)
             .unwrap_or(usize::MAX)
-            .min(tokio::sync::Semaphore::MAX_PERMITS)
+            .clamp(1, tokio::sync::Semaphore::MAX_PERMITS)
     }
 
     /// # Errors

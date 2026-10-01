@@ -255,6 +255,21 @@ jobs:
             exit 1
           fi
           echo "OK: no string-match sitemap coupling in crates/*/src"
+      # Regression guard for #1616 (audit CC-L1, CC-L2): two concurrency shapes
+      # that no compiler or clippy lint catches and that only fail at runtime, as
+      # a hang. CC-L1 is a bare `acquire().await;` whose permit is dropped at the
+      # semicolon, so the bound it enforces never applies. CC-L2 is a
+      # `Semaphore::new(<runtime value>)` that can park every acquire forever.
+      # See scripts/concurrency_lint_allowlist.txt for the reviewed exemptions.
+      - name: Concurrency lint gate
+        run: bash scripts/check_concurrency_lints.sh
+      # Semantics harness for the gate above: proves every rule FIRES on
+      # fixtures, that the `#[cfg(test)]` cutoff really does skip test code, that
+      # an exemption is keyed on path and not on argument text, and that an
+      # unreadable allowlist fails CLOSED rather than silently disabling every
+      # exemption. Offline, no repo state touched.
+      - name: Concurrency lint semantics harness
+        run: bash scripts/test_concurrency_lints.sh
       # Regression guard for the release hand-off (#1478/#1480). GitHub
       # suppresses workflow runs for events generated with GITHUB_TOKEN, so the
       # tags release-plz and cut-patch-tag.yml push CANNOT trigger release.yml's

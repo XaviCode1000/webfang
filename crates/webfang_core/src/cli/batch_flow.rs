@@ -159,6 +159,10 @@ async fn run_batch_crawl(
 
     if cancel.is_cancelled() {
         warn!("shutdown requested — exporting the pages captured so far");
+        // Stop the spool writer at the next page boundary so a shutdown never
+        // waits on a spool that has stopped draining (#1616). `finish` still
+        // flushes and joins it, so the pages already persisted are exported.
+        sink.cancel();
     }
 
     flush_batch_sink(&sink).await?;
@@ -250,6 +254,19 @@ async fn flush_batch_sink(sink: &BoundedFileSink) -> Result<(), CliExit> {
     if captured == 0 {
         error!("Batch captured no page bodies — nothing to export");
         return Err(CliExit::NetworkError("Batch produced no content".into()));
+    }
+
+    // The spool could not keep up with the crawl AND the sink's memory ceiling
+    // was reached, so some bodies were never spooled (#1616). The crawl itself
+    // is sound and the export is still valid, but the run is incomplete and the
+    // operator has to be able to tell that from a healthy batch.
+    let dropped = sink.dropped();
+    if dropped > 0 {
+        warn!(
+            captured_pages = captured,
+            dropped_pages = dropped,
+            "batch capture spool saturated — these page bodies were not exported"
+        );
     }
 
     Ok(())
