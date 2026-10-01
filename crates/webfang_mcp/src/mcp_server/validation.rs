@@ -8,9 +8,15 @@
 //! Every helper produces an error envelope identical to the one already used
 //! by handlers (`McpError::invalid_params(format!(...), Some(field))`), so the
 //! slice-2 wiring (`params.validate()?`) is a drop-in replacement.
+//!
+//! Since EC-08 (issue #1613) that envelope's `data` is a structured OBJECT
+//! (`{"field": …, "reason": <slug>}`) rather than a bare string, so a caller
+//! can tell WHICH field was wrong and WHY without parsing prose. The seven
+//! stable slugs are `validation::REASON_*` (documented on the
+//! `invalid_params_with_reason` builder below, which is module-private).
 
 use rmcp::ErrorData as McpError;
-use serde_json::Value;
+use serde_json::{json, Value};
 use std::path::{Component, Path, PathBuf};
 use webfang_core::domain::crawler_port::filename::is_windows_reserved;
 
@@ -37,11 +43,84 @@ pub const MAX_BLOB_LEN: usize = 1_048_576;
 /// Max length of a domain string (RFC 1035 §2.3.4 caps FQDNs at 253 octets).
 pub const MAX_DOMAIN_LEN: usize = 253;
 
+/// The required value is empty — fill it in.
+pub const REASON_EMPTY: &str = "empty";
+/// The value exceeds a byte cap — shorten it.
+pub const REASON_TOO_LONG: &str = "too_long";
+/// The value is present but unparseable — fix its shape.
+pub const REASON_MALFORMED: &str = "malformed";
+/// The URL scheme is not `http`/`https` — use one of those.
+pub const REASON_UNSUPPORTED_SCHEME: &str = "unsupported_scheme";
+/// The path is rejected for any structural reason (leading `/`, UNC prefix,
+/// Windows drive letter, `..` traversal, non-flat filename, Windows reserved
+/// name, Windows-invalid character, trailing `.`/space) — use a safe relative
+/// path and a plain filename.
+pub const REASON_PATH_NOT_ALLOWED: &str = "path_not_allowed";
+/// A numeric value is outside its inclusive bounds — clamp it.
+pub const REASON_OUT_OF_RANGE: &str = "out_of_range";
+/// An enum-ish value is not in the allowed list — pick a listed value.
+pub const REASON_NOT_IN_ALLOWED_SET: &str = "not_in_allowed_set";
+
 /// Build the standard `McpError::invalid_params` envelope used by every
-/// handler in this crate. Keeps the field tag and message format identical to
-/// the inline construction at `handlers/scraping.rs:34-37`.
-pub(crate) fn invalid_params(field: &str, msg: impl Into<String>) -> McpError {
-    McpError::invalid_params(msg.into(), Some(Value::String(field.to_string())))
+/// handler in this crate, WITH a stable [`REASON_*`] slug. `data` is
+/// `{"field": "<field>", "reason": "<slug>"}`.
+///
+/// Every rejection branch in the crate funnels through here, which is what
+/// makes the taxonomy exhaustive: a caller can always branch on `data.reason`
+/// instead of parsing prose. The sibling SSRF channel
+/// ([`crate::mcp_server::ssrf`]) attaches the same `data.reason` key without a
+/// `field` — an SSRF refusal is not a bad field but a policy decision or a
+/// server-side DNS fault — so one reader handles both.
+///
+/// # The reason taxonomy is a STABLE contract (EC-08, issue #1613)
+///
+/// `error.data` used to be a bare JSON string naming the field, and every
+/// rejection shared the JSON-RPC code `-32602` — an agent could tell which
+/// field was wrong but never why, so it had to parse prose. `data` is now an
+/// object and `data.reason` is one of exactly SEVEN coarse slugs:
+///
+/// | slug | meaning | what the caller should do |
+/// | :--- | :--- | :--- |
+/// | [`REASON_EMPTY`] | required value is empty | fill it in |
+/// | [`REASON_TOO_LONG`] | exceeds a byte cap | shorten it |
+/// | [`REASON_MALFORMED`] | present but unparseable | fix its shape |
+/// | [`REASON_UNSUPPORTED_SCHEME`] | not `http`/`https` | use http or https |
+/// | [`REASON_PATH_NOT_ALLOWED`] | any path rejection (absolute, UNC, drive letter, `..`, non-flat filename, reserved name, illegal char, trailing `.`/space) | use a safe relative path |
+/// | [`REASON_OUT_OF_RANGE`] | numeric bound | clamp it |
+/// | [`REASON_NOT_IN_ALLOWED_SET`] | not in the allowed list | pick a listed value |
+///
+/// **Coarse is deliberate, and the set is load-bearing.** A slug's job is to
+/// tell an agent what to DO, not to restate the message; seven stable values
+/// beat forty brittle ones. Downstream tooling branches on these strings, so
+/// do not rename one, add an eighth, or change a mapping to a different slug
+/// without a matching change to the documented contract in
+/// `docs/src/mcp-error-contract.md`. Message text remains the human-readable
+/// half and is NOT part of this contract (the module mixes English and one
+/// Spanish island by design, #1613).
+///
+/// There is deliberately no reason-less variant: a caller that cannot name a
+/// slug should pick the closest one rather than ship an absent reason, because
+/// a consumer branching on `data.reason` must be able to rely on it being
+/// there. Every rejection in the crate therefore carries one.
+pub(crate) fn invalid_params_with_reason(
+    field: &str,
+    msg: impl Into<String>,
+    reason: &str,
+) -> McpError {
+    McpError::invalid_params(
+        msg.into(),
+        Some(json!({ "field": field, "reason": reason })),
+    )
+}
+
+/// Read the `reason` slug out of an `invalid_params` `data` payload.
+///
+/// Tolerates a `data` that is `None`, a non-object (the pre-EC-08 bare
+/// string), or an object without a `reason` key — every one of those yields
+/// `None` rather than panicking, because `data` is sender-defined and this
+/// helper sits on a success-shaped diagnostic path.
+pub(crate) fn reason_of(data: Option<&Value>) -> Option<&str> {
+    data?.get("reason")?.as_str()
 }
 
 /// Validate that `value` parses as an http or https URL.
@@ -52,24 +131,33 @@ pub(crate) fn invalid_params(field: &str, msg: impl Into<String>) -> McpError {
 /// second parse.
 ///
 /// # Errors
-/// Returns `McpError::invalid_params` for any of the rejection reasons above.
+/// Returns `McpError::invalid_params` for any of the rejection reasons above,
+/// carrying [`REASON_EMPTY`], [`REASON_TOO_LONG`], [`REASON_MALFORMED`], or
+/// [`REASON_UNSUPPORTED_SCHEME`] respectively.
 pub fn require_http_url(field: &str, value: &str) -> Result<url::Url, McpError> {
     if value.is_empty() {
-        return Err(invalid_params(field, "must not be empty"));
-    }
-    if value.len() > MAX_URL_LEN {
-        return Err(invalid_params(
+        return Err(invalid_params_with_reason(
             field,
-            format!("exceeds maximum length of {MAX_URL_LEN} bytes"),
+            "must not be empty",
+            REASON_EMPTY,
         ));
     }
-    let parsed =
-        url::Url::parse(value).map_err(|e| invalid_params(field, format!("invalid URL: {e}")))?;
+    if value.len() > MAX_URL_LEN {
+        return Err(invalid_params_with_reason(
+            field,
+            format!("exceeds maximum length of {MAX_URL_LEN} bytes"),
+            REASON_TOO_LONG,
+        ));
+    }
+    let parsed = url::Url::parse(value).map_err(|e| {
+        invalid_params_with_reason(field, format!("invalid URL: {e}"), REASON_MALFORMED)
+    })?;
     match parsed.scheme() {
         "http" | "https" => Ok(parsed),
-        other => Err(invalid_params(
+        other => Err(invalid_params_with_reason(
             field,
             format!("unsupported scheme '{other}' (only http and https are allowed)"),
+            REASON_UNSUPPORTED_SCHEME,
         )),
     }
 }
@@ -80,15 +168,24 @@ pub fn require_http_url(field: &str, value: &str) -> Result<url::Url, McpError> 
 ///
 /// # Errors
 /// Returns `McpError::invalid_params` for empty, oversize, absolute, or
-/// `..`-traversal paths.
+/// `..`-traversal paths — [`REASON_EMPTY`], [`REASON_TOO_LONG`], or
+/// [`REASON_PATH_NOT_ALLOWED`] respectively. Every path-level rule shares the
+/// one `path_not_allowed` slug on purpose: what the caller must DO (switch to a
+/// safe relative path) is identical for all of them, and the message carries
+/// the specifics.
 pub fn require_safe_path(field: &str, value: &str) -> Result<PathBuf, McpError> {
     if value.is_empty() {
-        return Err(invalid_params(field, "must not be empty"));
+        return Err(invalid_params_with_reason(
+            field,
+            "must not be empty",
+            REASON_EMPTY,
+        ));
     }
     if value.len() > MAX_PATH_LEN {
-        return Err(invalid_params(
+        return Err(invalid_params_with_reason(
             field,
             format!("exceeds maximum length of {MAX_PATH_LEN} bytes"),
+            REASON_TOO_LONG,
         ));
     }
     let path = Path::new(value);
@@ -96,34 +193,42 @@ pub fn require_safe_path(field: &str, value: &str) -> Result<PathBuf, McpError> 
     // false for `C:\Windows` on Unix), so also probe the string for leading
     // slashes, UNC prefixes, and Windows drive letters explicitly.
     if value.starts_with('/') || value.starts_with('\\') {
-        return Err(invalid_params(
+        return Err(invalid_params_with_reason(
             field,
             "must be a relative path (no leading '/' or UNC prefix)",
+            REASON_PATH_NOT_ALLOWED,
         ));
     }
     if has_windows_drive_prefix(value) {
-        return Err(invalid_params(
+        return Err(invalid_params_with_reason(
             field,
             "must be a relative path (no Windows drive letter)",
+            REASON_PATH_NOT_ALLOWED,
         ));
     }
     if path.is_absolute() {
-        return Err(invalid_params(
+        return Err(invalid_params_with_reason(
             field,
             "must be a relative path (no leading '/' or Windows drive letter)",
+            REASON_PATH_NOT_ALLOWED,
         ));
     }
     if path.components().any(|c| matches!(c, Component::ParentDir)) {
-        return Err(invalid_params(
+        return Err(invalid_params_with_reason(
             field,
             "must not contain '..' traversal components",
+            REASON_PATH_NOT_ALLOWED,
         ));
     }
     // Per-component filename hardening (issue #1608): the relative-only
     // contract means no drive prefix is legitimate anywhere in the value.
     if let Some(reason) = normal_components(path).find_map(|c| filename_component_error(&c, false))
     {
-        return Err(invalid_params(field, reason));
+        return Err(invalid_params_with_reason(
+            field,
+            reason,
+            REASON_PATH_NOT_ALLOWED,
+        ));
     }
     Ok(path.to_path_buf())
 }
@@ -153,6 +258,11 @@ fn has_windows_drive_prefix(value: &str) -> bool {
 /// Filename-level hardening shared by [`require_safe_filename`] and the
 /// per-component extension of [`require_safe_path`] /
 /// [`require_safe_path_allow_absolute`] (issue #1608).
+///
+/// Returns the rejection MESSAGE only — every caller attaches
+/// [`REASON_PATH_NOT_ALLOWED`], because the caller's remedy ("use a plain
+/// filename inside a safe relative path") is the same for all of them, while
+/// the message carries the specific rule that fired.
 ///
 /// Checks one path component (no separators can occur inside a
 /// `Component::Normal`) and returns the Spanish rejection reason for the
@@ -218,31 +328,42 @@ fn filename_component_error(component: &str, allow_drive_prefix: bool) -> Option
 ///
 /// # Errors
 /// Returns `McpError::invalid_params` for empty, oversize, or
-/// `..`-traversal paths.
+/// `..`-traversal paths — [`REASON_EMPTY`], [`REASON_TOO_LONG`], or
+/// [`REASON_PATH_NOT_ALLOWED`] respectively.
 pub fn require_safe_path_allow_absolute(field: &str, value: &str) -> Result<PathBuf, McpError> {
     if value.is_empty() {
-        return Err(invalid_params(field, "must not be empty"));
+        return Err(invalid_params_with_reason(
+            field,
+            "must not be empty",
+            REASON_EMPTY,
+        ));
     }
     if value.len() > MAX_PATH_LEN {
-        return Err(invalid_params(
+        return Err(invalid_params_with_reason(
             field,
             format!("exceeds maximum length of {MAX_PATH_LEN} bytes"),
+            REASON_TOO_LONG,
         ));
     }
     let path = Path::new(value);
     // Absolute paths are intentionally allowed — Obsidian vaults live at
     // user-supplied absolute locations (issue #590, bug #8).
     if path.components().any(|c| matches!(c, Component::ParentDir)) {
-        return Err(invalid_params(
+        return Err(invalid_params_with_reason(
             field,
             "must not contain '..' traversal components",
+            REASON_PATH_NOT_ALLOWED,
         ));
     }
     // Per-component filename hardening (issue #1608). The drive-prefix
     // exception keeps absolute Windows paths (`C:\vault`, #590) valid: the
     // drive colon is a separator there, not an ADS hazard.
     if let Some(reason) = normal_components(path).find_map(|c| filename_component_error(&c, true)) {
-        return Err(invalid_params(field, reason));
+        return Err(invalid_params_with_reason(
+            field,
+            reason,
+            REASON_PATH_NOT_ALLOWED,
+        ));
     }
     Ok(path.to_path_buf())
 }
@@ -250,12 +371,14 @@ pub fn require_safe_path_allow_absolute(field: &str, value: &str) -> Result<Path
 /// Validate that `value` is at most `max_len` characters long.
 ///
 /// # Errors
-/// Returns `McpError::invalid_params` if `value.len() > max_len`.
+/// Returns `McpError::invalid_params` with [`REASON_TOO_LONG`] if
+/// `value.len() > max_len`.
 pub fn require_max_len(field: &str, value: &str, max_len: usize) -> Result<(), McpError> {
     if value.len() > max_len {
-        return Err(invalid_params(
+        return Err(invalid_params_with_reason(
             field,
             format!("exceeds maximum length of {max_len} bytes"),
+            REASON_TOO_LONG,
         ));
     }
     Ok(())
@@ -267,16 +390,21 @@ pub fn require_max_len(field: &str, value: &str, max_len: usize) -> Result<(), M
 /// but are not paths themselves (no traversal check needed).
 ///
 /// # Errors
-/// Returns `McpError::invalid_params` if `value` is empty or exceeds
-/// [`MAX_PATH_LEN`].
+/// Returns `McpError::invalid_params` with [`REASON_EMPTY`] or
+/// [`REASON_TOO_LONG`] if `value` is empty or exceeds [`MAX_PATH_LEN`].
 pub fn require_safe_name(field: &str, value: &str) -> Result<(), McpError> {
     if value.is_empty() {
-        return Err(invalid_params(field, "must not be empty"));
+        return Err(invalid_params_with_reason(
+            field,
+            "must not be empty",
+            REASON_EMPTY,
+        ));
     }
     if value.len() > MAX_PATH_LEN {
-        return Err(invalid_params(
+        return Err(invalid_params_with_reason(
             field,
             format!("exceeds maximum length of {MAX_PATH_LEN} bytes"),
+            REASON_TOO_LONG,
         ));
     }
     Ok(())
@@ -288,34 +416,51 @@ pub fn require_safe_name(field: &str, value: &str) -> Result<(), McpError> {
 /// least one `.`.
 ///
 /// # Errors
-/// Returns `McpError::invalid_params` if `value` fails any of the bare-domain
-/// rules.
+/// Returns `McpError::invalid_params` with [`REASON_EMPTY`],
+/// [`REASON_TOO_LONG`], [`REASON_MALFORMED`] (whitespace, stray separator,
+/// no `.` separator) or [`REASON_PATH_NOT_ALLOWED`] (a `..` segment) if
+/// `value` fails any of the bare-domain rules.
 pub fn require_safe_domain(field: &str, value: &str) -> Result<(), McpError> {
     if value.is_empty() {
-        return Err(invalid_params(field, "must not be empty"));
+        return Err(invalid_params_with_reason(
+            field,
+            "must not be empty",
+            REASON_EMPTY,
+        ));
     }
     if value.len() > MAX_DOMAIN_LEN {
-        return Err(invalid_params(
+        return Err(invalid_params_with_reason(
             field,
             format!("exceeds maximum length of {MAX_DOMAIN_LEN} bytes"),
+            REASON_TOO_LONG,
         ));
     }
     if value.chars().any(char::is_whitespace) {
-        return Err(invalid_params(field, "must not contain whitespace"));
+        return Err(invalid_params_with_reason(
+            field,
+            "must not contain whitespace",
+            REASON_MALFORMED,
+        ));
     }
     if value.contains(['/', '\\', ':']) {
-        return Err(invalid_params(
+        return Err(invalid_params_with_reason(
             field,
             "must be a bare domain (no path, scheme, or port separator)",
+            REASON_MALFORMED,
         ));
     }
     if value.contains("..") {
-        return Err(invalid_params(field, "must not contain '..'"));
+        return Err(invalid_params_with_reason(
+            field,
+            "must not contain '..'",
+            REASON_PATH_NOT_ALLOWED,
+        ));
     }
     if !value.contains('.') {
-        return Err(invalid_params(
+        return Err(invalid_params_with_reason(
             field,
             "must contain at least one '.' separator",
+            REASON_MALFORMED,
         ));
     }
     Ok(())
@@ -328,41 +473,59 @@ pub fn require_safe_domain(field: &str, value: &str) -> Result<(), McpError> {
 /// `..` traversal, and non-http(s) schemes (file://, ftp://, ...).
 ///
 /// # Errors
-/// Returns `McpError::invalid_params` if `value` is empty, contains
-/// whitespace, `..`, a disallowed scheme, or is neither a bare domain nor an
-/// http(s) URL.
+/// Returns `McpError::invalid_params` with [`REASON_EMPTY`],
+/// [`REASON_MALFORMED`] (whitespace, neither bare domain nor URL, no `.`
+/// separator), [`REASON_PATH_NOT_ALLOWED`] (a `..` segment) or
+/// [`REASON_UNSUPPORTED_SCHEME`] (a non-http(s) URL scheme) if `value` is
+/// empty, contains whitespace, `..`, a disallowed scheme, or is neither a bare
+/// domain nor an http(s) URL.
 pub fn require_safe_seed(field: &str, value: &str) -> Result<(), McpError> {
     if value.is_empty() {
-        return Err(invalid_params(field, "must not be empty"));
+        return Err(invalid_params_with_reason(
+            field,
+            "must not be empty",
+            REASON_EMPTY,
+        ));
     }
     if value.chars().any(char::is_whitespace) {
-        return Err(invalid_params(field, "must not contain whitespace"));
+        return Err(invalid_params_with_reason(
+            field,
+            "must not contain whitespace",
+            REASON_MALFORMED,
+        ));
     }
     if value.contains("..") {
-        return Err(invalid_params(field, "must not contain '..'"));
+        return Err(invalid_params_with_reason(
+            field,
+            "must not contain '..'",
+            REASON_PATH_NOT_ALLOWED,
+        ));
     }
     // URL form: require an http(s) scheme. `split_once("://")` distinguishes
     // "https://x" (scheme present) from "example.com" (no "://", bare host).
     if let Some((scheme, _rest)) = value.split_once("://") {
         if scheme != "http" && scheme != "https" {
-            return Err(invalid_params(
+            return Err(invalid_params_with_reason(
                 field,
                 format!("unsupported scheme '{scheme}' (only http/https allowed)"),
+                REASON_UNSUPPORTED_SCHEME,
             ));
         }
         return Ok(());
     }
     // Bare host form: require a domain shape (at least one '.', no '/' or ':').
     if value.contains(['/', ':']) {
-        return Err(invalid_params(
+        return Err(invalid_params_with_reason(
             field,
             "must be a bare domain or http(s) URL",
+            REASON_MALFORMED,
         ));
     }
     if !value.contains('.') {
-        return Err(invalid_params(
+        return Err(invalid_params_with_reason(
             field,
             "must contain at least one '.' separator",
+            REASON_MALFORMED,
         ));
     }
     Ok(())
@@ -371,10 +534,15 @@ pub fn require_safe_seed(field: &str, value: &str) -> Result<(), McpError> {
 /// Validate that `value` is non-empty.
 ///
 /// # Errors
-/// Returns `McpError::invalid_params` if `value` is empty.
+/// Returns `McpError::invalid_params` with [`REASON_EMPTY`] if `value` is
+/// empty.
 pub fn require_non_empty(field: &str, value: &str) -> Result<(), McpError> {
     if value.is_empty() {
-        return Err(invalid_params(field, "must not be empty"));
+        return Err(invalid_params_with_reason(
+            field,
+            "must not be empty",
+            REASON_EMPTY,
+        ));
     }
     Ok(())
 }
@@ -382,10 +550,15 @@ pub fn require_non_empty(field: &str, value: &str) -> Result<(), McpError> {
 /// Validate that `value` does not exceed `max`.
 ///
 /// # Errors
-/// Returns `McpError::invalid_params` if `value > max`.
+/// Returns `McpError::invalid_params` with [`REASON_OUT_OF_RANGE`] if
+/// `value > max`.
 pub fn require_max_value_u64(field: &str, value: u64, max: u64) -> Result<(), McpError> {
     if value > max {
-        return Err(invalid_params(field, format!("must be at most {max}")));
+        return Err(invalid_params_with_reason(
+            field,
+            format!("must be at most {max}"),
+            REASON_OUT_OF_RANGE,
+        ));
     }
     Ok(())
 }
@@ -393,13 +566,22 @@ pub fn require_max_value_u64(field: &str, value: u64, max: u64) -> Result<(), Mc
 /// Validate that `min <= value <= max`.
 ///
 /// # Errors
-/// Returns `McpError::invalid_params` if `value` is outside the inclusive range.
+/// Returns `McpError::invalid_params` with [`REASON_OUT_OF_RANGE`] if `value`
+/// is outside the inclusive range.
 pub fn require_range_u64(field: &str, value: u64, min: u64, max: u64) -> Result<(), McpError> {
     if value < min {
-        return Err(invalid_params(field, format!("must be at least {min}")));
+        return Err(invalid_params_with_reason(
+            field,
+            format!("must be at least {min}"),
+            REASON_OUT_OF_RANGE,
+        ));
     }
     if value > max {
-        return Err(invalid_params(field, format!("must be at most {max}")));
+        return Err(invalid_params_with_reason(
+            field,
+            format!("must be at most {max}"),
+            REASON_OUT_OF_RANGE,
+        ));
     }
     Ok(())
 }
@@ -431,16 +613,23 @@ pub fn require_range_u64(field: &str, value: u64, min: u64, max: u64) -> Result<
 /// (XP-P-07 partial; `\\?\` mitigation is out of scope).
 ///
 /// # Errors
-/// Returns `McpError::invalid_params` if `value` is empty, oversize, not a
-/// single flat `Normal` component, or violates any filename-hardening rule.
+/// Returns `McpError::invalid_params` with [`REASON_EMPTY`],
+/// [`REASON_TOO_LONG`], or [`REASON_PATH_NOT_ALLOWED`] if `value` is empty,
+/// oversize, not a single flat `Normal` component, or violates any
+/// filename-hardening rule.
 pub fn require_safe_filename(field: &str, value: &str) -> Result<(), McpError> {
     if value.is_empty() {
-        return Err(invalid_params(field, "must not be empty"));
+        return Err(invalid_params_with_reason(
+            field,
+            "must not be empty",
+            REASON_EMPTY,
+        ));
     }
     if value.len() > MAX_PATH_LEN {
-        return Err(invalid_params(
+        return Err(invalid_params_with_reason(
             field,
             format!("exceeds maximum length of {MAX_PATH_LEN} bytes"),
+            REASON_TOO_LONG,
         ));
     }
     // Reject separators explicitly so the rule is platform-independent: on
@@ -448,37 +637,49 @@ pub fn require_safe_filename(field: &str, value: &str) -> Result<(), McpError> {
     // platform-specific component parse mask a real traversal risk (issue
     // #601). `Path::components` below is the structural backstop.
     if value.contains(['/', '\\']) {
-        return Err(invalid_params(
+        return Err(invalid_params_with_reason(
             field,
             "must be a single flat filename (no '/' or '\\' separators)",
+            REASON_PATH_NOT_ALLOWED,
         ));
     }
     let mut components = Path::new(value).components();
     let Some(component) = components.next() else {
-        return Err(invalid_params(field, "must be a single filename component"));
+        return Err(invalid_params_with_reason(
+            field,
+            "must be a single filename component",
+            REASON_PATH_NOT_ALLOWED,
+        ));
     };
     if components.next().is_some() {
-        return Err(invalid_params(
+        return Err(invalid_params_with_reason(
             field,
             "must not contain path separators or directory components",
+            REASON_PATH_NOT_ALLOWED,
         ));
     }
     if !matches!(component, Component::Normal(_)) {
-        return Err(invalid_params(
+        return Err(invalid_params_with_reason(
             field,
             "must be a single flat filename (no '.', '..', '/', or drive prefix)",
+            REASON_PATH_NOT_ALLOWED,
         ));
     }
     if component.as_os_str().to_string_lossy() != value {
-        return Err(invalid_params(
+        return Err(invalid_params_with_reason(
             field,
             "must be a single flat filename (no embedded separators)",
+            REASON_PATH_NOT_ALLOWED,
         ));
     }
     // Cross-platform hardening (issue #1608). `false`: a flat filename can
     // never carry a drive prefix, so every `:` is rejected.
     if let Some(reason) = filename_component_error(value, false) {
-        return Err(invalid_params(field, reason));
+        return Err(invalid_params_with_reason(
+            field,
+            reason,
+            REASON_PATH_NOT_ALLOWED,
+        ));
     }
     Ok(())
 }
@@ -529,10 +730,15 @@ impl TryFrom<&str> for SanitizedFilename {
 /// Validate that `value` does not exceed `max`.
 ///
 /// # Errors
-/// Returns `McpError::invalid_params` if `value > max`.
+/// Returns `McpError::invalid_params` with [`REASON_OUT_OF_RANGE`] if
+/// `value > max`.
 pub fn require_max_value_u16(field: &str, value: u16, max: u16) -> Result<(), McpError> {
     if value > max {
-        return Err(invalid_params(field, format!("must be at most {max}")));
+        return Err(invalid_params_with_reason(
+            field,
+            format!("must be at most {max}"),
+            REASON_OUT_OF_RANGE,
+        ));
     }
     Ok(())
 }
@@ -540,16 +746,17 @@ pub fn require_max_value_u16(field: &str, value: u16, max: u16) -> Result<(), Mc
 /// Validate that `value` (case-insensitive) is one of `options`.
 ///
 /// # Errors
-/// Returns `McpError::invalid_params` if `value` does not match any option
-/// (case-insensitive).
+/// Returns `McpError::invalid_params` with [`REASON_NOT_IN_ALLOWED_SET`] if
+/// `value` does not match any option (case-insensitive).
 pub fn require_one_of(field: &str, value: &str, options: &[&str]) -> Result<(), McpError> {
     let lower = value.to_ascii_lowercase();
     if options.iter().any(|o| o.eq_ignore_ascii_case(&lower)) {
         Ok(())
     } else {
-        Err(invalid_params(
+        Err(invalid_params_with_reason(
             field,
             format!("must be one of: {} (got '{value}')", options.join(", ")),
+            REASON_NOT_IN_ALLOWED_SET,
         ))
     }
 }
@@ -759,5 +966,194 @@ mod tests {
         // The #590 contract survives: absolute Windows paths with a drive
         // prefix stay valid — the drive colon is a separator, not an ADS.
         assert!(require_safe_path_allow_absolute("vault_path", "C:\\vault").is_ok());
+    }
+
+    // --- EC-08 reason-slug contract (issue #1613) ---------------------------
+    //
+    // The transport-level proof lives in
+    // `tests/mcp_validation_reason_code_test.rs` (a live server, real
+    // JSON-RPC `error.data`). These cover what the transport cannot reach:
+    // the four slugs no tool argument can provoke, the branches behind a
+    // typed boundary, and the properties that make the taxonomy load-bearing
+    // — the closed 7-value set, the `data` SHAPE, and the fact that adding
+    // an 8th slug is a visible act.
+    // -----------------------------------------------------------------------
+
+    /// Every slug the module can emit.
+    const ALL_REASONS: [&str; 7] = [
+        REASON_EMPTY,
+        REASON_TOO_LONG,
+        REASON_MALFORMED,
+        REASON_UNSUPPORTED_SCHEME,
+        REASON_PATH_NOT_ALLOWED,
+        REASON_OUT_OF_RANGE,
+        REASON_NOT_IN_ALLOWED_SET,
+    ];
+
+    /// The `(field, reason)` pair carried by a rejection.
+    fn tag(err: &McpError) -> (String, Option<String>) {
+        let data = err.data.as_ref().expect("every rejection carries `data`");
+        assert!(
+            data.is_object(),
+            "`data` must be a JSON OBJECT now, not a bare string: {data}"
+        );
+        (
+            data.get("field")
+                .and_then(Value::as_str)
+                .expect("`data.field` must be the offending field")
+                .to_string(),
+            data.get("reason")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        )
+    }
+
+    #[test]
+    fn reason_slugs_are_distinct_and_the_set_is_closed() {
+        for (i, a) in ALL_REASONS.iter().enumerate() {
+            for b in &ALL_REASONS[i + 1..] {
+                assert_ne!(a, b, "two rules must not share a reason slug");
+            }
+        }
+        // The taxonomy is a wire contract: a typo here is a slug no caller
+        // branches on. This assertion is the tripwire for that.
+        assert_eq!(ALL_REASONS.len(), 7, "the taxonomy has exactly 7 slugs");
+    }
+
+    #[test]
+    fn every_rejection_helper_emits_a_slug_from_the_closed_set() {
+        let errs = [
+            require_http_url("url", "").unwrap_err(),
+            require_http_url("url", &"x".repeat(MAX_URL_LEN + 1)).unwrap_err(),
+            require_http_url("url", "not a url").unwrap_err(),
+            require_http_url("url", "ftp://example.com").unwrap_err(),
+            require_safe_path("file_path", "").unwrap_err(),
+            require_safe_path("file_path", &"x".repeat(MAX_PATH_LEN + 1)).unwrap_err(),
+            require_safe_path("file_path", "/etc/passwd").unwrap_err(),
+            require_safe_path("file_path", "notes/../escape").unwrap_err(),
+            require_safe_path("file_path", "notes/CON.md").unwrap_err(),
+            require_safe_path_allow_absolute("vault_path", "").unwrap_err(),
+            require_safe_path_allow_absolute("vault_path", "v/../x").unwrap_err(),
+            require_max_len("html", "xx", 1).unwrap_err(),
+            require_safe_name("vault_name", "").unwrap_err(),
+            require_safe_domain("base_domain", "").unwrap_err(),
+            require_safe_domain("base_domain", "exa mple.com").unwrap_err(),
+            require_safe_domain("base_domain", "example.com/../x").unwrap_err(),
+            require_safe_seed("seed_domain", "").unwrap_err(),
+            require_safe_seed("seed_domain", "example.com/x").unwrap_err(),
+            require_safe_seed("seed_domain", "example.com/../x").unwrap_err(),
+            require_safe_seed("seed_domain", "ftp://example.com").unwrap_err(),
+            require_non_empty("query", "").unwrap_err(),
+            require_max_value_u64("urls", 2, 1).unwrap_err(),
+            require_range_u64("concurrency", 0, 1, 5).unwrap_err(),
+            require_max_value_u16("retries", 9, 3).unwrap_err(),
+            require_safe_filename("filename", "").unwrap_err(),
+            require_safe_filename("filename", "../escape").unwrap_err(),
+            require_safe_filename("filename", "CON").unwrap_err(),
+            require_one_of("content_format", "yaml", &["jsonl", "vector"]).unwrap_err(),
+        ];
+        for err in &errs {
+            let (_, reason) = tag(err);
+            let slug = reason.expect("every helper rejection must carry a reason slug");
+            assert!(
+                ALL_REASONS.contains(&slug.as_str()),
+                "'{slug}' is outside the documented 7-value taxonomy: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn each_helper_emits_the_slug_its_rule_means() {
+        // One representative per slug, so a wrong MAPPING (not a wrong shape)
+        // is caught: each of these asserts the specific remediation the slug
+        // promises.
+        let cases: [(McpError, &str); 7] = [
+            (require_http_url("url", "").unwrap_err(), REASON_EMPTY),
+            (
+                require_max_len("html", "xx", 1).unwrap_err(),
+                REASON_TOO_LONG,
+            ),
+            (
+                require_http_url("url", "http://").unwrap_err(),
+                REASON_MALFORMED,
+            ),
+            (
+                require_http_url("url", "ftp://example.com").unwrap_err(),
+                REASON_UNSUPPORTED_SCHEME,
+            ),
+            (
+                require_safe_path("file_path", "notes/../x").unwrap_err(),
+                REASON_PATH_NOT_ALLOWED,
+            ),
+            (
+                require_max_value_u64("max_depth", 11, 10).unwrap_err(),
+                REASON_OUT_OF_RANGE,
+            ),
+            (
+                require_one_of("content_format", "yaml", &["jsonl"]).unwrap_err(),
+                REASON_NOT_IN_ALLOWED_SET,
+            ),
+        ];
+        for (err, expected) in cases {
+            assert_eq!(
+                tag(&err).1.as_deref(),
+                Some(expected),
+                "wrong slug for: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn data_carries_the_offending_field_beside_the_slug() {
+        // The field tag is the information the old bare-string `data` carried;
+        // EC-08 keeps it so nothing is lost in the restructure.
+        for (err, field) in [
+            (
+                require_http_url("url", "ftp://x.example").unwrap_err(),
+                "url",
+            ),
+            (require_max_len("html", "xx", 1).unwrap_err(), "html"),
+            (
+                require_safe_filename("filename", "..").unwrap_err(),
+                "filename",
+            ),
+        ] {
+            assert_eq!(tag(&err).0, field, "wrong field tag for: {err:?}");
+        }
+    }
+
+    #[test]
+    fn filename_component_messages_are_unchanged_and_tagged_path_not_allowed() {
+        // The Spanish island stays byte-for-byte what it was (no reword, no
+        // translate — #1613 documents the language contract, it does not unify
+        // it); only the machine-readable half is added.
+        let err = require_safe_filename("filename", "CON").unwrap_err();
+        assert_eq!(
+            err.message,
+            "usa un nombre reservado de Windows (CON, PRN, AUX, NUL, COM1-9, LPT1-9)"
+        );
+        assert_eq!(tag(&err).1.as_deref(), Some(REASON_PATH_NOT_ALLOWED));
+
+        let err = require_safe_filename("filename", "a:b").unwrap_err();
+        assert_eq!(
+            err.message,
+            "no debe contener ':' (riesgo de flujos alternativos NTFS)"
+        );
+        assert_eq!(tag(&err).1.as_deref(), Some(REASON_PATH_NOT_ALLOWED));
+    }
+
+    #[test]
+    fn reason_of_tolerates_a_missing_or_foreign_data_payload() {
+        // `data` is sender-defined, so the success-shaped `validate_url`
+        // channel may see anything: absent, the pre-EC-08 bare string, or an
+        // object without a `reason`. None of those may panic.
+        assert_eq!(reason_of(None), None);
+        assert_eq!(reason_of(Some(&Value::String("url".to_string()))), None);
+        assert_eq!(reason_of(Some(&json!({"field": "url"}))), None);
+        assert_eq!(reason_of(Some(&json!({"reason": 42}))), None);
+        assert_eq!(
+            reason_of(Some(&json!({"reason": REASON_MALFORMED}))),
+            Some(REASON_MALFORMED)
+        );
     }
 }

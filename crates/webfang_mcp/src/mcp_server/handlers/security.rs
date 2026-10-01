@@ -217,6 +217,7 @@ fn render_metrics(snapshot: &MetricsSnapshot) -> CallToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp_server::handlers::test_support::{self, result_text};
     use std::sync::Once;
     use webfang_core::domain::waf::WafTier;
 
@@ -574,38 +575,14 @@ mod tests {
 
     use crate::mcp_server::state::McpState;
     use rmcp::handler::server::wrapper::Parameters;
-    use rmcp::model::CallToolResult;
+
     use tempfile::TempDir;
     use webfang_core::di::Container;
-    use webfang_core::domain::config::ScraperConfig;
-    use webfang_core::domain::CrawlerConfig;
 
     async fn super_test_container() -> (TempDir, Container) {
         let tmp = TempDir::new().expect("create temp dir");
-        let crawler_config =
-            CrawlerConfig::new(url::Url::parse("https://example.com").expect("valid url"));
-        let scraper_config = ScraperConfig {
-            output_dir: tmp.path().to_path_buf(),
-            ..Default::default()
-        };
-        let container = Container::new(crawler_config, scraper_config)
-            .await
-            .expect("create container");
+        let container = test_support::container(&tmp).await;
         (tmp, container)
-    }
-
-    fn result_text(result: &CallToolResult) -> String {
-        serde_json::to_value(result)
-            .ok()
-            .and_then(|v| v.get("content").and_then(|c| c.as_array()).cloned())
-            .and_then(|arr| arr.first().cloned())
-            .and_then(|first| {
-                first
-                    .get("text")
-                    .and_then(|t| t.as_str())
-                    .map(str::to_owned)
-            })
-            .unwrap_or_default()
     }
 
     #[tokio::test]

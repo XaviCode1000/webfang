@@ -13,25 +13,16 @@
 #![cfg(feature = "mcp")]
 
 use serde_json::{json, Value};
-use std::net::SocketAddr;
-use tokio::net::TcpListener;
-use tokio::task::JoinHandle;
 use wreq::Client;
-
-use webfang_core::config::Config;
-use webfang_core::di::Container;
-use webfang_mcp::mcp_server::server::build_mcp_router;
-use webfang_mcp::mcp_server::server::ServerOptions;
-use webfang_mcp::mcp_server::state::McpState;
 
 // Session/tool-call JSON-RPC helpers live in the shared harness (`tests/common`),
 // not here — issue #1371. Imported by name rather than `use common::*` so this
-// file's own `start_test_server` cannot collide with `common::start_test_server`.
+// file's own helpers cannot collide with `common`'s.
 mod common;
-use common::{call_tool, init_session, is_tool_error, tool_text};
-
-/// JSON-RPC standard error code for "Invalid params" (JSON-RPC 2.0 spec).
-const JSONRPC_INVALID_PARAMS: i64 = -32602;
+use common::{
+    call_tool, error_code, init_session, is_tool_error, start_test_server_ssrf_enabled, tool_text,
+    JSONRPC_INVALID_PARAMS,
+};
 
 /// `validation::MAX_BLOB_LEN` (1_048_576) + 1, to exceed the max blob length.
 const MAX_BLOB_LEN_PLUS_1: usize = 1_048_577;
@@ -40,47 +31,6 @@ const MAX_BLOB_LEN_PLUS_1: usize = 1_048_577;
 // Harness — only the starter stays local (see its note); the JSON-RPC
 // helpers come from `tests/common/mod.rs`.
 // ============================================================================
-
-/// Start a test MCP server on a random port and return the base URL.
-///
-/// Deliberately NOT `common::start_test_server`: that one disarms the
-/// wiremock-loopback SSRF hatches, while this file runs with the SSRF guard
-/// LEFT ON. Rejection tests must prove params are refused before any fetch,
-/// so swapping the starter would silently change what is being asserted.
-async fn start_test_server() -> (String, JoinHandle<()>) {
-    let config = Config::default();
-    let container = Container::new(config.crawler, config.scraper)
-        .await
-        .expect("container creation failed");
-    let state = McpState::new(container);
-    let app = build_mcp_router(state, &ServerOptions::default());
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr: SocketAddr = listener.local_addr().unwrap();
-    let base_url = format!("http://{addr}");
-
-    let handle = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-
-    // Wait for the server to accept TCP connections instead of a fixed sleep.
-    for _ in 0..20 {
-        if tokio::net::TcpStream::connect(&addr).await.is_ok() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-
-    (base_url, handle)
-}
-
-/// Extract the JSON-RPC error code from a parsed response, if present.
-fn error_code(result: &Value) -> Option<i64> {
-    result
-        .get("error")
-        .and_then(|e| e.get("code"))
-        .and_then(|c| c.as_i64())
-}
 
 /// #1116: an invalid URL is now rejected at the `McpUrl` deserialization
 /// boundary. rmcp 1.8.0 surfaces tool-ARGUMENT deserialization failures as a
@@ -120,7 +70,7 @@ fn assert_url_argument_rejected(resp: &Value, reason_substring: &str) {
 /// `scrape_url` rejects a `file://` URL (unsupported scheme).
 #[tokio::test]
 async fn scrape_url_rejects_file_scheme() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -139,7 +89,7 @@ async fn scrape_url_rejects_file_scheme() {
 /// `scrape_url` rejects an `ftp://` URL (unsupported scheme).
 #[tokio::test]
 async fn scrape_url_rejects_ftp_scheme() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -159,7 +109,7 @@ async fn scrape_url_rejects_ftp_scheme() {
 /// `file://` URL (bug #7 fix: tool reports parsed result instead of rejecting).
 #[tokio::test]
 async fn validate_url_file_scheme_returns_tool_result() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -192,7 +142,7 @@ async fn validate_url_file_scheme_returns_tool_result() {
 /// `extract_domain` rejects a non-http(s) URL.
 #[tokio::test]
 async fn extract_domain_rejects_file_scheme() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -211,7 +161,7 @@ async fn extract_domain_rejects_file_scheme() {
 /// `crawl_site` rejects an unsupported scheme.
 #[tokio::test]
 async fn crawl_site_rejects_ftp_scheme() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -230,7 +180,7 @@ async fn crawl_site_rejects_ftp_scheme() {
 /// `crawl_site` rejects a `max_depth` beyond the allowed bound (> 10).
 #[tokio::test]
 async fn crawl_site_rejects_max_depth_beyond_limit() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -261,7 +211,7 @@ async fn crawl_site_rejects_max_depth_beyond_limit() {
 /// whose harness declares the system temp dir as its root.
 #[tokio::test]
 async fn crawl_site_rejects_absolute_checkpoint_dir_without_roots() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -290,7 +240,7 @@ async fn crawl_site_rejects_absolute_checkpoint_dir_without_roots() {
 /// deserialization boundary, mapped to -32602.
 #[tokio::test]
 async fn scrape_with_options_rejects_unknown_field() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -318,7 +268,7 @@ async fn scrape_with_options_rejects_unknown_field() {
 /// `export_file` rejects a path-traversal `output_dir`.
 #[tokio::test]
 async fn export_file_rejects_output_dir_traversal() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -354,7 +304,7 @@ async fn export_file_rejects_output_dir_traversal() {
 /// protocol-level `-32602`.
 #[tokio::test]
 async fn export_file_rejects_absolute_output_dir_without_roots() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -385,7 +335,7 @@ async fn export_file_rejects_absolute_output_dir_without_roots() {
 /// operational "no hay resultados disponibles" error.
 #[tokio::test]
 async fn export_jsonl_rejects_absolute_output_dir_without_roots() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -411,7 +361,7 @@ async fn export_jsonl_rejects_absolute_output_dir_without_roots() {
 /// #756: same runtime proof for `export_vector` (see `export_jsonl` above).
 #[tokio::test]
 async fn export_vector_rejects_absolute_output_dir_without_roots() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -437,7 +387,7 @@ async fn export_vector_rejects_absolute_output_dir_without_roots() {
 /// `export_file` rejects a path-traversal `filename` (issue #601).
 #[tokio::test]
 async fn export_file_rejects_filename_traversal() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -466,7 +416,7 @@ async fn export_file_rejects_filename_traversal() {
 /// (issue #601).
 #[tokio::test]
 async fn export_file_rejects_filename_subdirectory() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -494,7 +444,7 @@ async fn export_file_rejects_filename_subdirectory() {
 /// `export_file` rejects an unrecognized export format.
 #[tokio::test]
 async fn export_file_rejects_unknown_format() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -522,7 +472,7 @@ async fn export_file_rejects_unknown_format() {
 /// `download_assets` rejects a path-traversal `output_dir`.
 #[tokio::test]
 async fn download_assets_rejects_output_dir_traversal() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -551,7 +501,7 @@ async fn download_assets_rejects_output_dir_traversal() {
 /// `detect_obsidian_vault` accepts an absolute `vault_path` (bug #8 fix).
 #[tokio::test]
 async fn detect_obsidian_vault_accepts_absolute_path() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -576,7 +526,7 @@ async fn detect_obsidian_vault_accepts_absolute_path() {
 /// `build_obsidian_uri` rejects a path-traversal `file_path`.
 #[tokio::test]
 async fn build_obsidian_uri_rejects_traversal_file_path() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -599,7 +549,7 @@ async fn build_obsidian_uri_rejects_traversal_file_path() {
 /// `clean_html` rejects an oversize HTML blob.
 #[tokio::test]
 async fn clean_html_rejects_oversize_blob() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -622,7 +572,7 @@ async fn clean_html_rejects_oversize_blob() {
 /// `detect_waf` rejects an oversize HTML blob (no network access).
 #[tokio::test]
 async fn detect_waf_rejects_oversize_html() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -650,7 +600,7 @@ async fn detect_waf_rejects_oversize_html() {
 /// `validate_url` accepts a valid https URL and succeeds (no -32602).
 #[tokio::test]
 async fn validate_url_accepts_https() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -678,7 +628,7 @@ async fn validate_url_accepts_https() {
 /// `extract_links` accepts valid html + base_url and succeeds (no -32602).
 #[tokio::test]
 async fn extract_links_accepts_valid() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -705,7 +655,7 @@ async fn extract_links_accepts_valid() {
 /// and must NOT be rejected by validation.
 #[tokio::test]
 async fn convert_wiki_links_accepts_bare_domain() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -734,7 +684,7 @@ async fn convert_wiki_links_accepts_bare_domain() {
 /// `normalize_seed_host` handles it) and must NOT be rejected by validation.
 #[tokio::test]
 async fn is_internal_link_accepts_full_url_seed() {
-    let (base_url, _handle) = start_test_server().await;
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 

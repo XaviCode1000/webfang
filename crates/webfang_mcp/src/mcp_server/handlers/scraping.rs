@@ -7,6 +7,9 @@ use super::McpHandler;
 use crate::mcp_server::metrics::{domain_of, Outcome};
 use crate::mcp_server::params::*;
 use crate::mcp_server::provenance;
+use crate::mcp_server::validation::{
+    invalid_params_with_reason, REASON_NOT_IN_ALLOWED_SET, REASON_UNSUPPORTED_SCHEME,
+};
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::tool;
@@ -452,9 +455,10 @@ impl McpHandler {
             .map(str::parse::<webfang_core::domain::JsStrategy>)
             .transpose()
             .map_err(|e: String| {
-                McpError::invalid_params(
+                invalid_params_with_reason(
+                    "js_strategy",
                     format!("estrategia JS no soportada: {e}"),
-                    Some(serde_json::Value::String("js_strategy".to_string())),
+                    REASON_NOT_IN_ALLOWED_SET,
                 )
             })?
             .unwrap_or_default();
@@ -593,9 +597,15 @@ impl McpHandler {
             .as_ref()
             .map(|s| {
                 webfang_core::domain::ValidUrl::try_from_url(s.as_url().clone()).map_err(|e| {
-                    McpError::invalid_params(
+                    // The value is already PARSED (the `McpUrl` boundary did
+                    // it), so `try_from_url` can only reject it on its
+                    // scheme allow-list — the slug names that cause rather
+                    // than the generic "malformed" the unparsed `McpUrl`
+                    // collapse has to use.
+                    invalid_params_with_reason(
+                        "sitemap_url",
                         format!("URL de sitemap no soportada '{}': {e}", s.as_str()),
-                        Some(serde_json::Value::String("sitemap_url".to_string())),
+                        REASON_UNSUPPORTED_SCHEME,
                     )
                 })
             })
@@ -812,13 +822,9 @@ impl McpHandler {
                             excluded,
                             "discover_urls filtered to seed-host-internal links"
                         );
-                        let content = serde_json::to_string_pretty(&urls)
-                            .unwrap_or_else(|_| "failed to serialize".into());
-                        Ok(provenance::untrusted_text(
-                            &provenance::Origin::RemoteFetch {
-                                url: url.to_string(),
-                            },
-                            &content,
+                        Ok(discovered_urls_tool_result(
+                            url.as_str(),
+                            serde_json::to_string_pretty(&urls),
                         ))
                     },
                     Err(e) => {
@@ -901,13 +907,9 @@ impl McpHandler {
                     excluded,
                     "discover_sitemap filtered to seed-host-internal URLs"
                 );
-                let content = serde_json::to_string_pretty(&urls)
-                    .unwrap_or_else(|_| "failed to serialize".into());
-                Ok(provenance::untrusted_text(
-                    &provenance::Origin::RemoteFetch {
-                        url: seed.to_string(),
-                    },
-                    &content,
+                Ok(discovered_urls_tool_result(
+                    seed.as_str(),
+                    serde_json::to_string_pretty(&urls),
                 ))
             },
             Err(e) => {
@@ -1223,6 +1225,34 @@ pub fn build_router() -> ToolRouter<McpHandler> {
     McpHandler::tool_router_scraping()
 }
 
+/// Map a serialized discovery payload to its tool result (#1613, EC-06).
+///
+/// Shared by `discover_urls` and `discover_sitemap`, which reported a
+/// serialization failure as a SUCCESS whose entire body was the literal
+/// `"failed to serialize"` — a lost URL list indistinguishable from a real one.
+/// The failure is routed to [`provenance::neutralized_error`]: the same channel
+/// as the adjacent `Err` arm of both handlers, and the same mapping
+/// `render_metrics` already uses in `security.rs` (REQ-10). Deliberately NOT
+/// `McpError::internal_error` (`-32603`) — the surrounding `match` returns a
+/// `CallToolResult` directly, and `?`-propagating would move these functions'
+/// failures to a second channel.
+fn discovered_urls_tool_result(
+    url: &str,
+    json: Result<String, serde_json::Error>,
+) -> CallToolResult {
+    match json {
+        Ok(content) => provenance::untrusted_text(
+            &provenance::Origin::RemoteFetch {
+                url: url.to_string(),
+            },
+            &content,
+        ),
+        Err(e) => {
+            provenance::neutralized_error(&format!("no se pudo serializar la lista de URLs: {e}"))
+        },
+    }
+}
+
 /// Record per-domain scrape metrics for a completed batch (#696).
 ///
 /// Groups successes and failures by their REAL host so multi-domain batches
@@ -1281,14 +1311,13 @@ mod tests {
         s.parse().expect("test url must be valid http(s)")
     }
     use super::*;
+    use crate::mcp_server::handlers::test_support::{self, result_text};
     use crate::mcp_server::state::McpState;
     use rmcp::handler::server::wrapper::Parameters;
     use rmcp::model::CallToolResult;
     use serial_test::serial;
     use tempfile::TempDir;
-    use webfang_core::di::Container;
-    use webfang_core::domain::config::ScraperConfig;
-    use webfang_core::domain::CrawlerConfig;
+
     use webfang_core::infrastructure::crawler::robots_utils::RobotsFetcher;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1317,15 +1346,7 @@ mod tests {
     /// `output_dir` alive.
     async fn test_state() -> (McpState, TempDir) {
         let tmp = TempDir::new().expect("create temp dir");
-        let crawler_config =
-            CrawlerConfig::new(url::Url::parse("https://example.com").expect("valid url"));
-        let scraper_config = ScraperConfig {
-            output_dir: tmp.path().to_path_buf(),
-            ..Default::default()
-        };
-        let container = Container::new(crawler_config, scraper_config)
-            .await
-            .expect("create container");
+        let container = test_support::container(&tmp).await;
         (McpState::new(container), tmp)
     }
 
@@ -1373,22 +1394,6 @@ mod tests {
             .iter()
             .filter(|r| r.url.path() != "/robots.txt")
             .count()
-    }
-
-    /// The first text content of a tool result, serialized as the transport
-    /// would.
-    fn result_text(result: &CallToolResult) -> String {
-        serde_json::to_value(result)
-            .ok()
-            .and_then(|v| v.get("content").and_then(|c| c.as_array()).cloned())
-            .and_then(|arr| arr.first().cloned())
-            .and_then(|first| {
-                first
-                    .get("text")
-                    .and_then(|t| t.as_str())
-                    .map(str::to_owned)
-            })
-            .unwrap_or_default()
     }
 
     /// Assert that a tool result is an honest error (`isError:true`) whose
@@ -2201,5 +2206,45 @@ mod tests {
         assert_eq!(snap.error_count, 1, "all-failed domain is Error");
         assert_eq!(snap.domains["example.com"].pages, 2, "ok + bad counted");
         assert_eq!(snap.domains["broken.test"].pages, 1);
+    }
+
+    /// #1613 EC-06: `discover_urls` / `discover_sitemap` share
+    /// `discovered_urls_tool_result` — a serialization failure there is a
+    /// TOOL ERROR, not a success body reading `"failed to serialize"`.
+    #[test]
+    fn discovered_urls_serialization_failure_is_a_tool_error() {
+        let unwritable = Err(serde_json::Error::io(std::io::Error::other(
+            "url set not serializable",
+        )));
+        let res = discovered_urls_tool_result("https://example.com", unwritable);
+        assert_eq!(
+            res.is_error,
+            Some(true),
+            "a lost URL list must be isError:true, got: {}",
+            result_text(&res)
+        );
+        let text = result_text(&res);
+        assert!(
+            text.contains("no se pudo serializar la lista de URLs"),
+            "the honest Spanish reason must reach the agent, got: {text}"
+        );
+    }
+
+    /// The success arm of the shared mapping is untouched.
+    #[test]
+    fn discovered_urls_serialization_success_stays_a_tool_success() {
+        let res = discovered_urls_tool_result(
+            "https://example.com",
+            Ok("[\"https://example.com/a\"]".to_string()),
+        );
+        assert_ne!(
+            res.is_error,
+            Some(true),
+            "a serializable list is not an error"
+        );
+        assert!(
+            result_text(&res).contains("https://example.com/a"),
+            "the payload must survive"
+        );
     }
 }

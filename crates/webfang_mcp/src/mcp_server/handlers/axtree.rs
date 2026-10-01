@@ -207,6 +207,10 @@ pub fn build_router() -> ToolRouter<McpHandler> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(feature = "chromium"))]
+    use crate::mcp_server::handlers::test_support::{self, result_text};
+
     #[cfg(not(feature = "chromium"))]
     use crate::mcp_server::state::McpState;
     #[cfg(not(feature = "chromium"))]
@@ -215,12 +219,6 @@ mod tests {
     use serial_test::serial;
     #[cfg(not(feature = "chromium"))]
     use tempfile::TempDir;
-    #[cfg(not(feature = "chromium"))]
-    use webfang_core::di::Container;
-    #[cfg(not(feature = "chromium"))]
-    use webfang_core::domain::config::ScraperConfig;
-    #[cfg(not(feature = "chromium"))]
-    use webfang_core::domain::CrawlerConfig;
 
     /// Test helper: build an `McpUrl` from a KNOWN-VALID http(s) string.
     #[cfg(not(feature = "chromium"))]
@@ -234,32 +232,11 @@ mod tests {
     #[cfg(not(feature = "chromium"))]
     async fn test_handler() -> (McpHandler, TempDir) {
         let tmp = TempDir::new().expect("create temp dir");
-        let crawler_config =
-            CrawlerConfig::new(url::Url::parse("https://example.com").expect("valid url"));
-        let scraper_config = ScraperConfig {
-            output_dir: tmp.path().to_path_buf(),
-            ..Default::default()
-        };
-        let container = Container::new(crawler_config, scraper_config)
-            .await
-            .expect("create container");
+        let container = test_support::container(&tmp).await;
         (McpHandler::new(McpState::new(container)), tmp)
     }
 
     #[cfg(not(feature = "chromium"))]
-    fn result_text(result: &CallToolResult) -> String {
-        serde_json::to_value(result)
-            .ok()
-            .and_then(|v| v.get("content").and_then(|c| c.as_array()).cloned())
-            .and_then(|arr| arr.first().cloned())
-            .and_then(|first| {
-                first
-                    .get("text")
-                    .and_then(|t| t.as_str())
-                    .map(str::to_owned)
-            })
-            .unwrap_or_default()
-    }
 
     /// Feature-off contract: a valid URL without the `chromium` feature maps
     /// to an honest Spanish `isError:true` envelope — never a false success
