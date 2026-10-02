@@ -112,5 +112,44 @@ else
   bad "consumer mutated the seed: $SEED_MODE_BEFORE -> $SEED_MODE_AFTER"
 fi
 
+# ── 5. a chmod that fails must not be reported as `seeded` ───────────────────
+#
+# `chmod -R u+w` is what makes the clone usable, so reporting `seeded` without
+# verifying it hands back a read-only target under a verdict that promises a
+# working one. This is the same defect shape the removal path already documents:
+# a swallowed error plus a success verdict. There the consequence was debris; here
+# it is cargo's first write failing with an EACCES the caller cannot connect to
+# seeding.
+#
+# The stub fails ONCE and delegates every later call to the real chmod, so the
+# cleanup path is unaffected and the failure is isolated to the load-bearing call.
+mkdir -p "$SANDBOX/bin"
+cat >"$SANDBOX/bin/chmod" <<STUB
+#!/usr/bin/env bash
+if [ ! -e "$SANDBOX/chmod-already-failed" ]; then
+  : >"$SANDBOX/chmod-already-failed"
+  exit 1
+fi
+exec $(command -v chmod) "\$@"
+STUB
+chmod +x "$SANDBOX/bin/chmod"
+
+TARGET2="$SANDBOX/worktree-target-chmod-fails"
+OUT2="$(PATH="$SANDBOX/bin:$PATH" SEED_ROOT="$SEEDS" CARGO_TARGET_DIR="$TARGET2" \
+        bash "$SEEDER" 2>&1)"
+case "$OUT2" in
+  *"seeded"*)
+    bad "chmod failure is reported as seeded — a read-only target under a success verdict" ;;
+  *cold*clone-not-writable*)
+    ok "chmod failure is reported cold with reason=clone-not-writable" ;;
+  *)
+    bad "chmod failure produced an unexpected verdict: $OUT2" ;;
+esac
+if [ -e "$TARGET2" ]; then
+  bad "chmod failure left a target dir behind; a cold build assumes a clean one"
+else
+  ok "chmod failure left no target dir to build over"
+fi
+
 printf '\n  %d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
