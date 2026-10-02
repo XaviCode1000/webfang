@@ -270,6 +270,20 @@ jobs:
       # exemption. Offline, no repo state touched.
       - name: Concurrency lint semantics harness
         run: bash scripts/test_concurrency_lints.sh
+      # Regression guard for #1784 (follow-up to #1781/#1782): no
+      # `cargo nextest run` invocation may hardcode a thread-count flag
+      # (`-j`, `--jobs`, `--test-threads`) — `.config/nextest.toml`
+      # governs the width. `cargo test -- --ignored`, Miri, and TSan keep
+      # their `--test-threads=1` (different runner, out of scope).
+      - name: Nextest invocation lint gate
+        run: bash scripts/check_nextest_invocation_lint.sh
+      # Semantics harness for the gate above: proves on mktemp fixtures
+      # that a continuation-line flag and `-j4` FIRE, that libtest/Miri/TSan
+      # `=1`, cross-command `-j`, full-line comments, and `--json`-like
+      # flags PASS, and re-verifies the zero-findings baseline over the
+      # real tree. Offline, no repo state touched.
+      - name: Nextest invocation lint semantics harness
+        run: bash scripts/test_nextest_invocation_lint.sh
       # Regression guard for the release hand-off (#1478/#1480). GitHub
       # suppresses workflow runs for events generated with GITHUB_TOKEN, so the
       # tags release-plz and cut-patch-tag.yml push CANNOT trigger release.yml's
