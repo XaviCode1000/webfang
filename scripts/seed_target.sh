@@ -155,12 +155,22 @@ fi
 # performs a full copy and exits 0 — measured, 64 MB copied for a 64 MB file on
 # tmpfs. =always fails loudly, and failure here just means a cold build.
 #
-# --no-preserve=mode is REQUIRED, not cosmetic: the seed is published read-only
-# and a CoW clone inherits its mode bits, so without this the worktree's own
-# target dir arrives unwritable and the first cargo write fails with EACCES.
-# Dropping the read-only bits on the COPY is correct — the seed stays read-only,
-# and each worktree needs a target it can actually write.
-if ! cp -a --reflink=always --no-preserve=mode "$SEED" "$TARGET_DIR" 2>/dev/null; then
+# The seed is published read-only (555) and a CoW clone inherits its mode bits,
+# so the clone must have its read-only bits dropped or the worktree's target dir
+# arrives unwritable and the first cargo write fails with EACCES.
+#
+# Drop only the READ bits, not the whole mode. `--no-preserve=mode` looks like
+# it does the same thing, and it does not: cp then derives the copy's mode from
+# the umask, so a 555 build script lands as 644 — no `x` for anyone — and cargo
+# fails that unit with "Permission denied (os error 13)". That was measured on
+# btrfs, on a real seed:
+#     --no-preserve=mode            -> 644, not executable
+#     --preserve=mode + chmod u+w   -> 755, executable
+# `chmod -R u+w` is therefore not a fallback for the failure path alone; it is
+# part of the success path, and it is what turns the inherited 555 into a
+# writable-and-executable 755. Measured cost: 0.04 s over 8,541 files, against
+# an 18 s seeded build. The seed itself stays 555 — only the copy is widened.
+if ! cp -a --reflink=always "$SEED" "$TARGET_DIR" 2>/dev/null; then
   # A failed clone can leave the destination half-written. The contract is
   # "reflink failure -> clean target -> cold build", so removing the debris is
   # part of the failure path, not a courtesy — and it must be VERIFIED, not
@@ -191,6 +201,11 @@ if ! cp -a --reflink=always --no-preserve=mode "$SEED" "$TARGET_DIR" 2>/dev/null
   fi
   cold "reflink-unavailable"
 fi
+# Widen the clone's read-only bits. 555 -> 755: writable so cargo can build, and
+# still executable so the build scripts it inherits can run. Without this the
+# clone is read-only (first cargo write fails) or, if the mode was dropped at
+# clone time, unexecutable (build script fails to run). Both halves are needed.
+chmod -R u+w "$TARGET_DIR" 2>/dev/null || true
 # Apparent size, deliberately NOT a df delta: the delta is dominated by whatever
 # else is touching the filesystem in the same second and was measured coming out
 # NEGATIVE here. A number that can be negative is not a measurement.
