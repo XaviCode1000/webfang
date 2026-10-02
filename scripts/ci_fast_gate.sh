@@ -655,7 +655,23 @@ run_rustdoc_gate() {
 # The rustdoc step runs last via run_rustdoc_gate (auto mode: only on
 # lib_src_changed), so compile failures surface before doc findings.
 
+# log_nextest_env: echo ambient nextest env (#1786). Width/profile/retries
+# can be influenced by the environment now that no CLI flag pins them.
+# Informative only — no exit, no unset, no PASS/FAIL touch. Prints in
+# dry-run too, like the lane echoes. Empty-or-unset renders as unset.
+log_nextest_env() {
+  local -a vars=(NEXTEST_PROFILE NEXTEST_TEST_THREADS NEXTEST_RETRIES)
+  local v vals=""
+  for v in "${vars[@]}"; do
+    if [[ -n "${!v:-}" ]]; then
+      vals+="${v}=${!v} "
+    fi
+  done
+  echo "fast-gate: nextest env: ${vals:-none (profile=default, width from .config/nextest.toml)}"
+}
+
 targeted_cargo() {
+  log_nextest_env
   local -a pkgs=()
   [[ "$core_changed" == "true" || "$crawler_changed" == "true" || "$downloader_changed" == "true" ]] && pkgs+=(webfang_core)
   [[ "$cli_changed" == "true" ]] && pkgs+=(webfang_cli)
@@ -713,6 +729,7 @@ targeted_cargo() {
 
 lane_full() {
   echo "fast-gate lane: FULL (unknown scope — nothing skipped)"
+  log_nextest_env
   lane_fmt_and_guards
   run_step "cargo check (workspace, all targets+features)" cargo check --workspace --all-targets --all-features
   run_step "clippy strict (workspace)" cargo clippy --workspace --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines
