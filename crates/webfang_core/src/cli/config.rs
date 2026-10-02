@@ -318,6 +318,15 @@ pub fn init_logging_dual(
 mod tests {
     use super::*;
 
+    /// A missing path that is absolute on every platform. A literal like
+    /// `/nonexistent/...` is only *rooted* on Windows — `Path::is_absolute`
+    /// there demands a drive prefix — so `load_explicit` would reject it as
+    /// `NotAbsolute` before ever discovering the file does not exist.
+    /// `temp_dir()` is absolute on all supported platforms.
+    fn missing_absolute_path() -> std::path::PathBuf {
+        std::env::temp_dir().join("webfang-nonexistent-config/config.toml")
+    }
+
     #[test]
     fn test_load_defaults_when_no_file() {
         let config = ConfigDefaults::load(Path::new("/nonexistent/path/config.toml"));
@@ -438,9 +447,9 @@ max_pages = 20
     /// operator that their config was never read.
     #[test]
     fn explicit_override_fails_where_the_platform_default_degrades() {
-        let missing = Path::new("/nonexistent/webfang/config.toml");
+        let missing = missing_absolute_path();
 
-        let config = ConfigDefaults::load(missing);
+        let config = ConfigDefaults::load(&missing);
         assert!(
             config.format.is_none(),
             "a missing platform default must still degrade to defaults"
@@ -448,7 +457,7 @@ max_pages = 20
 
         assert!(
             matches!(
-                ConfigDefaults::load_explicit(missing),
+                ConfigDefaults::load_explicit(&missing),
                 Err(ConfigLoadError::NotFound { .. })
             ),
             "a missing explicit override must be an error, not a silent default"
@@ -538,9 +547,9 @@ max_pages = 20
     /// error, never a silent fallback.
     #[test]
     fn load_explicit_rejects_a_missing_file() {
-        let missing = Path::new("/nonexistent/webfang/config.toml");
+        let missing = missing_absolute_path();
         assert!(matches!(
-            ConfigDefaults::load_explicit(missing),
+            ConfigDefaults::load_explicit(&missing),
             Err(ConfigLoadError::NotFound { .. })
         ));
     }
@@ -612,8 +621,8 @@ max_pages = 20
     /// act on the message, which is the whole defect #1659 closes.
     #[test]
     fn load_explicit_messages_are_spanish_and_name_the_path() {
-        let missing = Path::new("/nonexistent/webfang/config.toml");
-        let msg = ConfigDefaults::load_explicit(missing)
+        let missing = missing_absolute_path();
+        let msg = ConfigDefaults::load_explicit(&missing)
             .expect_err("a missing override must fail")
             .to_string();
         assert!(
@@ -621,7 +630,7 @@ max_pages = 20
             "user-facing config errors are Spanish, got: {msg}"
         );
         assert!(
-            msg.contains("/nonexistent/webfang/config.toml"),
+            msg.contains(&missing.display().to_string()),
             "the message must name the offending path, got: {msg}"
         );
 

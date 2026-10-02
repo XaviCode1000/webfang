@@ -1134,7 +1134,11 @@ mod tests {
         );
         assert_eq!(tag(&err).1.as_deref(), Some(REASON_PATH_NOT_ALLOWED));
 
-        let err = require_safe_filename("filename", "a:b").unwrap_err();
+        // `a:b` parses as a drive-relative path on Windows (Prefix + Normal),
+        // so the multi-component guard rejects it before the colon rule is
+        // reached. The probe must be a single Normal component on BOTH
+        // platforms for the message contract asserted here to hold.
+        let err = require_safe_filename("filename", "stream.txt:ads").unwrap_err();
         assert_eq!(
             err.message,
             "no debe contener ':' (riesgo de flujos alternativos NTFS)"
