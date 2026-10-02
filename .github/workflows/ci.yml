@@ -503,9 +503,9 @@ jobs:
       - name: Pre-build test binary
         run: cargo build -p webfang_cli --bin webfang
       - name: Unit tests (lib)
-        run: cargo nextest run --lib --test-threads 4 --retries 2
+        run: cargo nextest run --lib --retries 2
       - name: Integration tests
-        run: cargo nextest run --test '*' --test-threads 4 --retries 2
+        run: cargo nextest run --test '*' --retries 2
 
   # ============================================================================
   # TIER 4: TEST FULL (4-6 minutes)
@@ -541,7 +541,7 @@ jobs:
       # the ~372MB model cache entry here saves Actions-cache budget.
       - name: Pre-build test binary
         run: cargo build -p webfang_cli --bin webfang --all-features
-      - run: cargo nextest run --all-features --test-threads 4 --retries 2
+      - run: cargo nextest run --all-features --retries 2
 
   # ============================================================================
   # TEST CROSSPLATFORM (ADVISORY SIGNAL IN PR) — XP-C-01 (#1608)
@@ -605,9 +605,9 @@ jobs:
       - name: Pre-build test binary
         run: cargo build -p webfang_cli --bin webfang
       - name: Unit tests (lib)
-        run: cargo nextest run --lib --test-threads 4 --retries 2
+        run: cargo nextest run --lib --retries 2
       - name: Integration tests
-        run: cargo nextest run --test '*' --test-threads 4 --retries 2
+        run: cargo nextest run --test '*' --retries 2
 
   # ============================================================================
   # TEST RELEASE PROVENANCE (L1) — Behavioral acceptance matrix for
