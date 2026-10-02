@@ -275,7 +275,7 @@ mod tests {
     }
 
     use super::*;
-    use crate::mcp_server::handlers::test_support::{result_text, test_handler};
+    use crate::mcp_server::handlers::test_support::{result_text, test_handler, SharedBufWriter};
 
     use rmcp::handler::server::wrapper::Parameters;
 
@@ -571,24 +571,6 @@ mod tests {
             result_text(&res).contains("https://example.com"),
             "the payload must survive"
         );
-    }
-
-    /// Shared sink behind a capture subscriber, so a span can be READ rather
-    /// than reviewed (#1615 DF-L2).
-    #[derive(Clone)]
-    struct SharedBufWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl std::io::Write for SharedBufWriter {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0
-                .lock()
-                .expect("capture buffer lock is never poisoned")
-                .extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
     }
 
     /// Install a global sink subscriber if none exists.

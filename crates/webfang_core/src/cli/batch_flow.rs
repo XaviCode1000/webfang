@@ -658,6 +658,18 @@ mod tests {
     use super::{build_batch_crawler_config, run_batch};
     use crate::application::crawl_options::CrawlOptions;
     use crate::cli::error::CliExit;
+    use crate::CrawlerConfig;
+
+    /// Build the batch config projection for `opts` the way preflight does:
+    /// the explicit overrides ride through a freshly built [`BudgetModel`].
+    fn projected_config(opts: &CrawlOptions) -> CrawlerConfig {
+        let budget = crate::domain::budget::BudgetModel::build(
+            opts.budget_overrides,
+            &crate::domain::budget::detector::SystemDetector,
+        );
+        build_batch_crawler_config(opts, wreq_util::Profile::Chrome145, &budget)
+            .expect("valid test projection must build")
+    }
 
     #[test]
     fn batch_config_propagates_delay_and_model_concurrency() {
@@ -673,13 +685,8 @@ mod tests {
             opts.budget_overrides.crawl =
                 crate::domain::budget::tiers::CrawlConcurrency::new(explicit).ok();
         }
-        let budget = crate::domain::budget::BudgetModel::build(
-            opts.budget_overrides,
-            &crate::domain::budget::detector::SystemDetector,
-        );
 
-        let config = build_batch_crawler_config(&opts, wreq_util::Profile::Chrome145, &budget)
-            .expect("valid test projection must build");
+        let config = projected_config(&opts);
 
         assert_eq!(config.delay_ms, 750, "--delay-ms must reach the crawler");
         assert_eq!(
@@ -697,13 +704,8 @@ mod tests {
         let mut opts = CrawlOptions::default();
         opts.budget_overrides.crawl = crate::domain::budget::tiers::CrawlConcurrency::new(4).ok();
         opts.budget_overrides.rate_burst = crate::domain::budget::tiers::BurstPermits::new(13).ok();
-        let budget = crate::domain::budget::BudgetModel::build(
-            opts.budget_overrides,
-            &crate::domain::budget::detector::SystemDetector,
-        );
 
-        let config = build_batch_crawler_config(&opts, wreq_util::Profile::Chrome145, &budget)
-            .expect("valid test projection must build");
+        let config = projected_config(&opts);
 
         assert_eq!(
             config.budget_overrides.crawl.map(|c| c.get()),

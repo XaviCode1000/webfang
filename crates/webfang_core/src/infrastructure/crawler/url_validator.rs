@@ -189,6 +189,13 @@ impl UrlValidatorTrait for UrlValidator {
 
 #[cfg(all(test, not(miri)))]
 mod tests {
+    /// #1615 (F11 / G-3 / G-4 / G-5): these tests drive real fetches against
+    /// wiremock's 127.0.0.1, which the literal-IP entry guard now refuses.
+    /// `EnvGuard::entry_guard_off()` disarms the guard for its lifetime — the
+    /// named constructor is the repo's rule, so each call site stays one line.
+    fn entry_off() -> webfang_test_utils::EnvGuard {
+        webfang_test_utils::EnvGuard::entry_guard_off()
+    }
     use super::*;
 
     #[test]
@@ -258,11 +265,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_http_status_200() {
-        // #1615 (F11 / G-3 / G-4 / G-5): this path now applies the
-        // literal-IP entry guard, which refuses wiremock's 127.0.0.1.
-        // The named constructor is the repo's rule — never spell the
-        // variable out at the call site.
-        let _entry_off = webfang_test_utils::EnvGuard::entry_guard_off();
+        let _entry_off = entry_off();
         use wiremock::matchers::method;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 

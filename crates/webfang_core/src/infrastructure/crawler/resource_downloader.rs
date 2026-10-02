@@ -354,6 +354,13 @@ impl ResourceDownloader {
 
 #[cfg(all(test, not(miri)))] // tokio::time::timeout + spawn_blocking hang under Miri (entire module)
 mod tests {
+    /// #1615 (F11 / G-3 / G-4 / G-5): these tests drive real fetches against
+    /// wiremock's 127.0.0.1, which the literal-IP entry guard now refuses.
+    /// `EnvGuard::entry_guard_off()` disarms the guard for its lifetime — the
+    /// named constructor is the repo's rule, so each call site stays one line.
+    fn entry_off() -> webfang_test_utils::EnvGuard {
+        webfang_test_utils::EnvGuard::entry_guard_off()
+    }
     use super::*;
     use std::sync::Arc;
     use tokio::sync::Semaphore;
@@ -536,11 +543,7 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // tokio::time::timeout hangs under Miri
     async fn test_download_normal() {
-        // #1615 (F11 / G-3 / G-4 / G-5): this path now applies the
-        // literal-IP entry guard, which refuses wiremock's 127.0.0.1.
-        // The named constructor is the repo's rule — never spell the
-        // variable out at the call site.
-        let _entry_off = webfang_test_utils::EnvGuard::entry_guard_off();
+        let _entry_off = entry_off();
 
         let mock_server = MockServer::start().await;
         let body = b"<html><body>hola</body></html>";
@@ -570,11 +573,7 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // tokio::time::timeout hangs under Miri
     async fn test_download_slowloris_chunk_timeout() {
-        // #1615 (F11 / G-3 / G-4 / G-5): this path now applies the
-        // literal-IP entry guard, which refuses wiremock's 127.0.0.1.
-        // The named constructor is the repo's rule — never spell the
-        // variable out at the call site.
-        let _entry_off = webfang_test_utils::EnvGuard::entry_guard_off();
+        let _entry_off = entry_off();
 
         let config = ResourceDownloadConfig {
             // Generous global budget so the GLOBAL timeout cannot fire first.
@@ -603,11 +602,7 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // tokio::time::timeout hangs under Miri
     async fn test_download_payload_too_large() {
-        // #1615 (F11 / G-3 / G-4 / G-5): this path now applies the
-        // literal-IP entry guard, which refuses wiremock's 127.0.0.1.
-        // The named constructor is the repo's rule — never spell the
-        // variable out at the call site.
-        let _entry_off = webfang_test_utils::EnvGuard::entry_guard_off();
+        let _entry_off = entry_off();
 
         let mock_server = MockServer::start().await;
         // 2 KiB body > 1 KiB configured limit.
@@ -638,11 +633,7 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // tokio::time::timeout hangs under Miri
     async fn test_download_global_timeout() {
-        // #1615 (F11 / G-3 / G-4 / G-5): this path now applies the
-        // literal-IP entry guard, which refuses wiremock's 127.0.0.1.
-        // The named constructor is the repo's rule — never spell the
-        // variable out at the call site.
-        let _entry_off = webfang_test_utils::EnvGuard::entry_guard_off();
+        let _entry_off = entry_off();
 
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -682,11 +673,7 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // tokio::time::timeout hangs under Miri
     async fn test_no_permit_inflation_after_download() {
-        // #1615 (F11 / G-3 / G-4 / G-5): this path now applies the
-        // literal-IP entry guard, which refuses wiremock's 127.0.0.1.
-        // The named constructor is the repo's rule — never spell the
-        // variable out at the call site.
-        let _entry_off = webfang_test_utils::EnvGuard::entry_guard_off();
+        let _entry_off = entry_off();
 
         let mock_server = MockServer::start().await;
         // 8 KiB body: large enough to span multiple wreq frames so per-chunk
@@ -742,11 +729,7 @@ mod tests {
     #[cfg_attr(miri, ignore)] // tokio::time::sleep hangs under Miri (time-driver does not advance)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_per_chunk_backpressure_holds_permits_mid_stream() {
-        // #1615 (F11 / G-3 / G-4 / G-5): this path now applies the
-        // literal-IP entry guard, which refuses wiremock's 127.0.0.1.
-        // The named constructor is the repo's rule — never spell the
-        // variable out at the call site.
-        let _entry_off = webfang_test_utils::EnvGuard::entry_guard_off();
+        let _entry_off = entry_off();
 
         // Two 4 KB chunks with a 500 ms gap between them: after the first chunk
         // the downloader holds 4 KB of permits while waiting for the second.
@@ -825,11 +808,7 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // tokio::time::timeout hangs under Miri
     async fn test_download_rejects_oversized_content_length() {
-        // #1615 (F11 / G-3 / G-4 / G-5): this path now applies the
-        // literal-IP entry guard, which refuses wiremock's 127.0.0.1.
-        // The named constructor is the repo's rule — never spell the
-        // variable out at the call site.
-        let _entry_off = webfang_test_utils::EnvGuard::entry_guard_off();
+        let _entry_off = entry_off();
 
         let mock_server = MockServer::start().await;
         // 2 KiB body with a 1 KiB limit → Content-Length (2048) > limit (1024).
@@ -878,11 +857,7 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // tokio::time::timeout hangs under Miri
     async fn test_download_semaphore_inanition_no_deadlock() {
-        // #1615 (F11 / G-3 / G-4 / G-5): this path now applies the
-        // literal-IP entry guard, which refuses wiremock's 127.0.0.1.
-        // The named constructor is the repo's rule — never spell the
-        // variable out at the call site.
-        let _entry_off = webfang_test_utils::EnvGuard::entry_guard_off();
+        let _entry_off = entry_off();
 
         let mock_server = MockServer::start().await;
         // `n` bytes delivered as the response body.

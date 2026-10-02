@@ -55,3 +55,22 @@ pub(crate) fn result_text(result: &CallToolResult) -> String {
         })
         .unwrap_or_default()
 }
+
+/// Shared capture sink behind a test tracing subscriber, so a span can be
+/// READ rather than reviewed (#1615 DF-L2). Was a per-file copy in the
+/// `content` and `security` handler tests.
+#[derive(Clone)]
+pub(crate) struct SharedBufWriter(pub(crate) std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+impl std::io::Write for SharedBufWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0
+            .lock()
+            .expect("capture buffer lock is never poisoned")
+            .extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}

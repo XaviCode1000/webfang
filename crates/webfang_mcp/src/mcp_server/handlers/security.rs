@@ -240,7 +240,7 @@ fn render_metrics(snapshot: &MetricsSnapshot) -> CallToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp_server::handlers::test_support::{self, result_text};
+    use crate::mcp_server::handlers::test_support::{self, result_text, SharedBufWriter};
     use std::sync::Once;
     use webfang_core::domain::waf::WafTier;
 
@@ -660,25 +660,6 @@ mod tests {
             .expect("verify_waf_integrity returns Ok");
         let text = result_text(&res);
         assert!(text.contains("WAF blocked"), "T2 + 403 must block: {text}");
-    }
-
-    /// In-memory `MakeWriter` so the M4 test can assert on the structured
-    /// tracing events the handler emits (the default test harness drops
-    /// them).
-    #[derive(Clone)]
-    struct SharedBufWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl std::io::Write for SharedBufWriter {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0
-                .lock()
-                .expect("capture buffer lock is never poisoned")
-                .extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
     }
 
     /// M4 (#1601): on a blocked verdict the MCP response keeps provider +
