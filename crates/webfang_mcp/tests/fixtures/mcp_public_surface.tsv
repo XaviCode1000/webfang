@@ -1,0 +1,153 @@
+# MCP public-surface fixture — generated, do NOT hand-edit.
+# Policy: docs/src/mcp-public-surface-policy.md (§3.1 classification table).
+# Regenerate: scripts/check_mcp_public_surface.sh --record
+# A changed row is a compatibility change; the version marker is the
+# separate file mcp_public_surface.version, and the shell guard fails
+# until it moves. Descriptions are intentionally NOT here (S0 prose).
+# tools: 36  properties: 81  defs: 20
+
+[tools]
+# <tool>	<additionalProperties>
+build_obsidian_uri	false
+clean_html	false
+convert_html_to_markdown	false
+convert_wiki_links	false
+crawl_site	false
+crawl_with_sitemap	false
+detect_obsidian_vault	false
+detect_spa	false
+detect_waf	false
+discover_sitemap	false
+discover_urls	false
+download_assets	false
+export_file	false
+export_jsonl	false
+export_vector	false
+extract_domain	false
+extract_links	false
+generate_frontmatter	false
+generate_rich_metadata	false
+get_accessibility_snapshot	false
+get_scrape_metrics	false
+highlight_code_blocks	false
+is_internal_link	false
+list_waf_providers	false
+match_url_pattern	false
+normalize_url	false
+open_in_obsidian	false
+process_export_pipeline	false
+scrape_batch	false
+scrape_url	false
+scrape_with_options	false
+search_obsidian	false
+semantic_cleaner	false
+url_to_file_path	false
+validate_url	false
+verify_waf_integrity	false
+
+[properties]
+# <tool>	<property>	<optional|required>	<type>	<default>	<min>	<max>
+build_obsidian_uri	file_path	required	string	-	-	-
+build_obsidian_uri	vault_name	required	string	-	-	-
+clean_html	html	required	string	-	-	-
+convert_html_to_markdown	html	required	string	-	-	-
+convert_wiki_links	base_domain	required	string	-	-	-
+convert_wiki_links	markdown	required	string	-	-	-
+crawl_site	checkpoint_dir	optional	null|string	-	-	-
+crawl_site	js_strategy	optional	null|string	"static"	-	-
+crawl_site	max_depth	optional	integer|null	3	0	10
+crawl_site	max_pages	optional	integer|null	100	1	100000
+crawl_site	session_pool	optional	boolean|null	-	-	-
+crawl_site	url	required	string	-	-	-
+crawl_with_sitemap	max_depth	optional	integer|null	3	0	10
+crawl_with_sitemap	max_pages	optional	integer|null	100	1	100000
+crawl_with_sitemap	sitemap_url	optional	-	-	-	-
+crawl_with_sitemap	url	required	string	-	-	-
+detect_obsidian_vault	vault_path	optional	null|string	-	-	-
+detect_spa	url	required	-	-	-	-
+detect_waf	html	required	string	-	-	-
+discover_sitemap	url	required	-	-	-	-
+discover_urls	url	required	-	-	-	-
+download_assets	base_url	required	-	-	-	-
+download_assets	documents	optional	boolean|null	-	-	-
+download_assets	html	required	string	-	-	-
+download_assets	images	optional	boolean|null	-	-	-
+download_assets	output_dir	optional	null|string	-	-	-
+export_file	content	required	string	-	-	-
+export_file	content_format	required	string	-	-	-
+export_file	filename	required	string	-	-	-
+export_file	format	optional	string	"jsonl"	-	-
+export_file	output_dir	required	string	-	-	-
+export_jsonl	filename	optional	null|string	-	-	-
+export_jsonl	output_dir	optional	null|string	-	-	-
+export_vector	filename	optional	null|string	-	-	-
+export_vector	output_dir	optional	null|string	-	-	-
+extract_domain	url	required	-	-	-	-
+extract_links	base_url	required	-	-	-	-
+extract_links	html	required	string	-	-	-
+generate_frontmatter	author	optional	null|string	-	-	-
+generate_frontmatter	excerpt	optional	null|string	-	-	-
+generate_frontmatter	tags	optional	array|null	-	-	-
+generate_frontmatter	title	optional	null|string	-	-	-
+generate_frontmatter	url	optional	-	-	-	-
+generate_rich_metadata	content	optional	null|string	-	-	-
+get_accessibility_snapshot	format	optional	-	-	-	-
+get_accessibility_snapshot	interactive_only	optional	boolean	true	-	-
+get_accessibility_snapshot	selector	optional	null|string	"body"	-	-
+get_accessibility_snapshot	url	required	-	-	-	-
+highlight_code_blocks	markdown	required	string	-	-	-
+is_internal_link	seed_domain	required	string	-	-	-
+is_internal_link	url	required	-	-	-	-
+match_url_pattern	pattern	required	string	-	-	-
+match_url_pattern	url	required	-	-	-	-
+normalize_url	url	required	-	-	-	-
+open_in_obsidian	file_path	required	string	-	-	-
+open_in_obsidian	vault_name	required	string	-	-	-
+process_export_pipeline	format	optional	string	"jsonl"	-	-
+process_export_pipeline	pipeline_format	optional	null|string	-	-	-
+process_export_pipeline	url	optional	string	-	-	-
+scrape_batch	concurrency	optional	integer|null	3	1	64
+scrape_batch	delay_ms	optional	integer|null	0	-	-
+scrape_batch	ignore_robots	optional	boolean|null	false	-	-
+scrape_batch	single_page	optional	boolean|null	false	-	-
+scrape_batch	urls	required	array	-	-	-
+scrape_url	url	required	-	-	-	-
+scrape_with_options	download_documents	optional	boolean|null	false	-	-
+scrape_with_options	download_images	optional	boolean|null	false	-	-
+scrape_with_options	ignore_robots	optional	boolean|null	false	-	-
+scrape_with_options	max_pages	optional	integer|null	-	1	100000
+scrape_with_options	selector	optional	null|string	"body"	-	-
+scrape_with_options	url	required	string	-	-	-
+search_obsidian	limit	optional	integer|null	-	0	-
+search_obsidian	query	required	string	-	-	-
+search_obsidian	vault_path	optional	null|string	-	-	-
+semantic_cleaner	url	required	-	-	-	-
+url_to_file_path	url	required	-	-	-	-
+validate_url	url	required	string	-	-	-
+verify_waf_integrity	content_type	optional	null|string	null	-	-
+verify_waf_integrity	headers	optional	null|object	-	-	-
+verify_waf_integrity	html	optional	null|string	-	-	-
+verify_waf_integrity	status	optional	integer|null	null	0	65535
+
+[defs]
+# <tool>	<$defs entry>	<const,comma,list>
+crawl_site	McpUrl	-
+crawl_with_sitemap	McpUrl	-
+detect_spa	McpUrl	-
+discover_sitemap	McpUrl	-
+discover_urls	McpUrl	-
+download_assets	McpUrl	-
+extract_domain	McpUrl	-
+extract_links	McpUrl	-
+generate_frontmatter	McpUrl	-
+get_accessibility_snapshot	McpUrl	-
+get_accessibility_snapshot	SnapshotFormatParams	compact,playwright-mcp
+is_internal_link	McpUrl	-
+match_url_pattern	McpUrl	-
+normalize_url	McpUrl	-
+process_export_pipeline	McpUrl	-
+scrape_batch	McpUrl	-
+scrape_url	McpUrl	-
+scrape_with_options	McpUrl	-
+semantic_cleaner	McpUrl	-
+url_to_file_path	McpUrl	-

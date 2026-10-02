@@ -590,6 +590,11 @@ lane_fmt_and_guards() {
   # warn-skip only when the script itself is absent).
   run_guard "orphan snapshot guard" scripts/check_orphan_snapshots.sh \
     bash scripts/check_orphan_snapshots.sh
+  # Issue #1614: the version-marker half of the MCP public-surface policy. The
+  # other half (live schema vs the committed fixture) is a test and runs in the
+  # cargo lanes; this one needs the base commit, which a test cannot see.
+  run_guard "mcp public-surface version marker (#1614)" scripts/check_mcp_public_surface.sh \
+    bash scripts/check_mcp_public_surface.sh
   run_step "forbid sitemap string-match coupling" bash -c "
     if grep -rn 'contains(\"no URLs found\")' crates/*/src/ --include='*.rs'; then
       echo 'use ScraperError::SitemapEmpty, never message matching'; exit 1
