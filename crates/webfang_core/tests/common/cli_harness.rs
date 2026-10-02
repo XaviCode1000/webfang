@@ -30,6 +30,7 @@
 use assert_cmd::Command;
 use insta::assert_snapshot;
 use std::path::Path;
+use std::time::{Duration, Instant};
 use wiremock::matchers::{method, path as wm_path};
 use wiremock::{Mock, ResponseTemplate};
 
@@ -44,6 +45,17 @@ use wiremock::{Mock, ResponseTemplate};
 /// `target/debug/webfang` existing. Features are derived individually via
 /// `cfg!()` so the binary matches the test's own configuration.
 pub(crate) fn webfang_path() -> std::path::PathBuf {
+    // #1697: resolve ONCE per process. This function shells out to
+    // `cargo build`, so without the cache every `cmd()` in a test process
+    // re-invoked the compiler — cheap when it is a no-op, but the FIRST call
+    // in a fresh target dir pays the whole build, inside whatever the caller
+    // was timing. Measured on this change: cold 40.2 s (the test's own 20 s
+    // budget, twice, then a 25 s pass), warm 0.319 s for the same test.
+    static PATH: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    PATH.get_or_init(resolve_webfang_path).clone()
+}
+
+fn resolve_webfang_path() -> std::path::PathBuf {
     if let Ok(p) = std::env::var("CARGO_BIN_EXE_webfang") {
         return std::path::PathBuf::from(p);
     }
@@ -109,6 +121,69 @@ pub(crate) fn webfang_path() -> std::path::PathBuf {
 /// Shared binary command builder for tests that don't need a mock server.
 pub(crate) fn cmd() -> Command {
     sanitize_env(Command::new(webfang_path()))
+}
+
+/// Wall-clock budget for one spawned-binary attempt whose real latency is
+/// milliseconds and whose failure mode is a hang (#1697).
+///
+/// The observed healthy run on `windows-latest` takes 3.05 s, so this leaves
+/// a ~6x margin — wide enough that a loaded runner does not trip it, tight
+/// enough that a genuinely stuck attempt is abandoned long before nextest's
+/// 180 s `terminate-after`.
+pub(crate) const SPAWN_LATENCY_BUDGET: Duration = Duration::from_secs(20);
+
+/// #1697: run a spawned-binary assertion under a wall-clock budget THIS
+/// harness enforces, retrying once before it declares failure.
+///
+/// `assert_cmd`'s `.timeout()` is not a bound a test process can rely on: on
+/// `windows-latest` `batch_empty_file_exits_64` set it to 5 s and the test
+/// still ran until nextest killed it at 180 s. With `--retries 2`, that cost
+/// the first attempt the whole `terminate-after` and then passed in 3 s —
+/// which is why one flaky test consumed 26% of the `Integration tests` step's
+/// wall clock while reporting itself as a plain FLAKY.
+///
+/// The assertion therefore runs on a worker thread and the caller waits with
+/// `recv_timeout`, so an overrunning attempt is *abandoned* instead of being
+/// allowed to hold the test process open. One retry, then a panic carrying
+/// BOTH measured latencies — a real regression overruns every attempt and so
+/// still fails, with the numbers that say by how much.
+///
+/// The abandoned thread outlives the budget but not the test: nextest gives
+/// each test its own process, so whatever is still blocked dies with it.
+pub(crate) fn assert_spawn_within<F>(budget: Duration, what: &str, attempt: F)
+where
+    F: Fn() -> Result<(), String> + Send + Sync + 'static,
+{
+    let attempt = std::sync::Arc::new(attempt);
+    // #1697: the budget covers the SPAWN, never a compiler invocation.
+    // `webfang_path()` falls back to `cargo build` when `CARGO_BIN_EXE_webfang`
+    // is unset — which it always is here, since the binary is owned by the
+    // sibling crate `webfang_cli`. Resolving it before the clock starts keeps a
+    // cold target directory from being charged to the spawn latency.
+    let _ = webfang_path();
+    let mut overruns: Vec<Duration> = Vec::new();
+    for attempt_no in 1..=2u8 {
+        let started = Instant::now();
+        let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+        let worker = std::sync::Arc::clone(&attempt);
+        std::thread::spawn(move || {
+            let _ = tx.send(worker());
+        });
+        match rx.recv_timeout(budget) {
+            Ok(Ok(())) => return,
+            Ok(Err(failure)) => panic!("{what}: {failure}"),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => overruns.push(started.elapsed()),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                panic!("{what}: the attempt ended without a verdict (attempt {attempt_no})")
+            },
+        }
+    }
+    panic!(
+        "{what}: exceeded its {budget:?} budget on 2 consecutive attempts \
+         (latencies {overruns:?}). A regression would overrun every attempt, \
+         so this failure is real — see #1697 for the windows-latest flake this \
+         budget exists to bound."
+    );
 }
 
 /// Strip `WEBFANG_*` / `AI_MODEL_ID` from a spawned binary command so runs
@@ -406,6 +481,77 @@ pub(crate) fn assert_snapshot_plain(name: &str, value: impl Into<String>) {
     settings.bind(|| {
         assert_snapshot!(name, value.into());
     });
+}
+
+#[cfg(test)]
+mod spawn_latency_budget {
+    use super::{assert_spawn_within, SPAWN_LATENCY_BUDGET};
+    use std::time::{Duration, Instant};
+
+    /// The property #1697 needs and that the Windows lane cannot show on a
+    /// healthy runner: an overrunning attempt is ABANDONED at its budget, not
+    /// allowed to run to completion. A closure sleeping 10x the budget must
+    /// therefore cost ~2x the budget (two attempts), not ~20x. Without this
+    /// the helper could silently degrade back into "wait for whatever the
+    /// child does", which is exactly the 180 s burn it was written to stop.
+    ///
+    /// The 5x bound is deliberately loose: it still separates ~200 ms from
+    /// ~2 s by an order of magnitude while leaving room for a loaded runner.
+    #[test]
+    fn an_overrunning_attempt_is_abandoned_at_its_budget() {
+        // Warm the binary resolution the same way `assert_spawn_within` does,
+        // so a cold target directory's `cargo build` is not charged to this
+        // test's clock — that charge belongs to whichever test warms first,
+        // and asserting on it here would make the pin depend on test order.
+        let _ = super::webfang_path();
+        let budget = Duration::from_millis(100);
+        let sleep_ms = 10 * budget.as_millis() as u64;
+        let started = Instant::now();
+        let result = std::panic::catch_unwind(|| {
+            assert_spawn_within(budget, "stuck_spawn", move || {
+                std::thread::sleep(Duration::from_millis(sleep_ms));
+                Ok(())
+            });
+        });
+        let elapsed = started.elapsed();
+        assert!(result.is_err(), "a stuck attempt must fail the test");
+        assert!(
+            elapsed < budget * 5,
+            "two abandoned attempts should cost about 2x the budget, took {elapsed:?}"
+        );
+    }
+
+    /// The counterpart: a healthy attempt returns immediately and never pays
+    /// the budget, so the helper adds no latency to the ~941 tests that spawn
+    /// the binary normally.
+    ///
+    /// These three tests are compiled into every integration-test binary that
+    /// includes `cli_harness.rs`, so this one ran in parallel with whatever
+    /// else the runner was doing — and whichever of them warmed the binary
+    /// first decided whether a cold `cargo build` landed inside this clock.
+    /// Warming up front makes the pin independent of test order AND of which
+    /// binary happens to run first.
+    #[test]
+    fn a_healthy_attempt_returns_without_paying_the_budget() {
+        let _ = super::webfang_path();
+        let started = Instant::now();
+        assert_spawn_within(SPAWN_LATENCY_BUDGET, "healthy_spawn", || Ok(()));
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "a passing attempt must not wait on the budget"
+        );
+    }
+
+    /// A genuine failure must surface its own message, not be swallowed into
+    /// the generic budget panic — otherwise the retry would hide the first
+    /// verdict and report a timeout for a test that actually answered wrong.
+    #[test]
+    #[should_panic(expected = "expected code 64, got 0")]
+    fn a_failing_attempt_reports_its_own_verdict() {
+        assert_spawn_within(SPAWN_LATENCY_BUDGET, "wrong_code", || {
+            Err("expected code 64, got 0".to_owned())
+        });
+    }
 }
 
 #[cfg(test)]
