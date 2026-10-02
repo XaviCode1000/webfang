@@ -100,6 +100,7 @@ pub fn create_rate_limited_client(delay_ms: u64, tls_emulation: Profile) -> Scra
 ///
 /// * `Ok(HttpFetchResult)` - Body, status, post-redirect `final_url`, and cookies
 /// * `Err(CrawlError)` - Error during fetch (transport, non-2xx status, body read)
+///   or a forbidden SSRF literal target (below)
 ///
 /// # Note on final URL
 ///
@@ -107,6 +108,38 @@ pub fn create_rate_limited_client(delay_ms: u64, tls_emulation: Profile) -> Scra
 /// `Uri` cannot be parsed back into a `url::Url` (e.g. an opaque final URI), the
 /// caller-supplied URL is reused as a conservative fallback so callers can keep
 /// keying by URL without special-casing the rare failure path.
+///
+/// # SSRF layer 2 lives here, not at the call sites (#1615, F11)
+///
+/// This is the one place every [`StaticFetchPort`] consumer passes through:
+/// `application::crawler::ports::ProductionPageFetcher` calls it whenever no
+/// JS-rendering `Downloader` is injected. Before this change the fallback
+/// applied the client-stack layers -- timeout, redirect policy, connect-time
+/// validating resolver -- but never the LITERAL-IP entry guard, so a target
+/// like `http://169.254.169.254/` was dialed: the address the validating
+/// resolver checks is itself the forbidden address, and a literal needs no
+/// resolution in the first place. The JS arm never had this problem, because
+/// `FetchRouter::fetch` applies `reject_forbidden_literal_url` to every
+/// strategy arm. That asymmetry is the finding.
+///
+/// Putting the check at the PORT rather than at each call site is the issue's
+/// own remedy, and it is the one that survives: a future consumer of the port
+/// inherits the guard by existing, where a call-site check is a check someone
+/// has to remember to add. The check runs before the client is built, so a
+/// refused target never opens a socket and never constructs a TLS stack.
+///
+/// Ordering is the guard chain in `AGENTS.md` and nothing here is reordered:
+/// entry validation, then pacing at the call site, then per attempt timeout ->
+/// redirect -> SSRF-at-dial. The literal guard is a pre-dial refinement of
+/// stage 3c, not a new stage.
+///
+/// # Errors
+///
+/// [`CrawlError::InvalidUrl`] when the host is a forbidden IP literal, carrying
+/// the guard's Spanish message verbatim -- the same text the CLI and MCP entry
+/// points produce, because it is the same guard. `InvalidUrl` is terminal: the
+/// engine does not retry it and does not escalate to the JS downloader, so a
+/// refused target stays refused.
 pub async fn fetch_url(url: &str, config: &CrawlerConfig) -> Result<HttpFetchResult, CrawlError> {
     debug!("Fetching URL: {}", url);
 
@@ -114,6 +147,15 @@ pub async fn fetch_url(url: &str, config: &CrawlerConfig) -> Result<HttpFetchRes
         message: format!("invalid URL {url}: {e}"),
         status_code: None,
     })?;
+
+    // SSRF layer 2 (F-06 + F-32 #1217), applied here so every consumer of the
+    // port inherits it (F11). Same choke point, same deny list, same
+    // exact-"1" hatch as the CLI and MCP entry paths: sharing
+    // `reject_forbidden_literal_url` is what makes the entry points unable to
+    // drift apart.
+    if let Err(rejection) = crate::domain::ssrf_guard::reject_forbidden_literal_url(&requested) {
+        return Err(CrawlError::InvalidUrl(rejection.to_string()));
+    }
 
     let client = create_rate_limited_client(config.delay_ms, config.tls_emulation)
         // LCOV_EXCL_LINE defensive: wreq-client-build — client construction fails only on invalid TLS profile, an invariant
@@ -207,6 +249,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_fetch_url_with_custom_profile_succeeds() {
+        // #1615 (F11 / G-3 / G-4 / G-5): this path now applies the
+        // literal-IP entry guard, which refuses wiremock's 127.0.0.1.
+        // The named constructor is the repo's rule — never spell the
+        // variable out at the call site.
+        let _entry_off = webfang_test_utils::EnvGuard::entry_guard_off();
         use wiremock::matchers::path;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 

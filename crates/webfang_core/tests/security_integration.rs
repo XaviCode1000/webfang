@@ -171,12 +171,40 @@ async fn test_datadome_high_entropy_detection() {
         .map(char::from)
         .collect();
 
-    // Degraded mode treats unknown status as non-200, so the high-entropy body
-    // (>100KB, >5.5 b/B) blocks as an obfuscated WAF challenge.
-    let verdict = inspect_body(&obfuscated_js);
+    // #1615 F8: this row used to run in DEGRADED mode and assert a block,
+    // documenting the false positive as intended behaviour — the comment said
+    // "degraded mode treats unknown status as non-200". Degraded mode has no
+    // HTTP context, and its documented contract is that only unambiguous
+    // challenge markers block; a size/entropy heuristic is not one. The
+    // detection is real, so the row supplies the status that correlates with a
+    // WAF. The degraded arm now has its own row, asserting the opposite.
+    ensure_waf_inspector();
+    let ctx = InspectionContext {
+        status: Some(403),
+        ..Default::default()
+    };
+    let verdict = waf_inspector().inspect(&obfuscated_js, &ctx);
     assert!(
         verdict.is_blocked,
-        "High entropy content should be detected, got {verdict:?}"
+        "high-entropy content behind a WAF status should be detected, got {verdict:?}"
+    );
+}
+
+/// #1615 F8 — the same body in degraded mode, which is now clean. This is the
+/// inverse of the row above and is what makes the pair meaningful: the rule
+/// was not disabled, it stopped firing without evidence.
+#[tokio::test]
+async fn high_entropy_alone_does_not_block_in_degraded_mode() {
+    let obfuscated_js: String = (32u8..=126)
+        .cycle()
+        .take(95 * 1100)
+        .map(char::from)
+        .collect();
+    let verdict = inspect_body(&obfuscated_js);
+    assert!(
+        !verdict.is_blocked,
+        "degraded mode has no status to correlate, so entropy alone must not \
+         block, got {verdict:?}"
     );
 }
 
@@ -382,12 +410,51 @@ async fn test_waf_inspector_silent_challenge_detection() {
         </html>
     "#;
 
-    let verdict = inspect_with_headers(HashMap::new(), html);
+    // #1615 F8: this row ran degraded and asserted a block, relying on "unknown
+    // status counts as non-2xx". The 200+HTML arm is the documented silent
+    // challenge that `discovery.rs` depends on, and it is a real detection —
+    // so the row states the status and content type it actually means to
+    // exercise.
+    ensure_waf_inspector();
+    let ctx = InspectionContext {
+        status: Some(200),
+        content_type: Some("text/html".to_string()),
+        ..Default::default()
+    };
+    let verdict = waf_inspector().inspect(html, &ctx);
     assert!(verdict.is_blocked);
     assert!(
         verdict.evidence_chain().contains("Silent Challenge"),
         "chain: {}",
         verdict.evidence_chain()
+    );
+}
+
+/// #1615 F8 — the same script-dense body behind an ordinary 404, which is now
+/// clean. A 404 page is not a challenge, and reporting it as one made the
+/// engine skip real content.
+#[tokio::test]
+async fn silent_challenge_does_not_block_on_an_ordinary_404() {
+    let html = r#"
+        <html>
+        <script></script>
+        <script></script>
+        <script></script>
+        <script></script>
+        <script></script>
+        <script></script>
+        </html>
+    "#;
+    ensure_waf_inspector();
+    let ctx = InspectionContext {
+        status: Some(404),
+        content_type: Some("text/html".to_string()),
+        ..Default::default()
+    };
+    let verdict = waf_inspector().inspect(html, &ctx);
+    assert!(
+        !verdict.is_blocked,
+        "a 404 is not a silent challenge, got {verdict:?}"
     );
 }
 

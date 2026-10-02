@@ -1712,6 +1712,13 @@ async fn crawl_site_with_options_inner(
 #[cfg(test)]
 #[cfg(not(miri))] // wiremock + wreq use btls-sys FFI (unsupported by Miri)
 mod tests {
+    /// #1615 (F11 / G-3 / G-4 / G-5): these tests drive real fetches against
+    /// wiremock's 127.0.0.1, which the literal-IP entry guard now refuses.
+    /// `EnvGuard::entry_guard_off()` disarms the guard for its lifetime — the
+    /// named constructor is the repo's rule, so each call site stays one line.
+    fn entry_off() -> webfang_test_utils::EnvGuard {
+        webfang_test_utils::EnvGuard::entry_guard_off()
+    }
     /// Test helper: non-zero literal for `CrawlerConfig::concurrency` (#1132).
     fn nz(n: usize) -> std::num::NonZeroUsize {
         std::num::NonZeroUsize::new(n).expect("test literal is non-zero")
@@ -1865,6 +1872,7 @@ mod tests {
     /// rate-limit refill (#509 acceptance).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancellation_aborts_rate_blocked_worker_and_run_returns_within_bound() {
+        let _entry_off = entry_off();
         let server = MockServer::start().await;
         let port = server.address().port();
         // Burst-decoupled (#302 D1): the token-bucket burst no longer tracks
@@ -2057,6 +2065,7 @@ mod tests {
     /// pattern MUST still be crawled (sanity check).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn seed_not_excluded_is_crawled() {
+        let _entry_off = entry_off();
         let server = MockServer::start().await;
         let port = server.address().port();
         Mock::given(path("/"))
@@ -2175,6 +2184,7 @@ mod tests {
     /// every task context derived from the session.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn ports_injected_pool_reaches_crawl_workers() {
+        let _entry_off = entry_off();
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/"))
@@ -2235,6 +2245,7 @@ mod tests {
     /// completes — the port-gated fetch path must not block a healthy domain.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn crawl_site_with_options_session_pool_enabled_crawls_through_port() {
+        let _entry_off = entry_off();
         let server = MockServer::start().await;
         let port = server.address().port();
         Mock::given(path("/"))
@@ -2273,6 +2284,7 @@ mod tests {
     #[allow(deprecated)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn deprecated_crawl_site_shim_matches_explicit_options_entry() {
+        let _entry_off = entry_off();
         let server = MockServer::start().await;
         // Two runs, one per entry; each fetches exactly the seed (max_depth 0,
         // robots ignored via the option the shim derives from config).
@@ -2333,6 +2345,7 @@ mod tests {
     #[allow(deprecated)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn deprecated_crawl_site_capturing_shim_matches_content_sink_option() {
+        let _entry_off = entry_off();
         use crate::application::crawler::content_sink::{CrawlContentSink, InMemoryContentSink};
 
         let server = MockServer::start().await;

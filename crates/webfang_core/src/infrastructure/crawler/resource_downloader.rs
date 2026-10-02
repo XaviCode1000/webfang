@@ -11,6 +11,7 @@ use bytes::BytesMut;
 use futures::StreamExt;
 use std::sync::Arc;
 use tokio::time::{timeout, Duration};
+use url::Url;
 use wreq::Client;
 
 /// RAII guard for semaphore permits.
@@ -153,14 +154,57 @@ impl ResourceDownloader {
     ///   the release, guaranteeing `permits released == permits acquired`
     ///   (no double-release, no permit inflation).
     ///
+    /// # SSRF layer 2 (#1615, G-5) — URL provenance, traced
+    ///
+    /// The finding was that this downloader builds a guarded client (redirect
+    /// policy + connect-time validating resolver) with no per-URL literal
+    /// guard. The tracing the issue asked for:
+    ///
+    /// - **Who can reach `download` today?** Nobody. `ResourceDownloadPort`
+    ///   and `ResourceDownloader` have zero call sites outside this module's
+    ///   own tests — the `application::elastic_ingestion` consumer that the
+    ///   port-slice comment describes is not wired. So the gap is latent, not
+    ///   live, which is also why no probe traffic ever reached it.
+    /// - **Where would the URL come from once wired?** Elastic-ingestion
+    ///   corpus entries — operator-supplied document URLs, not URLs extracted
+    ///   from fetched HTML. That is a materially weaker provenance than the
+    ///   asset chain (`asset_download.rs`, which extracts attacker-controlled
+    ///   links out of a hostile page and is therefore guarded there), and it
+    ///   is the reason this is graded low rather than high.
+    /// - **Why guard it anyway?** "Latent" is a statement about today's call
+    ///   graph, not about the function. `download` takes a bare `&str` with no
+    ///   validated type, so the moment a caller passes a corpus row that came
+    ///   from somewhere else, the guard is the only thing between a corpus file
+    ///   and a socket. The check is one line and costs nothing, so the answer
+    ///   is "covered" rather than "accepted".
+    ///
+    /// The refusal is `ScraperError::Config` carrying the guard's Spanish
+    /// reason — the same variant and the same text `ssrf_gate` uses for the
+    /// LLM base URL, so one refusal reads identically at every entry point.
+    /// It is checked before the request is built, so a refused URL never opens
+    /// a socket and never acquires a permit.
+    ///
     /// # Errors
     /// Returns `ScraperError` if:
+    /// - The host is a forbidden SSRF literal IP (above)
     /// - Global timeout exceeded (`GlobalTimeout`)
     /// - Per-chunk timeout exceeded — Anti-Slowloris (`SlowlorisTimeout`)
     /// - `Content-Length` or accumulated size exceeds the limit (`PayloadTooLarge`)
     /// - Network error occurs (`Network`)
     /// - Semaphore acquisition fails (`SemaphoreInanition`)
     pub async fn download(&self, url: &str) -> Result<Vec<u8>, ScraperError> {
+        // SSRF layer 2 (#1615, G-5): pre-dial, pre-permit. A literal target
+        // needs no DNS, so the validating resolver in `self.client` has nothing
+        // to check and the address it would dial is the forbidden one. This is
+        // the same position as everywhere else in the guard chain — a
+        // refinement of SSRF-at-dial, not a new stage.
+        if let Ok(parsed) = Url::parse(url) {
+            if let Err(rejection) = crate::domain::ssrf_guard::reject_forbidden_literal_url(&parsed)
+            {
+                return Err(ScraperError::Config(rejection.to_string()));
+            }
+        }
+
         // Global timeout wraps the request (headers). Permits are acquired only
         // AFTER headers, so oversized responses are rejected permit-free.
         let response = timeout(
@@ -310,6 +354,13 @@ impl ResourceDownloader {
 
 #[cfg(all(test, not(miri)))] // tokio::time::timeout + spawn_blocking hang under Miri (entire module)
 mod tests {
+    /// #1615 (F11 / G-3 / G-4 / G-5): these tests drive real fetches against
+    /// wiremock's 127.0.0.1, which the literal-IP entry guard now refuses.
+    /// `EnvGuard::entry_guard_off()` disarms the guard for its lifetime — the
+    /// named constructor is the repo's rule, so each call site stays one line.
+    fn entry_off() -> webfang_test_utils::EnvGuard {
+        webfang_test_utils::EnvGuard::entry_guard_off()
+    }
     use super::*;
     use std::sync::Arc;
     use tokio::sync::Semaphore;
@@ -492,6 +543,8 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // tokio::time::timeout hangs under Miri
     async fn test_download_normal() {
+        let _entry_off = entry_off();
+
         let mock_server = MockServer::start().await;
         let body = b"<html><body>hola</body></html>";
         Mock::given(method("GET"))
@@ -520,6 +573,8 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // tokio::time::timeout hangs under Miri
     async fn test_download_slowloris_chunk_timeout() {
+        let _entry_off = entry_off();
+
         let config = ResourceDownloadConfig {
             // Generous global budget so the GLOBAL timeout cannot fire first.
             global_timeout_seconds: 30,
@@ -547,6 +602,8 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // tokio::time::timeout hangs under Miri
     async fn test_download_payload_too_large() {
+        let _entry_off = entry_off();
+
         let mock_server = MockServer::start().await;
         // 2 KiB body > 1 KiB configured limit.
         let body = vec![0u8; 2 * 1024];
@@ -576,6 +633,8 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // tokio::time::timeout hangs under Miri
     async fn test_download_global_timeout() {
+        let _entry_off = entry_off();
+
         let mock_server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/"))
@@ -614,6 +673,8 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // tokio::time::timeout hangs under Miri
     async fn test_no_permit_inflation_after_download() {
+        let _entry_off = entry_off();
+
         let mock_server = MockServer::start().await;
         // 8 KiB body: large enough to span multiple wreq frames so per-chunk
         // acquire is exercised (a single chunk would still expose the bug).
@@ -668,6 +729,8 @@ mod tests {
     #[cfg_attr(miri, ignore)] // tokio::time::sleep hangs under Miri (time-driver does not advance)
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn test_per_chunk_backpressure_holds_permits_mid_stream() {
+        let _entry_off = entry_off();
+
         // Two 4 KB chunks with a 500 ms gap between them: after the first chunk
         // the downloader holds 4 KB of permits while waiting for the second.
         let chunk = vec![0x21u8; 4 * 1024];
@@ -745,6 +808,8 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // tokio::time::timeout hangs under Miri
     async fn test_download_rejects_oversized_content_length() {
+        let _entry_off = entry_off();
+
         let mock_server = MockServer::start().await;
         // 2 KiB body with a 1 KiB limit → Content-Length (2048) > limit (1024).
         let body = vec![0u8; 2 * 1024];
@@ -792,6 +857,8 @@ mod tests {
     #[tokio::test]
     #[cfg_attr(miri, ignore)] // tokio::time::timeout hangs under Miri
     async fn test_download_semaphore_inanition_no_deadlock() {
+        let _entry_off = entry_off();
+
         let mock_server = MockServer::start().await;
         // `n` bytes delivered as the response body.
         let n: usize = 256;
