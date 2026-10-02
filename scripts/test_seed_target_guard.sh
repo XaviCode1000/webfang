@@ -173,6 +173,62 @@ else
 fi
 rm -f "$SANDBOX/bin/realpath"
 
+# ── 11. the remediation must not hand back the bootstrap we removed ──────────
+#
+# The guard caught a worktree pointing at main's target and told the operator to
+# recover with a `sed` over main's .envrc. That recipe is gone. AGENTS.md records
+# why it had to go: it made main's target name a load-bearing input to every
+# future worktree, and when main moved off `cargo-target/webfang` the substitution
+# silently stopped matching and emitted a perfectly VALID CARGO_TARGET_DIR
+# pointing at main's target. Silent, and caught only here, at the build.
+#
+# So the message printed on refusal is part of what this gate is worth. A correct
+# verdict paired with a remediation that reintroduces the failure is not a pass,
+# which is why this is asserted rather than assumed.
+MAIN_ROOT_T="$(dirname "$(git -C "$REPO_ROOT" rev-parse --path-format=absolute --git-common-dir)")"
+MAIN_TARGET="$(sed -n 's/^export CARGO_TARGET_DIR=//p' "$MAIN_ROOT_T/.envrc" 2>/dev/null | tail -1)"
+if [ -z "$MAIN_TARGET" ]; then
+  echo "SKIP 11. main's checkout is not bootstrapped; this suite already depends on it"
+else
+  : >"$MARKER"
+  out="$(cd "$REPO_ROOT" && env \
+      PATH="$SANDBOX/bin:$PATH" \
+      CARGO_TARGET_DIR="$MAIN_TARGET" \
+      WEBFANG_SEEDS_ROOT="$STORES" \
+        WEBFANG_QUARANTINE_ROOT="$QSTORE" \
+      bash "$GATE" 2>&1)"; rc=$?
+  if [ "$rc" -ne 2 ]; then
+    bad "11. main's target → expected exit 2, got $rc"
+  elif [ -s "$MARKER" ]; then
+    bad "11. rejected, but Cargo RAN first"
+  else
+    ok "11. main's target → exit 2, Cargo never invoked"
+  fi
+  case "$out" in
+    *"main's target dir"*) ok "11. it names the collision it found" ;;
+    *) bad "11. no explanation: $(printf '%s' "$out" | head -1)" ;;
+  esac
+  # The regression itself: any remediation that rewrites main's .envrc.
+  case "$out" in
+    *"sed -e"*".envrc"*|*"'\$MAIN_ROOT/.envrc'"*)
+      bad "11. remediation tells the operator to rewrite main's .envrc — the recipe that caused this failure" ;;
+    *)
+      ok "11. remediation does not rewrite main's .envrc" ;;
+  esac
+  case "$out" in
+    *"Do NOT derive it by rewriting main's .envrc"*)
+      ok "11. remediation says why, not only what" ;;
+    *)
+      bad "11. remediation forbids the old recipe without explaining the failure it caused" ;;
+  esac
+  case "$out" in
+    *"cargo-target/$(basename "$REPO_ROOT")"*)
+      ok "11. remediation names this tree's own target dir" ;;
+    *)
+      bad "11. remediation does not name a concrete target dir for this tree" ;;
+  esac
+fi
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

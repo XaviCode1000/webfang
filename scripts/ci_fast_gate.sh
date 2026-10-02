@@ -150,12 +150,20 @@ if [[ "$ROOT" != "$MAIN_ROOT" ]]; then
     echo "  CARGO_TARGET_DIR $(readlink -f "${CARGO_TARGET_DIR%/}")" >&2
     echo "  main's target:   $(readlink -f "$MAIN_TARGET")" >&2
     echo "  this would compile this tree into main's target dir (#1267)." >&2
-    echo "  fix: give this worktree its own target dir and re-run:" >&2
-    echo "        cd $ROOT" >&2
-    echo "        sed -e 's#cargo-target/$(basename "$MAIN_TARGET")#cargo-target/$(basename "$ROOT")#' \\" >&2
-    echo "            -e 's#^export CARGO_INCREMENTAL=1#export CARGO_INCREMENTAL=0#' \\" >&2
-    echo "            '$MAIN_ROOT/.envrc' > .envrc" >&2
-    echo "        direnv allow" >&2
+    echo "  fix: give this worktree its own target dir, then re-run." >&2
+    echo "        Run the worktree bootstrap documented in AGENTS.md" >&2
+    echo "        (§ Git Worktree Isolation → Worktree lifecycle) for '$ROOT':" >&2
+    echo "          - write .envrc FROM THIS WORKTREE'S OWN NAME, containing" >&2
+    echo "              export CARGO_TARGET_DIR=\$HOME/.cache/cargo-target/$(basename "$ROOT")" >&2
+    echo "              export CARGO_INCREMENTAL=0" >&2
+    echo "            (main keeps CARGO_INCREMENTAL=1 on measured grounds)" >&2
+    echo "          - direnv allow" >&2
+    echo "        Do NOT derive it by rewriting main's .envrc. That recipe was" >&2
+    echo "        removed because main's target name became a load-bearing input:" >&2
+    echo "        when main's name moved off 'cargo-target/webfang' the" >&2
+    echo "        substitution stopped matching and emitted a perfectly VALID" >&2
+    echo "        CARGO_TARGET_DIR pointing at main's target — silent, and caught" >&2
+    echo "        only here, at the build. That is this failure." >&2
     exit 2
   fi
 fi
