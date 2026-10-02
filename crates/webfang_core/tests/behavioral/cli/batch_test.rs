@@ -2,6 +2,7 @@
 
 use crate::cmd;
 use crate::BehavioralTest;
+use crate::{assert_spawn_within, SPAWN_LATENCY_BUDGET};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -328,19 +329,48 @@ async fn batch_file_processes_urls() {
     );
 }
 
+/// #1697: an empty `--batch-file` must exit 64 with the Spanish message.
+///
+/// Runs under [`assert_spawn_within`] because this test carries the
+/// `windows-latest` spawn-latency flake: its `.timeout(5s)` was not honoured
+/// there and the first attempt burned nextest's whole 180 s `terminate-after`
+/// before the retry passed in 3 s. The budget below bounds that at ~2x20 s
+/// instead, and the assertion — code 64 AND the message — is unchanged, so a
+/// genuine regression still fails and reports which half it got wrong.
 #[test]
 fn batch_empty_file_exits_64() {
     let temp = TempDir::new().unwrap();
     let batch_file = temp.path().join("urls.txt");
     std::fs::write(&batch_file, "").unwrap();
 
-    cmd()
-        .arg("--batch-file")
-        .arg(&batch_file)
-        .timeout(Duration::from_secs(5))
-        .assert()
-        .code(64)
-        .stderr(predicates::str::contains("No URLs provided"));
+    assert_spawn_within(
+        SPAWN_LATENCY_BUDGET,
+        "batch_empty_file_exits_64",
+        move || {
+            let output = cmd()
+                .arg("--batch-file")
+                .arg(&batch_file)
+                .timeout(Duration::from_secs(5))
+                .output()
+                .map_err(|e| format!("could not spawn the binary: {e}"))?;
+
+            if output.status.code() != Some(64) {
+                return Err(format!(
+                    "expected exit code 64, got {:?}; stderr: {}",
+                    output.status.code(),
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.contains("No URLs provided") {
+                return Err(format!(
+                    "stderr must name the empty batch, got: {}",
+                    stderr.trim()
+                ));
+            }
+            Ok(())
+        },
+    );
 }
 
 // ---------------------------------------------------------------------------

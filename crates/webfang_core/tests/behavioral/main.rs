@@ -15,8 +15,12 @@ mod common;
 // Re-export the centralized CLI behavioral harness so `cli/*` submodules can
 // keep using `crate::cmd`, `crate::BehavioralTest`, and friends. (`webfang_path`
 // and `redact_temp_path` stay crate-private in `common` — only `cli_harness.rs`
-// needs them directly.)
-pub(crate) use crate::common::{cmd, redact_nondeterministic, BehavioralTest};
+// needs them directly.) `assert_spawn_within` / `SPAWN_LATENCY_BUDGET` (#1697)
+// join the re-export for the same reason: a test that spawns the binary must be
+// able to bound the spawn.
+pub(crate) use crate::common::{
+    assert_spawn_within, cmd, redact_nondeterministic, BehavioralTest, SPAWN_LATENCY_BUDGET,
+};
 
 use insta::assert_snapshot;
 use std::path::Path;
