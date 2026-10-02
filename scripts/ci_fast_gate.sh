@@ -139,6 +139,12 @@ fast_gate_early_exit_trap() {
   return "$rc"
 }
 trap fast_gate_early_exit_trap EXIT
+# Signal deaths (#1789): INT/TERM would otherwise kill the gate with no
+# row. Convert to the conventional codes (130/143); the EXIT trap above
+# then logs the single `early-exit` row and the script keeps that code.
+# Installed alongside the EXIT trap so pre-dispatch deaths are covered too.
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 BASE_REF="origin/main"
 HEAD_REF="HEAD"
