@@ -49,9 +49,29 @@ const SEED_URL: &str = "https://example.com/";
 /// `Is a directory (os error 21)` on Linux and a different sentence with a
 /// different number elsewhere. The snapshot must pin OUR message — that it
 /// names the path and says what went wrong — not the platform's wording.
+/// See the filter's own comment for the one place where the *sentence* (not
+/// just the number) is OS text and had to collapse too (#1777).
 fn assert_stderr_snapshot(name: &str, dir: &Path, stderr: &str) {
     let redacted = redact_nondeterministic(dir, stderr);
     let mut settings = insta::Settings::clone_current();
+    // #1777: opening a DIRECTORY as a config file is one operation with two OS
+    // sentences — Linux renders `Is a directory (os error 21)`, Windows renders
+    // `Access is denied. (os error 5)`. Neither sentence is OUR text, and the
+    // two cannot be told apart afterwards on Windows (the permission-denied
+    // case renders the same one there), so the snapshot collapses both rather
+    // than pinning either platform's wording — the same tradeoff INT-1 (#1631)
+    // made for the network-failure surface.
+    //
+    // This rule must be added BEFORE the `(os error \d+)` rule: it needs the
+    // digits still in place to match the whole tail.
+    //
+    // `Permission denied` is deliberately NOT part of this class. Its own test
+    // is `#[cfg(unix)]` — the chmod-000 setup does not exist on Windows — so
+    // that snapshot must keep pinning the Unix sentence.
+    settings.add_filter(
+        r"(?i)(?:is a directory|access is denied\.)\s*\(os error \d+\)",
+        "<RUTA_NO_LEGIBLE>",
+    );
     settings.add_filter(r"\(os error \d+\)", "(os error N)");
     settings.bind(|| {
         assert_snapshot!(name, redacted);
