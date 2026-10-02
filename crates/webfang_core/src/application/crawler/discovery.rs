@@ -129,6 +129,27 @@ pub async fn discover_urls_single_fetch(
         let client = super::super::create_http_client_with_config(&http_config)?;
 
         info!("Fetching {} for link extraction", base_url);
+        // SSRF layer 2 (#1615, G-3): this branch built its OWN client and went
+        // straight to `send()`, so it applied timeout and TLS config but never
+        // the literal-IP entry guard. The seed arrives from `--url` or from
+        // sitemap discovery, and in the sitemap case a third party supplies the
+        // host -- so an entry the operator never typed could be dialled here
+        // with no pre-socket refusal. The JS and sitemap arms are guarded; this
+        // one was the gap.
+        //
+        // It sits at the same position as everywhere else (see the guard chain
+        // in `AGENTS.md`), not as a new stage: the check runs before `send()`,
+        // and building a client opens no socket.
+        let seed = Url::parse(base_url)?;
+        if let Err(rejection) = crate::domain::ssrf_guard::reject_forbidden_literal_url(&seed) {
+            // The typed error the caller already handles for a bad seed, so this
+            // refusal rides the same reporting path as a parse failure instead
+            // of inventing a new one. `InvalidUrl` is the variant the
+            // static-fetch port uses too (F11), so the two entry points
+            // classify one refusal identically.
+            return Err(ScraperError::InvalidUrl(rejection.to_string()));
+        }
+
         let response = client.get(base_url).send().await?;
 
         let status = response.status();
@@ -244,10 +265,13 @@ pub async fn scrape_single_url(
 /// Inner implementation of [`scrape_single_url`].
 ///
 /// The `#[instrument]` span declares the per-page identity (`correlation_id`,
-/// `trace_id`) AT CREATION time (#501): FileTraceLayer snapshots span fields
-/// in `on_new_span`, so fields recorded later never reach the `--trace-file`
-/// JSONL. The instrumented span lifecycle is also async-safe — no `enter()`
-/// guard crosses an `.await` (#501 follow-up).
+/// `trace_id`) AT CREATION time (#501). Anything only known at the END of the
+/// operation is declared `tracing::field::Empty` and recorded with
+/// `tracing::Span::record`, which FileTraceLayer merges into the same snapshot
+/// (`on_record`, #1610) — the earlier claim that late records never reach the
+/// `--trace-file` JSONL was true until that hook landed, and is false now. The
+/// instrumented span lifecycle is also async-safe — no `enter()` guard crosses
+/// an `.await` (#501 follow-up).
 #[instrument(
     level = "debug",
     name = "scrape_single",
@@ -427,6 +451,13 @@ async fn scrape_single_url_inner(
 
 #[cfg(test)]
 mod tests {
+    /// #1615 (F11 / G-3 / G-4 / G-5): these tests drive real fetches against
+    /// wiremock's 127.0.0.1, which the literal-IP entry guard now refuses.
+    /// `EnvGuard::entry_guard_off()` disarms the guard for its lifetime — the
+    /// named constructor is the repo's rule, so each call site stays one line.
+    fn entry_off() -> webfang_test_utils::EnvGuard {
+        webfang_test_utils::EnvGuard::entry_guard_off()
+    }
     use super::*;
     use crate::domain::CrawlError;
     // parse_sitemap stays an infrastructure fn (quick_xml machinery);
@@ -558,6 +589,7 @@ mod tests {
     #[tokio::test]
     #[cfg(not(miri))]
     async fn test_discover_urls_single_fetch_respects_request_timeout() {
+        let _entry_off = entry_off();
         use wiremock::matchers::path;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -596,6 +628,7 @@ mod tests {
     #[tokio::test]
     #[cfg(not(miri))]
     async fn test_discover_urls_single_fetch_respects_connect_timeout() {
+        let _entry_off = entry_off();
         use tokio::net::TcpListener;
 
         // TLS blackhole: accept TCP connections and hold them open without ever
@@ -676,6 +709,7 @@ mod tests {
     #[tokio::test]
     #[cfg(not(miri))]
     async fn test_discover_urls_max_depth_one_returns_links() {
+        let _entry_off = entry_off();
         use wiremock::matchers::path;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 

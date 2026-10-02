@@ -129,6 +129,13 @@ async fn crawl_with_sitemap_session_inner(
 #[cfg(test)]
 #[cfg(not(miri))] // wiremock + wreq use btls-sys FFI (unsupported by Miri)
 mod tests {
+    /// #1615 (F11 / G-3 / G-4 / G-5): these tests drive real fetches against
+    /// wiremock's 127.0.0.1, which the literal-IP entry guard now refuses.
+    /// `EnvGuard::entry_guard_off()` disarms the guard for its lifetime — the
+    /// named constructor is the repo's rule, so each call site stays one line.
+    fn entry_off() -> webfang_test_utils::EnvGuard {
+        webfang_test_utils::EnvGuard::entry_guard_off()
+    }
     use super::*;
     use url::Url;
     use wiremock::matchers::path;
@@ -181,6 +188,7 @@ mod tests {
     /// is included although absent from the sitemap set.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn sitemap_entry_covers_seed_bfs_and_sitemap_only_page_once() {
+        let _entry_off = entry_off();
         let server = MockServer::start().await;
         let port = server.address().port();
         let seed = Url::parse(&format!("http://127.0.0.1:{port}/")).expect("seed");
@@ -236,6 +244,7 @@ mod tests {
     /// unaffected by the additive hook.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn sitemap_entry_with_empty_extra_seeds_keeps_single_seed_behaviour() {
+        let _entry_off = entry_off();
         let server = MockServer::start().await;
         let port = server.address().port();
         let seed = Url::parse(&format!("http://127.0.0.1:{port}/")).expect("seed");
@@ -323,6 +332,7 @@ mod tests {
     /// `crawl_task.rs` instead of forcing an unrepresentable fixture here.
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn sitemap_failed_fetch_does_not_consume_budget() {
+        let _entry_off = entry_off();
         let result = many_url_sitemap_run_with(3, 2, 0).await;
         let urls = collected_urls(&result);
         assert_eq!(

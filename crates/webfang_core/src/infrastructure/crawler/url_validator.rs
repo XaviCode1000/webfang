@@ -114,7 +114,30 @@ impl UrlValidator {
     /// This is the infra-specific method that makes actual HTTP calls.
     /// The `UrlValidatorTrait::validate_http_status` default returns `Ok(Valid)`;
     /// this impl overrides it with real HTTP behavior.
+    ///
+    /// # SSRF layer 2 (#1615, G-4)
+    ///
+    /// The client this holds has the redirect guard and the connect-time
+    /// validating resolver, so a HOSTNAME that resolves to a private address is
+    /// refused at connect. A LITERAL is not: `169.254.169.254` needs no
+    /// resolution, so the resolver has nothing to check and the address the
+    /// request would dial is itself the forbidden one. The literal entry guard
+    /// is what covers that, and this path did not have it.
+    ///
+    /// Like `preflight_check`, this type has no caller in the tree, so nothing
+    /// ever exercised the gap. The guard goes in now rather than at the next
+    /// wiring: an HTTP-aware URL validator is precisely what someone would
+    /// reach for, and reaching for it should not import a bypass.
+    ///
+    /// The refusal is reported as `ValidationResult::Invalid` with the guard's
+    /// Spanish reason, not as a transport error: to a caller asking "is this
+    /// URL usable?", a forbidden target is a no, and it must not become
+    /// retryable by being shaped like a network failure.
     async fn validate_http_status_inner(&self, url: &Url) -> Result<ValidationResult> {
+        if let Err(rejection) = crate::domain::ssrf_guard::reject_forbidden_literal_url(url) {
+            return Ok(ValidationResult::Invalid(rejection.to_string()));
+        }
+
         let response = self
             .client
             .head(url.as_str())
@@ -166,6 +189,13 @@ impl UrlValidatorTrait for UrlValidator {
 
 #[cfg(all(test, not(miri)))]
 mod tests {
+    /// #1615 (F11 / G-3 / G-4 / G-5): these tests drive real fetches against
+    /// wiremock's 127.0.0.1, which the literal-IP entry guard now refuses.
+    /// `EnvGuard::entry_guard_off()` disarms the guard for its lifetime — the
+    /// named constructor is the repo's rule, so each call site stays one line.
+    fn entry_off() -> webfang_test_utils::EnvGuard {
+        webfang_test_utils::EnvGuard::entry_guard_off()
+    }
     use super::*;
 
     #[test]
@@ -235,6 +265,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_http_status_200() {
+        let _entry_off = entry_off();
         use wiremock::matchers::method;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 

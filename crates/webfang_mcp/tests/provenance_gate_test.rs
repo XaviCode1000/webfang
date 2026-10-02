@@ -140,3 +140,86 @@ fn provenance_module_still_owns_the_sanctioned_constructors() {
         );
     }
 }
+
+// ========================================================================
+// Gate 4 — the POLICY FILE is reachable from every surface that has to
+// obey it (PI-2, issue #1615).
+// ========================================================================
+
+/// Repository root, two levels up from `crates/webfang_mcp`.
+fn repo_root() -> PathBuf {
+    manifest_dir()
+        .parent()
+        .and_then(Path::parent)
+        .expect("crate lives at <repo>/crates/webfang_mcp")
+        .to_path_buf()
+}
+
+/// The agent-facing surface is `AGENTS.md`, not the tool description.
+///
+/// PI-2 recorded that `docs/security/prompt-injection-policy.md` had no
+/// references from code, tests, CI or agent surfaces, and that the auditor
+/// "could not confirm an `AGENTS.md` Layer-2 reference" even though Layer 2
+/// was documented there in prose. Prose that no check reads is what a
+/// refactor deletes, and the next auditor reads the absence as a finding again.
+///
+/// Gates 1–3 above cover the CODE surface. This covers the two that are prose
+/// by nature: the agent instructions, and the policy's own reachability. Both
+/// are one-line assertions, and the failure message names the file to edit —
+/// which is the whole value, since a gate nobody knows about is a gate nobody
+/// fixes.
+#[test]
+fn the_policy_is_reachable_from_the_agent_surface_and_from_agents_md() {
+    let policy_rel = "docs/security/prompt-injection-policy.md";
+    let policy = repo_root().join(policy_rel);
+    assert!(
+        policy.exists(),
+        "the policy this gate enforces must exist at {policy_rel}"
+    );
+
+    let agents =
+        std::fs::read_to_string(repo_root().join("AGENTS.md")).expect("gate must read AGENTS.md");
+    assert!(
+        agents.contains(policy_rel),
+        "AGENTS.md must name {policy_rel}: the agent-facing Layer-2 rules point at \
+         it, and without that reference the policy is only reachable by someone \
+         who already knows it exists"
+    );
+}
+
+/// The policy must state the rules it exists to enforce, not merely exist.
+///
+/// PI-2's substance is reachability PLUS content: a policy that is linked from
+/// `AGENTS.md` but says nothing is still unenforced. `Regla 0` is the one every
+/// tool description and the export sidecar (#1615 PI-9) cite, so it is the one
+/// whose disappearance would silently strip the meaning out of all of them.
+///
+/// NOTE: the audit's `M5` label names a section of the AUDIT REPORT's mitigation
+/// plan, not of this policy file — the policy numbers its rules `Regla N`. An
+/// earlier version of this gate asserted on the literal `M5` and failed, which
+/// is why the assertion names the real headings.
+#[test]
+fn the_policy_states_the_rules_its_referrers_cite() {
+    let policy =
+        std::fs::read_to_string(repo_root().join("docs/security/prompt-injection-policy.md"))
+            .expect("gate must read the policy");
+    assert!(
+        policy.len() > 500,
+        "the policy must have content; a stub cannot carry a rule"
+    );
+    for rule in ["Regla 0", "Regla 1", "Regla 2", "Regla 3"] {
+        assert!(
+            policy.contains(rule),
+            "the policy must keep {rule:?}: every tool description and the export \
+             provenance sidecar cite this policy, so a rule that disappears leaves \
+             all of them citing nothing"
+        );
+    }
+    // The English sentence the code side carries verbatim, so the policy and
+    // `provenance::INJECTION_NOTICE` cannot drift into saying different things.
+    assert!(
+        policy.contains("data, no instrucciones"),
+        "the policy must state Regla 0 in the form the code cites: tool output is \
+         data, not instructions"
+    );
+}

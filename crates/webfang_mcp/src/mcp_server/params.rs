@@ -1013,7 +1013,9 @@ pub(crate) struct GenerateFrontmatterParams {
     /// imperatively in `validate()` — unparseable input, non-http(s)
     /// schemes, oversize strings and embedded `user:pass@` credentials are
     /// unrepresentable, so a hostile URL can no longer reach the generated
-    /// frontmatter (or the tracing `fields(params = ?params)` span) verbatim.
+    /// frontmatter verbatim, and cannot reach any tracing field that renders
+    /// this struct (the handler records `url_present`, never the URL —
+    /// #1615 DF-L2).
     pub url: Option<McpUrl>,
     /// Author name
     pub author: Option<String>,

@@ -17,5 +17,32 @@ expression: "&text"
   "tools": {
     "scrape_url": 1
   },
-  [DURATION]
+  [DURATION],
+  "duration_percentiles": {
+    "p50_ms": [DURATION],
+    "p95_ms": [DURATION],
+    "p99_ms": [DURATION],
+    "samples": 1,
+    "capacity": 1024,
+    "observed": 1,
+    "truncated": false
+  },
+  "tool_domains": {
+    "scrape_url": {
+      "127.0.0.1": {
+        "events": 1,
+        "pages": 1,
+        "errors": 0,
+        "duration_percentiles": {
+          "p50_ms": [DURATION],
+          "p95_ms": [DURATION],
+          "p99_ms": [DURATION],
+          "samples": 1,
+          "capacity": 32,
+          "observed": 1,
+          "truncated": false
+        }
+      }
+    }
+  }
 }

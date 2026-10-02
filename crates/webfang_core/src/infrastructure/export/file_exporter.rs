@@ -6,6 +6,9 @@
 use std::fs;
 use std::path::PathBuf;
 
+#[cfg(test)]
+use tracing_subscriber::layer::SubscriberExt;
+
 use crate::domain::config::OutputFormat;
 use crate::domain::crawler_port::filename::confine_filename_component;
 use crate::domain::entities::DocumentChunkValidated;
@@ -133,6 +136,19 @@ impl FileExporter {
         Ok(())
     }
 
+    /// Export every document one at a time.
+    ///
+    /// The write loop of [`Exporter::export_batch`], split out so the
+    /// instrumented wrapper can record the batch outcome on its span
+    /// (#1610, OBS-H6) without touching this loop's control flow.
+    fn export_batch_documents(&self, documents: &[DocumentChunkValidated]) -> ExportResult<()> {
+        // Default: export one by one
+        for doc in documents {
+            self.export(doc.clone())?;
+        }
+        Ok(())
+    }
+
     /// Generate output path for a document.
     ///
     /// Both the domain directory and the file stem are confined to single
@@ -210,13 +226,29 @@ impl Exporter for FileExporter {
         }
     }
 
-    #[tracing::instrument(skip(self, documents), fields(exporter = "file", documents = documents.len()))]
+    // `payload_bytes` semantics (shared by all three exporters, #1610): the
+    // serialized document bytes THIS batch handed to its writer. The file
+    // exporter's Jsonl branch serializes inside `export`, and its Auto/Vector
+    // branches delegate to `save_json`, neither of which reports a size — so
+    // the field is left unrecorded here rather than filled with an invented
+    // number. Absence is the honest reading; the jsonl and vector exporters
+    // document their own (known) figures on the same key.
+    #[tracing::instrument(
+        skip(self, documents),
+        fields(
+            exporter = "file",
+            documents = documents.len(),
+            outcome = tracing::field::Empty,
+            payload_bytes = tracing::field::Empty
+        )
+    )]
     fn export_batch(&self, documents: &[DocumentChunkValidated]) -> ExportResult<()> {
-        // Default: export one by one
-        for doc in documents {
-            self.export(doc.clone())?;
+        let outcome = self.export_batch_documents(documents);
+        match &outcome {
+            Ok(()) => record_export_outcome("ok", None),
+            Err(_) => record_export_outcome("error", None),
         }
-        Ok(())
+        outcome
     }
 
     fn config(&self) -> &ExporterConfig {
@@ -228,10 +260,59 @@ impl Exporter for FileExporter {
 // Conversion from ScrapedContent
 // ============================================================================
 
+/// Record how an `export_batch` call ended on its own span (#1610, OBS-H6).
+///
+/// A span that only knows "N documents, M seconds" cannot answer "did the
+/// export land?", so the outcome is declared `Empty` and recorded here.
+/// `payload_bytes` is `None` for exporters whose writes are delegated to a
+/// helper that reports no size: an absent field is the honest reading, while
+/// a made-up number would be indistinguishable from a real one offline.
+fn record_export_outcome(outcome: &str, payload_bytes: Option<u64>) {
+    let span = tracing::Span::current();
+    span.record("outcome", outcome);
+    if let Some(bytes) = payload_bytes {
+        span.record("payload_bytes", bytes);
+    }
+}
+
 // NOTE: From<ScrapedContent> for DocumentChunk<Draft> is implemented in entities.rs
+
+/// Run `body` on its own current-thread runtime under a real
+/// `FileTraceLayer` and parse the emitted JSONL (#1610).
+///
+/// Canonical home of the exporter span-capture harness: the jsonl and vector
+/// exporter test modules reuse it so all three prove the same contract
+/// (recorded span fields reach the trace file) with the same parser.
+#[cfg(test)]
+pub(crate) fn capture_export_trace<F, Fut>(body: F) -> Vec<serde_json::Value>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    let dir = tempfile::tempdir().expect("temp dir");
+    let path = dir.path().join("trace.jsonl");
+    let layer = crate::infrastructure::observability::FileTraceLayer::new(path.clone())
+        .expect("trace layer");
+    let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer));
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("runtime");
+    tracing::dispatcher::with_default(&dispatch, || runtime.block_on(body()));
+    drop(runtime);
+    // Flush before reading: the layer buffers and only drains on drop.
+    drop(dispatch);
+    std::fs::read_to_string(&path)
+        .expect("trace file")
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str::<serde_json::Value>(l).expect("jsonl line"))
+        .collect()
+}
 
 #[cfg(test)]
 mod tests {
+    use super::capture_export_trace;
     use super::*;
     use std::env::temp_dir;
 
@@ -326,5 +407,82 @@ mod tests {
         assert_eq!(chunk.url, "https://example.com/test");
         assert!(chunk.metadata.contains_key("excerpt"));
         assert!(chunk.metadata.contains_key("author"));
+    }
+
+    /// #1610 (OBS-H6): the `export_batch` span must say whether the export landed
+    /// — and must NOT invent a byte count it cannot know.
+    ///
+    /// The file exporter's Auto/Vector branches delegate to `save_json`, which
+    /// reports no size, so `payload_bytes` stays absent: an absent key is honest,
+    /// a fabricated number would be indistinguishable from a measured one.
+    #[test]
+    fn export_batch_span_records_outcome_and_omits_unknown_bytes() {
+        let dir = temp_dir().join("exporter_test_span_outcome");
+        let config = ExporterConfig::new(
+            dir.clone(),
+            crate::domain::entities::ExportFormat::Jsonl,
+            "test",
+        );
+        let exporter = FileExporter::new(config);
+
+        let records = capture_export_trace(|| async {
+            exporter
+                .export_batch(&[make_test_doc(), make_test_doc()])
+                .expect("batch export must succeed");
+        });
+
+        let closes: Vec<_> = records
+            .iter()
+            .filter(|r| r["record"] == "span_close" && r["span"] == "export_batch")
+            .collect();
+        assert_eq!(closes.len(), 1, "exactly one export_batch span");
+        let fields = closes[0]["span_fields"].as_object().expect("span_fields");
+        assert_eq!(fields.get("outcome").and_then(|v| v.as_str()), Some("ok"));
+        assert_eq!(
+            fields.get("exporter").and_then(|v| v.as_str()),
+            Some("file")
+        );
+        assert_eq!(fields.get("documents").and_then(|v| v.as_u64()), Some(2));
+        assert!(
+            !fields.contains_key("payload_bytes"),
+            "the file exporter cannot measure its payload — it must omit the key, not guess: {fields:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// #1610: the failure arm. An unwritable output directory is a batch error,
+    /// and the span must say so instead of closing as a bare duration.
+    #[test]
+    fn export_batch_span_records_error_outcome() {
+        let dir = temp_dir().join("exporter_test_span_error");
+        let _ = std::fs::remove_dir_all(&dir);
+        // A plain FILE where a directory is required: `create_dir_all` fails for
+        // every user and on every OS, without a permissions fixture.
+        std::fs::write(&dir, b"not a directory").expect("fixture file");
+        let config = ExporterConfig::new(
+            dir.clone(),
+            crate::domain::entities::ExportFormat::Jsonl,
+            "test",
+        );
+        let exporter = FileExporter::new(config);
+
+        let records = capture_export_trace(|| async {
+            let result = exporter.export_batch(&[make_test_doc()]);
+            assert!(result.is_err(), "unwritable output must fail the batch");
+        });
+
+        let closes: Vec<_> = records
+            .iter()
+            .filter(|r| r["record"] == "span_close" && r["span"] == "export_batch")
+            .collect();
+        assert_eq!(closes.len(), 1, "exactly one export_batch span");
+        let fields = closes[0]["span_fields"].as_object().expect("span_fields");
+        assert_eq!(
+            fields.get("outcome").and_then(|v| v.as_str()),
+            Some("error")
+        );
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

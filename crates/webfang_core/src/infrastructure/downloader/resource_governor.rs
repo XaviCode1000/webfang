@@ -11,6 +11,18 @@
 //! - **80 %** RAM used → warning log, max_instances halved
 //! - **90 %** RAM used → all new Chrome permits denied
 //!
+//! # Admission waits are observable (#1610, OBS-P1-2 / OBS-M2)
+//!
+//! [`ResourceGovernor::acquire`] is the only admission gate a heavyweight
+//! downloader passes through, and it used to be silent: a render queue that
+//! serialised behind the permit budget looked exactly like a slow browser.
+//! Every acquire now emits one `semaphore_acquire` event carrying the measured
+//! wait, the occupancy it waited behind, and how the wait ended.
+//!
+//! The held permit is an [`tokio::sync::OwnedSemaphorePermit`], not a
+//! `MutexGuard`/`RwLockReadGuard`: it is the documented semaphore pattern and
+//! it is NOT the "never hold a lock across `.await`" rule that governs mutexes.
+//!
 //! # Sanitizer coverage
 //!
 //! - **Miri: inapplicable** — `sysinfo` calls `sysconf(SC_PHYS_PAGES)`, which
@@ -41,6 +53,9 @@ const WARNING_THRESHOLD: u8 =
 const CRITICAL_THRESHOLD: u8 =
     crate::domain::budget::derivation::RamThresholds::DEFAULT_CRITICAL_PERCENT;
 
+/// `operation` field of every event this governor emits (#1610).
+const RESOURCE_GOVERNOR_OPERATION: &str = "browser.resource_governor.acquire";
+
 /// Gates concurrent heavyweight downloader instances based on system RAM.
 ///
 /// Holds a [`CancellationToken`] (#509) so a caller blocked in
@@ -51,6 +66,10 @@ const CRITICAL_THRESHOLD: u8 =
 pub struct ResourceGovernor {
     semaphore: Arc<Semaphore>,
     cancel: CancellationToken,
+    /// Configured permit budget, kept so the emitted event can report the
+    /// occupancy a waiter observed (`available` / `total`) instead of only the
+    /// free count, which alone cannot distinguish "full" from "empty" (#1610).
+    max_permits: usize,
 }
 
 impl ResourceGovernor {
@@ -81,6 +100,7 @@ impl ResourceGovernor {
         Self {
             semaphore: Arc::new(Semaphore::new(max_permits)),
             cancel,
+            max_permits,
         }
     }
 
@@ -126,8 +146,11 @@ impl ResourceGovernor {
     /// [`DownloadError::Internal`] if the semaphore was closed.
     pub async fn acquire(&self) -> Result<tokio::sync::OwnedSemaphorePermit, DownloadError> {
         let arc = Arc::clone(&self.semaphore);
+        // Occupancy BEFORE the wait: what the waiter had to queue behind.
+        let available_before = arc.available_permits();
+        let started = std::time::Instant::now();
 
-        tokio::select! {
+        let outcome = tokio::select! {
             result = arc.acquire_owned() => {
                 // LCOV_EXCL_LINE defensive: semaphore-closed — acquire_owned fails only when the governor is shut down
                 result.map_err(|_| {
@@ -135,7 +158,26 @@ impl ResourceGovernor {
                 })
             },
             () = self.cancel.cancelled() => Err(DownloadError::Cancelled),
-        }
+        };
+
+        // #1610 (OBS-M2): the wait is the admission decision, so it emits
+        // whether or not it blocked — a zero-cost acquire is what makes a
+        // NON-saturated governor provable. DEBUG keeps the console quiet;
+        // --trace-file always captures it.
+        debug!(
+            operation = RESOURCE_GOVERNOR_OPERATION,
+            waited_ms = started.elapsed().as_millis() as u64,
+            available_permits = available_before,
+            total_permits = self.max_permits,
+            outcome = match &outcome {
+                Ok(_) => "granted",
+                Err(DownloadError::Cancelled) => "cancelled",
+                Err(_) => "closed",
+            },
+            "semaphore acquire"
+        );
+
+        outcome
     }
 
     /// Current number of available permits.
@@ -322,6 +364,129 @@ mod tests {
             .await
             .expect("acquire must not hang when permits are available");
         assert!(permit.is_ok());
+    }
+
+    // ========================================================================
+    // Admission-wait observability (#1610, OBS-M2)
+    // ========================================================================
+
+    /// `tracing` caches the per-callsite `Interest` process-wide: whichever
+    /// test reaches the `semaphore acquire` callsite first WITHOUT a subscriber
+    /// freezes it at `never` and the assertions below would pass vacuously. A
+    /// global sink subscriber installed once keeps every callsite interested;
+    /// the per-test `FileTraceLayer` is what collects.
+    static GLOBAL_SUBSCRIBER: std::sync::Once = std::sync::Once::new();
+
+    /// Run `body` under a real `FileTraceLayer` and return the records whose
+    /// `message` equals `message`.
+    ///
+    /// The production layer is the assertion surface — what this proves is
+    /// that the event survives the same path `--trace-file` uses. The body
+    /// drives its own runtime so every event it emits stays inside the
+    /// `with_default` scope.
+    fn capture<F, Fut>(message: &'static str, body: F) -> Vec<serde_json::Value>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        use crate::infrastructure::observability::FileTraceLayer;
+        use tracing_subscriber::layer::SubscriberExt;
+
+        GLOBAL_SUBSCRIBER.call_once(|| {
+            let _ = tracing::subscriber::set_global_default(
+                tracing_subscriber::fmt()
+                    .with_writer(std::io::sink)
+                    .finish(),
+            );
+        });
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("trace.jsonl");
+        let layer = FileTraceLayer::new(path.clone()).expect("trace layer");
+        let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        tracing::dispatcher::with_default(&dispatch, || runtime.block_on(body()));
+
+        std::fs::read_to_string(&path)
+            .expect("trace file")
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).expect("jsonl line"))
+            .filter(|v| v["message"] == message)
+            .collect()
+    }
+
+    /// A CONTENDED acquire emits the wait it paid: `available_permits = 0`
+    /// (the occupancy it queued behind) and a measurable cost. This is what
+    /// turns "the render queue serialised us" from an inference drawn from
+    /// slowness into a queryable fact.
+    #[test]
+    fn contended_acquire_emits_measured_wait() {
+        let events = capture("semaphore acquire", || async {
+            let gov = std::sync::Arc::new(ResourceGovernor::with_max_instances(
+                1,
+                CancellationToken::new(),
+            ));
+            let held = gov.acquire().await.expect("first permit");
+
+            // A second waiter cannot proceed until `held` is released, so the
+            // wait is real rather than a scheduling accident.
+            let waiter = {
+                let gov = std::sync::Arc::clone(&gov);
+                tokio::spawn(async move { gov.acquire().await.map(drop).is_ok() })
+            };
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            drop(held);
+            assert!(
+                waiter.await.expect("waiter task"),
+                "the queued waiter must be granted once the permit frees"
+            );
+        });
+
+        assert_eq!(events.len(), 2, "both acquires emit");
+        let queued = events
+            .iter()
+            .find(|e| e["fields"]["available_permits"] == serde_json::json!(0))
+            .expect("the queued acquire must report zero free permits");
+        let fields = queued["fields"].as_object().expect("fields");
+        assert_eq!(
+            fields["operation"].as_str(),
+            Some("browser.resource_governor.acquire")
+        );
+        assert_eq!(fields["outcome"].as_str(), Some("granted"));
+        assert_eq!(fields["total_permits"].as_u64(), Some(1));
+        assert!(
+            fields["waited_ms"].as_u64().is_some_and(|ms| ms >= 40),
+            "a queued acquire must report a measurable wait, got {:?}",
+            fields["waited_ms"]
+        );
+    }
+
+    /// #1610: a wait released by shutdown reports `outcome = "cancelled"`, not
+    /// a generic failure — an admission skip and an admission denial are
+    /// different operational facts.
+    #[test]
+    fn cancelled_acquire_emits_cancelled_outcome() {
+        let events = capture("semaphore acquire", || async {
+            let cancel = CancellationToken::new();
+            let gov = ResourceGovernor::with_max_instances(1, cancel.clone());
+            let held = gov.acquire().await.expect("single permit");
+            cancel.cancel();
+            let result = gov.acquire().await;
+            assert!(matches!(result, Err(DownloadError::Cancelled)));
+            drop(held);
+        });
+
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1]["fields"]["outcome"].as_str(), Some("cancelled"));
+        assert_eq!(
+            events[1]["fields"]["available_permits"].as_u64(),
+            Some(0),
+            "the cancelled waiter queued behind a held permit"
+        );
     }
 
     // ========================================================================

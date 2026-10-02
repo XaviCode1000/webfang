@@ -439,6 +439,13 @@ fn extract_title(chunks: &[ProcessedChunk]) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// #1615 (F11 / G-3 / G-4 / G-5): these tests drive real fetches against
+    /// wiremock's 127.0.0.1, which the literal-IP entry guard now refuses.
+    /// `EnvGuard::entry_guard_off()` disarms the guard for its lifetime — the
+    /// named constructor is the repo's rule, so each call site stays one line.
+    fn entry_off() -> webfang_test_utils::EnvGuard {
+        webfang_test_utils::EnvGuard::entry_guard_off()
+    }
     use super::*;
     #[cfg(not(miri))]
     use crate::infrastructure::cpu_pool::RayonCpuPool;
@@ -596,6 +603,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_run_persists_resource_and_chunk() {
+            let _entry_off = entry_off();
             let repo = InMemoryRepo::default();
             let orc = make_orchestrator(repo.clone());
             let (_server, url) =
@@ -635,6 +643,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_run_dedup_short_circuits_when_hash_exists() {
+            let _entry_off = entry_off();
             let repo = InMemoryRepo::default();
             let orc = make_orchestrator(repo.clone());
             let (_server, url) = serve_html("<main><p>duplicate content</p></main>").await;
@@ -679,6 +688,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_ingest_batch_all_success() {
+            let _entry_off = entry_off();
             let repo = InMemoryRepo::default();
             let orc = make_orchestrator(repo.clone());
 
@@ -703,6 +713,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_ingest_batch_mixed_results() {
+            let _entry_off = entry_off();
             let repo = InMemoryRepo::default();
             let orc = make_orchestrator(repo.clone());
 
@@ -745,6 +756,7 @@ mod tests {
 
         #[tokio::test]
         async fn test_ingest_batch_dedup() {
+            let _entry_off = entry_off();
             let repo = InMemoryRepo::default();
             let orc = make_orchestrator(repo.clone());
             let (_server, url) = serve_html("<main><p>unique batch dedup content</p></main>").await;

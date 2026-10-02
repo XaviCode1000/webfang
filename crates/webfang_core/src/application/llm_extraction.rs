@@ -257,22 +257,59 @@ impl LlmConfig {
     }
 }
 
+/// Name of the test-only hatch that disarms this gate (#703, #1615 DF-E9).
+///
+/// The value is irrelevant: this constant exists so the variable is never
+/// spelled out at a call site, and so a rename cannot desynchronize the
+/// writer and the reader (the same rule the SSRF hatches in
+/// `webfang_test_utils` follow).
+pub const LLM_SSRF_TEST_HATCH_ENV: &str = "WEBFANG_DISABLE_SSRF";
+
 /// SSRF gate for the LLM base URL (#703): scheme allow-list http/https plus
 /// literal-host rejection via
 /// [`is_forbidden_literal_host`](crate::domain::ssrf_guard::is_forbidden_literal_host)
 /// (loopback / private / link-local / CGNAT / IPv6-ULA). A blocked URL never
 /// produces a request.
 ///
-/// Tests against wiremock (127.0.0.1) may set `WEBFANG_DISABLE_SSRF=1`.
 /// Hostname-level DNS validation lives at the MCP entry point (slice B,
 /// `validate_url_no_ssrf` precedent) alongside the client-side redirect guard.
+///
+/// # The test hatch is compiled out of production (#1615, DF-E9)
+///
+/// This used to be a PRESENCE-based env read on a production path: setting
+/// `WEBFANG_DISABLE_SSRF` to anything — `1`, `0`, `false`, an empty string —
+/// returned `Ok` for every base URL, including `http://169.254.169.254/`. That
+/// is a kill-switch for an SSRF gate, keyed on nothing but the presence of a
+/// name, reachable by anything that can set one environment variable in the
+/// process's environment.
+///
+/// The hatch is now `#[cfg(test)]`. Two consequences, both intentional:
+///
+/// - **Production builds cannot be disarmed through the environment at all.**
+///   Not "the value is checked more carefully" — the code is not compiled in.
+///   The blast radius of an env-var injection or a container misconfiguration
+///   that exports this name drops to zero, which is the property the finding
+///   was about.
+/// - **Integration tests under `crates/*/tests/` cannot use it either**, since
+///   they link `webfang_core` as an external crate and do not see `cfg(test)`.
+///   No such test needed it: this hatch's only consumers are the unit tests
+///   below, which run inside the crate. A future integration test that needs a
+///   loopback LLM base URL should construct the gate's inputs directly rather
+///   than reach for a production escape hatch.
+///
+/// This is deliberately the opposite of the `#1349` decision for
+/// `WEBFANG_MCP_DISABLE_SSRF`, which kept an exact-`"1"` production hatch. The
+/// difference is that a hatch the whole test suite can point at a wiremock
+/// loopback address from a separate crate has to exist in the shipped binary;
+/// this one does not, because nothing outside the crate ever needed it.
 ///
 /// # Errors
 ///
 /// Returns [`ScraperError::Config`] when the scheme is not http(s) or the
 /// host is a forbidden literal IP.
 pub fn ssrf_gate(url: &Url) -> Result<()> {
-    if std::env::var("WEBFANG_DISABLE_SSRF").is_ok() {
+    #[cfg(test)]
+    if std::env::var(LLM_SSRF_TEST_HATCH_ENV).is_ok() {
         return Ok(());
     }
     let scheme = url.scheme();
@@ -298,7 +335,7 @@ mod tests {
 
     #[test]
     fn ssrf_gate_blocks_forbidden_internal_ips() {
-        let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_DISABLE_SSRF"]);
+        let _guard = webfang_test_utils::EnvGuard::clean(&[LLM_SSRF_TEST_HATCH_ENV]);
         for host in [
             "127.0.0.1",
             "169.254.169.254",
@@ -317,14 +354,14 @@ mod tests {
 
     #[test]
     fn ssrf_gate_allows_public_ip() {
-        let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_DISABLE_SSRF"]);
+        let _guard = webfang_test_utils::EnvGuard::clean(&[LLM_SSRF_TEST_HATCH_ENV]);
         let url = Url::parse("https://8.8.8.8/v1").expect("literal parses");
         ssrf_gate(&url).expect("public host must pass");
     }
 
     #[test]
     fn ssrf_gate_rejects_non_http_scheme() {
-        let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_DISABLE_SSRF"]);
+        let _guard = webfang_test_utils::EnvGuard::clean(&[LLM_SSRF_TEST_HATCH_ENV]);
         let url = Url::parse("ftp://8.8.8.8/v1").expect("parses");
         assert!(matches!(
             ssrf_gate(&url).expect_err("ftp must fail"),
@@ -332,9 +369,22 @@ mod tests {
         ));
     }
 
+    /// #1615 DF-E9: the hatch still disarms the gate for THIS crate's unit
+    /// tests — the change is that it is no longer compiled into production,
+    /// not that the tests lost their loopback escape. A value that looks like
+    /// a refusal (`0`, `false`, empty) still disarms it, because that is the
+    /// pre-existing unit-test contract and hardening it would change behaviour
+    /// only under `cfg(test)`, which is not where the finding lived.
+    ///
+    /// The STRONG row is `crates/webfang_core/tests/llm_ssrf_hatch_test.rs`,
+    /// which is compiled as an EXTERNAL crate where `cfg(test)` of
+    /// `webfang_core` is definitively off. A unit test cannot observe the
+    /// property that matters here, because a unit test is compiled WITH it —
+    /// so this test pins that the escape still works, and that other one pins
+    /// that production cannot reach it.
     #[test]
     fn ssrf_gate_bypass_env_for_tests() {
-        let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_DISABLE_SSRF", "1")]);
+        let _guard = webfang_test_utils::EnvGuard::with(&[(LLM_SSRF_TEST_HATCH_ENV, "1")]);
         let url = Url::parse("http://127.0.0.1:9/v1").expect("parses");
         assert!(ssrf_gate(&url).is_ok());
     }

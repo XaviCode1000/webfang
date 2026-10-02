@@ -1109,6 +1109,29 @@ impl Engine {
         }
     }
 
+    /// Record how this crawl run ended on its own `crawl_site*` span
+    /// (#1610, OBS-H7).
+    ///
+    /// `#[instrument]` can only see arguments, so the verdict a caller cares
+    /// about — did the run finish, and was it interrupted — is declared
+    /// `Empty` on the span and recorded here, where the engine knows all
+    /// three. Cancellation wins over the returned `Result` on purpose: an
+    /// interrupted crawl still returns `Ok` (the pages collected so far are
+    /// the run's result), and reporting that as a clean `ok` is exactly the
+    /// "0 pages for nobody's known reason" gap this field closes.
+    fn record_run_outcome(&self, result: &Result<CrawlResult, CrawlError>) {
+        let outcome = if self.cancel_token.is_cancelled() {
+            "cancelled"
+        } else {
+            match result {
+                Ok(_) => "ok",
+                Err(CrawlError::Cancelled) => "cancelled",
+                Err(_) => "error",
+            }
+        };
+        tracing::Span::current().record("outcome", outcome);
+    }
+
     /// Build the per-category error breakdown map (issue #374).
     fn collect_error_breakdown(&self) -> std::collections::BTreeMap<CrawlErrorCategory, usize> {
         CrawlErrorCategory::ALL
@@ -1151,6 +1174,12 @@ impl Engine {
             errors_panic = self.error_breakdown[CrawlErrorCategory::Panic.index()]
                 .load(std::sync::atomic::Ordering::SeqCst),
             duration_secs = duration.as_secs(),
+            // #1610 (OBS-H7): `duration_secs` is whole seconds, so every run
+            // under one second reported 0 and the crawl cost was only
+            // recoverable from the span_close. The millisecond figure makes
+            // the event queryable on its own; `duration_secs` is kept
+            // untouched because existing tooling reads it.
+            duration_ms = duration.as_millis() as u64,
             pages_per_sec = summary_rate,
             trace_id = %self.correlation_id.trace_id(),
             "crawl completed"
@@ -1462,10 +1491,12 @@ pub async fn crawl_site_capturing(
 /// Inner implementation of [`crawl_site`].
 ///
 /// The `#[instrument]` span declares the run-root identity (`correlation_id`,
-/// `trace_id`) AT CREATION time (#501): FileTraceLayer snapshots span fields
-/// in `on_new_span`, so fields recorded later never reach the `--trace-file`
-/// JSONL. The instrumented span lifecycle is also async-safe — no `enter()`
-/// guard crosses an `.await` (#519).
+/// `trace_id`) AT CREATION time (#501) — they are arguments. What it cannot
+/// see is how the run ENDED, so `outcome` is declared `Empty` and recorded by
+/// [`Engine::record_run_outcome`] once the engine returns (#1610, OBS-H7); the
+/// FileTraceLayer merges late records into the same snapshot (`on_record`).
+/// The instrumented span lifecycle is async-safe — no `enter()` guard crosses
+/// an `.await` (#519).
 #[instrument(
     name = "crawl_site",
     skip(config, correlation_id, content_sink),
@@ -1476,7 +1507,8 @@ pub async fn crawl_site_capturing(
         max_depth = config.max_depth,
         max_pages = config.max_pages,
         delay_ms = config.delay_ms,
-        concurrency = config.concurrency.get()
+        concurrency = config.concurrency.get(),
+        outcome = tracing::field::Empty
     )
 )]
 async fn crawl_site_inner(
@@ -1538,6 +1570,10 @@ async fn crawl_site_inner(
     session.begin();
     let mut engine = Engine::from_session(session)?;
     let result = engine.run().await;
+    // Record BEFORE `shutdown()`: shutdown cancels the engine's own token, so
+    // a verdict read afterwards could not tell an operator-triggered stop from
+    // a self-inflicted one.
+    engine.record_run_outcome(&result);
     engine.shutdown().await;
     result
 }
@@ -1614,9 +1650,11 @@ pub async fn crawl_site_with_options(
 /// Inner implementation of [`crawl_site_with_options`].
 ///
 /// The `#[instrument]` span declares the run-root identity (`correlation_id`,
-/// `trace_id`) AT CREATION time (#501): FileTraceLayer snapshots span fields
-/// in `on_new_span`. The instrumented span lifecycle is also async-safe — no
-/// `enter()` guard crosses an `.await` (#519).
+/// `trace_id`) AT CREATION time (#501) — they are arguments. The run verdict
+/// is not, so `outcome` is declared `Empty` and recorded by
+/// [`Engine::record_run_outcome`] after the engine returns (#1610, OBS-H7).
+/// The instrumented span lifecycle is async-safe — no `enter()` guard crosses
+/// an `.await` (#519).
 #[instrument(
     name = "crawl_site_with_options",
     skip(config, options, correlation_id),
@@ -1630,7 +1668,8 @@ pub async fn crawl_site_with_options(
         session_pool = options.session_pool_enabled,
         ignore_robots = options.ignore_robots,
         capture_enabled = options.content_sink.is_some(),
-        shared_limiter = options.rate_limiter.is_some()
+        shared_limiter = options.rate_limiter.is_some(),
+        outcome = tracing::field::Empty
     )
 )]
 async fn crawl_site_with_options_inner(
@@ -1705,6 +1744,8 @@ async fn crawl_site_with_options_inner(
         engine.rate_limiter = limiter;
     }
     let result = engine.run().await;
+    // Record BEFORE `shutdown()` for the same reason as `crawl_site_inner`.
+    engine.record_run_outcome(&result);
     engine.shutdown().await;
     result
 }
@@ -1712,6 +1753,13 @@ async fn crawl_site_with_options_inner(
 #[cfg(test)]
 #[cfg(not(miri))] // wiremock + wreq use btls-sys FFI (unsupported by Miri)
 mod tests {
+    /// #1615 (F11 / G-3 / G-4 / G-5): these tests drive real fetches against
+    /// wiremock's 127.0.0.1, which the literal-IP entry guard now refuses.
+    /// `EnvGuard::entry_guard_off()` disarms the guard for its lifetime — the
+    /// named constructor is the repo's rule, so each call site stays one line.
+    fn entry_off() -> webfang_test_utils::EnvGuard {
+        webfang_test_utils::EnvGuard::entry_guard_off()
+    }
     /// Test helper: non-zero literal for `CrawlerConfig::concurrency` (#1132).
     fn nz(n: usize) -> std::num::NonZeroUsize {
         std::num::NonZeroUsize::new(n).expect("test literal is non-zero")
@@ -1729,6 +1777,7 @@ mod tests {
     use crate::domain::budget::tiers::{BurstPermits, CrawlConcurrency};
     use crate::domain::budget::{BudgetModel, BudgetOverrides};
     use crate::domain::session_port::SessionPort;
+    use tracing_subscriber::layer::SubscriberExt;
     use url::Url;
     use wiremock::matchers::{method, path, path_regex};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -1865,6 +1914,7 @@ mod tests {
     /// rate-limit refill (#509 acceptance).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancellation_aborts_rate_blocked_worker_and_run_returns_within_bound() {
+        let _entry_off = entry_off();
         let server = MockServer::start().await;
         let port = server.address().port();
         // Burst-decoupled (#302 D1): the token-bucket burst no longer tracks
@@ -2057,6 +2107,7 @@ mod tests {
     /// pattern MUST still be crawled (sanity check).
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn seed_not_excluded_is_crawled() {
+        let _entry_off = entry_off();
         let server = MockServer::start().await;
         let port = server.address().port();
         Mock::given(path("/"))
@@ -2175,6 +2226,7 @@ mod tests {
     /// every task context derived from the session.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn ports_injected_pool_reaches_crawl_workers() {
+        let _entry_off = entry_off();
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/"))
@@ -2235,6 +2287,7 @@ mod tests {
     /// completes — the port-gated fetch path must not block a healthy domain.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn crawl_site_with_options_session_pool_enabled_crawls_through_port() {
+        let _entry_off = entry_off();
         let server = MockServer::start().await;
         let port = server.address().port();
         Mock::given(path("/"))
@@ -2273,6 +2326,7 @@ mod tests {
     #[allow(deprecated)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn deprecated_crawl_site_shim_matches_explicit_options_entry() {
+        let _entry_off = entry_off();
         let server = MockServer::start().await;
         // Two runs, one per entry; each fetches exactly the seed (max_depth 0,
         // robots ignored via the option the shim derives from config).
@@ -2333,6 +2387,7 @@ mod tests {
     #[allow(deprecated)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn deprecated_crawl_site_capturing_shim_matches_content_sink_option() {
+        let _entry_off = entry_off();
         use crate::application::crawler::content_sink::{CrawlContentSink, InMemoryContentSink};
 
         let server = MockServer::start().await;
@@ -2594,6 +2649,119 @@ mod tests {
         assert!(
             tasks.is_empty(),
             "no worker may be spawned after the budget decision"
+        );
+    }
+
+    // ——— #1610 crawl run outcome + duration contract (OBS-H7) ———
+
+    /// #1610 (OBS-H7): the crawl entry span must say how the run ENDED, and
+    /// the `crawl completed` event must carry a millisecond duration.
+    ///
+    /// Before the outcome contract the span closed with configuration only,
+    /// and `duration_secs` rounded every sub-second run to 0 — the crawl cost
+    /// was recoverable only from the `span_close` record, which no summary
+    /// query can aggregate. The crawl runs against a wiremock seed (the
+    /// proven shape of the sibling entry tests) under a real FileTraceLayer,
+    /// so both records are read back from the parsed JSONL.
+    #[test]
+    fn crawl_site_with_options_span_records_outcome_and_summary_duration_ms() {
+        // #1615 (F11 / G-3 / G-4 / G-5): this path applies the literal-IP
+        // entry guard, which refuses wiremock's 127.0.0.1.
+        let _entry_off = webfang_test_utils::EnvGuard::entry_guard_off();
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let trace_path = dir.path().join("trace.jsonl");
+        let layer = crate::infrastructure::observability::FileTraceLayer::new(trace_path.clone())
+            .expect("trace layer");
+        let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer));
+        // Multi-threaded, like the sibling entry tests: the crawl spawns
+        // workers. Only the entry span and the summary event are asserted —
+        // both are produced on THIS thread, where the layer is installed.
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            runtime.block_on(async {
+                let server = MockServer::start().await;
+                let port = server.address().port();
+                Mock::given(path("/"))
+                    .respond_with(
+                        ResponseTemplate::new(200)
+                            .set_body_string("<html><body>seed</body></html>"),
+                    )
+                    .mount(&server)
+                    .await;
+
+                let seed =
+                    Url::parse(&format!("http://127.0.0.1:{port}/")).expect("valid seed URL");
+                let config = CrawlerConfig::builder(seed)
+                    .max_depth(0)
+                    .max_pages(10)
+                    .ignore_robots(true)
+                    .build();
+                let result = crawl_site_with_options(
+                    config,
+                    EngineOptions {
+                        ignore_robots: true,
+                        ..Default::default()
+                    },
+                    &CorrelationId::new(),
+                )
+                .await
+                .expect("crawl must succeed");
+                assert_eq!(result.total_pages, 1, "the seed page is crawled");
+            });
+        });
+        drop(runtime);
+        // Flush before reading: the layer buffers and only drains on drop.
+        drop(dispatch);
+
+        let records: Vec<serde_json::Value> = std::fs::read_to_string(&trace_path)
+            .expect("trace file")
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).expect("jsonl line"))
+            .collect();
+
+        let closes: Vec<_> = records
+            .iter()
+            .filter(|r| r["record"] == "span_close" && r["span"] == "crawl_site_with_options")
+            .collect();
+        assert_eq!(closes.len(), 1, "exactly one crawl entry span closes");
+        let span_fields = closes[0]["span_fields"].as_object().expect("span_fields");
+        assert_eq!(
+            span_fields.get("outcome").and_then(|v| v.as_str()),
+            Some("ok"),
+            "a completed crawl must close its span with a verdict"
+        );
+        assert!(
+            span_fields.contains_key("correlation_id"),
+            "the run-root identity must survive the late outcome record"
+        );
+
+        let summaries: Vec<_> = records
+            .iter()
+            .filter(|r| r["message"] == "crawl completed")
+            .collect();
+        assert_eq!(summaries.len(), 1, "exactly one crawl summary");
+        let summary_fields = summaries[0]["fields"].as_object().expect("summary fields");
+        let duration_ms = summary_fields
+            .get("duration_ms")
+            .and_then(serde_json::Value::as_u64)
+            .expect("the summary must report milliseconds, not whole seconds only");
+        assert!(
+            summary_fields.contains_key("duration_secs"),
+            "the historical field must survive — other tooling reads it"
+        );
+        let span_ms = closes[0]["span_duration_ms"]
+            .as_u64()
+            .expect("the span reports its own lifetime");
+        assert!(
+            duration_ms <= span_ms,
+            "the summary is emitted inside the span, so its elapsed time ({duration_ms}ms) cannot exceed the span lifetime ({span_ms}ms)"
         );
     }
 }
