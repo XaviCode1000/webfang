@@ -142,6 +142,67 @@ when counting events (otherwise every span is double-counted).
 jq -r 'select(.level == "ERROR") | .fields.url // empty' debug.jsonl | sort -u
 ```
 
+### Was this run slow, or was it PACED?
+
+Pacing and admission waits emit `rate limit wait` / `semaphore acquire`
+events at DEBUG level. **`-vvv` is not required** for these: the
+`--trace-file` layer always runs at TRACE, so they land in the JSONL
+whenever a trace file was requested. They exist because a wait used to be
+invisible — a throttled crawl looked exactly like a slow network.
+
+```bash
+# Total time spent waiting, per pacing scope.
+scripts/analyze-trace.sh debug.jsonl pacing
+```
+
+| Scope | Meaning |
+| :--- | :--- |
+| `crawl_discovery` | Per-page pacing inside the crawl engine |
+| `cli_scrape` | Per-URL pacing in the CLI scrape phase |
+| `batch_scrape` | Per-URL pacing in the batch scrape path |
+| `http_client` | Per-session quota in the HTTP client |
+
+A scope with `total_waited_ms` near zero means pacing was free and the
+run's time went to the network. A large `cancelled` count means shutdown
+was shedding queued work, not that the fetches were slow.
+
+Which targets absorbed the wait (each event names the URL whose permit it
+was waiting for, and the page's `correlation_id`):
+
+```bash
+scripts/analyze-trace.sh debug.jsonl pacing-hot 10
+```
+
+Reconstruct one page's pacing from its own identity:
+
+```bash
+CID=00-01949e0e8b8e70008000000000000001-0000000000000042-01
+jq -c "select(.fields.correlation_id? == \"$CID\" and .message? == \"rate limit wait\")" debug.jsonl
+```
+
+The same wait is also folded into the page's own span, so a page record
+answers "how much of this page was pacing" without a join:
+
+```bash
+jq -r 'select(.span == "crawl_page" and .record == "span_close")
+       | [.span_fields.outcome, .span_fields.rate_limit_wait_ms, .span_duration_ms] | @tsv' \
+  debug.jsonl | sort -k2 -rn | head
+```
+
+### Admission and dispatch queues
+
+```bash
+scripts/analyze-trace.sh debug.jsonl admission
+```
+
+One row per `operation`, covering the downloader resource governor
+(`browser.resource_governor.acquire`), the AI inference pool permit
+(`ai.inference_pool.acquire`) and the AI pool dispatch queue
+(`ai.inference_pool.dispatch`). `max_in_flight` is the pool occupancy the
+waiter observed. If `max_waited_ms` is high and `max_in_flight` equals the
+worker count, the pool was saturated — raise the worker budget or lower the
+concurrency feeding it, rather than raising timeouts.
+
 ---
 
 ## Spans you will see
@@ -172,9 +233,13 @@ in `.fields`); `scrape_multiple_with_limit` does the same with a
 - `span_fields.correlation_id` (full W3C traceparent) is **unique per
   page**; its trace part is the run-root UUID without dashes.
 
-Identity is declared **at span creation time** because FileTraceLayer
-snapshots span fields in `on_new_span` — fields recorded later never reach
-the JSONL. `ScrapedContent` and the RAG exports carry the same identity, so
+Identity is declared **at span creation time**: FileTraceLayer snapshots
+the span's declared fields in `on_new_span`, and `#[instrument]` can only
+see function arguments. Fields that are only known at the END of an
+operation (an outcome, an HTTP status) are therefore declared
+`tracing::field::Empty` and filled in with `tracing::Span::record`, which
+`on_record` merges into the same snapshot — they reach the JSONL both in
+the `span_fields` of later events and in the `span_close` record. `ScrapedContent` and the RAG exports carry the same identity, so
 an exported document's `correlation_id` matches its page's
 `span_fields.correlation_id`:
 
@@ -236,3 +301,26 @@ When you add a hot path or operation, follow the observability mandate in
 - Use `.instrument(span)` on async futures — never hold `span.enter()` across
   `.await`.
 - Verify with: `webfang ... --trace-file debug.jsonl -vvv` and the queries above.
+
+---
+
+## Correlating a wait with the page that paid it
+
+A pacing wait happens BEFORE the page span is created (the permit is taken
+before any socket opens), so it is emitted as its own event rather than
+inside the page span. It is still attributable, twice over:
+
+```bash
+# 1. By identity — the wait carries the same correlation_id the page span does.
+CID=00-01949e0e8b8e70008000000000000001-0000000000000042-01
+jq -c "select(.fields.correlation_id? == \"$CID\")" debug.jsonl
+
+# 2. By span field — crawl_page records the wait it absorbed.
+jq -c 'select(.span == "crawl_page" and .record == "span_close")
+       | {url: .span_fields.url, outcome: .span_fields.outcome,
+          paced_ms: .span_fields.rate_limit_wait_ms,
+          total_ms: .span_duration_ms}' debug.jsonl
+```
+
+A page where `paced_ms` is a large share of `total_ms` was queued, not
+slow. That distinction is the whole reason the wait emits at all.

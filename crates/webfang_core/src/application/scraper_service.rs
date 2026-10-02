@@ -13,7 +13,7 @@
 
 use crate::application::error_mapping::scraper_error_from_http;
 use crate::application::http_client::HttpClientPort;
-use crate::application::rate_limiter::SharedRateLimiter;
+use crate::application::rate_limiter::{PacingContext, SharedRateLimiter};
 use crate::domain::config::ScraperConfig;
 use crate::domain::crawler_port::{RobotsDecision, RobotsPort};
 use crate::domain::html_cleaner::clean_html;
@@ -246,6 +246,16 @@ pub async fn enforce_robots_policy(
     Ok(())
 }
 
+/// Instrumented span of the scrape use case (#1610, OBS-P2-4).
+///
+/// `#[instrument]` can only see arguments, so what the caller actually needs
+/// — did this page produce content, and if not, WHICH class of failure — is
+/// declared `Empty` here and recorded on the span just before it closes.
+/// Without it the span closed as a bare "the fetch took N ms" and every
+/// answer to "did this page work" had to be reassembled from neighbouring
+/// events. The wrapper exists so the recording happens INSIDE the span
+/// without rewriting the many `?` early returns of [`scrape_page`] into
+/// explicit matches: control flow and errors are untouched.
 #[instrument(
     name = "scrape_with_config",
     skip(client, config, downloader, inspector, engine, correlation),
@@ -253,10 +263,52 @@ pub async fn enforce_robots_policy(
         url = %url,
         correlation_id = %correlation,
         trace_id = %correlation.trace_id(),
-        has_downloads = config.has_downloads()
+        has_downloads = config.has_downloads(),
+        outcome = tracing::field::Empty,
+        error_class = tracing::field::Empty,
+        results = tracing::field::Empty
     )
 )]
 async fn scrape_with_config_inner(
+    client: &dyn HttpClientPort,
+    url: &url::Url,
+    config: &ScraperConfig,
+    downloader: Option<&dyn crate::domain::ports::AssetDownloaderPort>,
+    inspector: Option<&dyn DomInspectorPort>,
+    #[allow(unused_variables)] engine: Option<&AdaptiveSelectorEngine>,
+    correlation: CorrelationId,
+) -> Result<ScrapeOutcome> {
+    let scraped = scrape_page(
+        client,
+        url,
+        config,
+        downloader,
+        inspector,
+        engine,
+        correlation,
+    )
+    .await;
+
+    let span = tracing::Span::current();
+    match &scraped {
+        Ok(outcome) => {
+            span.record("outcome", "ok");
+            span.record("results", outcome.results.len() as u64);
+        },
+        Err(e) => {
+            span.record("outcome", "error");
+            // `display` wraps the Display impl as a tracing Value, so the
+            // JSONL spells the class exactly as the error events do.
+            span.record("error_class", tracing::field::display(e.classify()));
+        },
+    }
+
+    scraped
+}
+
+/// Body of the scrape use case — the span lives in
+/// [`scrape_with_config_inner`], which wraps it to record the outcome.
+async fn scrape_page(
     client: &dyn HttpClientPort,
     url: &url::Url,
     config: &ScraperConfig,
@@ -533,9 +585,9 @@ fn clean_html_for_scrape(html: &str, config: &ScraperConfig) -> String {
 ///
 /// #962: every shared-document operation (Readability parse, author
 /// extraction, asset URL extraction) completes synchronously in
-/// [`scrape_with_config_inner`] — `scraper::Html` is neither `Send` nor
-/// `Sync`, and async-fn parameters are conservatively live across `.await`
-/// points, so this future only receives owned / `Send` data.
+/// [`scrape_page`] — `scraper::Html` is neither `Send` nor `Sync`, and
+/// async-fn parameters are conservatively live across `.await` points, so
+/// this future only receives owned / `Send` data.
 #[allow(clippy::too_many_arguments)]
 async fn build_scraped_content(
     article: crate::error::Result<readability::Article>,
@@ -783,9 +835,12 @@ async fn scrape_multiple_inner(
                 // G2 (RC-1 slice 4): pre-fetch pacing — the wait happens
                 // BEFORE the network is touched, mirroring the crawl engine
                 // and the CLI scrape phase (one shared cadence policy, no
-                // second limiter implementation).
+                // second limiter implementation). #1610: measured and
+                // emitted, so a slow batch can be told apart from a batch
+                // that was being paced.
                 if let Some(limiter) = pacing {
-                    limiter.until_ready().await;
+                    let wait_ctx = PacingContext::bare("batch_scrape").with_url(url.as_str());
+                    limiter.until_ready_observed(&wait_ctx).await;
                 }
                 let result = scrape_with_config(
                     client,
@@ -857,6 +912,194 @@ fn collect_batch_outcome(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::http_port::HttpResponse;
+    use std::collections::HashMap;
+    use std::pin::Pin;
+    use tracing_subscriber::layer::SubscriberExt;
+
+    /// Canned `HttpClientPort` — the scrape use case is exercised against
+    /// fixed bodies, never the network.
+    struct StubClient {
+        status: u16,
+        body: String,
+    }
+
+    impl HttpClientPort for StubClient {
+        fn get(
+            &self,
+            _url: &str,
+        ) -> Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = crate::domain::http_error::HttpResult<HttpResponse>,
+                    > + Send
+                    + '_,
+            >,
+        > {
+            let status = self.status;
+            let body = self.body.clone();
+            Box::pin(async move {
+                Ok(HttpResponse {
+                    status,
+                    body,
+                    headers: HashMap::new(),
+                })
+            })
+        }
+    }
+
+    /// Run `body` on its own current-thread runtime under a real
+    /// `FileTraceLayer` and parse the emitted JSONL (same shape as the
+    /// `rate_limiter` and `file_trace_layer` span-outcome tests, #1610).
+    fn capture_trace<F, Fut>(body: F) -> Vec<serde_json::Value>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("trace.jsonl");
+        let layer = crate::infrastructure::observability::FileTraceLayer::new(path.clone())
+            .expect("trace layer");
+        let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        tracing::dispatcher::with_default(&dispatch, || runtime.block_on(body()));
+        drop(runtime);
+        // Flush before reading: the layer's BufWriter is only drained on drop.
+        drop(dispatch);
+        std::fs::read_to_string(&path)
+            .expect("trace file")
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).expect("jsonl line"))
+            .collect()
+    }
+
+    /// Every `span_close` record for `name`.
+    fn span_closes(records: &[serde_json::Value], name: &str) -> Vec<serde_json::Value> {
+        records
+            .iter()
+            .filter(|r| r["record"] == "span_close" && r["span"] == name)
+            .cloned()
+            .collect()
+    }
+
+    /// Prose long enough to clear the minimum-content guard (#706), so the
+    /// test exercises the SUCCESS arm of the outcome contract rather than the
+    /// extraction failure it would otherwise report.
+    const ARTICLE: &str = "<html><head><title>Observability</title></head><body><article>\
+        <h1>Span outcomes</h1>\
+        <p>A hot path that cannot say whether it worked forces every operator to reassemble \
+        the answer from neighbouring events, which is slow, lossy, and impossible to automate \
+        without a parser per call site.</p>\
+        <p>Declaring the outcome on the span itself makes the verdict a queryable field of the \
+        record that already describes the operation, so an offline run can be classified \
+        without correlating timestamps across unrelated lines of the same file.</p>\
+        </article></body></html>";
+
+    /// #1610 (OBS-P2-4): a successful scrape must close its span carrying
+    /// `outcome = "ok"` and the produced-document count. Before the outcome
+    /// contract the span closed with a duration and a URL, and "did this page
+    /// work" was only answerable from neighbouring events.
+    #[test]
+    fn scrape_span_records_success_outcome_and_result_count() {
+        // The page identity is a CHILD of this root, so the trace must match
+        // the caller's — a late outcome record must not disturb it.
+        let root = CorrelationId::new();
+        let root_trace = root.trace_id().to_string();
+        let records = capture_trace(|| async {
+            let client = StubClient {
+                status: 200,
+                body: ARTICLE.to_owned(),
+            };
+            let url: url::Url = "https://example.com/post".parse().expect("valid URL");
+            let outcome = scrape_with_config(
+                &client,
+                &url,
+                &ScraperConfig::default(),
+                None,
+                None,
+                None,
+                None,
+                true,
+                &root,
+            )
+            .await
+            .expect("scrape must succeed");
+            assert_eq!(outcome.results.len(), 1, "one document scraped");
+        });
+
+        let closes = span_closes(&records, "scrape_with_config");
+        assert_eq!(closes.len(), 1, "exactly one scrape span must close");
+        let fields = closes[0]["span_fields"]
+            .as_object()
+            .expect("span_fields object");
+        assert_eq!(
+            fields.get("outcome").and_then(serde_json::Value::as_str),
+            Some("ok"),
+            "recorded outcome must land in span_fields"
+        );
+        assert_eq!(
+            fields.get("results").and_then(serde_json::Value::as_u64),
+            Some(1),
+            "the produced-document count must be recorded"
+        );
+        assert_eq!(
+            fields.get("trace_id").and_then(serde_json::Value::as_str),
+            Some(root_trace.as_str()),
+            "the page identity must survive alongside the late records"
+        );
+    }
+
+    /// #1610: the failure arm is the one operators search for. A 404 must
+    /// close the span as `outcome = "error"` with the classification in the
+    /// repo's snake_case `ErrorClass` spelling, never a formatted message.
+    #[test]
+    fn scrape_span_records_error_outcome_with_error_class() {
+        let records = capture_trace(|| async {
+            let client = StubClient {
+                status: 404,
+                body: "not found".to_owned(),
+            };
+            let url: url::Url = "https://example.com/missing".parse().expect("valid URL");
+            let result = scrape_with_config(
+                &client,
+                &url,
+                &ScraperConfig::default(),
+                None,
+                None,
+                None,
+                None,
+                true,
+                &CorrelationId::new(),
+            )
+            .await;
+            assert!(result.is_err(), "a 404 must still be an error");
+        });
+
+        let closes = span_closes(&records, "scrape_with_config");
+        assert_eq!(closes.len(), 1, "exactly one scrape span must close");
+        let fields = closes[0]["span_fields"]
+            .as_object()
+            .expect("span_fields object");
+        assert_eq!(
+            fields.get("outcome").and_then(serde_json::Value::as_str),
+            Some("error")
+        );
+        assert_eq!(
+            fields
+                .get("error_class")
+                .and_then(serde_json::Value::as_str),
+            Some("permanent_fatal"),
+            "the 404 must classify with the shared ErrorClass spelling"
+        );
+        assert!(
+            !fields.contains_key("results"),
+            "a failed scrape must not report a document count"
+        );
+    }
 
     /// Capture-subscriber harness (same pattern as
     /// `observability::error_logging` tests): a fmt subscriber writing into a

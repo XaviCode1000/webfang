@@ -214,6 +214,47 @@ impl JsonlExporter {
         let metadata = WebfangMetadata::from_chunk(doc);
         serde_json::to_string(&metadata).map_err(ExporterError::Serialization)
     }
+
+    /// Append a whole batch, returning how many payload bytes were queued.
+    ///
+    /// The write loop of [`Exporter::export_batch`], split out so the
+    /// instrumented wrapper can report the outcome AND the byte volume on its
+    /// span (#1610, OBS-H6) without touching this loop's control flow. The
+    /// returned count is the sum of every appended line INCLUDING its
+    /// terminating newline — the exact bytes handed to the writer.
+    fn export_batch_documents(&self, documents: &[DocumentChunkValidated]) -> ExportResult<u64> {
+        let session = self.session()?;
+
+        let mut payload_bytes: u64 = 0;
+        for doc in documents {
+            let line = self.serialize_line(doc)?;
+            payload_bytes += line.len() as u64 + 1; // + newline
+            session
+                .append_blocking(format!("{line}\n").as_bytes())
+                .map_err(|e| ExporterError::WriteError(e.to_string()))?;
+        }
+        // One flush barrier per batch; every queued byte is durable on return.
+        session
+            .flush_blocking()
+            .map_err(|e| ExporterError::WriteError(e.to_string()))?;
+        tracing::info!("Batch exported {} documents to JSONL", documents.len());
+        Ok(payload_bytes)
+    }
+}
+
+/// Record how an `export_batch` call ended on its own span (#1610, OBS-H6).
+///
+/// A span that only knows "N documents, M seconds" cannot answer "did the
+/// export land, and how much data left?", so both are declared `Empty` and
+/// recorded here. `payload_bytes` is `None` for exporters that delegate their
+/// writes to a helper reporting no size: an absent key is the honest reading,
+/// a made-up number would be indistinguishable from a real one.
+fn record_export_outcome(outcome: &str, payload_bytes: Option<u64>) {
+    let span = tracing::Span::current();
+    span.record("outcome", outcome);
+    if let Some(bytes) = payload_bytes {
+        span.record("payload_bytes", bytes);
+    }
 }
 
 impl Drop for JsonlExporter {
@@ -241,23 +282,32 @@ impl crate::domain::exporter::Exporter for JsonlExporter {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self, documents), fields(exporter = "jsonl", documents = documents.len()))]
+    // `payload_bytes` semantics (shared by all three exporters, #1610): the
+    // serialized document bytes THIS batch handed to its writer. JSONL knows
+    // the figure exactly — every line is serialized here, and the count
+    // includes the terminating newline. The file exporter's Auto/Vector
+    // branches delegate to `save_json`, which reports no size, so that
+    // exporter leaves the key absent rather than inventing a number.
+    #[tracing::instrument(
+        skip(self, documents),
+        fields(
+            exporter = "jsonl",
+            documents = documents.len(),
+            outcome = tracing::field::Empty,
+            payload_bytes = tracing::field::Empty
+        )
+    )]
     fn export_batch(&self, documents: &[DocumentChunkValidated]) -> ExportResult<()> {
-        let count = documents.len();
-        let session = self.session()?;
-
-        for doc in documents {
-            let line = self.serialize_line(doc)?;
-            session
-                .append_blocking(format!("{line}\n").as_bytes())
-                .map_err(|e| ExporterError::WriteError(e.to_string()))?;
+        match self.export_batch_documents(documents) {
+            Ok(payload_bytes) => {
+                record_export_outcome("ok", Some(payload_bytes));
+                Ok(())
+            },
+            Err(e) => {
+                record_export_outcome("error", None);
+                Err(e)
+            },
         }
-        // One flush barrier per batch; every queued byte is durable on return.
-        session
-            .flush_blocking()
-            .map_err(|e| ExporterError::WriteError(e.to_string()))?;
-        tracing::info!("Batch exported {} documents to JSONL", count);
-        Ok(())
     }
 
     fn config(&self) -> &ExporterConfig {
@@ -278,7 +328,86 @@ mod tests {
     use crate::domain::config::ExportFormat;
     use crate::domain::exporter::Exporter;
 
+    use super::super::file_exporter::capture_export_trace;
     use super::*;
+
+    /// #1610 (OBS-H6): the jsonl exporter KNOWS its payload size — it
+    /// serializes every line itself — so the span must carry both the outcome
+    /// and the exact byte volume handed to the writer.
+    #[test]
+    fn export_batch_span_records_outcome_and_payload_bytes() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = ExporterConfig::new(
+            PathBuf::from(temp_dir.path()),
+            ExportFormat::Jsonl,
+            "span_test",
+        )
+        .with_append(false);
+        let exporter = JsonlExporter::new(config);
+        let chunks = vec![create_test_chunk("One"), create_test_chunk("Two")];
+
+        let records = capture_export_trace(|| async {
+            exporter
+                .export_batch(&chunks)
+                .expect("batch export must succeed");
+        });
+
+        let closes: Vec<_> = records
+            .iter()
+            .filter(|r| r["record"] == "span_close" && r["span"] == "export_batch")
+            .collect();
+        assert_eq!(closes.len(), 1, "exactly one export_batch span");
+        let fields = closes[0]["span_fields"].as_object().expect("span_fields");
+        assert_eq!(fields.get("outcome").and_then(|v| v.as_str()), Some("ok"));
+        assert_eq!(
+            fields.get("exporter").and_then(|v| v.as_str()),
+            Some("jsonl")
+        );
+        assert_eq!(fields.get("documents").and_then(|v| v.as_u64()), Some(2));
+
+        let written = std::fs::metadata(temp_dir.path().join("span_test.jsonl"))
+            .expect("export file")
+            .len();
+        assert_eq!(
+            fields.get("payload_bytes").and_then(|v| v.as_u64()),
+            Some(written),
+            "the recorded payload must be the bytes actually written"
+        );
+    }
+
+    /// #1610: the failure arm — a batch that could not even open its session
+    /// must close the span as `error`, not as a silent zero-byte success.
+    #[test]
+    fn export_batch_span_records_error_outcome() {
+        let temp_dir = TempDir::new().unwrap();
+        // A plain FILE where the output directory is required: session open
+        // fails for every user on every OS, with no permission fixture.
+        let blocked = temp_dir.path().join("blocked");
+        std::fs::write(&blocked, b"not a directory").expect("fixture file");
+        let config =
+            ExporterConfig::new(blocked, ExportFormat::Jsonl, "span_error").with_append(false);
+        let exporter = JsonlExporter::new(config);
+
+        let records = capture_export_trace(|| async {
+            let result = exporter.export_batch(&[create_test_chunk("Doomed")]);
+            assert!(result.is_err(), "unwritable output must fail the batch");
+        });
+
+        let closes: Vec<_> = records
+            .iter()
+            .filter(|r| r["record"] == "span_close" && r["span"] == "export_batch")
+            .collect();
+        assert_eq!(closes.len(), 1, "exactly one export_batch span");
+        let fields = closes[0]["span_fields"].as_object().expect("span_fields");
+        assert_eq!(
+            fields.get("outcome").and_then(|v| v.as_str()),
+            Some("error")
+        );
+        assert!(
+            !fields.contains_key("payload_bytes"),
+            "a failed batch wrote no payload — the key must be absent: {fields:?}"
+        );
+    }
 
     fn create_test_chunk(title: &str) -> DocumentChunkValidated {
         use crate::domain::Validated;

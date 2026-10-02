@@ -259,6 +259,23 @@ use std::thread;
 use tokio::sync::{mpsc, oneshot, Semaphore};
 use tracing::{error, info};
 
+/// `operation` field of the inference-pool DISPATCH events (#1610, OBS-H4).
+///
+/// Same dotted `resource.action` shape as `http.rate_limit.wait` and
+/// `browser.resource_governor.acquire`, so one `jq` selects every admission
+/// and dispatch decision across the three transports.
+///
+/// The measured cost travels as `waited_ms` — ONE key for all four admission
+/// operations (`http.rate_limit.wait`, `browser.resource_governor.acquire`,
+/// `ai.inference_pool.dispatch`, `ai.inference_pool.acquire`), which is what
+/// lets `scripts/analyze-trace.sh <trace> admission` aggregate every queue
+/// with a single expression. `stage` is what distinguishes queueing from
+/// granting, so the field itself does not need to say which.
+pub const AI_INFERENCE_DISPATCH_OPERATION: &str = "ai.inference_pool.dispatch";
+
+/// `operation` field of the inference-pool PERMIT waits (#1610, OBS-H4/M2).
+pub const AI_POOL_ACQUIRE_OPERATION: &str = "ai.inference_pool.acquire";
+
 /// Internal: a single inference request dispatched to a worker thread.
 struct WorkerRequest {
     input: ModelInput,
@@ -304,6 +321,15 @@ pub struct InferencePool {
     shared_session: Option<SharedSession>,
     model_variant: AiModel,
     worker_count: usize,
+    /// Requests currently executing on a worker (#1610, OBS-H4).
+    ///
+    /// Purely observational: the dispatch event reports it as `in_flight`, so
+    /// "how full was the pool when this request asked for capacity" is
+    /// answerable, and the counter is sampled BEFORE the dispatch attempt for
+    /// exactly that reason. It is a counter, never a gate — admission is the
+    /// bounded channel, and occupancy deliberately stays a read-only mirror of
+    /// it rather than a second admission decision.
+    in_flight: Arc<AtomicUsize>,
 }
 
 impl InferencePool {
@@ -336,12 +362,19 @@ impl InferencePool {
         // never a Tokio worker thread on a synchronous crossbeam send.
         let (request_tx, receiver) = mpsc::channel::<WorkerRequest>(worker_count);
         let receiver: SharedReceiver = Arc::new(Mutex::new(receiver));
+        let in_flight = Arc::new(AtomicUsize::new(0));
 
         let (shared_session, worker_handles) = match prepare_shared_session(&model_path) {
             Ok((session, plan)) => {
                 let session: SharedSession = Arc::new(Mutex::new(session));
-                let handles =
-                    spawn_workers(&receiver, &session, &plan, model_variant, worker_count)?;
+                let handles = spawn_workers(
+                    &receiver,
+                    &session,
+                    &plan,
+                    model_variant,
+                    worker_count,
+                    Arc::clone(&in_flight),
+                )?;
                 (Some(session), handles)
             },
             Err(e) => {
@@ -358,6 +391,7 @@ impl InferencePool {
             shared_session,
             model_variant,
             worker_count,
+            in_flight,
         })
     }
 
@@ -408,7 +442,14 @@ impl InferencePool {
 impl InferenceEngine for InferencePool {
     /// Dispatch one request to the worker threads (real ORT session behind
     /// the shared `Mutex`; see the `InferencePool` docs for why it exists).
-    #[instrument(skip_all)]
+    #[instrument(
+        skip_all,
+        fields(
+            waited_ms = tracing::field::Empty,
+            in_flight = tracing::field::Empty,
+            workers = self.worker_count
+        )
+    )]
     fn infer<'a>(
         &'a self,
         input: &'a ModelInput,
@@ -423,9 +464,42 @@ impl InferenceEngine for InferencePool {
             // #1133: async send on a bounded tokio channel. When all workers are
             // busy the task waits cooperatively (cancellable) for capacity — the
             // executor thread is released, not parked on a blocking send.
+            //
+            // #1610 (OBS-H4): that queueing IS the pool's admission wait, and
+            // it used to be invisible. Measure it and record it on this span
+            // (always); emit an event only when the request actually QUEUED,
+            // because "the pool made this caller wait" is the rare, alertable
+            // fact — an uncontended dispatch is already visible as a span
+            // carrying waited_ms = 0. That asymmetry is deliberate and
+            // specific to this pool: inference runs once per embedded page, so
+            // an always-emitted event would put one DEBUG record per page in
+            // the JSONL, which is a different trade from `http.rate_limit.wait`
+            // (one per fetch) or `browser.resource_governor.acquire` (one per
+            // instance) — both of those emit unconditionally.
+            let queued_at = std::time::Instant::now();
+            // Sampled BEFORE the attempt: the question the event answers is
+            // how busy the pool was when this caller asked for capacity, and a
+            // value read after the send would describe a moment the caller has
+            // already passed (a worker may have taken the request immediately).
+            let in_flight = self.in_flight.load(Ordering::Relaxed);
             self.request_tx.send(request).await.map_err(|_| {
                 SemanticError::Inference("InferencePool channel closed (all workers exited)".into())
             })?;
+            let waited_ms = queued_at.elapsed().as_millis() as u64;
+            let span = tracing::Span::current();
+            span.record("waited_ms", waited_ms);
+            span.record("in_flight", in_flight as u64);
+            if waited_ms > 0 {
+                debug!(
+                    operation = AI_INFERENCE_DISPATCH_OPERATION,
+                    stage = "queued",
+                    model = %self.model_variant,
+                    workers = self.worker_count,
+                    in_flight,
+                    waited_ms,
+                    "inference request queued for a worker"
+                );
+            }
 
             // Await result asynchronously — yields to Tokio, no blocking
             reply_rx
@@ -904,6 +978,22 @@ impl PooledInferenceEngine {
     pub fn intra_threads(&self) -> usize {
         self.intra_threads
     }
+
+    /// Slots whose single permit is currently free (#1610, OBS-H4).
+    ///
+    /// Occupancy is a READ of state the pool already owns, so no second
+    /// centralized counter was introduced — the same discipline that removed
+    /// the `Mutex<usize>` round-robin. Every slot holds exactly one permit, so
+    /// this free count is a busy count. Sampled AFTER a permit is granted, it
+    /// separates "the whole pool was saturated" (0 free) from "this caller was
+    /// merely unlucky" (a free slot elsewhere), which is the only occupancy
+    /// question a waiter cannot already answer from the wait itself.
+    fn available_slots(&self) -> usize {
+        self.slots
+            .iter()
+            .filter(|slot| slot.semaphore.available_permits() > 0)
+            .count()
+    }
 }
 
 impl InferenceEngine for PooledInferenceEngine {
@@ -936,14 +1026,45 @@ impl InferenceEngine for PooledInferenceEngine {
                 }
             }
             let slot = &self.slots[start];
+            // #1610 (OBS-H4 / OBS-M2): the slow path is a real admission wait.
+            // Reaching it already PROVES every slot was busy (the rotation
+            // above just failed `try_acquire` on all of them), which is why
+            // occupancy here is read off the per-slot semaphores
+            // (`available_slots`) instead of a new counter. Field names mirror
+            // `browser.resource_governor.acquire` verbatim so one jq compares
+            // both admission queues.
+            let waited_at = std::time::Instant::now();
             let permit = Arc::clone(&slot.semaphore)
                 .acquire_owned()
                 .await
                 .map_err(|_| {
+                    debug!(
+                        operation = AI_POOL_ACQUIRE_OPERATION,
+                        stage = "queued",
+                        total_permits = len,
+                        available_permits = self.available_slots(),
+                        slot = start,
+                        waited_ms = waited_at.elapsed().as_millis() as u64,
+                        outcome = "closed",
+                        "inference pool permit"
+                    );
                     SemanticError::Inference(
                         "el pool de inferencia se cerró durante la espera".to_string(),
                     )
                 })?;
+            debug!(
+                operation = AI_POOL_ACQUIRE_OPERATION,
+                stage = "queued",
+                total_permits = len,
+                // Sampled after the grant, so the granted slot counts as busy:
+                // `available_permits == 0` means every OTHER session was still
+                // running, which is what makes the pool, not luck, the cause.
+                available_permits = self.available_slots(),
+                slot = start,
+                waited_ms = waited_at.elapsed().as_millis() as u64,
+                outcome = "granted",
+                "inference pool permit"
+            );
             let result = slot.engine.infer(input).await;
             drop(permit);
             result
@@ -1037,6 +1158,7 @@ fn spawn_workers(
     plan: &InputPlan,
     variant: AiModel,
     worker_count: usize,
+    in_flight: Arc<AtomicUsize>,
 ) -> Result<Vec<thread::JoinHandle<()>>, SemanticError> {
     let mut handles = Vec::with_capacity(worker_count);
 
@@ -1044,11 +1166,12 @@ fn spawn_workers(
         let receiver = Arc::clone(receiver);
         let session = Arc::clone(session);
         let plan = plan.clone();
+        let in_flight = Arc::clone(&in_flight);
 
         let handle = thread::Builder::new()
             .name(format!("inference-worker-{worker_id}"))
             .spawn(move || {
-                worker_main(&receiver, &session, variant, &plan, worker_id);
+                worker_main(&receiver, &session, variant, &plan, worker_id, &in_flight);
             })
             .map_err(|e| {
                 SemanticError::Inference(format!("failed to spawn worker {worker_id}: {e}"))
@@ -1077,37 +1200,79 @@ fn spawn_drainer(receiver: &SharedReceiver) -> Result<Vec<thread::JoinHandle<()>
 
 /// Entry point for one inference worker thread.
 ///
-/// Serves requests from the channel until it disconnects, locking the shared
-/// session for the duration of each inference call.
+/// Serves requests from the channel until it disconnects. The per-request work
+/// lives in [`serve_one_request`] so this stays a loop: the occupancy counter
+/// and the dispatch event (#1610) belong to the request, not to the loop, and
+/// inlining them pushed the function past the cognitive-complexity ratchet
+/// (#516).
 fn worker_main(
     receiver: &SharedReceiver,
     session: &SharedSession,
     variant: AiModel,
     plan: &InputPlan,
     worker_id: usize,
+    in_flight: &AtomicUsize,
 ) {
     debug!(worker_id, "Worker ready, waiting for requests");
 
     while let Some(request) = recv_request(receiver) {
-        // A poisoned mutex means another worker panicked mid-inference: the
-        // shared session is no longer trustworthy, so every request fails fast
-        // instead of panicking this thread too. The crate denies `expect_used`.
-        let result = match session.lock() {
-            Ok(mut guard) => run_session_inference(&mut guard, &request.input, variant, plan),
-            Err(_) => {
-                error!(
-                    worker_id,
-                    "Shared ONNX session mutex poisoned by a previous worker panic"
-                );
-                Err(SemanticError::Inference(
-                    "shared ONNX session poisoned by a previous worker panic".to_string(),
-                ))
-            },
-        };
-        let _ = request.reply_tx.send(result);
+        serve_one_request(session, request, variant, plan, worker_id, in_flight);
     }
 
     debug!(worker_id, "Worker exiting (channel disconnected)");
+}
+
+/// Serve ONE request: count it as in flight, run it, reply, release the count.
+///
+/// #1610 (OBS-H4): occupancy is the pool's own dispatch state, counted here —
+/// the worker that is ABOUT to run is in flight from the moment it takes the
+/// request, not when inference returns. Relaxed is correct: the value is
+/// observational and only ever read as an approximate depth.
+///
+/// Unlike the dispatch event, this one fires per request rather than per
+/// CONTENDED request, and that is the point: it is the only record of an
+/// occupancy TRANSITION, so it is what makes `in_flight` on a queued dispatch
+/// explainable ("it waited because all N workers were busy") instead of just a
+/// number. It costs one DEBUG record per embedded page, on top of the `infer`
+/// span the layer already opens and closes per inference.
+///
+/// The count is released on every exit path, including the poisoned-session
+/// one, because the caller never returns from here — the thread's next `recv`
+/// is the only thing that follows.
+fn serve_one_request(
+    session: &SharedSession,
+    request: WorkerRequest,
+    variant: AiModel,
+    plan: &InputPlan,
+    worker_id: usize,
+    in_flight: &AtomicUsize,
+) {
+    let occupied = in_flight.fetch_add(1, Ordering::Relaxed) + 1;
+    debug!(
+        operation = AI_INFERENCE_DISPATCH_OPERATION,
+        stage = "worker_take",
+        worker_id,
+        in_flight = occupied,
+        "inference worker took a request"
+    );
+
+    // A poisoned mutex means another worker panicked mid-inference: the
+    // shared session is no longer trustworthy, so every request fails fast
+    // instead of panicking this thread too. The crate denies `expect_used`.
+    let result = match session.lock() {
+        Ok(mut guard) => run_session_inference(&mut guard, &request.input, variant, plan),
+        Err(_) => {
+            error!(
+                worker_id,
+                "Shared ONNX session mutex poisoned by a previous worker panic"
+            );
+            Err(SemanticError::Inference(
+                "shared ONNX session poisoned by a previous worker panic".to_string(),
+            ))
+        },
+    };
+    let _ = request.reply_tx.send(result);
+    in_flight.fetch_sub(1, Ordering::Relaxed);
 }
 
 // ---------------------------------------------------------------------------
@@ -1697,6 +1862,7 @@ mod tests {
             shared_session: None,
             model_variant: AiModel::Granite97M,
             worker_count: 1,
+            in_flight: Arc::new(AtomicUsize::new(0)),
         };
         let input = ModelInput::from_tokens(vec![101, 2]);
 
@@ -1723,6 +1889,7 @@ mod tests {
             shared_session: None,
             model_variant: AiModel::Granite97M,
             worker_count: 1,
+            in_flight: Arc::new(AtomicUsize::new(0)),
         };
         let input = ModelInput::from_tokens(vec![101, 2]);
         let err = pool
@@ -1732,6 +1899,515 @@ mod tests {
         assert!(
             err.to_string().contains("channel closed"),
             "error must name the closed channel, got: {err}"
+        );
+    }
+
+    // --- #1610 (OBS-H4): dispatch + admission observability ---
+    //
+    // `webfang_ai` has no `tracing-subscriber` and no `serde_json`, and adding
+    // either is forbidden for this mission, so these tests cannot assert
+    // through the production `FileTraceLayer` the way `webfang_core`'s do.
+    // What they DO exercise is the part under test: a `debug!`, and a
+    // late `Span::record` on an `#[instrument]` span, reaching a live
+    // subscriber with their fields intact. The subscriber below is the
+    // smallest thing that can observe that, built on `tracing` alone.
+
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::sync::atomic::AtomicU64;
+
+    /// Fields of one span or event, captured as strings.
+    ///
+    /// `set` (not `push`) so a late `Span::record` REPLACES the value a field
+    /// was declared with: `waited_ms` is declared `Empty` and recorded
+    /// after the fact, and "last writer wins" is the only reading that stays
+    /// true if that ever changes.
+    #[derive(Debug, Default, Clone)]
+    struct CapturedFields(Vec<(String, String)>);
+
+    impl CapturedFields {
+        fn set(&mut self, name: &str, value: String) {
+            match self.0.iter_mut().find(|(key, _)| key == name) {
+                Some(slot) => slot.1 = value,
+                None => self.0.push((name.to_string(), value)),
+            }
+        }
+
+        fn get(&self, name: &str) -> Option<&str> {
+            self.0
+                .iter()
+                .find(|(key, _)| key == name)
+                .map(|(_, value)| value.as_str())
+        }
+
+        /// Numeric field, or `None` when absent or not parseable.
+        fn number(&self, name: &str) -> Option<u64> {
+            self.get(name).and_then(|value| value.parse().ok())
+        }
+    }
+
+    impl tracing::field::Visit for CapturedFields {
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            self.set(field.name(), value.to_string());
+        }
+
+        fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+            self.set(field.name(), value.to_string());
+        }
+
+        fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+            self.set(field.name(), value.to_string());
+        }
+
+        fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+            self.set(field.name(), value.to_string());
+        }
+
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            // `%value` (Display) and bare expressions both land here: tracing's
+            // display wrapper prints through Debug, so this is the Display text.
+            self.set(field.name(), format!("{value:?}"));
+        }
+    }
+
+    impl tracing::field::Visit for &mut CapturedFields {
+        fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+            (**self).record_str(field, value);
+        }
+
+        fn record_u64(&mut self, field: &tracing::field::Field, value: u64) {
+            (**self).record_u64(field, value);
+        }
+
+        fn record_i64(&mut self, field: &tracing::field::Field, value: i64) {
+            (**self).record_i64(field, value);
+        }
+
+        fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+            (**self).record_bool(field, value);
+        }
+
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            (**self).record_debug(field, value);
+        }
+    }
+
+    /// One captured event plus the span that was current when it fired.
+    #[derive(Debug, Clone)]
+    struct CapturedEvent {
+        fields: CapturedFields,
+        span: Option<u64>,
+    }
+
+    impl CapturedEvent {
+        fn get(&self, name: &str) -> Option<&str> {
+            self.fields.get(name)
+        }
+
+        fn number(&self, name: &str) -> Option<u64> {
+            self.fields.number(name)
+        }
+
+        /// Events of one `operation` (`stage` when given), in emission order.
+        fn matching(
+            events: &[CapturedEvent],
+            operation: &str,
+            stage: Option<&str>,
+        ) -> Vec<CapturedEvent> {
+            events
+                .iter()
+                .filter(|event| {
+                    event.get("operation") == Some(operation)
+                        && stage.is_none_or(|stage| event.get("stage") == Some(stage))
+                })
+                .cloned()
+                .collect()
+        }
+    }
+
+    /// A span the subscriber handed out, with its declared and late-recorded
+    /// fields. `metadata` is kept because `Subscriber::current_span` must
+    /// return it for `Span::current()` to resolve inside the instrumented fn.
+    #[derive(Debug, Clone)]
+    struct CapturedSpan {
+        metadata: &'static tracing::Metadata<'static>,
+        fields: CapturedFields,
+    }
+
+    // Spans entered on this thread, innermost last.
+    //
+    // Thread-local on purpose: `with_default` is a thread-local override, so a
+    // thread-local stack is exactly the scope of the capture — events emitted
+    // by tests running in parallel cannot land in this capture.
+    thread_local! {
+        static CURRENT_SPANS: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn current_span_id() -> Option<u64> {
+        CURRENT_SPANS.with(|stack| stack.borrow().last().copied())
+    }
+
+    /// Minimal `tracing::Subscriber`: records events and spans, enables
+    /// everything, and reports the current span.
+    struct CaptureSubscriber {
+        events: Arc<Mutex<Vec<CapturedEvent>>>,
+        spans: Arc<Mutex<HashMap<u64, CapturedSpan>>>,
+        next_id: AtomicU64,
+    }
+
+    impl tracing::Subscriber for CaptureSubscriber {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn new_span(&self, attrs: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            // Ids start at 1: `tracing` reserves 0 for "no span".
+            let id = self.next_id.fetch_add(1, Ordering::Relaxed) + 1;
+            let mut fields = CapturedFields::default();
+            attrs.record(&mut fields);
+            self.spans.lock().expect("span store").insert(
+                id,
+                CapturedSpan {
+                    metadata: attrs.metadata(),
+                    fields,
+                },
+            );
+            tracing::span::Id::from_u64(id)
+        }
+
+        fn record(&self, id: &tracing::span::Id, values: &tracing::span::Record<'_>) {
+            let mut recorded = CapturedFields::default();
+            values.record(&mut recorded);
+            let mut spans = self.spans.lock().expect("span store");
+            if let Some(span) = spans.get_mut(&id.into_u64()) {
+                for (name, value) in recorded.0 {
+                    span.fields.set(&name, value);
+                }
+            }
+        }
+
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+
+        fn event(&self, event: &tracing::Event<'_>) {
+            let mut fields = CapturedFields::default();
+            event.record(&mut fields);
+            self.events.lock().expect("event sink").push(CapturedEvent {
+                fields,
+                span: current_span_id(),
+            });
+        }
+
+        fn enter(&self, id: &tracing::span::Id) {
+            CURRENT_SPANS.with(|stack| stack.borrow_mut().push(id.into_u64()));
+        }
+
+        fn exit(&self, id: &tracing::span::Id) {
+            CURRENT_SPANS.with(|stack| {
+                let popped = stack.borrow_mut().pop();
+                debug_assert_eq!(popped, Some(id.into_u64()), "span exits must nest");
+            });
+        }
+
+        // NOTE: `current_span` is deliberately NOT implemented. Its return type
+        // is `tracing_core::span::Current`, and `tracing` re-exports neither it
+        // nor the `tracing-core` crate, so implementing it here would require a
+        // dependency this mission forbids. The consequence is narrow and is
+        // stated in the tests below: `Span::current()` does not resolve under
+        // this subscriber, so the two fields `infer` records AFTER its span was
+        // created (`waited_ms`, `in_flight`) are asserted through the
+        // events instead. The span itself is still observable through
+        // `new_span`, and so is its attribution.
+    }
+
+    /// A [`CaptureSubscriber`] wired to a fresh capture.
+    struct Capture {
+        dispatch: tracing::Dispatch,
+        events: Arc<Mutex<Vec<CapturedEvent>>>,
+        spans: Arc<Mutex<HashMap<u64, CapturedSpan>>>,
+    }
+
+    impl Capture {
+        fn new() -> Self {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let spans = Arc::new(Mutex::new(HashMap::new()));
+            let dispatch = tracing::Dispatch::new(CaptureSubscriber {
+                events: Arc::clone(&events),
+                spans: Arc::clone(&spans),
+                next_id: AtomicU64::new(0),
+            });
+            Self {
+                dispatch,
+                events,
+                spans,
+            }
+        }
+
+        /// Run `body` on a current-thread runtime with the capture installed as
+        /// this thread's default. A current-thread runtime is what makes the
+        /// capture cover spawned tasks too: they are polled here, on the only
+        /// thread whose default is this subscriber.
+        fn run<F: Future>(&self, body: F) {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("current-thread runtime");
+            tracing::dispatcher::with_default(&self.dispatch, || {
+                // `tracing` caches each callsite's `Interest` PROCESS-WIDE, so
+                // whichever thread first reached the dispatch `debug!` with no
+                // subscriber installed has cached `never()` for it, and every
+                // assertion below would pass vacuously. `Dispatch::new` above
+                // already re-registers the callsites it knows about; this
+                // closes the remaining window — a callsite first-hit by another
+                // test thread while this dispatch is the only one registered
+                // (tracing then consults that thread's default, not this one).
+                // The docs prescribe exactly this call for a subscriber
+                // installed after a callsite was registered.
+                tracing::callsite::rebuild_interest_cache();
+                runtime.block_on(body);
+            });
+        }
+
+        fn events(&self) -> Vec<CapturedEvent> {
+            self.events.lock().expect("event sink").clone()
+        }
+
+        /// The span an event was emitted inside.
+        fn enclosing_span(&self, event: &CapturedEvent) -> Option<CapturedSpan> {
+            let id = event.span?;
+            self.spans.lock().expect("span store").get(&id).cloned()
+        }
+
+        /// The one span whose metadata name is `name` (or ends with
+        /// `::name`, since `#[instrument]` may or may not qualify it) — for
+        /// finding the `infer` span when no event identifies it, because the
+        /// fast path emits none.
+        fn span_named(&self, name: &str) -> Option<CapturedSpan> {
+            self.spans
+                .lock()
+                .expect("span store")
+                .values()
+                .find(|span| {
+                    let span_name = span.metadata.name();
+                    span_name == name || span_name.ends_with(&format!("::{name}"))
+                })
+                .cloned()
+        }
+    }
+
+    /// #1610 (OBS-H4): a dispatch that had to wait for capacity emits ONE
+    /// structured event carrying its measured cost and the pool's occupancy.
+    ///
+    /// The backpressure is real, not simulated: a capacity-1 channel is
+    /// pre-filled by a request nobody will answer and NO worker drains it, so
+    /// the `send` inside `infer` genuinely parks. The wait is released by
+    /// draining one message, which is what makes the queue wait measurable
+    /// rather than a tautology.
+    ///
+    /// Covered here: the event (all identifying fields, the measured cost, the
+    /// occupancy counter) and the dispatch span it is emitted inside. NOT
+    /// covered: the two fields `infer` records into that span after the fact —
+    /// see the note on `CaptureSubscriber` for why this crate cannot observe
+    /// them without a `tracing-core` dependency.
+    #[test]
+    fn queued_dispatch_reports_measured_wait_and_occupancy() {
+        let capture = Capture::new();
+
+        capture.run(async {
+            let (tx, mut rx) = mpsc::channel::<WorkerRequest>(1);
+            let (hold_tx, hold_rx) = oneshot::channel();
+            tx.try_send(WorkerRequest {
+                input: ModelInput::from_tokens(vec![101, 2]),
+                reply_tx: hold_tx,
+            })
+            .expect("hold request fills capacity 1");
+
+            let pool = InferencePool {
+                request_tx: tx,
+                _worker_handles: Vec::new(),
+                shared_session: None,
+                model_variant: AiModel::Granite97M,
+                worker_count: 1,
+                // No worker thread exists in this pool, so this stays exactly 3
+                // for the whole test. A fixed NON-ZERO value is what makes the
+                // assertion meaningful: an event reporting 0 could equally mean
+                // "a hardcoded zero" rather than "the counter was read".
+                in_flight: Arc::new(AtomicUsize::new(3)),
+            };
+            let input = ModelInput::from_tokens(vec![101, 2]);
+            let mut inference = std::pin::pin!(pool.infer(&input));
+
+            // One poll is enough to park the send on the full channel: the wait
+            // starts here, before the timer does.
+            assert!(
+                futures::poll!(&mut inference).is_pending(),
+                "a full channel must park infer on its send, not complete it"
+            );
+            tokio::time::sleep(Duration::from_millis(60)).await;
+            // Freeing one slot lets the parked `send` complete.
+            drop(
+                rx.recv()
+                    .await
+                    .expect("draining the held request frees capacity"),
+            );
+
+            // Nobody answers THIS request's oneshot, so infer stays pending:
+            // reaching the dispatch event is all this test needs.
+            assert!(
+                tokio::time::timeout(Duration::from_millis(200), &mut inference)
+                    .await
+                    .is_err(),
+                "infer must still be pending on its own reply channel"
+            );
+            drop(hold_rx);
+        });
+
+        let events = capture.events();
+        let queued =
+            CapturedEvent::matching(&events, AI_INFERENCE_DISPATCH_OPERATION, Some("queued"));
+        assert_eq!(
+            queued.len(),
+            1,
+            "one queued dispatch must emit exactly one event, got: {events:?}"
+        );
+        let event = &queued[0];
+        assert_eq!(
+            event.get("message"),
+            Some("inference request queued for a worker")
+        );
+        assert_eq!(event.get("model"), Some("granite-97m"));
+        assert_eq!(event.number("workers"), Some(1));
+        assert_eq!(
+            event.number("in_flight"),
+            Some(3),
+            "occupancy must come from the pool counter, got: {event:?}"
+        );
+        assert!(
+            event.number("waited_ms").is_some_and(|ms| ms >= 40),
+            "a real ~60ms backpressure wait must be measurable, got: {event:?}"
+        );
+
+        // The event must be emitted INSIDE the dispatch span, so the two
+        // surfaces join on one span id in `--trace-file` (`span_fields` of
+        // later events and its `span_close` record).
+        let span = capture
+            .enclosing_span(event)
+            .expect("the queued event must be emitted inside the instrumented span");
+        assert!(
+            span.metadata.name().ends_with("infer"),
+            "the event must sit inside the dispatch span, got {}",
+            span.metadata.name()
+        );
+        assert_eq!(
+            span.fields.number("workers"),
+            Some(1),
+            "the dispatch span must carry the pool size: {:?}",
+            span.fields
+        );
+    }
+
+    /// #1610 (OBS-H4): an uncontended dispatch is NOT an event. Only contention
+    /// is alertable, so the fast path must stay quiet — while still reporting
+    /// `waited_ms = 0` on its span, which is what makes "the pool never
+    /// made anybody wait" provable rather than merely absent.
+    #[test]
+    fn uncontended_dispatch_emits_no_queued_event() {
+        let capture = Capture::new();
+
+        capture.run(async {
+            // Empty capacity-1 channel: the send completes into the buffer on
+            // the first poll, so this is the fast path.
+            let (tx, _rx) = mpsc::channel::<WorkerRequest>(1);
+            let pool = InferencePool {
+                request_tx: tx,
+                _worker_handles: Vec::new(),
+                shared_session: None,
+                model_variant: AiModel::Granite97M,
+                worker_count: 1,
+                in_flight: Arc::new(AtomicUsize::new(0)),
+            };
+            let input = ModelInput::from_tokens(vec![101, 2]);
+            let mut inference = std::pin::pin!(pool.infer(&input));
+            assert!(
+                futures::poll!(&mut inference).is_pending(),
+                "infer must reach its reply await (dispatched, nobody replies)"
+            );
+        });
+
+        let events = capture.events();
+        assert!(
+            CapturedEvent::matching(&events, AI_INFERENCE_DISPATCH_OPERATION, None).is_empty(),
+            "an uncontended dispatch must emit no dispatch event, got: {events:?}"
+        );
+        let span = capture
+            .span_named("infer")
+            .expect("the dispatch still produced its span");
+        assert_eq!(
+            span.fields.number("workers"),
+            Some(1),
+            "the dispatch span is created even when nothing had to wait"
+        );
+    }
+
+    /// #1610 (OBS-H4 / OBS-M2): the `PooledInferenceEngine` slow path — every
+    /// session busy — reports its permit wait with the SAME field names as
+    /// `browser.resource_governor.acquire`, including occupancy derived from
+    /// the per-slot semaphores rather than a new counter.
+    ///
+    /// The two holders take the fast path, so asserting exactly one event also
+    /// pins the fast path's silence on this pool too.
+    #[test]
+    fn saturated_pool_permit_wait_reports_measured_event() {
+        let capture = Capture::new();
+
+        capture.run(async {
+            let engines: Vec<Arc<dyn InferenceEngine + Send + Sync>> = vec![
+                Arc::new(MockInferenceEngine::new(Duration::from_millis(150))),
+                Arc::new(MockInferenceEngine::new(Duration::from_millis(150))),
+            ];
+            let pool =
+                Arc::new(PooledInferenceEngine::from_engines(engines).expect("two-session pool"));
+            let input = ModelInput::from_tokens(vec![101, 2]);
+
+            let mut holders = Vec::new();
+            for _ in 0..2 {
+                let pool = Arc::clone(&pool);
+                let input = input.clone();
+                holders.push(tokio::spawn(async move { pool.infer(&input).await }));
+            }
+            // Both slots are now held for ~150ms.
+            tokio::time::sleep(Duration::from_millis(30)).await;
+
+            let waiter = {
+                let pool = Arc::clone(&pool);
+                let input = input.clone();
+                tokio::spawn(async move { pool.infer(&input).await })
+            };
+            for holder in holders {
+                holder.await.expect("holder joins").expect("holder infers");
+            }
+            waiter.await.expect("waiter joins").expect("waiter infers");
+        });
+
+        let events = capture.events();
+        let acquires = CapturedEvent::matching(&events, AI_POOL_ACQUIRE_OPERATION, Some("queued"));
+        assert_eq!(
+            acquires.len(),
+            1,
+            "only the saturated caller waits on a permit, got: {events:?}"
+        );
+        let acquire = &acquires[0];
+        assert_eq!(acquire.get("message"), Some("inference pool permit"));
+        assert_eq!(acquire.get("outcome"), Some("granted"));
+        assert_eq!(acquire.number("total_permits"), Some(2));
+        assert!(
+            acquire
+                .number("available_permits")
+                .is_some_and(|free| free < 2),
+            "the granted slot is held at sampling time, so occupancy must be reported: {acquire:?}"
+        );
+        assert!(
+            acquire.number("waited_ms").is_some_and(|ms| ms >= 40),
+            "a real wait behind two busy sessions must be measurable, got: {acquire:?}"
         );
     }
 

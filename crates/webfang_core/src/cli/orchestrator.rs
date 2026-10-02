@@ -80,7 +80,15 @@ pub(crate) fn output_vectors_gate(opts: &CrawlOptions) -> Option<CliExit> {
 /// 3. Export results
 /// 4. Report failures + exit code
 #[allow(clippy::too_many_lines)]
-#[instrument(level = "info", skip(opts, ai_cleaner, adaptive_engine, vault_ports, llm_port), fields(url = %opts.url))]
+#[instrument(
+    level = "info",
+    skip(opts, ai_cleaner, adaptive_engine, vault_ports, llm_port),
+    fields(
+        url = %opts.url,
+        correlation_id = tracing::field::Empty,
+        trace_id = tracing::field::Empty
+    )
+)]
 pub async fn run(
     opts: CrawlOptions,
     #[cfg(feature = "ai")] ai_cleaner: Option<std::sync::Arc<dyn SemanticCleaner>>,
@@ -95,10 +103,22 @@ pub async fn run(
     // every route — dry-run preview, batch, prepare/scrape phases. Before
     // #1439 the discovery Engine minted its own root milliseconds after this
     // event, silently splitting every DOM/batch run into two identities in
-    // the trace (the historical #687 class). `#[instrument]` spans cannot
-    // see locals at creation, so declare it offline-visible via a structured
-    // event (lands in the JSONL `.fields`).
+    // the trace (the historical #687 class). `#[instrument]` sees arguments
+    // only, and the root is a LOCAL minted after span creation, so it is
+    // declared `Empty` and recorded on the span right here (#1610, OBS-H1):
+    // the root `run` span now carries its own identity, and the `run
+    // identity` event below (kept as the historical contract other tooling
+    // reads) inherits it through `span_fields`.
     let root_correlation = domain::CorrelationId::new();
+    let run_span = tracing::Span::current();
+    run_span.record(
+        "correlation_id",
+        tracing::field::display(root_correlation.to_string()),
+    );
+    run_span.record(
+        "trace_id",
+        tracing::field::display(root_correlation.trace_id()),
+    );
     info!(
         correlation_id = %root_correlation,
         trace_id = %root_correlation.trace_id(),
@@ -612,6 +632,7 @@ mod tests {
     };
     use crate::application::crawl_options::CrawlOptions;
     use crate::cli::error::CliExit;
+    use tracing_subscriber::layer::SubscriberExt;
 
     // ===== discovery config tests (#653 / R2-1) =====
 
@@ -1044,6 +1065,108 @@ mod tests {
         assert!(
             matches!(exit, CliExit::DataFormatError(_)),
             "expected CliExit::DataFormatError, got {exit:?}"
+        );
+    }
+
+    // ===== #1610 span identity =====
+
+    /// #1610 (OBS-H1): the root `run` span must carry the run-root identity it
+    /// mints for itself, not only the URL it was handed.
+    ///
+    /// `#[instrument]` sees arguments only, and the root is a local minted
+    /// AFTER the span exists, so it is declared `Empty` and recorded in place.
+    /// The probe is a dry run with an unknown TLS profile: the run mints its
+    /// identity and returns at the profile check, before any socket opens —
+    /// deterministic, offline, and through the real entry point.
+    #[test]
+    fn run_span_carries_the_run_root_identity() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("trace.jsonl");
+        let layer = crate::infrastructure::observability::FileTraceLayer::new(path.clone())
+            .expect("trace layer");
+        let dispatch = tracing::Dispatch::new(tracing_subscriber::registry().with(layer));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+
+        let mut opts = CrawlOptions::default();
+        opts.export.dry_run = true;
+        opts.network.h2_profile = "NotAProfile".to_owned();
+        let expected_url = opts.url.to_string();
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            runtime.block_on(async {
+                let exit = run(
+                    opts,
+                    #[cfg(feature = "ai")]
+                    None,
+                    #[cfg(feature = "adaptive-selectors")]
+                    None,
+                    Default::default(),
+                    None,
+                )
+                .await;
+                assert!(
+                    matches!(exit, CliExit::ConfigError(_)),
+                    "an unknown TLS profile must abort before any fetch"
+                );
+            });
+        });
+        drop(runtime);
+        // Flush before reading: the layer buffers and only drains on drop.
+        drop(dispatch);
+
+        let records: Vec<serde_json::Value> = std::fs::read_to_string(&path)
+            .expect("trace file")
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| serde_json::from_str::<serde_json::Value>(l).expect("jsonl line"))
+            .collect();
+
+        let closes: Vec<_> = records
+            .iter()
+            .filter(|r| r["record"] == "span_close" && r["span"] == "run")
+            .collect();
+        assert_eq!(closes.len(), 1, "exactly one root run span must close");
+        let span_fields = closes[0]["span_fields"].as_object().expect("span_fields");
+        let correlation_id = span_fields
+            .get("correlation_id")
+            .and_then(serde_json::Value::as_str)
+            .expect("the root span must carry its own correlation_id");
+        let trace_id = span_fields
+            .get("trace_id")
+            .and_then(serde_json::Value::as_str)
+            .expect("the root span must carry its own trace_id");
+        assert_eq!(
+            span_fields.get("url").and_then(serde_json::Value::as_str),
+            Some(expected_url.as_str()),
+            "the declaration-time URL must survive the late records"
+        );
+
+        // The historical `run identity` event is the contract other tooling
+        // reads; it must now carry the SAME identity the span does, so a
+        // consumer can join on either one.
+        let identity_events: Vec<_> = records
+            .iter()
+            .filter(|r| r["message"] == "run identity")
+            .collect();
+        assert_eq!(identity_events.len(), 1, "the run identity event stays");
+        let event_fields = identity_events[0]["fields"]
+            .as_object()
+            .expect("event fields");
+        assert_eq!(
+            event_fields
+                .get("correlation_id")
+                .and_then(serde_json::Value::as_str),
+            Some(correlation_id),
+            "span and event must announce the same root"
+        );
+        assert_eq!(
+            event_fields
+                .get("trace_id")
+                .and_then(serde_json::Value::as_str),
+            Some(trace_id)
         );
     }
 }

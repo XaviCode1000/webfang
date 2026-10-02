@@ -384,6 +384,52 @@ impl VectorExporter {
         file.seek(SeekFrom::End(0))?;
         Ok(())
     }
+
+    /// Write a whole batch, returning how many payload bytes were written.
+    ///
+    /// The write loop of [`Exporter::export_batch`], split out so the
+    /// instrumented wrapper can report the outcome AND the byte volume on its
+    /// span (#1610, OBS-H6) without touching this loop's control flow. The
+    /// returned count sums the serialized document lines this batch appended;
+    /// it deliberately EXCLUDES the metadata header and the closing `]}}`,
+    /// which this exporter writes around the documents and does not own
+    /// per-document.
+    fn export_batch_documents(&self, documents: &[DocumentChunkValidated]) -> ExportResult<u64> {
+        if documents.is_empty() {
+            return Ok(0);
+        }
+
+        let (mut file, mut writer) = self.writer()?;
+        let is_first_doc =
+            !self.config.append || file.metadata().map(|m| m.len() == 0).unwrap_or(true);
+        let existing = if is_first_doc {
+            0
+        } else {
+            self.read_append_state(&mut file)?
+        };
+
+        self.write_metadata_header(&mut writer, &mut file, is_first_doc)?;
+
+        let mut doc_count = 0;
+        let mut payload_bytes: u64 = 0;
+        for (i, doc) in documents.iter().enumerate() {
+            if i > 0 || !is_first_doc {
+                write!(writer, ",")?;
+            }
+
+            let serialized = self.serialize_document(doc)?;
+            payload_bytes += serialized.len() as u64;
+            writeln!(writer, "{serialized}")?;
+            doc_count += 1;
+        }
+
+        self.close_json(&mut writer, &mut file, existing + doc_count)?;
+
+        // Release lock
+        fs2::FileExt::unlock(&file)?;
+
+        Ok(payload_bytes)
+    }
 }
 
 /// Read up to [`HEADER_SCAN_BYTES`] leading bytes from the file.
@@ -491,6 +537,21 @@ fn patch_header_field(
     Ok(())
 }
 
+/// Record how an `export_batch` call ended on its own span (#1610, OBS-H6).
+///
+/// A span that only knows "N documents, M seconds" cannot answer "did the
+/// export land, and how much data left?", so both are declared `Empty` and
+/// recorded here. `payload_bytes` is `None` for exporters that delegate their
+/// writes to a helper reporting no size: an absent key is the honest reading,
+/// a made-up number would be indistinguishable from a real one.
+fn record_export_outcome(outcome: &str, payload_bytes: Option<u64>) {
+    let span = tracing::Span::current();
+    span.record("outcome", outcome);
+    if let Some(bytes) = payload_bytes {
+        span.record("payload_bytes", bytes);
+    }
+}
+
 impl Exporter for VectorExporter {
     fn export(&self, document: DocumentChunkValidated) -> ExportResult<()> {
         let (mut file, mut writer) = self.writer()?;
@@ -519,40 +580,32 @@ impl Exporter for VectorExporter {
         Ok(())
     }
 
-    #[tracing::instrument(skip(self, documents), fields(exporter = "vector", documents = documents.len()))]
+    // `payload_bytes` semantics (shared by all three exporters, #1610): the
+    // serialized document bytes THIS batch handed to its writer. The vector
+    // exporter knows them per document and excludes the header/closer it owns;
+    // the file exporter's Auto/Vector branches delegate to `save_json`, which
+    // reports no size, so that exporter leaves the key absent rather than
+    // inventing a number.
+    #[tracing::instrument(
+        skip(self, documents),
+        fields(
+            exporter = "vector",
+            documents = documents.len(),
+            outcome = tracing::field::Empty,
+            payload_bytes = tracing::field::Empty
+        )
+    )]
     fn export_batch(&self, documents: &[DocumentChunkValidated]) -> ExportResult<()> {
-        if documents.is_empty() {
-            return Ok(());
+        match self.export_batch_documents(documents) {
+            Ok(payload_bytes) => {
+                record_export_outcome("ok", Some(payload_bytes));
+                Ok(())
+            },
+            Err(e) => {
+                record_export_outcome("error", None);
+                Err(e)
+            },
         }
-
-        let (mut file, mut writer) = self.writer()?;
-        let is_first_doc =
-            !self.config.append || file.metadata().map(|m| m.len() == 0).unwrap_or(true);
-        let existing = if is_first_doc {
-            0
-        } else {
-            self.read_append_state(&mut file)?
-        };
-
-        self.write_metadata_header(&mut writer, &mut file, is_first_doc)?;
-
-        let mut doc_count = 0;
-        for (i, doc) in documents.iter().enumerate() {
-            if i > 0 || !is_first_doc {
-                write!(writer, ",")?;
-            }
-
-            let serialized = self.serialize_document(doc)?;
-            writeln!(writer, "{serialized}")?;
-            doc_count += 1;
-        }
-
-        self.close_json(&mut writer, &mut file, existing + doc_count)?;
-
-        // Release lock
-        fs2::FileExt::unlock(&file)?;
-
-        Ok(())
     }
 
     fn config(&self) -> &ExporterConfig {
@@ -564,8 +617,107 @@ impl Exporter for VectorExporter {
 mod tests {
     use std::path::PathBuf;
 
+    use super::super::file_exporter::capture_export_trace;
     use super::*;
     use crate::domain::config::ExportFormat;
+
+    /// #1610 (OBS-H6): the vector exporter serializes each document itself, so
+    /// its span reports the exact per-document byte volume it appended (the
+    /// header and closing bracket are written by the exporter around the
+    /// documents, and are deliberately excluded — the key documents ONE
+    /// figure, the same one the file/jsonl exporters spell).
+    #[test]
+    fn export_batch_span_records_outcome_and_payload_bytes() {
+        let temp_dir = tempfile::TempDir::new().expect("tempdir");
+        let exporter =
+            VectorExporter::new(create_test_config_with_dir(temp_dir.path().to_path_buf()));
+        let chunks = vec![create_test_chunk(), create_test_chunk()];
+        let expected: u64 = chunks
+            .iter()
+            .map(|c| serde_json::to_string(c).expect("serialize").len() as u64)
+            .sum();
+
+        let records = capture_export_trace(|| async {
+            exporter
+                .export_batch(&chunks)
+                .expect("batch export must succeed");
+        });
+
+        let closes: Vec<_> = records
+            .iter()
+            .filter(|r| r["record"] == "span_close" && r["span"] == "export_batch")
+            .collect();
+        assert_eq!(closes.len(), 1, "exactly one export_batch span");
+        let fields = closes[0]["span_fields"].as_object().expect("span_fields");
+        assert_eq!(fields.get("outcome").and_then(|v| v.as_str()), Some("ok"));
+        assert_eq!(
+            fields.get("exporter").and_then(|v| v.as_str()),
+            Some("vector")
+        );
+        assert_eq!(fields.get("documents").and_then(|v| v.as_u64()), Some(2));
+        assert_eq!(
+            fields.get("payload_bytes").and_then(|v| v.as_u64()),
+            Some(expected),
+            "the recorded payload must be the serialized document bytes"
+        );
+    }
+
+    /// #1610: an empty batch is a SUCCESS with a zero volume — the token must
+    /// not be inferred from the byte count.
+    #[test]
+    fn export_batch_span_records_ok_for_empty_batch() {
+        let temp_dir = tempfile::TempDir::new().expect("tempdir");
+        let exporter =
+            VectorExporter::new(create_test_config_with_dir(temp_dir.path().to_path_buf()));
+
+        let records = capture_export_trace(|| async {
+            exporter.export_batch(&[]).expect("empty batch is a no-op");
+        });
+
+        let closes: Vec<_> = records
+            .iter()
+            .filter(|r| r["record"] == "span_close" && r["span"] == "export_batch")
+            .collect();
+        assert_eq!(closes.len(), 1, "exactly one export_batch span");
+        let fields = closes[0]["span_fields"].as_object().expect("span_fields");
+        assert_eq!(fields.get("outcome").and_then(|v| v.as_str()), Some("ok"));
+        assert_eq!(
+            fields.get("payload_bytes").and_then(|v| v.as_u64()),
+            Some(0)
+        );
+    }
+
+    /// #1610: the failure arm — a batch that cannot open its output file must
+    /// close the span as `error`, with no payload claim attached.
+    #[test]
+    fn export_batch_span_records_error_outcome() {
+        let temp_dir = tempfile::TempDir::new().expect("tempdir");
+        // A plain FILE where the output directory is required: `create_dir_all`
+        // fails for every user on every OS, with no permission fixture.
+        let blocked = temp_dir.path().join("blocked");
+        std::fs::write(&blocked, b"not a directory").expect("fixture file");
+        let exporter = VectorExporter::new(create_test_config_with_dir(blocked));
+
+        let records = capture_export_trace(|| async {
+            let result = exporter.export_batch(&[create_test_chunk()]);
+            assert!(result.is_err(), "unwritable output must fail the batch");
+        });
+
+        let closes: Vec<_> = records
+            .iter()
+            .filter(|r| r["record"] == "span_close" && r["span"] == "export_batch")
+            .collect();
+        assert_eq!(closes.len(), 1, "exactly one export_batch span");
+        let fields = closes[0]["span_fields"].as_object().expect("span_fields");
+        assert_eq!(
+            fields.get("outcome").and_then(|v| v.as_str()),
+            Some("error")
+        );
+        assert!(
+            !fields.contains_key("payload_bytes"),
+            "a failed batch wrote no payload — the key must be absent: {fields:?}"
+        );
+    }
 
     fn create_test_config_with_dir(dir: PathBuf) -> ExporterConfig {
         ExporterConfig::new(dir, ExportFormat::Vector, "test_export")
