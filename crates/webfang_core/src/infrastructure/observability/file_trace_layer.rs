@@ -17,6 +17,12 @@
 //! `on_close` uses. No thread-local span stack is consulted, so events keep
 //! attribution when Tokio moves a task across worker threads (issue #1238).
 //!
+//! `span_fields` holds BOTH the fields declared when the span was created
+//! (`on_new_span`) and the ones filled in afterwards via
+//! `tracing::Span::record` (`on_record`) — a span's outcome is only known at
+//! the end of the operation, so it must reach the JSONL after the fact
+//! (#1610, OBS-P2-4).
+//!
 //! Top-level `trace_id` is the root span's `Id` formatted as 16-hex
 //! (`format!("{:016x}", root.id().into_u64())`). One logical `trace_id` per
 //! run: every record inside the run's root scope shares it, so the full JSONL
@@ -119,6 +125,30 @@ where
             span_ref.extensions_mut().insert(SpanTimings {
                 start: Instant::now(),
             });
+        }
+    }
+
+    /// Merge fields recorded AFTER span creation (#1610, OBS-P2-4).
+    ///
+    /// `on_new_span` snapshots the declared fields, which is why an
+    /// `#[instrument(fields(...))]` span can carry its identity offline. The
+    /// outcome of a span, however, is only known when the operation ends —
+    /// it has to be declared `Empty` and filled in later with
+    /// [`tracing::Span::record`]. Without this hook those records went
+    /// nowhere: the span closed with an `Empty` field invisible and the
+    /// outcome lived only in a separate event, which is exactly the gap
+    /// OBS-P2-4 reports.
+    ///
+    /// The recorded values land in the SAME `EventRecorder` extension the
+    /// creation-time snapshot uses, so they appear in `span_fields` of every
+    /// subsequent event inside the span AND in the `span_close` record.
+    fn on_record(&self, id: &tracing::Id, values: &tracing::span::Record<'_>, ctx: Context<'_, S>) {
+        let Some(span_ref) = ctx.span(id) else {
+            return;
+        };
+        let mut extensions = span_ref.extensions_mut();
+        if let Some(recorder) = extensions.get_mut::<EventRecorder>() {
+            values.record(recorder);
         }
     }
 
@@ -814,6 +844,94 @@ mod tests {
 
         let content = std::fs::read_to_string(&path).unwrap();
         assert!(!content.is_empty(), "Drop must flush buffered data to disk");
+    }
+
+    /// #1610 (OBS-P2-4): a field declared `Empty` and filled in with
+    /// `Span::record` after the span was created MUST reach the JSONL.
+    ///
+    /// This is the span-outcome contract: `#[instrument]` can only see
+    /// arguments, so an outcome declared at creation is empty and recorded at
+    /// the end of the operation. Before `on_record` existed the value was
+    /// dropped and the span closed with no outcome at all.
+    #[test]
+    fn contract_span_close_carries_late_recorded_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trace.jsonl");
+        let layer = FileTraceLayer::new(path.clone()).unwrap();
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            let span = tracing::info_span!(
+                "crawl_page",
+                url = "https://example.com",
+                outcome = tracing::field::Empty,
+                http_status = tracing::field::Empty,
+            );
+            let _enter = span.enter();
+            span.record("outcome", "ok");
+            span.record("http_status", 200u64);
+        });
+
+        let closes = span_close_records(&path);
+        assert_eq!(closes.len(), 1, "exactly one span_close record expected");
+        let fields = closes[0]["span_fields"]
+            .as_object()
+            .expect("span_fields must be an object");
+        assert_eq!(
+            fields.get("outcome").and_then(Value::as_str),
+            Some("ok"),
+            "recorded outcome must land in span_fields"
+        );
+        assert_eq!(
+            fields.get("http_status").and_then(Value::as_u64),
+            Some(200),
+            "recorded numeric field must land as a number"
+        );
+        assert_eq!(
+            fields.get("url").and_then(Value::as_str),
+            Some("https://example.com"),
+            "creation-time fields must survive the merge"
+        );
+    }
+
+    /// #1610 (OBS-P2-4): a field recorded mid-span must also reach the
+    /// `span_fields` of every event emitted AFTER the record — otherwise a
+    /// failure event raised while the outcome was still unknown would show a
+    /// half-populated span.
+    #[test]
+    fn contract_late_recorded_field_visible_on_later_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("trace.jsonl");
+        let layer = FileTraceLayer::new(path.clone()).unwrap();
+        let subscriber = tracing_subscriber::registry().with(layer);
+        let dispatch = tracing::Dispatch::new(subscriber);
+
+        tracing::dispatcher::with_default(&dispatch, || {
+            let span = tracing::info_span!(
+                "crawl_page",
+                url = "https://example.com",
+                outcome = tracing::field::Empty,
+            );
+            let _enter = span.enter();
+            span.record("outcome", "error");
+            tracing::info!(page_failed = true, "page failed");
+        });
+
+        let events: Vec<Value> = read_jsonl_lines(&path)
+            .iter()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|v| v["record"].is_null())
+            .collect();
+        assert_eq!(events.len(), 1, "one event expected");
+        let fields = events[0]["span_fields"]
+            .as_object()
+            .expect("span_fields must be an object");
+        assert_eq!(
+            fields.get("outcome").and_then(Value::as_str),
+            Some("error"),
+            "later event must see the recorded outcome"
+        );
     }
 
     #[test]

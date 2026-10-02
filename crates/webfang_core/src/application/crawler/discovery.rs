@@ -265,10 +265,13 @@ pub async fn scrape_single_url(
 /// Inner implementation of [`scrape_single_url`].
 ///
 /// The `#[instrument]` span declares the per-page identity (`correlation_id`,
-/// `trace_id`) AT CREATION time (#501): FileTraceLayer snapshots span fields
-/// in `on_new_span`, so fields recorded later never reach the `--trace-file`
-/// JSONL. The instrumented span lifecycle is also async-safe — no `enter()`
-/// guard crosses an `.await` (#501 follow-up).
+/// `trace_id`) AT CREATION time (#501). Anything only known at the END of the
+/// operation is declared `tracing::field::Empty` and recorded with
+/// `tracing::Span::record`, which FileTraceLayer merges into the same snapshot
+/// (`on_record`, #1610) — the earlier claim that late records never reach the
+/// `--trace-file` JSONL was true until that hook landed, and is false now. The
+/// instrumented span lifecycle is also async-safe — no `enter()` guard crosses
+/// an `.await` (#501 follow-up).
 #[instrument(
     level = "debug",
     name = "scrape_single",

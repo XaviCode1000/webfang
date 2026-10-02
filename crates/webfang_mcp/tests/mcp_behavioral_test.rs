@@ -1179,9 +1179,20 @@ async fn test_scrape_then_metrics_reflects_it_cross_session() {
     );
 
     // REQ-08: the redacted snapshot is byte-stable across runs.
+    //
+    // Every MEASURED duration needs a filter, not just `average_duration_ms`:
+    // the percentile block added by #1610 (OBS-M4) carries real wall-clock
+    // samples, so accepting it unredacted would bake this machine's timings
+    // into the snapshot and make the test flaky on any loaded runner.
+    // `samples`/`capacity`/`observed`/`truncated` are deliberately NOT
+    // filtered — they are the deterministic bookkeeping that makes the
+    // percentiles interpretable.
     insta::with_settings!({
         filters => vec![
             (r#""average_duration_ms":\s*[\d.]+"#, "[DURATION]"),
+            (r#""p50_ms":\s*\d+"#, r#""p50_ms": [DURATION]"#),
+            (r#""p95_ms":\s*\d+"#, r#""p95_ms": [DURATION]"#),
+            (r#""p99_ms":\s*\d+"#, r#""p99_ms": [DURATION]"#),
             (r"127\.0\.0\.1:\d+", "127.0.0.1:[PORT]"),
         ],
     }, {
