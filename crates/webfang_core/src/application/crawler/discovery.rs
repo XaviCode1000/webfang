@@ -451,6 +451,13 @@ async fn scrape_single_url_inner(
 
 #[cfg(test)]
 mod tests {
+    /// #1615 (F11 / G-3 / G-4 / G-5): these tests drive real fetches against
+    /// wiremock's 127.0.0.1, which the literal-IP entry guard now refuses.
+    /// `EnvGuard::entry_guard_off()` disarms the guard for its lifetime — the
+    /// named constructor is the repo's rule, so each call site stays one line.
+    fn entry_off() -> webfang_test_utils::EnvGuard {
+        webfang_test_utils::EnvGuard::entry_guard_off()
+    }
     use super::*;
     use crate::domain::CrawlError;
     // parse_sitemap stays an infrastructure fn (quick_xml machinery);
@@ -582,11 +589,7 @@ mod tests {
     #[tokio::test]
     #[cfg(not(miri))]
     async fn test_discover_urls_single_fetch_respects_request_timeout() {
-        // #1615 (F11 / G-3 / G-4 / G-5): this path now applies the
-        // literal-IP entry guard, which refuses wiremock's 127.0.0.1.
-        // The named constructor is the repo's rule — never spell the
-        // variable out at the call site.
-        let _entry_off = webfang_test_utils::EnvGuard::entry_guard_off();
+        let _entry_off = entry_off();
         use wiremock::matchers::path;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -625,11 +628,7 @@ mod tests {
     #[tokio::test]
     #[cfg(not(miri))]
     async fn test_discover_urls_single_fetch_respects_connect_timeout() {
-        // #1615 (F11 / G-3 / G-4 / G-5): this path now applies the
-        // literal-IP entry guard, which refuses wiremock's 127.0.0.1.
-        // The named constructor is the repo's rule — never spell the
-        // variable out at the call site.
-        let _entry_off = webfang_test_utils::EnvGuard::entry_guard_off();
+        let _entry_off = entry_off();
         use tokio::net::TcpListener;
 
         // TLS blackhole: accept TCP connections and hold them open without ever
@@ -710,11 +709,7 @@ mod tests {
     #[tokio::test]
     #[cfg(not(miri))]
     async fn test_discover_urls_max_depth_one_returns_links() {
-        // #1615 (F11 / G-3 / G-4 / G-5): this path now applies the
-        // literal-IP entry guard, which refuses wiremock's 127.0.0.1.
-        // The named constructor is the repo's rule — never spell the
-        // variable out at the call site.
-        let _entry_off = webfang_test_utils::EnvGuard::entry_guard_off();
+        let _entry_off = entry_off();
         use wiremock::matchers::path;
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
