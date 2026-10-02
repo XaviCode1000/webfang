@@ -7,6 +7,52 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-10-02
+
+
+### 🎉 Added
+
+- Make the metrics snapshot answer the SLO questions
+- Make the inference pool's dispatch and occupancy observable
+
+### 🏗️ Architecture Improvements
+
+- Consolidate the MCP test harness scaffolding in common
+- Mark the three enums that grow as non_exhaustive
+- Collapse the repeated #1615 guard blocks behind one-line helpers
+- Collapse the last long-form #1615 entry-guard comment blocks
+
+### 📖 Documentation
+
+- Say out loud that a routable bind carries the bearer token in cleartext
+
+### 🔧 Fixed
+
+- Bound the results one session retains, and refuse an over-budget run
+- Mount the rate limiter inside auth, keyed per credential
+- Refuse token-less traffic by default instead of passing it
+- Stop dropping the advertised-default overrides the router serves
+- Stop the tool descriptions advertising controls the tools lack
+- Say so, in the schema, that max_pages and single_page do nothing
+- Declare the export wire names instead of letting three spellings drift
+- Stop every handler span from recording the whole tool params
+- Carry the prompt-injection boundary onto the exported file, and gate the policy's reachability
+- Resolve the constant_time_eq rustdoc link across the crate boundary
+- Keep the bearer token out of Debug output and off a short-circuiting compare
+- Compile the LLM SSRF kill-switch out of production builds
+- Put the SSRF layer-2 literal guard at the fetch port, not the call sites
+- Stop the WAF entropy rules blocking on every non-200, and stop publishing their thresholds
+- Reclaim and disclose the batch capture spool a crashed run left behind
+
+### 🧪 Testing
+
+- Pin the seven bridged input schemas and resolve what rmcp normalizes
+- Pin the compatibility boundary of every bridged tool
+- Name the error channel the inert max_pages bound travels on
+- Make the public-surface policy machine-checked
+- Report how many surface rows moved, not a net delta
+- Record the provenance sidecar in the four export snapshots
+- Name the #1615 regression rows after the issue
 ## [2.5.0] - 2026-10-01
 
 
