@@ -15,7 +15,7 @@ use crate::application::crawl_options::CrawlOptions;
 use crate::application::crawler::content_sink::CapturedPage;
 use crate::application::export_factory;
 use crate::application::progress_observer::ProgressObserver;
-use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
+use crate::application::rate_limiter::{PacingContext, RateLimiterConfig, SharedRateLimiter};
 use crate::application::resume::filter_committed;
 use crate::application::scrape_single_url;
 use crate::cli::error::CliExit;
@@ -293,14 +293,24 @@ pub async fn scrape_urls(
                     // URL. Governor consumes the permit at grant time, so
                     // waiting after the fetch would space nothing. A wait
                     // abandoned by shutdown is a skip, not a failure (#509).
+                    //
+                    // #1610 (OBS-H2): the per-page identity is minted BEFORE
+                    // the wait, so the pacing event carries the same
+                    // correlation as the page it delayed instead of floating
+                    // free between the batch and the first page span.
+                    let page_correlation = root_correlation.child();
                     if let Some(limiter) = ctx.rate_limiter.as_ref() {
-                        if limiter.until_ready_or_cancel(cancel).await.is_err() {
+                        let wait_ctx = PacingContext::bare("cli_scrape")
+                            .with_url(url.as_str())
+                            .with_correlation(&page_correlation);
+                        if limiter
+                            .until_ready_or_cancel_observed(&wait_ctx, cancel)
+                            .await
+                            .is_err()
+                        {
                             return (index, None);
                         }
                     }
-                    // Per-page identity: child of the run root — shared trace_id, fresh
-                    // span_id (#501).
-                    let page_correlation = root_correlation.child();
                     let outcome = scrape_one_url(
                         &url,
                         ctx,
