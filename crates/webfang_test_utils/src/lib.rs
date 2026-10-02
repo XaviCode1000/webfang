@@ -415,6 +415,19 @@ pub fn redact_temp_path(dir: &Path, text: &str) -> String {
 #[must_use]
 pub fn redact_nondeterministic(dir: &Path, text: &str) -> String {
     let text = redact_temp_path(dir, text);
+    // #1777: the redaction token replaces a directory PREFIX, but the separator
+    // that FOLLOWED the prefix is the OS's, and it survives verbatim — Windows
+    // renders `<OUT_DIR>\typo.toml` where POSIX renders `<OUT_DIR>/typo.toml`.
+    // A committed snapshot can only ever match one of them, which is how four
+    // `config_default_contract_test` snapshots passed on Linux and failed on
+    // `windows-latest` with nothing but this character between them.
+    //
+    // The rule is anchored to the token on purpose. Rewriting every backslash
+    // would corrupt any message that carries one as content (a regex, a
+    // literal path, a Windows-style escape) and silently fork every snapshot
+    // that contains one.
+    let sep = Regex::new(r"(<OUT_DIR>|<TEMP_PATH>)\\").expect("valid path separator regex");
+    let text = sep.replace_all(&text, "$1/").into_owned();
     let ansi = Regex::new(r"\x1b\[[0-9;]*m").expect("valid ANSI regex");
     let text = ansi.replace_all(&text, "").into_owned();
     let ts = Regex::new(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?([+-]\d{2}:?\d{2}|Z)")
@@ -894,6 +907,36 @@ mod tests {
         let input = "wrote /tmp/.tmpABC123/output.md";
         let result = redact_nondeterministic(dir, input);
         assert_eq!(result, "wrote <OUT_DIR>/output.md");
+    }
+
+    /// #1777: the redaction token stands in for a directory PREFIX, but the
+    /// separator that FOLLOWED the prefix is the OS's. A message carrying a
+    /// real Windows path renders `<OUT_DIR>\typo.toml` where POSIX renders
+    /// `<OUT_DIR>/typo.toml`, so a committed snapshot can only ever match one
+    /// of them. `override_is_relative` passes on both platforms precisely
+    /// because its message carries no separator.
+    #[test]
+    fn redact_nondeterministic_normalizes_the_separator_after_a_path_token() {
+        let dir = Path::new("/tmp/test");
+        let input = "no existe el archivo de configuración: <OUT_DIR>\\typo.toml";
+        let result = redact_nondeterministic(dir, input);
+        assert_eq!(
+            result,
+            "no existe el archivo de configuración: <OUT_DIR>/typo.toml"
+        );
+    }
+
+    /// The counterpart claim: a backslash that is NOT adjacent to a redaction
+    /// token is content, not a separator, and must survive untouched. Without
+    /// this the rule above could be widened to "replace every backslash",
+    /// which would silently corrupt any snapshot whose message happens to
+    /// contain one (a Windows-style escape, a regex, a literal path).
+    #[test]
+    fn redact_nondeterministic_leaves_a_backslash_that_is_not_after_a_token() {
+        let dir = Path::new("/tmp/test");
+        let input = r"patrón \N no coincide y <OUT_DIR>/ok.toml sí";
+        let result = redact_nondeterministic(dir, input);
+        assert_eq!(result, r"patrón \N no coincide y <OUT_DIR>/ok.toml sí");
     }
 
     #[test]
