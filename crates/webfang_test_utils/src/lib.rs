@@ -61,6 +61,53 @@
 //! | robots chain | [`EnvGuard::wiremock_robots`] | entry guard + MCP validator |
 //! | MCP scrape of a loopback mock | [`EnvGuard::ssrf_hatches_off`] | entry guard + MCP validator |
 //! | entry guard only (sitemap parse/discover suites) | [`EnvGuard::entry_guard_off`] | entry guard only |
+//! | entry guard as the SUBJECT (it must stay armed and fire) | [`EnvGuard::entry_guard_on`] | none — asserts armed |
+//! | entry guard as the subject, on a loopback seed that needs layer 3 lifted | [`EnvGuard::entry_guard_on_resolver_off`] | validating resolver only; asserts entry guard armed |
+//!
+//! # A mutex only protects the threads that take it (#1788)
+//!
+//! Everything above frames `ENV_LOCK` as protecting **mutation**, and it is
+//! exactly that: no two guard constructors run their `env::set_var` at the
+//! same time, so a write window is never observed torn. That guarantee,
+//! however, is conditional on the *reader* taking the lock too — and a reader
+//! who does not take it is not protected at all.
+//!
+//! A test that needs the environment in its **default / armed posture** is
+//! exactly such a reader. It mutates nothing, so nothing warns it that the
+//! shared state it reads is mutable. Meanwhile a sibling thread may already be
+//! inside an `EnvGuard::entry_guard_off()` window with the hatch set, and the
+//! observer's assertions then describe the *sibling's* state, not its own.
+//!
+//! Under nextest this is nearly invisible: every test is its own process, so
+//! the only other holder of `ENV_LOCK` would have to be in that very process,
+//! which nothing else is. Under **libtest** it is a real race — every `--lib`
+//! test shares one process across N threads, and the `Coverage` job runs
+//! exactly that (no `--nextest`, #1788). There the four sitemap-discovery pins
+//! that assert an *armed* entry guard (`..._rejects_loopback_seed_pre_socket`
+//! and its three siblings) intermittently observed a disarmed guard, let an
+//! RFC1918 literal through, and failed with `Http { Connect }` where the
+//! contract says `CrawlError::InvalidUrl`.
+//!
+//! **The rule:** a test that asserts the shared state is in its default or
+//! armed posture must take the same lock as one that changes it — otherwise it
+//! is not protected at all. [`EnvGuard::entry_guard_on`] is that
+//! lock-acquiring observer for the SSRF entry guard: it holds `ENV_LOCK` for
+//! its whole lifetime, changes nothing, and asserts the hatch is not set to
+//! the exact `"1"` the guard reads. Excluding the disarm window is a
+//! precondition of observing the armed state, not a side effect of wanting to
+//! change it.
+//!
+//! # Poisoning stays tolerated (#1788)
+//!
+//! A guard holds the lock across arbitrary test code, so any test that
+//! panics while holding it poisons `ENV_LOCK` for every later test in the
+//! process. Every acquisition in this module therefore uses
+//! `unwrap_or_else(|poisoned| poisoned.into_inner())`: the environment is the
+//! thing being serialized, and it is restored by `Drop` during the unwind
+//! regardless of the mutex's poisoned flag, so refusing the lock afterwards
+//! would cascade one failure into the whole suite. `EnvGuard::entry_guard_on`
+//! follows the same rule — including the `catch_unwind` pin below, which
+//! proves the restore-on-unwind path rather than the happy-path drop.
 //!
 //! What #1308 actually forbids is an *ad-hoc* hatch: a literal env name at a
 //! call site, where a rename silently desynchronizes writer and reader and
@@ -268,6 +315,121 @@ impl EnvGuard {
         )])
     }
 
+    /// Hold `ENV_LOCK` for this guard's whole lifetime and assert the
+    /// literal-IP SSRF entry guard is **ARMED**, mutating nothing (#1788).
+    ///
+    /// The mirror image of [`EnvGuard::entry_guard_off`]: where that one
+    /// disarms layer 1 and restores it on drop, this one refuses to run at all
+    /// if layer 1 is currently disarmed, and changes no variable. The returned
+    /// guard holds the lock until it is dropped, so no sibling test can open a
+    /// disarm window for the duration of the caller's assertions.
+    ///
+    /// # Why
+    ///
+    /// `ENV_LOCK` serializes only the threads that TAKE it. The module docs
+    /// frame it as protecting mutation, which is true and is not the hazard
+    /// here: a test that must *observe* the armed posture mutates nothing, so
+    /// nothing prompts it to take the lock — and without the lock it observes
+    /// whatever a sibling thread's `entry_guard_off()` window happens to hold.
+    /// The exclusion window is a precondition of observing the armed state, so
+    /// an observer needs the same lock as a mutator; taking it is the whole
+    /// point of this constructor.
+    ///
+    /// Only the exact `"1"` counts as disarmed, mirroring
+    /// `reject_forbidden_literal_url`'s own read — any other value leaves the
+    /// guard armed, and this constructor accepts it.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `WEBFANG_DISABLE_SSRF_ENTRY_GUARD` (canonical const:
+    /// `webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV`) is set to
+    /// the exact `"1"` while this guard is being built. The message names the
+    /// variable, its observed value, and the fact that another test leaked the
+    /// hatch.
+    ///
+    /// # Nesting (#1224, #1788)
+    ///
+    /// `ENV_LOCK` is **not reentrant**, and this guard holds it for its whole
+    /// lifetime: never combine it with another `EnvGuard` in the same scope, or
+    /// the test self-deadlocks. A test that needs a hatch lifted *as well*
+    /// must use the single-step [`EnvGuard::entry_guard_on_resolver_off`]
+    /// instead of stacking two guards.
+    #[must_use]
+    pub fn entry_guard_on() -> Self {
+        let lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_entry_guard_armed();
+        Self {
+            _lock: lock,
+            original_vars: Vec::new(),
+        }
+    }
+
+    /// Keep the literal-IP entry guard ARMED (asserted) while lifting ONLY the
+    /// connect-time validating resolver hatch (#1788).
+    ///
+    /// The posture a loopback-seed harness needs when layer 1 is the SUBJECT:
+    /// the seed is spelled as a hostname (`localhost`) so layer 3 would reject
+    /// the 127.0.0.1 it resolves to, and layer 1 must stay armed so a
+    /// forbidden *literal* elsewhere in the chain is what fires.
+    ///
+    /// # Why one constructor and not two guards
+    ///
+    /// `ENV_LOCK` is not reentrant, so a test cannot hold both an
+    /// `entry_guard_on()` observer and an `EnvGuard::with(..)` mutator: the
+    /// second acquisition self-deadlocks. Folding both into one constructor is
+    /// also the only shape that keeps the module's single-writer discipline
+    /// (#1396): the resolver hatch's canonical name stays here, in the one
+    /// place that is allowed to write it, instead of being restated at a call
+    /// site where a rename would silently desynchronize writer and reader.
+    /// Every other hatch stays armed — in particular the entry guard, which is
+    /// asserted armed both before and after the writes below.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `WEBFANG_DISABLE_SSRF_ENTRY_GUARD` (canonical const:
+    /// `webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV`) is set to
+    /// the exact `"1"` either when this guard is built or after the resolver
+    /// hatch is written — the second check rejects a caller that tries to smuggle
+    /// the entry hatch in through another variable. On that panic the guard has
+    /// already been constructed, so `Drop` still restores the resolver hatch
+    /// during the unwind.
+    ///
+    /// # Nesting (#1224)
+    ///
+    /// The returned guard holds the non-reentrant `ENV_LOCK` for its whole
+    /// lifetime — prime any env-*writing* process-wide `Once` in
+    /// `spawn_blocking` first, exactly as for [`EnvGuard::entry_guard_off`].
+    #[must_use]
+    pub fn entry_guard_on_resolver_off() -> Self {
+        let lock = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        assert_entry_guard_armed();
+        let original =
+            env::var(webfang_core::domain::ssrf_guard::DISABLE_VALIDATING_RESOLVER_ENV).ok();
+        // SAFETY: ENV_LOCK exclusivity is guaranteed — no other thread can
+        // access the environment while this guard lives.
+        unsafe {
+            env::set_var(
+                webfang_core::domain::ssrf_guard::DISABLE_VALIDATING_RESOLVER_ENV,
+                "1",
+            );
+        }
+        // Build the guard BEFORE re-asserting, so a panic here unwinds through
+        // `Drop` and restores the resolver hatch instead of leaking it.
+        let guard = Self {
+            _lock: lock,
+            original_vars: vec![(
+                webfang_core::domain::ssrf_guard::DISABLE_VALIDATING_RESOLVER_ENV.to_owned(),
+                original,
+            )],
+        };
+        assert_entry_guard_armed();
+        guard
+    }
+
     /// Remove the given variables from the environment, saving originals for
     /// restoration on drop.
     #[must_use]
@@ -369,6 +531,28 @@ impl EnvGuard {
             env::remove_var(var);
         }
     }
+}
+
+/// Assert the literal-IP SSRF entry guard is ARMED, i.e. that its hatch
+/// `WEBFANG_DISABLE_SSRF_ENTRY_GUARD` is not set to the exact `"1"` the
+/// production read demands (#1788).
+///
+/// Caller contract: `ENV_LOCK` must already be held. The read is therefore
+/// not itself the serialized part — the *exclusion* is. A caller that holds no
+/// lock can read the hatch at any instant, including inside another test's
+/// disarm window, which is the whole defect this assertion exists to surface.
+fn assert_entry_guard_armed() {
+    let var = webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV;
+    let observed = env::var(var).ok();
+    assert!(
+        observed.as_deref() != Some("1"),
+        "{var} is set to \"1\" (observed: {observed:?}), so the SSRF entry guard is \
+         DISARMED — another test leaked the hatch outside its own scope, or its \
+         EnvGuard is still alive. A test whose subject IS the armed entry guard \
+         must call EnvGuard::entry_guard_on() (or EnvGuard::entry_guard_on_resolver_off()) \
+         so ENV_LOCK excludes the disarm window; taking no lock observes whichever \
+         state a sibling thread happened to leave behind."
+    );
 }
 
 // SAFETY: same ENV_LOCK serialization as the constructors; drop restores
@@ -874,6 +1058,127 @@ mod tests {
                 "the sibling armed before the guard must survive it"
             );
             env::remove_var(DISABLE_VALIDATING_RESOLVER_ENV);
+        }
+    }
+
+    /// #1788 acceptance pin: the latch must be restored after a **panic**
+    /// exit, not only on the happy-path drop.
+    ///
+    /// Every other guard test drops at the end of a scope that exits normally,
+    /// so all of them exercise the same unwind. This one drives the guard out
+    /// of scope through `panic!` instead, which is the only way the restore
+    /// path actually runs in a real failing suite: a guard built at the top of
+    /// a test, a `#[tokio::test]` assertion blowing up mid-await, and the
+    /// process continuing with the next test.
+    ///
+    /// The assertion also pins the poisoning consequence: the panic unwinds
+    /// through `Drop` *while the mutex guard is still held*, so `ENV_LOCK` is
+    /// left poisoned. The post-unwind read below only succeeds because every
+    /// acquisition tolerates poisoning — which is precisely the contract the
+    /// module docs state, and precisely what turns one failure into a cascade if
+    /// it is forgotten.
+    #[test]
+    fn entry_guard_restores_the_entry_hatch_after_a_panic_exit() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        use webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV;
+
+        // Capture the baseline under the lock, so the post-unwind comparison
+        // is against a value no sibling could have moved underneath us.
+        let original = {
+            let _lock = env_lock();
+            env::var(DISABLE_ENTRY_GUARD_ENV).ok()
+        };
+
+        let outcome = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = EnvGuard::entry_guard_off();
+            assert_eq!(
+                env::var(DISABLE_ENTRY_GUARD_ENV).as_deref(),
+                Ok("1"),
+                "the latch must be armed inside the guard, or this pin proves nothing"
+            );
+            panic!("deliberate panic inside the guard's scope (#1788)");
+        }));
+
+        assert!(
+            outcome.is_err(),
+            "the closure must have panicked, otherwise the restore-on-unwind \
+             path was never taken and this test asserts nothing"
+        );
+
+        // Re-acquire the (now poisoned) lock to read: no other guard can be
+        // mid-window while it is held, so this observes OUR restore and not a
+        // sibling's.
+        let observed = {
+            let _lock = env_lock();
+            env::var(DISABLE_ENTRY_GUARD_ENV).ok()
+        };
+        assert_eq!(
+            observed, original,
+            "{DISABLE_ENTRY_GUARD_ENV} was not restored after the panic exit; \
+             the latch leaked and every later test would silently run with the \
+             SSRF entry guard disarmed"
+        );
+    }
+
+    /// #1788 triangulation for the observer side: `entry_guard_on` must
+    /// REFUSE to build while the hatch is armed, and must be constructible (and
+    /// mutate nothing) once it is restored. Without the refusal arm, a test
+    /// could hold a guard that proves nothing; without the success arm, the
+    /// constructor would be unusable.
+    ///
+    /// The panic is captured rather than propagated so both arms run in one
+    /// test, and the leftover is cleaned up before the second arm.
+    /// # Why it does not call the constructor itself
+    ///
+    /// `ENV_LOCK` is not reentrant, so arranging "the hatch is set" inside
+    /// this test necessarily means HOLDING the lock — and calling
+    /// `EnvGuard::entry_guard_on` from there would re-acquire it on the same
+    /// thread and self-deadlock, hanging the whole test binary instead of
+    /// failing an assertion. That is the exact hazard #1224 documents, and it
+    /// is not observable as a test failure: the process just stops.
+    ///
+    /// So the refusal is pinned on `assert_entry_guard_armed`, the unit that
+    /// decides it and the only thing `entry_guard_on` adds on top of taking the
+    /// lock. The lock-acquisition half needs no separate pin: it is the same
+    /// two lines `EnvGuard::entry_guard_off` already runs, and the second arm
+    /// below exercises it on a real, live construction.
+    #[test]
+    fn entry_guard_on_refuses_a_disarmed_entry_guard() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        use webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV;
+
+        {
+            let _disarmed = EnvGuard::entry_guard_off();
+            let refused = catch_unwind(AssertUnwindSafe(assert_entry_guard_armed));
+            let Err(message) = refused else {
+                panic!("the armed-posture assertion must refuse while the hatch is set");
+            };
+            let text = message
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| message.downcast_ref::<&str>().copied())
+                .unwrap_or_default();
+            assert!(
+                text.contains(DISABLE_ENTRY_GUARD_ENV) && text.contains("leaked the hatch"),
+                "the diagnostic must name the variable and the leak, got: {text}"
+            );
+        }
+
+        // Outside the disarm window the same constructor must build cleanly,
+        // holding the lock without touching the environment.
+        let before = {
+            let _lock = env_lock();
+            env::var(DISABLE_ENTRY_GUARD_ENV).ok()
+        };
+        {
+            let _armed = EnvGuard::entry_guard_on();
+            // Read directly: the guard already holds ENV_LOCK, so a second
+            // acquisition here would self-deadlock (the #1224 invariant).
+            assert_eq!(
+                env::var(DISABLE_ENTRY_GUARD_ENV).ok(),
+                before,
+                "entry_guard_on must not mutate the environment"
+            );
         }
     }
 
