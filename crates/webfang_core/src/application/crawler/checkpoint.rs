@@ -819,6 +819,7 @@ mod tests {
         assert_eq!(original, loaded);
     }
 
+    #[cfg_attr(miri, ignore = "copy_file_range(326) unsupported by Miri")]
     #[test]
     fn test_old_format_json_loads() {
         let tmp = TempDir::new().unwrap();
