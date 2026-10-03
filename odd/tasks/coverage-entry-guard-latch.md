@@ -39,7 +39,7 @@ diala `192.168.1.5:59999` → `Http { Connect }` en vez de `InvalidUrl`.
 - `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines`
 - `cargo fmt --all -- --check`
 - `cargo llvm-cov --all-features --workspace --lcov -- --skip test_mcp` (el comando exacto
-  del job que falla) — debe reproducir la姿势 de libtest, no la de nextest.
+  del job que falla) — debe reproducir la postura de libtest, no la de nextest.
 - `cargo nextest run -p webfang_core --lib` (no debe regressar)
 
 ## Criterio de aceptación de la issue
@@ -48,6 +48,22 @@ diala `192.168.1.5:59999` → `Http { Connect }` en vez de `InvalidUrl`.
 - [x] Test que falle si el latch no se restaura tras panic.
 - [ ] `Coverage` verde (se valida en CI, no localmente — 3 corridas consecutivas).
 - [x] El mensaje del SSRF **sigue verificándose**: `InvalidUrl` + "SSRF detectado" + el literal.
+
+### Por qué ese checkbox no se cierra con este PR
+
+Revisando CI despues de publicar: el job `Coverage` esta rojo, pero **no por este PR**.
+Falla `mcp_server::auth::tests::a_rejection_log_carries_neither_the_expected_nor_the_presented_token`
+(`crates/webfang_mcp/src/mcp_server/auth.rs:308`), en un crate que este cambio no toca, y
+**exactamente el mismo test falla en `main`** (run `37079594733`, job `Coverage`, commit
+anterior a este PR). Es un flake preexistente de otra clase, tambien por env compartida en
+el mismo proceso libtest.
+
+Los tests objetivo de este PR si pasaron en CI. Como `Coverage` no es check requerido, esto
+no bloquea el merge, pero si impide que la acceptance de la issue se cumpla por la via de
+"3 corridas consecutivas": con el flake de auth vivo, ese contador no avanza.
+
+Por eso el follow-up que este PR deja afuera — agregar `--nextest` al job — no es un
+nice-to-have: es el cierre real de #1788, porque mata la clase de los dos flakes a la vez.
 
 ## Reproducción: antes / después
 
@@ -100,4 +116,7 @@ que además toma el lock.
 
 ## Commits
 
-_(pendiente)_
+- `749b9fa1` — `fix(test): give SSRF entry-guard observers the lock mutators already take (#1788)`
+  en `fix/coverage-entry-guard-latch`. PR #1791.
+- (este commit) — corrige el mojibake del doc, registra la identidad del commit de trabajo y
+  anota el flake de auth que impide cerrar la acceptance de la issue por la via de CI.
