@@ -337,6 +337,7 @@ mod tests {
 
     // --- Sprint 0 Gate 0: version gate RED tests ---
 
+    #[cfg_attr(miri, ignore = "copy_file_range(326) unsupported by Miri")]
     #[test]
     fn test_load_or_default_discards_stale_version_zero() {
         let dir = tempdir().unwrap();
@@ -369,6 +370,7 @@ mod tests {
     /// #1587: discarding a stale version must preserve the pre-migration
     /// file as a `.bak` sibling so the next save cannot silently overwrite
     /// work the new schema refused to read.
+    #[cfg_attr(miri, ignore = "copy_file_range(326) unsupported by Miri")]
     #[test]
     fn test_load_or_default_stale_version_preserves_bak() {
         // No "webfang/state" subdir: the store writes wherever `cache_dir`
