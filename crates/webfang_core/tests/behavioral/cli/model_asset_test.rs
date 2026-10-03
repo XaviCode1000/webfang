@@ -1,7 +1,10 @@
 //! Per-tier ONNX model RSS budgets (#1315) and cold-pull observability (#1316).
 //!
-//! All three tests are ignored: `tier_*` requires the real Granite ONNX blobs
-//! in the native HF cache, and `cold_pull_*` performs a real network pull.
+//! All tests are ignored: `tier_*` requires the real Granite ONNX blobs in
+//! the native HF cache, and `cold_pull_*` performs a real network pull. The
+//! two granite-97m budget tests each pin an engine spec via
+//! `WEBFANG_AI_ENGINE` (#1576) so the ceiling asserts the software, not the
+//! host's core count.
 //! Run them explicitly with:
 //!
 //! ```bash
@@ -26,9 +29,23 @@ use wiremock::{Mock, ResponseTemplate};
 ///
 /// - 311m measured (post-fix, warm): ~2,147,000 KiB across repeated runs
 ///   (variance < 0.1%); pre-fix 3,360,932 KiB (#1315). Budget 2.5 GiB.
-/// - 97m measured (post-fix, warm): ~770,500 KiB; pre-fix 1,152,544 KiB.
-///   Budget 1 GiB — the gap between measured and pre-fix is only ~382 MiB,
-///   so a looser ceiling would stop catching the double-copy regression.
+/// - 97m measured (post-fix, warm) with the `single` engine spec: ~770,500
+///   KiB; pre-fix 1,152,544 KiB. Budget 1,000,000 KiB — the gap between
+///   measured and pre-fix is only ~380 MiB, so a looser ceiling would stop
+///   catching the double-copy regression.
+/// - 97m with the `pool:4` engine spec: ~1,925,000 KiB (#1576). Budget
+///   2,100,000 KiB (~9.1% headroom — see the pool:4 test for the warning).
+///
+/// #1576 correction: the original ~770,500 KiB floor was measured when
+/// `EngineConfig::Single` was the default engine. The default flipped to
+/// `Pool` in #1568 (commit b9644c81, 2026-09-25) AFTER that measurement, so
+/// the old 1,048,576 KiB ceiling described a spec that was no longer the one
+/// under test — and the Pool default's worker count derives from host
+/// parallelism with no ceiling (measured 1,139,328 KiB at 4 vCPU vs
+/// 1,929,764 KiB at 16 vCPU). The budgets are therefore asserted PER ENGINE
+/// SPEC (`WEBFANG_AI_ENGINE`), never against the unfixed default: both
+/// pinned specs are flat against core count (2 vs 16 vCPU dispersion
+/// < 0.1%), so each test is deterministic on any host.
 ///
 /// NOTE on row 7.12's "mmap used not loaded": the vendored ONNX Runtime build
 /// has no mmap model-loading (zero `external_mmap` strings in
@@ -40,7 +57,21 @@ use wiremock::{Mock, ResponseTemplate};
 const TIER_311M_MAX_RSS_KIB: u64 = 2_621_440;
 /// Granite-97M tier: 1024 MiB (measured floor ~752 MiB + ~272 MiB headroom,
 /// still below the pre-fix 1125 MiB so the budget stays sensitive).
-const TIER_97M_MAX_RSS_KIB: u64 = 1_048_576;
+/// Granite-97M tier under the `single` engine spec (#1576): 1,000,000 KiB
+/// (measured floor ~771,000 KiB + ~29.6% headroom, still below the pre-fix
+/// 1,152,544 KiB so the budget stays sensitive to a restored double-copy).
+const TIER_97M_SINGLE_MAX_RSS_KIB: u64 = 1_000_000;
+/// Granite-97M tier under the `pool:4` engine spec (#1576): 2,100,000 KiB
+/// (measured floor ~1,925,000 KiB; deliberately larger than `single`'s
+/// ceiling because the Pool's per-worker cost is the documented price of the
+/// #1568 rollout, not a regression — but the headroom is asymmetric, ~9.1%).
+const TIER_97M_POOL4_MAX_RSS_KIB: u64 = 2_100_000;
+
+/// Mirrors `webfang_ai::infrastructure_ai::EngineConfig::ENV_VAR`.
+/// `webfang_core` cannot depend on `webfang_ai` (enforced dependency
+/// direction), so the name is repeated as a literal; a rename upstream must
+/// update this constant too.
+const WEBFANG_AI_ENGINE_ENV: &str = "WEBFANG_AI_ENGINE";
 
 /// HF hub cache directory names (under `<cache>/hub/`) for the two tiers.
 const GRANITE_97M_REPO_DIR: &str = "models--ibm-granite--granite-embedding-97m-multilingual-r2";
@@ -88,11 +119,23 @@ fn model_snapshot_file(cache: &Path, repo_dir: &str) -> Option<PathBuf> {
 /// wrapped in `/usr/bin/time -v`, assert success, and return the measured
 /// peak RSS in KiB.
 ///
+/// `engine_spec` pins `WEBFANG_AI_ENGINE` for the measured child process
+/// (#1576): `Some("single")` / `Some("pool:4")` make the RSS budget a
+/// function of the engine spec, never of the host's core count. `None`
+/// removes the variable so an inherited value from the developer's shell
+/// cannot silently re-point the measurement (the engine then resolves to the
+/// binary's own default).
+///
 /// The HF cache is pinned via `HF_HOME` so the run resolves the model from
 /// the native cache (warm run — cold pulls are `cold_pull_*`'s job), and the
 /// webfang state cache gets its own `XDG_CACHE_HOME` (mirroring the harness)
 /// so wiremock port reuse cannot leak resume state across tests.
-fn run_and_measure_peak_rss_kib(t: &BehavioralTest, model_flag: &str, hf_cache: &Path) -> u64 {
+fn run_and_measure_peak_rss_kib(
+    t: &BehavioralTest,
+    model_flag: &str,
+    hf_cache: &Path,
+    engine_spec: Option<&str>,
+) -> u64 {
     const GNU_TIME: &str = "/usr/bin/time";
     assert!(
         Path::new(GNU_TIME).exists(),
@@ -122,6 +165,14 @@ fn run_and_measure_peak_rss_kib(t: &BehavioralTest, model_flag: &str, hf_cache: 
             webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
             "1",
         );
+    match engine_spec {
+        Some(spec) => {
+            cmd.env(WEBFANG_AI_ENGINE_ENV, spec);
+        },
+        None => {
+            cmd.env_remove(WEBFANG_AI_ENGINE_ENV);
+        },
+    }
     let xdg_cache = t.out.path().join("hermetic-cache");
     let _ = std::fs::create_dir_all(&xdg_cache);
     cmd.env("XDG_CACHE_HOME", &xdg_cache);
@@ -192,7 +243,7 @@ async fn tier_311m_peak_rss_under_budget() {
         .mount(&t.server)
         .await;
 
-    let peak_kib = run_and_measure_peak_rss_kib(&t, "granite-311m", &cache);
+    let peak_kib = run_and_measure_peak_rss_kib(&t, "granite-311m", &cache, None);
 
     assert!(
         peak_kib < TIER_311M_MAX_RSS_KIB,
@@ -203,6 +254,14 @@ async fn tier_311m_peak_rss_under_budget() {
 }
 
 /// The Granite-97m tier must stay under its per-tier peak-RSS budget.
+///
+/// This half pins the `single` engine spec (`WEBFANG_AI_ENGINE=single`,
+/// #1576): the original ~770,500 KiB floor and this ceiling both describe
+/// `EngineConfig::Single`, so this is the test that still detects the #1315
+/// regression — the pre-fix double-copy floor was ~1,152,544 KiB, above the
+/// 1,000,000 KiB ceiling. The Pool default (#1568) has its own test below;
+/// the default itself is deliberately NOT asserted because its worker count
+/// derives from host parallelism with no ceiling (#1576 measurement table).
 #[tokio::test]
 #[ignore = "requires the granite-97m model in the native HF cache"]
 async fn tier_97m_peak_rss_under_budget() {
@@ -223,13 +282,59 @@ async fn tier_97m_peak_rss_under_budget() {
         .mount(&t.server)
         .await;
 
-    let peak_kib = run_and_measure_peak_rss_kib(&t, "granite-97m", &cache);
+    let peak_kib = run_and_measure_peak_rss_kib(&t, "granite-97m", &cache, Some("single"));
 
     assert!(
-        peak_kib < TIER_97M_MAX_RSS_KIB,
-        "granite-97m peak RSS {peak_kib} KiB must stay under the per-tier \
-         budget {TIER_97M_MAX_RSS_KIB} KiB (1024 MiB) — a full in-RAM model \
-         copy is back (#1315)"
+        peak_kib < TIER_97M_SINGLE_MAX_RSS_KIB,
+        "granite-97m peak RSS {peak_kib} KiB under the `single` engine spec \
+         must stay under the budget {TIER_97M_SINGLE_MAX_RSS_KIB} KiB — a \
+         full in-RAM model copy is back (#1315)"
+    );
+}
+
+/// The Granite-97m tier under the `pool:4` engine spec must stay under its
+/// own ceiling (#1576).
+///
+/// `WEBFANG_AI_ENGINE=pool:4` measures ~1,925,000 KiB on ANY host (2 vs
+/// 16 vCPU dispersion 0.04%): the pool builds ONE shared ORT session and the
+/// RSS grows with worker count, which the explicit `:4` fixes. The extra
+/// cost over `single` (+~1.15 GiB for one page) is the deliberate,
+/// documented tradeoff of the #1568 rollout (single 122.2s vs pool:4 22.5s
+/// on an 8-page wall) — priced here as its own budget, not a regression.
+///
+/// ASYMMETRIC HEADROOM WARNING: 2,100,000 KiB leaves only ~9.1% over the
+/// measured floor — enough for page noise, probably NOT for an ORT version
+/// bump. If this trips for that reason, the registered escape hatches are
+/// (a) raise to ~2,400,000 KiB, treating this as an order-of-magnitude
+/// guardrail, or (b) re-anchor the ceiling as a ratio against the `single`
+/// measurement (portable across builds). Widen consciously, never silently.
+#[tokio::test]
+#[ignore = "requires the granite-97m model in the native HF cache"]
+async fn tier_97m_pool4_peak_rss_under_budget() {
+    let cache = native_hf_cache_dir();
+    if model_snapshot_file(&cache, GRANITE_97M_REPO_DIR).is_none() {
+        panic!(
+            "the granite-97m ONNX blob was not found under {}.\n\
+             Running this test is a deliberate manual act: pre-cache the model \
+             (one `--clean-ai` run downloads it) and retry.",
+            cache.join("hub").join(GRANITE_97M_REPO_DIR).display()
+        );
+    }
+
+    let t = BehavioralTest::new().await;
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(PAGE_HTML))
+        .mount(&t.server)
+        .await;
+
+    let peak_kib = run_and_measure_peak_rss_kib(&t, "granite-97m", &cache, Some("pool:4"));
+
+    assert!(
+        peak_kib < TIER_97M_POOL4_MAX_RSS_KIB,
+        "granite-97m peak RSS {peak_kib} KiB under the `pool:4` engine spec \
+         must stay under the budget {TIER_97M_POOL4_MAX_RSS_KIB} KiB (#1576) \
+         — pool memory per worker grew beyond the measured floor"
     );
 }
 
