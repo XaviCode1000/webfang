@@ -1058,6 +1058,10 @@ version }}"`, `version_group = "webfang"` on every processed crate, `publish = f
   events for GITHUB_TOKEN-created PRs, so pr-validation never runs on `chore/release-*`
   branches (whose ISO-8601 names would fail the branch regex). Do NOT migrate to a PAT
   without first allowing that branch shape in `pr-validation.yml`.
+  (Slice 1 landed: the `release-pr` job mints a GitHub App token, so Release PRs now
+  trigger checks; the `chore/release-*` exemption is already in `pr-validation.yml`
+  (#1474) and #1177 carries `status:approved`. The tag/release job stays on
+  `GITHUB_TOKEN` + dispatch until the full migration.)
 
 ### Pre-commit gate (every commit)
 
