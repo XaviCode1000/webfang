@@ -39,8 +39,10 @@
 #     date,branch,lane,result,seconds
 #   date    UTC ISO-8601 of gate finish (`date` only, no new dependencies).
 #   branch  `git branch --show-current` (or `unknown` when unreadable).
-#   lane    one of: docs, ci, docs+ci, code, full, unknown.
-#   result  `green` (FAIL=0) or `red` (FAIL>0).
+#   lane    one of: docs, ci, docs+ci, code, full, unknown
+#           (`unknown` when the gate aborts before the lane dispatch).
+#   result  `green` (FAIL=0), `red` (FAIL>0), or `early-exit`
+#           (fail-closed abort before the summary, via the EXIT trap).
 #   seconds wall-clock seconds for the whole gate invocation.
 #   The append is `|| true`-guarded: logging must never turn green red, and
 #   dry runs are never logged (they would pollute the series).
@@ -58,6 +60,91 @@ CLASSIFIER="$SCRIPT_DIR/ci_path_classifier.sh"
 # Phase 6 timing: start stamp + lane label (set in the dispatch below).
 FAST_GATE_START_SECONDS="$(date +%s)"
 FAST_GATE_LANE="unknown"
+FAST_GATE_LOGGED=false
+FAST_GATE_LOG_FILE=""
+
+# Phase 6: append one `date,branch,lane,result,seconds` line to
+# docs/ci-metrics/fast-gate.log. Shell built-ins + `date` only, fully
+# `|| true`-guarded: best-effort, never fails the gate.
+# result is `green`/`red` (summary path) or `early-exit` (EXIT-trap path
+# for fail-closed aborts before the summary). Sets FAST_GATE_LOGGED so the
+# trap never double-logs a run the summary already recorded.
+log_fast_gate_timing() {
+  local result="$1"
+  local now elapsed branch finished_at
+  FAST_GATE_LOGGED=true
+  if [[ -z "$FAST_GATE_LOG_FILE" ]]; then
+    return 0
+  fi
+  now="$(date +%s)"
+  elapsed=$((now - FAST_GATE_START_SECONDS))
+  branch="$(git branch --show-current 2>/dev/null || echo unknown)"
+  [[ -z "$branch" ]] && branch="unknown"
+  finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  mkdir -p "$(dirname "$FAST_GATE_LOG_FILE")" 2>/dev/null || true
+  printf '%s,%s,%s,%s,%s\n' "$finished_at" "$branch" \
+    "$FAST_GATE_LANE" "$result" "$elapsed" \
+    >> "$FAST_GATE_LOG_FILE" 2>/dev/null || true
+}
+
+# Early-exit coverage (#1789): the fail-closed guards below `exit 2` before
+# the lane dispatch, so without this trap those aborts skip logging entirely.
+# The trap is installed only after FAST_GATE_START_SECONDS and the validated
+# absolute FAST_GATE_LOG_FILE exist (`set -u` safety: the handler never
+# references an unset variable). Consequences, declared: the trap precedes
+# arg parsing, so usage-error exits (code 2) are covered; clean exits
+# (`--help`, exit 0) intentionally leave no row.
+#
+# Worktree safety (load-bearing): the path is absolute, anchored at this
+# script's own worktree — never relative, because pre-`cd` exits run under
+# the caller's CWD and a relative append there would dirty whatever tree
+# invoked the gate (including `main`). When the path cannot be validated to
+# live inside the current worktree, it stays empty and the handler — like
+# every logging path here — writes nothing.
+_FAST_GATE_SCRIPT_TOP="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+if [[ -n "$_FAST_GATE_SCRIPT_TOP" ]]; then
+  _FAST_GATE_CANDIDATE="$_FAST_GATE_SCRIPT_TOP/docs/ci-metrics/fast-gate.log"
+  _FAST_GATE_CANDON="$(realpath -m -- "$_FAST_GATE_CANDIDATE" 2>/dev/null || true)"
+  _FAST_GATE_TOPCANON="$(realpath -m -- "$_FAST_GATE_SCRIPT_TOP" 2>/dev/null || true)"
+  if [[ -n "$_FAST_GATE_TOPCANON" && "$_FAST_GATE_CANDON" == "$_FAST_GATE_TOPCANON"* ]]; then
+    FAST_GATE_LOG_FILE="$_FAST_GATE_CANDIDATE"
+  fi
+fi
+unset _FAST_GATE_SCRIPT_TOP _FAST_GATE_CANDIDATE _FAST_GATE_CANDON _FAST_GATE_TOPCANON
+
+fast_gate_early_exit_trap() {
+  local rc=$?
+  # Owns temp cleanup: this is the only EXIT trap in this script.
+  rm -f "${UNION_TMP:-}" "${CLASS_TMP:-}" 2>/dev/null || true
+  # Exactly-once: the summary path already logged.
+  if [[ "${FAST_GATE_LOGGED:-false}" == "true" ]]; then
+    return "$rc"
+  fi
+  # Clean exits (e.g. `--help`) leave no row; only failures are traced.
+  if [[ "$rc" -eq 0 ]]; then
+    return "$rc"
+  fi
+  # Dry runs never pollute the series (current behavior, kept).
+  if [[ "${DRY_RUN:-false}" == "true" ]]; then
+    return "$rc"
+  fi
+  # Unvalidated log path: write nothing (worktree safety).
+  if [[ -z "${FAST_GATE_LOG_FILE:-}" ]]; then
+    return "$rc"
+  fi
+  # `|| true`-guarded like the summary append: logging never turns any
+  # outcome redder or greener. No `exit`, no PASS/FAIL touch — the script
+  # keeps the exit code captured on entry.
+  log_fast_gate_timing "early-exit" || true
+  return "$rc"
+}
+trap fast_gate_early_exit_trap EXIT
+# Signal deaths (#1789): INT/TERM would otherwise kill the gate with no
+# row. Convert to the conventional codes (130/143); the EXIT trap above
+# then logs the single `early-exit` row and the script keeps that code.
+# Installed alongside the EXIT trap so pre-dispatch deaths are covered too.
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 BASE_REF="origin/main"
 HEAD_REF="HEAD"
@@ -285,23 +372,6 @@ skip_step() {
   SKIPPED=$((SKIPPED + 1))
 }
 
-# Phase 6: append one `date,branch,lane,result,seconds` line to
-# docs/ci-metrics/fast-gate.log. Shell built-ins + `date` only, fully
-# `|| true`-guarded: best-effort, never fails the gate.
-log_fast_gate_timing() {
-  local result="$1"
-  local now elapsed branch finished_at
-  now="$(date +%s)"
-  elapsed=$((now - FAST_GATE_START_SECONDS))
-  branch="$(git branch --show-current 2>/dev/null || echo unknown)"
-  [[ -z "$branch" ]] && branch="unknown"
-  finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  mkdir -p docs/ci-metrics 2>/dev/null || true
-  printf '%s,%s,%s,%s,%s\n' "$finished_at" "$branch" \
-    "$FAST_GATE_LANE" "$result" "$elapsed" \
-    >> docs/ci-metrics/fast-gate.log 2>/dev/null || true
-}
-
 # --- classify ------------------------------------------------------------------
 # Range files (committed) UNION worktree files (staged + unstaged + untracked)
 # so uncommitted work is never invisible to the lane decision.
@@ -330,7 +400,7 @@ worktree_files() {
 }
 
 UNION_TMP="$(mktemp)"
-trap 'rm -f "$UNION_TMP"' EXIT
+# Temp cleanup is owned by fast_gate_early_exit_trap (the single EXIT trap).
 {
   range_files "$BASE_REF" "$HEAD_REF"
   worktree_files
@@ -340,7 +410,7 @@ echo "fast-gate: base=$BASE_REF head=$HEAD_REF worktree files considered:"
 sed 's/^/  changed: /' "$UNION_TMP"
 
 CLASS_TMP="$(mktemp)"
-trap 'rm -f "$UNION_TMP" "$CLASS_TMP"' EXIT
+# (No per-file EXIT trap here either — see above.)
 bash "$CLASSIFIER" --base-ref "$BASE_REF" --head-ref "$HEAD_REF" \
   --files "$(cat "$UNION_TMP")" --github-output "$CLASS_TMP"
 
