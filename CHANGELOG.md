@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.1] - 2026-10-03
+
+
+### 🔧 Fixed
+
+- Make the MCP auth leak capture deterministic ([#1778](https://github.com/XaviCode1000/webfang/pull/1778)) ([#1793](https://github.com/XaviCode1000/webfang/pull/1793))
+- Make unit-test path assumptions Windows-safe ([#1775](https://github.com/XaviCode1000/webfang/pull/1775))
+- Normalize the path separator after a redaction token ([#1780](https://github.com/XaviCode1000/webfang/pull/1780))
+- Bound the batch spawn latency instead of burning nextest's terminate-after ([#1697](https://github.com/XaviCode1000/webfang/pull/1697)) ([#1783](https://github.com/XaviCode1000/webfang/pull/1783))
+- Dar a los observadores del guard SSRF el lock que ya toman los mutadores ([#1788](https://github.com/XaviCode1000/webfang/pull/1788)) ([#1791](https://github.com/XaviCode1000/webfang/pull/1791))
+- Gate the copy_file_range(326) Miri trap in the backup tests ([#1794](https://github.com/XaviCode1000/webfang/pull/1794))
+- Budget the spawn budget for batch_empty_stdin_exits_64 ([#1697](https://github.com/XaviCode1000/webfang/pull/1697)) ([#1800](https://github.com/XaviCode1000/webfang/pull/1800))
 ## [2.6.0] - 2026-10-02
 
 
