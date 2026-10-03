@@ -134,6 +134,7 @@ fn bearer_token_matches(header_value: &str, expected: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::mcp_server::handlers::test_support::{ensure_global_subscriber, SharedBufWriter};
     use axum::body::Body;
     use axum::http::Request;
     use tower::ServiceExt;
@@ -245,52 +246,49 @@ mod tests {
         );
     }
 
-    /// Run `f` on the current thread under an in-memory `tracing` subscriber and
-    /// return the log text.
+    /// Run `f` under an in-memory `tracing` subscriber and return the log text.
     ///
-    /// Async version of the `capture_logs` in the HTTP binary: the subscriber
-    /// guard is thread-local, and a single-threaded tokio runtime keeps the
-    /// middleware's events on THIS thread, so the capture sees them.
-    async fn capture_logs_async<F, Fut>(f: F) -> String
+    /// Synchronous by construction (#1778): the subscriber is installed with
+    /// `with_default`, whose guard is scoped to the CLOSURE, and the runtime is
+    /// built and `block_on`-ed INSIDE that closure. The previous shape —
+    /// `#[tokio::test]` plus `set_default`, holding a thread-local guard across
+    /// `.await` — made the capture's success depend on which thread happened
+    /// to poll the future, because the auth check is an axum/tower middleware.
+    /// A current-thread runtime polled entirely inside the closure removes that
+    /// surface: the events are dispatched on the thread that owns the default.
+    ///
+    /// The max level stays TRACE deliberately — this asserts the whole span,
+    /// not just the `warn!`. `FmtSpan::FULL` is what makes span entries appear
+    /// at all: the fmt default is `FmtSpan::NONE`, which prints events only, so
+    /// without it a span-only assertion would read an empty capture as "clean".
+    /// The shared [`SharedBufWriter`] replaces a per-file copy of the same sink.
+    fn capture_logs<F, Fut>(f: F) -> String
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = ()>,
     {
-        use std::sync::{Arc, Mutex};
+        let captured = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let subscriber = {
+            let sink = std::sync::Arc::clone(&captured);
+            tracing_subscriber::fmt()
+                .with_writer(move || SharedBufWriter(std::sync::Arc::clone(&sink)))
+                .with_ansi(false)
+                .with_max_level(tracing::Level::TRACE)
+                .with_span_events(tracing_subscriber::fmt::format::FmtSpan::FULL)
+                .finish()
+        };
 
-        /// Shared sink behind the subscriber's writer.
-        #[derive(Clone, Default)]
-        struct Buffer(Arc<Mutex<Vec<u8>>>);
+        tracing::subscriber::with_default(subscriber, || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("test runtime")
+                .block_on(f())
+        });
 
-        impl std::io::Write for Buffer {
-            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-                self.0
-                    .lock()
-                    .expect("capture buffer lock is not poisoned")
-                    .write(bytes)
-            }
-
-            fn flush(&mut self) -> std::io::Result<()> {
-                self.0
-                    .lock()
-                    .expect("capture buffer lock is not poisoned")
-                    .flush()
-            }
-        }
-
-        let buffer = Buffer::default();
-        let sink = buffer.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .with_ansi(false)
-            .with_max_level(tracing::Level::TRACE)
-            .with_writer(move || sink.clone())
-            .finish();
-        let _guard = tracing::subscriber::set_default(subscriber);
-        f().await;
-        let bytes = buffer
-            .0
+        let bytes = captured
             .lock()
-            .expect("capture buffer lock is not poisoned")
+            .expect("capture buffer lock is never poisoned")
             .clone();
         String::from_utf8(bytes).expect("tracing writes UTF-8")
     }
@@ -304,12 +302,44 @@ mod tests {
     /// type. The refusal log names only whether a header arrived, so neither
     /// string may appear. The TRACE subscriber level is deliberate: this
     /// asserts the whole span, not just the `warn!`.
-    #[tokio::test]
-    async fn a_rejection_log_carries_neither_the_expected_nor_the_presented_token() {
+    ///
+    /// #1778 — why the [`ensure_global_subscriber`] call below is load-bearing
+    /// and not decorative. This test asserts only ABSENCES, so a capture that
+    /// contains nothing satisfies every one of them: the test used to pass
+    /// vacuously whenever the buffer came back empty. Two independent
+    /// mechanisms could empty it, and both are now closed:
+    ///
+    /// 1. **Callsite poisoning.** `tracing` caches per-callsite `Interest`
+    ///    process-wide through a one-time compare-exchange. The sibling tests
+    ///    above (`refuses_every_request_…`, `rejects_wrong_token`, …) drive the
+    ///    SAME two `tracing::warn!` callsites with NO subscriber installed, so
+    ///    whichever reaches them first registers `Interest::never()` for the
+    ///    whole process. Under libtest — one process, many threads — that is a
+    ///    race this test loses depending on scheduling; under nextest every
+    ///    test is its own process, which is exactly why this only ever
+    ///    appeared in the libtest-based `Coverage` lane.
+    /// 2. **The guard-across-an-await surface.** `set_default` is thread-local;
+    ///    the auth check is a tower middleware, so its events only reached the
+    ///    capture when the polling thread happened to be the guarded one.
+    ///    `capture_logs` closes it with a closure-scoped default and a
+    ///    runtime built inside that closure.
+    ///
+    /// `ensure_global_subscriber` is what repairs mechanism 1, including a
+    /// poison that a concurrent test already cached before this test started —
+    /// `set_global_default` rebuilds the interest of every registered
+    /// callsite. The non-empty assertion below is what keeps the repair
+    /// honest: a leak test must never be able to pass for the wrong reason.
+    /// Fourth occurrence of this defect class; #417 → `1ef88a48`, then #664,
+    /// then #1638.
+    #[test]
+    fn a_rejection_log_carries_neither_the_expected_nor_the_presented_token() {
+        // Must not race a sibling test into a cached `Interest::never()`.
+        ensure_global_subscriber();
+
         const EXPECTED: &str = "sk-expected-secret-1615";
         const PRESENTED: &str = "sk-attacker-supplied-1615";
 
-        let logs = capture_logs_async(|| async {
+        let logs = capture_logs(|| async {
             let app = app_with_token(Some(Arc::from(EXPECTED)));
             let req = Request::builder()
                 .uri("/test")
@@ -318,9 +348,16 @@ mod tests {
                 .expect("request builds");
             let response = app.oneshot(req).await.expect("oneshot drives the router");
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        })
-        .await;
+        });
 
+        // Checked BEFORE any absence assertion: every credential check below is
+        // an "is not present" claim, so an empty capture would satisfy all of
+        // them at once and hide the defect this test exists to prevent.
+        assert!(
+            !logs.trim().is_empty(),
+            "the refusal produced no log output at all — a leak test that \
+             captures nothing passes every absence assertion vacuously (#1778)"
+        );
         assert!(
             !logs.contains(EXPECTED),
             "the configured token must never be logged: {logs}"
