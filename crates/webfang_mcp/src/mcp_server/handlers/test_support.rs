@@ -1,10 +1,19 @@
-//! Shared `#[cfg(test)]` support for the per-handler unit-test modules.
+//! Shared `#[cfg(test)]` support for the `mcp_server` unit-test modules.
 //!
 //! Every handler's inline `mod tests` needs the same trio: a `Container` over
 //! a temp output dir, an `McpHandler` around a default `McpState`, and the
 //! text of the first content block of a `CallToolResult`. They live here so
 //! each handler does not carry its own copy (duplication ratchet, issue #516;
 //! consolidated while landing the #1613 reason-code contract).
+//!
+//! The tracing-capture helpers ([`SharedBufWriter`],
+//! [`ensure_global_subscriber`]) are shared by the whole `mcp_server` test
+//! surface, not only by the handler ones: `mcp_server/auth.rs` captures a
+//! `tracing::warn!` too (#1778). `ensure_global_subscriber` exists as ONE copy
+//! for the same reason as the trio — it is the #417/#664/#1638 pattern, and
+//! the duplication ratchet (`scripts/check_duplication.sh`, jscpd
+//! `--min-tokens 50`, actively descending under #1757) counts each additional
+//! verbatim copy as a regression.
 
 use rmcp::model::CallToolResult;
 use tempfile::TempDir;
@@ -73,4 +82,32 @@ impl std::io::Write for SharedBufWriter {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+/// Installs a process-global sink subscriber so no callsite in this binary can
+/// be poisoned with `Interest::never()` (issues #417, #664, #1638, #1778).
+///
+/// `tracing` caches per-callsite `Interest` process-wide through a one-time
+/// compare-exchange. A sibling test that reaches a callsite with no subscriber
+/// — e.g. an ordinary `status_of(..).await` assertion on the same rejection
+/// path — makes `Dispatch::none()` register `Interest::never()`, permanently
+/// disabling that callsite for every other thread. Under libtest (one process,
+/// many threads) a capture test then observes an empty buffer and passes
+/// vacuously; under nextest every test is its own process, which is why the
+/// flake only ever surfaces in the libtest-based `Coverage` lane.
+///
+/// Setting a *global* default rebuilds the cached interest of every
+/// already-registered callsite, so calling this once at the top of a capture
+/// test is enough to undo a poison that already happened. Output goes to
+/// `io::sink`: this subscriber exists only to make the dispatch non-none,
+/// never to be read — the per-test capture is scoped separately.
+pub(crate) fn ensure_global_subscriber() {
+    static GLOBAL_SUBSCRIBER_INIT: std::sync::Once = std::sync::Once::new();
+    GLOBAL_SUBSCRIBER_INIT.call_once(|| {
+        let _ = tracing::subscriber::set_global_default(
+            tracing_subscriber::fmt()
+                .with_writer(std::io::sink)
+                .finish(),
+        );
+    });
 }
