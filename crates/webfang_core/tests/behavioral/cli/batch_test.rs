@@ -134,15 +134,51 @@ async fn batch_stdin_processes_urls() {
     );
 }
 
+/// #1697: an empty `--batch` on stdin must exit 64 with the Spanish message.
+///
+/// Runs under [`assert_spawn_within`] for the same reason as its
+/// `batch_empty_file_exits_64` sibling. #1697 shipped the budget for that
+/// test and this is the one it left behind: both do nothing but spawn the
+/// binary, feed it an empty batch and assert the exit code, so they carry the
+/// identical `windows-latest` spawn-latency flake. The flake is a property of
+/// SPAWNING on that platform, not of which input path feeds the process —
+/// which is why fixing the file-input half did not fix the stdin half.
+///
+/// Observed on `Tests (windows-latest)` for PR #1793 (run 37126785645): TRY 1
+/// and TRY 2 each ran past nextest's 180 s `terminate-after` as TMT, and TRY 3
+/// failed. The budget below bounds that at ~2x20 s instead, and the assertion
+/// — code 64 AND the message — is unchanged, so a genuine regression still
+/// fails and reports which half it got wrong.
 #[test]
 fn batch_empty_stdin_exits_64() {
-    cmd()
-        .arg("--batch")
-        .write_stdin("")
-        .timeout(Duration::from_secs(5))
-        .assert()
-        .code(64)
-        .stderr(predicates::str::contains("No URLs provided"));
+    assert_spawn_within(
+        SPAWN_LATENCY_BUDGET,
+        "batch_empty_stdin_exits_64",
+        move || {
+            let output = cmd()
+                .arg("--batch")
+                .write_stdin("")
+                .timeout(Duration::from_secs(5))
+                .output()
+                .map_err(|e| format!("could not spawn the binary: {e}"))?;
+
+            if output.status.code() != Some(64) {
+                return Err(format!(
+                    "expected exit code 64, got {:?}; stderr: {}",
+                    output.status.code(),
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if !stderr.contains("No URLs provided") {
+                return Err(format!(
+                    "stderr must name the empty batch, got: {}",
+                    stderr.trim()
+                ));
+            }
+            Ok(())
+        },
+    );
 }
 
 /// FIX-0 (#1235): record cardinality against the REAL binary. AUDIT-01
