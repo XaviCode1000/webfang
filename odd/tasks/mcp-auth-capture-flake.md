@@ -90,22 +90,46 @@ Replicate the #1638 shape already proven in this crate:
 7. [x] Full pre-commit gate: check, strict clippy, `fmt --check`, rustdoc,
    affected `nextest`.
 8. [x] Work-unit commit.
-9. [ ] Native review of the candidate — **blocked**, see below.
+9. [x] Native review of the candidate — **approved**, authority burned.
 
-## Native review — blocked (environment, not code)
-`gentle_review inspect` returned `ready` for the worktree candidate
-(target `sha256:762f59e0…`, paths exactly the two files above). Two STARTs with
-fresh idempotency keys each returned a consent binding that was **already
-expired on arrival** (`consent-binding-expired`, 10-minute TTL):
-`bb0c5279-a6d1-4550-baaa-a3ddd7caed48` and
-`8b95fe55-1bf0-40ca-8c75-3f2a86810f25`. Both reported `lineage_created: false`
-and `mutation_performed: false`, so no authority was burned and no candidate was
-frozen. System clock is synchronized (`timedatectl`: "System clock
-synchronized: yes"), `gentle-ai 4.0.0`. Not retried further: the contract
-forbids replaying a prepared START, and a deterministic-looking failure is not
-a reason to loop. The pre-commit gate abstains (`delivery: unmanaged`) because
-no lineage governs the candidate, which is the honest outcome here: an absent
-review is not an approved review.
+## Native review — APPROVED
+
+First pass failed and this section recorded it as blocked; a retry succeeded, so
+the correction is recorded here rather than by rewriting the pushed commit.
+
+**Why the first pass failed.** Two STARTs against the *uncommitted workspace*
+projection each returned a consent binding already expired on arrival
+(`consent-binding-expired`, 10-minute TTL: `bb0c5279-…`, `8b95fe55-…`), both
+with `lineage_created: false`. System clock synchronized, `gentle-ai 4.0.0`. No
+authority burned, nothing frozen.
+
+**What changed on the retry.** The candidate was the **committed range** rather
+than the dirty workspace: after the work-unit commit the workspace projection had
+no diff left to review. `inspect` then projected `base-diff` with
+`--base-ref=169668d19… --committed-only=true`, and START was granted.
+
+| | |
+| :--- | :--- |
+| lineage | `review-c0faa96b21f36704` |
+| target | `sha256:a7027cf3d4df1e28ffb983cdb83f3c7d018ddbcf1b5ca4178ae67ab9f0e7fa49` |
+| risk tier | **high** (`hot_path` / `auth`) |
+| lenses | risk, resilience, readability, reliability — 4/4 prepared, 4/4 admitted |
+| verdict | **approved**, no correction transition offered |
+| authority | **burned** (`gentle-ai.review-acknowledged/v1`) |
+
+**Advisory findings — all non-blocking, none reopened the review.** Separate
+later work, never a reason to re-review this candidate:
+
+| id | lens | location | severity |
+| :--- | :--- | :--- | :--- |
+| R2-001 | readability | `auth.rs:251-258` | WARNING |
+| R2-002 | readability | `handlers/test_support.rs:11-17` | WARNING |
+| R2-003 | readability | this doc `:90-102` | SUGGESTION |
+| R3-NONEMPTY-CAPTURE | reliability | `auth.rs:356-360` | WARNING |
+| R4-nonelog-spans | resilience | `auth.rs:355-359` | WARNING |
+
+The lifecycle stops here: `delivery: ordinary-repository-policy`. An approved
+review is evidence, never delivery authority — merge remains a human decision.
 
 ## Acceptance
 - [x] The capture mechanism is not thread-local-scoped: `with_default`
