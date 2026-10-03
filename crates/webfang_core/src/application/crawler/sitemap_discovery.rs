@@ -1215,10 +1215,19 @@ mod tests {
     // was never called on this path, so a loopback *seed* opened real sockets
     // (measured: 18 requests with every guard armed, #1376/#1382). These pins
     // restore the AGENTS.md guard-chain order: entry validation BEFORE the
-    // discovery client touches the network. No `EnvGuard` here — tests run in
-    // production posture (guards armed); the probes arm the tripwire mock and
-    // assert it observes ZERO requests, which is only true when the rejection
-    // happens before any socket opens.
+    // discovery client touches the network.
+    //
+    // Every pin below needs layer 1 ARMED, which makes them *observers* of the
+    // process-global environment rather than mutators of it. Taking no lock is
+    // not neutrality here: `ENV_LOCK` serializes only the threads that take it,
+    // so a sibling test inside an `entry_guard_off()` window would leave these
+    // asserting against a DISARMED guard — the RFC1918 literal would pass
+    // through and the downloader would dial it, failing with `Http { Connect }`
+    // where the contract says `CrawlError::InvalidUrl`. That is #1788, and it
+    // reproduces under libtest (one process, N threads — what the `Coverage`
+    // job runs, no `--nextest`) rather than under nextest (one process per
+    // test, so the window never coincides). Hence `EnvGuard::entry_guard_on()`:
+    // it excludes the disarm window for its whole lifetime and mutates nothing.
 
     /// A loopback seed is rejected at entry, pre-socket: the run fails with
     /// the typed `CrawlError::InvalidUrl` carrying the Spanish SSRF message,
@@ -1226,6 +1235,9 @@ mod tests {
     /// requests of any kind (no robots.txt GET, no probes, nothing).
     #[tokio::test]
     async fn sitemap_discovery_rejects_loopback_seed_pre_socket() {
+        // Layer 1 is the SUBJECT: it must be armed, and observing that
+        // requires excluding every sibling's disarm window (#1788).
+        let _entry_on = webfang_test_utils::EnvGuard::entry_guard_on();
         let mock = MockServer::start().await;
         // Tripwire: any request that escapes the guard lands here and fails
         // the zero-request assertion.
@@ -1263,6 +1275,7 @@ mod tests {
     /// this test focused on the sitemap target alone.
     #[tokio::test]
     async fn sitemap_discovery_rejects_forbidden_literal_sitemap_url() {
+        let _entry_on = webfang_test_utils::EnvGuard::entry_guard_on();
         // Hostname seed: sitemap discovery never fetches the seed itself, and
         // the entry guard lets hostnames through (that is layer-3 territory).
         let seed = Url::parse("https://example.com").expect("hostname seed");
@@ -1305,11 +1318,11 @@ mod tests {
     async fn sitemap_discovery_rejects_robots_directive_pointing_at_literal() {
         // Resolver-only hatch: `localhost` resolves to 127.0.0.1, a forbidden
         // answer for layer 3. Layer 1 (literal guard) stays armed — it is the
-        // layer under test.
-        let _resolver_off = webfang_test_utils::EnvGuard::with(&[(
-            crate::domain::ssrf_guard::DISABLE_VALIDATING_RESOLVER_ENV,
-            "1",
-        )]);
+        // layer under test. ONE guard, not two: `ENV_LOCK` is not reentrant,
+        // so an armed-guard observer stacked on an `EnvGuard::with` mutator
+        // would self-deadlock (#1788, #1224). The combined constructor keeps a
+        // single lock holder and leaves the hatch names in this one module.
+        let _entry_on = webfang_test_utils::EnvGuard::entry_guard_on_resolver_off();
         // `localhost` + the mock's port: the same wiremock listener, spelled
         // as a hostname so the entry layer is not the thing that fires on the
         // seed itself.
@@ -1357,10 +1370,11 @@ mod tests {
     /// entry layer before its socket exists.
     #[tokio::test]
     async fn sitemap_discovery_rejects_index_child_pointing_at_literal() {
-        let _resolver_off = webfang_test_utils::EnvGuard::with(&[(
-            crate::domain::ssrf_guard::DISABLE_VALIDATING_RESOLVER_ENV,
-            "1",
-        )]);
+        // Same single-holder constraint as the robots-directive pin above: the
+        // entry guard must stay ARMED (it is the layer under test) and the
+        // resolver hatch must be lifted for the loopback index, so both facts
+        // are established by ONE non-reentrant-lock holder (#1788).
+        let _entry_on = webfang_test_utils::EnvGuard::entry_guard_on_resolver_off();
         let mock = MockServer::start().await;
         let base_url = format!("http://localhost:{}/", mock.address().port());
 
