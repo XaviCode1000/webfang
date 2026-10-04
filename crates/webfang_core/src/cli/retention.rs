@@ -236,7 +236,10 @@ mod tests {
         // 1 resource + 1 chunk + 1 note + 1 note_chunk, all aged.
         assert_eq!(removed, 4, "aged rows across all four tables");
         let remaining = count_rows(&pool).await;
-        assert_eq!(remaining, 2, "fresh resource and fresh note survive");
+        assert_eq!(
+            remaining, 4,
+            "every fresh row survives (resource, chunk, note, note_chunk)"
+        );
     }
 
     #[cfg(feature = "persistence")]
