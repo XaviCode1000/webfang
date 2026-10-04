@@ -1,7 +1,7 @@
 # Test Inventory — `#[ignore]` Catalog (Gate 0)
 
-**Source of truth:** `rg -n "#\[ignore" crates/ --glob '!target'` — **44 rows** (34 test attributes + 10 doc/comment mentions).
-Generated: `2026-08-21`, updated `2026-09-07`, re-baselined `2026-09-12` (#1328: composition corrected from the stale 27+5 claim to the on-disk 26+6; rows re-keyed from drifting `file:line` to stable `file` + test name). Catalogued #1368 measurement rows `2026-09-13` (#1384 decision: retain + catalogue — the corpus lives outside the repo, so the ignore is legitimate). Linked to `COMPATIBILITY-MATRIX.md`.
+**Source of truth:** `rg -n "#\[ignore" crates/ --glob '!target'` — **46 rows** (35 test attributes + 11 doc/comment mentions).
+Generated: `2026-08-21`, updated `2026-09-07`, re-baselined `2026-09-12` (#1328: composition corrected from the stale 27+5 claim to the on-disk 26+6; rows re-keyed from drifting `file:line` to stable `file` + test name). Catalogued #1368 measurement rows `2026-09-13` (#1384 decision: retain + catalogue — the corpus lives outside the repo, so the ignore is legitimate). Catalogued the #1561 timing benchmark `2026-10-03` (quarantined, assertion kept verbatim; needs an idle box with ≥8 cores). Catalogued the #1576 two-spec 97m budgets `2026-10-04` (the new `pool:4` sibling). Linked to `COMPATIBILITY-MATRIX.md`.
 
 **CI enforcement:** this baseline is a frozen budget — `scripts/check_ignored_guard.sh` runs in the CI `repo-guards` job and fails on any drift between this inventory and the live scan, **per category**: each group's declared count, the file+test-name pair set, and the per-file doc/comment counts are all checked, so a composition swap with an equal total fails even when the sum matches (the totals-only blind spot that #1328 killed). Update this file in the same PR when adding/removing an ignored test or a doc/comment mention.
 
@@ -14,9 +14,10 @@ Generated: `2026-08-21`, updated `2026-09-07`, re-baselined `2026-09-12` (#1328:
 | Tracing | 1 | `tracing global subscriber` | #501 | Keep ignored; subscriber race |
 | Reproduction | 2 | race window too narrow to force from a fixture; kept-RED TDD evidence | #1230, #1429 | Keep ignored; the deterministic pins are the seam test / GREEN bound pin |
 | Quantification | 1 | `one-off quantification #1368; needs WEBFANG_1368_CORPUS dir` | #1368 | Keep ignored; corpus is out-of-repo by design (#1384) — re-run by hand for loss evidence |
-| Comments/docs | 10 | doc comment mentions `#[ignore]` | #386 | Not tests — counted as their own checked category |
+| Timing benchmark | 1 | `BENCH … needs ≥8 idle cores and an unloaded machine` | #1561 | Keep ignored; run by hand on an idle box — a ratio floor on a pinned-8-worker executor is red for reasons unrelated to the code under test |
+| Comments/docs | 11 | doc comment mentions `#[ignore]` | #386 | Not tests — counted as their own checked category |
 
-Total: 26+4+1+2+1+10 = **44**.
+Total: 26+4+1+2+1+1+11 = **46**.
 
 > The former **WAF** group (1 row, `waf_gauntlet` at `waf_gauntlet_test.rs:126`, #337) is gone:
 > `waf_gauntlet_observability_trace` was un-ignored — the mock is counter-based and deterministic,
@@ -49,7 +50,7 @@ discoverable from the same document as its `#[ignore]` budget.
 Adding or removing any of them does NOT change this file's counts — the `#[ignore]` budget and this
 table are independent by design, and `scripts/check_ignored_guard.sh` enforces only the former.
 
-## Full catalog (44 rows)
+## Full catalog (46 rows)
 
 Rows are keyed by **file + identifier**, never by line number — inserting code above an ignored
 test must not invalidate its row. `Identifier` is the test function name for attributes and `doc`
@@ -101,6 +102,8 @@ for doc/comment mentions (compared per file by count). `Line` is not recorded on
 | 42 | Comments/docs | `crates/webfang_ai/tests/p0_001_measure.rs` | `doc` | `//! ... [p0_001_measure_sweep] is #[ignore]-gated, runs REAL models only ...` | #386 | docs only |
 | 43 | Comments/docs | `crates/webfang_ai/tests/p0_001_measure.rs` | `doc` | `/// ... Not #[ignore]: the parent re-executes this binary ...` | #386 | docs only |
 | 44 | Comments/docs | `crates/webfang_ai/tests/p0_001_measure.rs` | `doc` | `// Parent: the sweep (#[ignore]-gated BENCH)` | #386 | docs only |
+| 45 | Timing benchmark | `crates/webfang_ai/tests/mock_inference_benchmark.rs` | `mock_fixed_latency_scales_linearly` | `BENCH mock fan-out B/C ratio (#1561): needs ≥8 idle cores and an unloaded machine` (B/C ≥ 0.3 timing floor, executor pinned to 8 workers) | #1561 | Keep ignored; flaky in the default suite on a green `main` (run 37152742982, `FLAKY 2/3`) — run by hand with `--ignored --nocapture` on an idle ≥8-core box |
+| 46 | Comments/docs | `crates/webfang_ai/tests/mock_inference_benchmark.rs` | `doc` | `//! ... is #[ignore]-gated (#1561): it is a` | #386 | docs only |
 
 > **Guard contract (since #1328, 2026-09-12):** `check_ignored_guard.sh` compares this catalog to
 > the live scan per category — group counts, the file+test-name pair set, and per-file doc/comment
