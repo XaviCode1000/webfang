@@ -255,6 +255,10 @@ pub struct ExportOptions {
     pub obsidian_relative_assets: bool,
     /// Quick-save mode: save directly to vault _inbox folder.
     pub quick_save: bool,
+    /// Retention window in days: at the end of a successful run, exports
+    /// under `output_dir` and vault-DB rows older than this are pruned
+    /// (#1827). `0` (default) disables retention entirely.
+    pub retention_days: u32,
 }
 
 /// Elastic ingestion pipeline tuning (hardware autotuning overrides).
@@ -384,6 +388,7 @@ impl Default for ExportOptions {
             obsidian_wiki_links: false,
             obsidian_relative_assets: false,
             quick_save: false,
+            retention_days: 0,
         }
     }
 }

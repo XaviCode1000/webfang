@@ -155,8 +155,11 @@ pub async fn run(
         // onto the `BatchProcessor`, so every per-URL crawl engine of one
         // batch run shares this single identity instead of minting its own
         // (the old per-crawl mint split the batch trace in two).
-        return run_batch(
-            opts,
+        // `opts` is cloned for the batch call so retention can still read
+        // the flag values afterwards (#1827); the copy is negligible next
+        // to the batch run itself.
+        let exit = run_batch(
+            opts.clone(),
             #[cfg(feature = "ai")]
             ai_cleaner,
             vault_ports,
@@ -165,6 +168,10 @@ pub async fn run(
             &root_correlation,
         )
         .await;
+        // Retention after the batch exported (#1827): best-effort, never
+        // changes the run's exit code.
+        crate::cli::retention::apply_retention(&opts).await;
+        return exit;
     }
 
     // PersistenceMode unified control-plane — pure resolver with default dir.
@@ -263,6 +270,11 @@ pub async fn run(
     let export_exit = export_phase(&results, &opts, state_store.as_deref(), ai_cleaner).await;
     #[cfg(not(feature = "ai"))]
     let export_exit = export_phase(&results, &opts, state_store.as_deref()).await;
+
+    // Retention after the export wrote its artifacts (#1827): runs on both
+    // the success and the cancelled path (export already ran there too).
+    // Best-effort — never changes the run's exit code.
+    crate::cli::retention::apply_retention(&opts).await;
 
     // Special cell — Cancelled (error-classification-matrix): cooperative
     // cancellation is a control signal, not an operational failure, so it
