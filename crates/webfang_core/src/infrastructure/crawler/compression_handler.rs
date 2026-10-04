@@ -13,6 +13,7 @@
 
 use crate::domain::CompressionType;
 use async_compression::tokio::bufread::{BrotliDecoder, DeflateDecoder, GzipDecoder, ZstdDecoder};
+use std::borrow::Cow;
 use std::io::Cursor;
 use tokio::io::{AsyncReadExt, BufReader};
 
@@ -111,17 +112,25 @@ impl CompressionHandler {
 
     /// Detect compression format and decompress content
     ///
+    /// Returns [`Cow::Borrowed`] over the input when no compression is
+    /// detected — the caller keeps a single live body buffer (#1822) — and
+    /// [`Cow::Owned`] with the decompressed payload otherwise.
+    ///
     /// Some servers double-encode `.gz` sitemaps (gzip-of-gzip): after
     /// stripping the first layer the payload still carries compression magic
     /// bytes. Re-sniff once and decompress at most ONE additional layer
     /// (2 total, never a loop) so double-encoded sitemaps parse instead of
     /// feeding the second gzip layer to the XML parser.
-    pub(crate) async fn detect_and_decompress(&self, content: &[u8], url: &str) -> Result<Vec<u8>> {
+    pub(crate) async fn detect_and_decompress<'a>(
+        &self,
+        content: &'a [u8],
+        url: &str,
+    ) -> Result<Cow<'a, [u8]>> {
         let formats = Self::detect_compression(content, url);
 
         if formats.is_empty() {
-            // No compression detected, return as-is
-            return Ok(content.to_vec());
+            // No compression detected: lend the input buffer back, no copy.
+            return Ok(Cow::Borrowed(content));
         }
 
         let mut decompressed = self.decompress_formats(content, &formats).await?;
@@ -139,7 +148,7 @@ impl CompressionHandler {
                 .await?;
         }
 
-        Ok(decompressed)
+        Ok(Cow::Owned(decompressed))
     }
 
     /// Decompress `content` trying each detected format in order — fail closed
@@ -339,7 +348,13 @@ mod tests {
             .await;
         assert!(result.is_ok());
         let decompressed = result.unwrap();
-        assert_eq!(decompressed, content);
+        // #1822: the no-compression path must LEND the input buffer back
+        // (Cow::Borrowed), never allocate a redundant full copy.
+        assert!(
+            matches!(decompressed, Cow::Borrowed(_)),
+            "uncompressed input must be returned as Cow::Borrowed"
+        );
+        assert_eq!(decompressed.as_ref(), content);
     }
 
     #[test]
