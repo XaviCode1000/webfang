@@ -537,6 +537,20 @@ EOF
   else
     skip_step "compatibility harness semantics" "no compatibility harness files changed"
   fi
+  # Target-isolation guard semantics (#1679): hermetic mktemp git-tree proof
+  # that the build-cache target policy rejects unset/uncanonicalisable
+  # targets, the seed and quarantine stores, targets owned by ANY other live
+  # worktree (collision-first; the opt-out cannot bypass a collision), and
+  # unregistered targets without the explicit per-invocation opt-out.
+  # Triggered by either the guard or its harness changing — both are
+  # `scripts/**`, so a PR touching only one of them still lands in this
+  # CI-ONLY lane. Hermetic, no cargo, ~1s — cheap enough that it is never
+  # skipped once triggered.
+  if grep -Eq '^(scripts/check_target_isolation\.sh|scripts/tests/test_check_target_isolation\.sh)$' "$UNION_TMP" 2>/dev/null; then
+    run_step "target isolation guard semantics (offline)" bash scripts/tests/test_check_target_isolation.sh
+  else
+    skip_step "target isolation guard semantics" "no target-guard files changed"
+  fi
   # Path-classifier regression harness (#1707; coverage for #1643): the
   # `$(...)` NUL-dropping capture collapsed a multi-file diff into one
   # pseudo-path, which could flip `run_code_jobs` false and cascade-skip every
