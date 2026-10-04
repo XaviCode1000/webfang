@@ -54,7 +54,27 @@ decision. The console handler only *fires* the existing authority; it never owns
 | 2. Wire the console source into all shutdown sites | done |
 | 3. XP-K-03 — UTF-8 console codepage at CLI startup | done |
 | 4. Docs — ADR-0016, `persistence-resume.md`, `troubleshooting.md` (XP-P-07 `\\?\` recorded as a known limitation with the `LongPathsEnabled` workaround) | done |
-| 5. Verify + PR | in progress |
+| 5. Verify + PR | done — PR #1810 |
+
+## CI failures found after the first push (both real, both now fixed)
+
+| job | cause | fix |
+| :--- | :--- | :--- |
+| `Repo guards` → *Intra-crate direction gate (strict)* | `application/crawler/engine.rs` named `crate::infrastructure::platform::first_termination_event`. `application` may only import inward; the gate was right. | Inverted through a port: `TerminationSource` in `application/crawler/ports.rs` (erased `Arc<dyn Fn() -> BoxFuture<'static, Option<&'static str>>>`, default = Ctrl+C only), wired once by `application::container::build_termination_source()` — the crate's permanent application→infrastructure entry. `1da5f4c`. No allowlist entry added. |
+| `Tests (windows-latest)` → *Pre-build test binary* | The `#[cfg(windows)]` arm of `console_event_source()` called `warn!` without importing the macro. | `use tracing::warn;`. `a89ce7b7`. |
+
+## How the Windows arms are now verified locally (the reusable trick)
+
+`cargo check --target x86_64-pc-windows-msvc` **cannot work on the workspace**:
+`btls-sys`'s build script runs for the target and dies with
+`failed to find tool "lib.exe"` — `cargo check` still executes build scripts, and
+there is no MSVC toolchain on this host.
+
+What does work: an **isolated scratch crate** carrying a byte-identical copy of the
+module, depending only on `tokio` / `futures` / `tracing` / `windows-sys`, checked
+for the MSVC target. That type-checks the real Win32 surface against the real
+`windows-sys` 0.60 sources — which is precisely the part the Linux gate cannot see.
+It found the missing `warn` import in one run.
 
 ## Non-goals
 
