@@ -121,26 +121,13 @@ async fn run_standard_export(config: ExportConfig<'_>) -> Result<Vec<String>, Cl
     let output_dir = config.output_dir;
     let export_format = config.export_format;
     let results = config.results;
-    let outcome = tokio::task::spawn_blocking(move || {
+    let handle = tokio::task::spawn_blocking(move || {
         let ctx = record_store
             .as_ref()
             .map(|store| export_factory::ResumeContext::new(store).with_resume(resume));
         export_factory::process_results(&results, output_dir, export_format, "export", ctx.as_ref())
-    })
-    .await;
-    match outcome {
-        Ok(Ok(urls)) => Ok(urls),
-        Ok(Err(e)) => {
-            warn!(error = %e, format = ?export_format, "export of scrape results failed");
-            Err(CliExit::IoError(e.to_string()))
-        },
-        Err(join) => {
-            warn!(error = %join, format = ?export_format, "export task failed on the blocking pool");
-            Err(CliExit::IoError(format!(
-                "la exportación falló en el pool de bloqueo: {join}"
-            )))
-        },
-    }
+    });
+    await_blocking_export(handle, "scrape", export_format).await
 }
 
 /// AI semantic cleaning export path.
@@ -175,7 +162,7 @@ async fn run_ai_export(
     let resume = config.resume;
     let output_dir = config.output_dir;
     let export_format = config.export_format;
-    let outcome = tokio::task::spawn_blocking(move || {
+    let handle = tokio::task::spawn_blocking(move || {
         let ctx = record_store
             .as_ref()
             .map(|store| export_factory::ResumeContext::new(store).with_resume(resume));
@@ -186,16 +173,31 @@ async fn run_ai_export(
             "export",
             ctx.as_ref(),
         )
-    })
-    .await;
-    match outcome {
+    });
+    await_blocking_export(handle, "AI-cleaned", export_format).await
+}
+
+/// Await a blocking-pool export handle and translate its outcome onto the CLI
+/// error surface.
+///
+/// Shared by the standard and AI export paths (issue #1814 slice B): the D3
+/// sequence executes on the blocking pool; this wrapper only maps
+/// `ExporterError` and `JoinError` onto `CliExit` with the Spanish
+/// user-facing wording. Extracted so both `run_*_export` paths stay inside
+/// the cognitive-complexity ratchet.
+async fn await_blocking_export(
+    handle: tokio::task::JoinHandle<Result<Vec<String>, crate::domain::exporter::ExporterError>>,
+    stage: &'static str,
+    format: ExportFormat,
+) -> Result<Vec<String>, CliExit> {
+    match handle.await {
         Ok(Ok(urls)) => Ok(urls),
         Ok(Err(e)) => {
-            warn!(error = %e, format = ?export_format, "export of AI-cleaned results failed");
+            warn!(error = %e, format = ?format, "export of {stage} results failed");
             Err(CliExit::IoError(e.to_string()))
         },
         Err(join) => {
-            warn!(error = %join, format = ?export_format, "AI export task failed on the blocking pool");
+            warn!(stage, error = %join, format = ?format, "export task failed on the blocking pool");
             Err(CliExit::IoError(format!(
                 "la exportación falló en el pool de bloqueo: {join}"
             )))
