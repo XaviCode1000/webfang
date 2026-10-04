@@ -113,7 +113,7 @@ case "${#trusted[@]}" in
       unrecognised=()
     fi
     if [[ "${#unrecognised[@]}" -gt 0 ]]; then
-      echo "::error::${unrecognised[*]} points at HEAD but does not match the release-plz fingerprint (annotated + github-actions[bot] + 'chore: Release package ...'). Either release-plz changed its tag format - update scripts/release-plz-tags.sh - or a human tag landed here. This tag would ship with no binaries." >&2
+      echo "::error::${unrecognised[*]} points at HEAD but does not match the release-plz fingerprint (annotated + automation tagger + 'chore: Release package ...'). Either release-plz changed its tag format - update scripts/release-plz-tags.sh - or a human tag landed here. This tag would ship with no binaries." >&2
       exit 1
     fi
     echo "No releasable tag at HEAD and release-plz succeeded: this push carried no version bump. Nothing to release."

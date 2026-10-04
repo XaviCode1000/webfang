@@ -452,7 +452,7 @@ cargo build                                        # cold or seeded; both are co
 >
 > Without `.envrc`, cargo falls back to an in-repo `target/`. This is no longer silent: `scripts/ci_fast_gate.sh` fails closed with exit 2 when `CARGO_TARGET_DIR` is unset, and names `direnv allow` as the fix. That guard exists because the in-repo fallback is invisible by construction — `.gitignore` has `target`, so a leaked 33 G in-repo target dir leaves `git status` clean and no cleanup step can attribute it. Measured 2026-09-29 on `main`: six such dirs, 39 G logical / 18 G physical on btrfs+zstd.
 >
-> ⚠️ **A defined `CARGO_TARGET_DIR` is not enough — the gate also rejects main's target inside a worktree.** A worktree created without `.envrc` *inherits* main's value from the shell that launched it, so the "is it set?" check passes and the tree compiles straight into main's target. That is #1267 exactly. The same gate now rejects that case **by directory identity, not by name**: it canonicalises both sides (`readlink -f`) and compares them against the target declared in main's `.envrc`. Both halves matter — matching on `basename` would reject a legitimate `~/.cache/cargo-target/x/webfang` and would *accept* a symlink pointing at main's cache, which is the failure being closed. If main's `.envrc` is missing or declares no target, the gate **refuses** rather than assuming: a gate that cannot prove isolation must not say "probably fine". Bootstrapping the main checkout is therefore a precondition for using agent worktrees, not an optional convenience. Audited 2026-09-29 in what used to be `main`'s shared target: **46 dead worktrees** referenced by live fingerprints plus one still-running worktree, which is the leak this closes. The guard prevents NEW contamination only; it does not clean what is already there — `main` migrating to its own seeded target is what makes that historical state reclaimable.
+> ⚠️ **A defined `CARGO_TARGET_DIR` is not enough — the gate enforces a worktree target registry (#1679).** The policy lives in `scripts/check_target_isolation.sh`: the gate enumerates ALL live worktrees via `git worktree list --porcelain -z` and reads each tree's `.envrc` declaration (`export CARGO_TARGET_DIR=`, last line wins, with `$HOME`/`~` expansion — sibling `.envrc` files use literal `$HOME/...`) as the ownership registry, comparing everything by canonical path identity. A target owned by ANY other live worktree is hard-rejected with `reason=target-owned-by-other-worktree` and has **no opt-out** — `--allow-unregistered-target` cannot excuse it, because two trees building the same profile into one directory get identical output filenames (#1267: an E2E run silently executes the other tree's binary). A target nobody declares is rejected with `reason=unregistered-target` unless `--allow-unregistered-target` is passed to `scripts/ci_fast_gate.sh` (per-invocation flag; deliberately never an env var, which would propagate exactly the inherited ambient state this guard exists to stop). The old main-only check is subsumed — main is just another registry entry, and an unbootstrapped main still refuses (`reason=main-unbootstrapped`). Trees without `.envrc` (tool-generated detached worktrees) are non-owners and are skipped, so the normal bootstrap-then-gate flow never needs the flag.
 >
 > ⚠️ **Concurrent agent builds must NOT share a target dir (#1267).** Two worktrees building the same binary profile into one target dir concurrently overwrite each other's `debug/webfang` (same `-C metadata` hash ⇒ same output filename), so E2E runs silently execute the other tree's binary — stale links report as fresh, failures misattribute. Every tree builds into its own target dir. Isolated-build recipe (verified 2026-09-09 after 8 opaque worker deaths): `export CARGO_TARGET_DIR=~/.cache/cargo-target/<worktree>` (home disk — `/tmp` tmpfs is only 16 GB and a full workspace target dir starves both the build and sccache), `env -u RUSTC_WRAPPER -u RUSTUP_TOOLCHAIN` (sccache's Rust cache key embeds the target-dir path, so an identical source in a new isolated dir scores ZERO hits - verified with a private cache and a positive control: same dir hits, different dir misses, leaving duplicate objects for one unit. Raising `SCCACHE_CACHE_SIZE` cannot fix that, it only fits the duplicates; the wrapper also breaks `--json` parsing on isolated dirs; an exported stable toolchain shadows `rust-toolchain.toml` and its rust-lld rejects the BFD-only link flags below — F-52 evidence), `CARGO_BUILD_JOBS=2` plus `RUSTFLAGS="-C link-arg=-Wl,--no-keep-memory -C link-arg=-Wl,--reduce-memory-overheads"` (test-binary links OOM-die otherwise). The orchestrator assigns the isolated path per gate; workers never invent their own. Step 6 of the post-merge runbook deletes them - measured cost of NOT doing it: 52 GB of dead build state from three already-merged trees, invisible to `git status` and to `git worktree prune`.
 
@@ -1021,24 +1021,21 @@ merge PR to main
          version bump ([workspace.package] in Cargo.toml) + CHANGELOG.md (cliff.toml)
    merge Release PR (human review — the ONE place to polish changelog text)
    └─> release-plz-release job: pushes tag v{{ version }} (single lockstep version)
-         │   The tag push does NOT trigger release.yml — see the note below.
-         └─> dispatch-release job: calls release.yml via workflow_dispatch
-             └─> release.yml: 4 binaries + SHA256SUMS + GitHub Release
-                 (linux x86_64/aarch64, macOS Apple Silicon, Windows x86_64 —
-                 Intel macOS is not built: ONNX Runtime dropped x64 macOS as of
-                 1.24.1, so the `ai` feature has no prebuilt to link against)
+       └─> tag push fires release.yml natively (push: tags — App token, no suppression)
+           └─> release.yml: 4 binaries + SHA256SUMS + GitHub Release
+               (linux x86_64/aarch64, macOS Apple Silicon, Windows x86_64 —
+               Intel macOS is not built: ONNX Runtime dropped x64 macOS as of
+               1.24.1, so the `ai` feature has no prebuilt to link against)
 ```
 
-> ⚠️ **The `v*` tag push does NOT trigger `release.yml`, and never did (#1478).** GitHub
-> suppresses workflow runs caused by `GITHUB_TOKEN`-generated events, and `release-plz` pushes
-> the tag as `github-actions[bot]` — so `release.yml`'s `push: tags: v*` trigger never fired for
-> an automated tag. Evidence: `v2.0.0` (human tagger) ran `release.yml` via `event: push`, while
-> `v2.1.0` shipped its binaries only through a **manual** dispatch and `v2.1.1` ended with a tag
-> and **no Release at all**. The hand-off is therefore an explicit `workflow_dispatch` call from
-> the `dispatch-release` job — `workflow_dispatch` and `repository_dispatch` are the documented
-> exceptions to that suppression (proven in-repo: run 35403760298,
-> `actor=github-actions[bot]`). Do not "restore" a tag-push-based hand-off: under `GITHUB_TOKEN`
-> it cannot work.
+> ⚠️ **The `v*` tag push IS the hand-off — `release.yml` triggers on `push: tags` natively.**
+> Both release-plz jobs mint a GitHub App token, and GitHub only suppresses workflow runs
+> for `GITHUB_TOKEN`-generated events, so App-pushed tags fire the trigger like any human
+> push. History: under `GITHUB_TOKEN` the same tags never fired it — `v2.1.0` shipped its
+> binaries only through a **manual** dispatch and `v2.1.1` ended with a tag and **no Release
+> at all** (#1478) — and the hand-off was an explicit `workflow_dispatch` call from a
+> `dispatch-release` job. Do not reintroduce that job: with the native trigger live it would
+> run `release.yml` twice per release.
 
 Configuration lives in `release-plz.toml` (workspace: `git_only = true`, `git_tag_name = "v{{
 version }}"`, `version_group = "webfang"` on every processed crate, `publish = false`) and
@@ -1046,22 +1043,19 @@ version }}"`, `version_group = "webfang"` on every processed crate, `publish = f
 
 - All crates share ONE version and ONE tag per release — the tag must keep the `v*` shape or
   the dispatcher filter and `release.yml` preflight reject it (`git_tag_name` is load-bearing).
-- The hand-off from `release-plz` to `release.yml` is `workflow_dispatch`, never the tag push
-  (see the note above). The dispatcher only ever fires for a tag that both sits at the pushed
-  commit and carries the `release-plz` fingerprint (`tagger=github-actions[bot]` + subject
-  `chore: Release package …`), so historical or human tags are never built and published.
+- The hand-off from `release-plz` to `release.yml` is the `push: tags` trigger, never a
+  dispatch call (see the note above). A tag is trusted only if it both sits at the pushed
+  commit and carries the `release-plz` fingerprint (tagger `github-actions[bot]` pre-migration
+  or the App bot since slice 2 + subject `chore: Release package …`), so historical or human
+  tags are never built and published.
 - `webfang_benchmark` and `webfang_test_utils` are excluded (`release = false`).
 - Breaking changes: declare `BREAKING CHANGE: <why>` in the commit footer → major bump; `feat:`
   → minor; `fix:`/`perf:` → patch.
 - The tag must never be created by hand anymore (except emergency recoveries); release-plz owns it.
-- Release PRs use `GITHUB_TOKEN` deliberately (#1205): GitHub does not deliver `pull_request`
-  events for GITHUB_TOKEN-created PRs, so pr-validation never runs on `chore/release-*`
-  branches (whose ISO-8601 names would fail the branch regex). Do NOT migrate to a PAT
-  without first allowing that branch shape in `pr-validation.yml`.
-  (Slice 1 landed: the `release-pr` job mints a GitHub App token, so Release PRs now
-  trigger checks; the `chore/release-*` exemption is already in `pr-validation.yml`
-  (#1474) and #1177 carries `status:approved`. The tag/release job stays on
-  `GITHUB_TOKEN` + dispatch until the full migration.)
+- Both release-plz jobs mint a GitHub App token (the full migration closed #1205):
+  App-opened Release PRs deliver `pull_request` events so checks run without a human-token
+  rerun, and App-pushed tags fire `push: tags` with no dispatch job. The `chore/release-*`
+  exemption stays in `pr-validation.yml` (#1474) and #1177 carries `status:approved`.
 
 ### Pre-commit gate (every commit)
 

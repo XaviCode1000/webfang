@@ -1,0 +1,11 @@
+---
+source: crates/webfang_core/tests/batch_export_exit_code_test.rs
+expression: redacted
+---
+  <TIMESTAMP>  WARN <MODULE>: export of scrape results failed, error: failed to create output directory: <IO_ERROR>
+    at <FILE>.rs:<LINE>
+
+  <TIMESTAMP> ERROR <MODULE>: Export failed, error: IoError("failed to create output directory: <IO_ERROR>")
+    at <FILE>.rs:<LINE>
+
+Error: failed to create output directory: <IO_ERROR>

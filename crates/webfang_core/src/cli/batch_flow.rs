@@ -112,21 +112,22 @@ pub(crate) async fn run_batch(
     let _ = report_phase(&results, &failures, 0, opts.verbosity);
 
     #[cfg(feature = "ai")]
-    {
-        export_phase(&results, &opts, state_store.as_deref(), ai_cleaner).await;
-    }
+    let export_exit = export_phase(&results, &opts, state_store.as_deref(), ai_cleaner).await;
     #[cfg(not(feature = "ai"))]
-    {
-        export_phase(&results, &opts, state_store.as_deref()).await;
-    }
+    let export_exit = export_phase(&results, &opts, state_store.as_deref()).await;
 
     // Final exit code aggregates BOTH crawl-level and extraction-level outcomes
     // with `#537` severity routing: partial success -> 69, all-fail with an
     // internal fatal error -> 3, otherwise 0. Crawl failures were only logged
-    // above, so this is the only place the batch's true status surfaces.
+    // above, so this is the only place the batch's true status surfaces. A
+    // failed export (`IoError` 74, `ConfigError` 78, ...) surfaces only when
+    // that aggregate is `Success`, mirroring the single-run path's export
+    // ordering (orchestrator.rs) — a dropped export exit here used to make a
+    // batch with a failed export exit 0 (#1820).
 
     // Special cell — Cancelled: same precedence as the single-run path —
-    // cancellation beats classification-based routing and exits 0.
+    // cancellation beats both the classification-based routing and the export
+    // exit, and exits 0.
     if let Some(exit) = crate::cli::error::cancelled_exit(cancel.is_cancelled()) {
         return exit;
     }
@@ -134,7 +135,11 @@ pub(crate) async fn run_batch(
     let total_failed = summary.failed + failures.len();
     let mut all_errors = summary.errors;
     all_errors.extend(failures);
-    batch_exit_code(results.len(), total_failed, &all_errors)
+    let batch_exit = batch_exit_code(results.len(), total_failed, &all_errors);
+    if !matches!(batch_exit, CliExit::Success) {
+        return batch_exit;
+    }
+    export_exit
 }
 
 /// Scrape every batch URL (one page per URL, #1215), spooling each fetched
