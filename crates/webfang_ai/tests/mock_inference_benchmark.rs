@@ -14,6 +14,7 @@
 //!   B−C gap attributes the real-CPU overhead and C measures the pure
 //!   sleep fan-out ceiling of this test executor.
 //!
+//!
 //! Verdict rule (from the issue):
 //! - speedup 1→8 ≈ 8× (linear) → P2-001/002 are downstream of P0-001:
 //!   archive them, do NOT touch `export_flow.rs`.
@@ -21,6 +22,19 @@
 //!   do NOT redesign `export_flow.rs` here (it gets its own MEASURE).
 //!
 //! Requires the `ai` feature (same gate as the other AI integration tests).
+//!
+//! `mock_fixed_latency_scales_linearly` is `#[ignore]`-gated (#1561): it is a
+//! timing benchmark whose B/C ratio collapses under CPU contention, so it was
+//! red in the default suite on an otherwise-green `main` (run 37152742982,
+//! `FLAKY 2/3`). The assertion is preserved VERBATIM for manual runs; it is
+//! not weakened. Preconditions for a meaningful run: idle machine, at least
+//! 8 physical cores (`available_parallelism()` ≥ 8 — the runtime is pinned to
+//! `worker_threads = 8`), and no other heavy build running concurrently.
+//!
+//! ```bash
+//! cargo nextest run --all-features -p webfang_ai \
+//!     --test mock_inference_benchmark -- --ignored --nocapture
+//! ```
 
 #![cfg(feature = "ai")]
 
@@ -142,6 +156,17 @@ fn report_curve(name: &str, wall_times: &[Duration]) -> f64 {
 /// ~1× speedup on a current-thread executor. `worker_threads = 8` is FIXED:
 /// the 8-worker suspicion is read from the curve shape (B vs C gap), and
 /// varying the executor would add a fourth variable to the three curves.
+//
+// #1561: quarantined, not weakened. The B/C floor below is a TIMING gate, and
+// the executor is pinned to 8 workers, so it needs ≥8 idle cores to mean
+// anything: on a 4-core runner, or on a 16-core box already compiling
+// something else, the ratio falls from the observed 0.37–0.54 into the [0.3,
+// 0.37) band and the suite goes red for a reason that has nothing to do with
+// the code under test. Hardening was tried and failed (the retired absolute
+// 3.0 floor, #1457) — a second threshold on the same noisy signal inherits
+// the same fragility. A ratio near 0.125 is still the serialization signal,
+// and the deterministic pins on the fan-out contract are what CI runs.
+#[ignore = "BENCH mock fan-out B/C ratio (#1561): needs ≥8 idle cores and an unloaded machine"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn mock_fixed_latency_scales_linearly() {
     let cleaner = mock_cleaner();
