@@ -148,11 +148,14 @@ Full allow-matrix (effective build graph):
 | `webfang_ai` | `webfang_core` |
 | `webfang_mcp` | `webfang_core`, `webfang_ai` |
 | `webfang_cli` | `webfang_core`, `webfang_ai`, `webfang_mcp` |
+| `webfang_test_utils` | `webfang_core` (leaf; test harness, `publish = false`) |
 | `webfang_benchmark` | `webfang_core`, `webfang_test_utils` (leaf; benchmark tooling, no production dependents) |
 
 This is an architectural POLICY, not just what the code happens to do. New code must respect this direction. Verify cross-crate usage with `codedb_deps` or CodeGraph `explore` before adding any inter-crate import.
 
-**CI gate (#513):** `scripts/check_dependency_direction.sh` runs in the `toolchain` job of `ci.yml` and fails on any prohibited inter-crate dependency (including feature-gated optional deps). It parses each crate's `Cargo.toml` `[dependencies]`/`[dev-dependencies]` against the matrix above and prints the effective graph on success. Keep the matrix in the script and this section in sync.
+**Dev tier (#1825):** any crate may target `webfang_test_utils` from `[dev-dependencies]` — it is the shared test harness and never ships. A `[dependencies]` edge into it remains prohibited. The gate extractor also recognizes the dotted-key form (`webfang_core.workspace = true`).
+
+**CI gate (#513):** `scripts/check_dependency_direction.sh` runs in the `repo-guards` job of `ci.yml` (ci.yml:225-226) and fails on any prohibited inter-crate dependency (including feature-gated optional deps). It parses each crate's `Cargo.toml` `[dependencies]`/`[dev-dependencies]` against the matrix above and prints the effective graph on success. A semantics harness (`scripts/test_dependency_direction.sh`) runs as the next step and fails on any fixture where a forbidden edge passes or a documented edge is rejected (#1825). Keep the matrix in the script and this section in sync.
 
 ### Intra-crate layers (Clean Architecture)
 
