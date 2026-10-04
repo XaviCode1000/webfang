@@ -296,7 +296,12 @@ impl TerminationSource {
     /// SIGINT + SIGTERM + SIGHUP on Unix (SIGHUP added by XP-S-03, #1608, so
     /// dropping the terminal drains instead of killing the run); Ctrl+C only
     /// everywhere else. This is what production wiring injects off Windows,
-    /// where no console-event source exists.
+    /// where the console-event source replaces it.
+    ///
+    /// `cfg(not(windows))` because on Windows nothing calls it: the platform
+    /// console source is injected instead, and an uncalled constructor would be
+    /// a `dead_code` warning in a lane nobody runs locally.
+    #[cfg(not(windows))]
     #[must_use]
     pub fn host_signals() -> Self {
         #[cfg(unix)]

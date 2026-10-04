@@ -209,7 +209,15 @@ pub fn init_console_output_encoding() {
     set_utf8_code_page();
 }
 
+/// Switch the console code page to UTF-8 (XP-K-03).
 #[cfg(windows)]
+// The Win32 FFI boundary is the one legitimate use of unsafe in this crate:
+// `SetConsoleCP`/`SetConsoleOutputCP` are raw `extern "system"` bindings with
+// no safe wrapper, and there is no way to reach them without one. The
+// workspace denies unsafe by default (`[workspace.lints.rust] unsafe_code`);
+// crash injection is the only other place in `webfang_core` that opts out, and
+// it opts out the same way.
+#[allow(unsafe_code)]
 fn set_utf8_code_page() {
     use tracing::warn;
     use windows_sys::Win32::Globalization::CP_UTF8;
@@ -261,6 +269,12 @@ mod handler {
     /// that. Returns 1 for an event this source consumed, 0 to pass it on to
     /// the next handler in the chain (which is how Ctrl+C still reaches
     /// tokio's handler).
+    ///
+    /// `unsafe` is in the signature, not the body: Win32 requires a plain
+    /// `extern "system"` callback and `PHANDLER_ROUTINE` is declared unsafe.
+    /// The body only reads a `OnceLock` and does a non-blocking send. See the
+    /// justification on `set_utf8_code_page`.
+    #[allow(unsafe_code)]
     unsafe extern "system" fn ctrl_handler(ctrl_type: u32) -> i32 {
         let Some(name) = console_event_name(ctrl_type) else {
             // Ctrl+C / Ctrl+Break: not ours. Passing it on is what keeps the
@@ -282,6 +296,11 @@ mod handler {
     }
 
     /// Install the handler once per process, publishing the channel.
+    ///
+    /// `unsafe` for the single `SetConsoleCtrlHandler` call: see the
+    /// justification on `set_utf8_code_page` — the Win32 console API is raw
+    /// FFI, and the workspace denies unsafe by default.
+    #[allow(unsafe_code)]
     fn install() {
         use windows_sys::Win32::System::Console::{SetConsoleCtrlHandler, PHANDLER_ROUTINE};
 
