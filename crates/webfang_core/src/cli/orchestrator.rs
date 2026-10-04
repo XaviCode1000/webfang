@@ -851,7 +851,7 @@ mod tests {
         let mut opts = CrawlOptions::default();
         opts.export.output_dir = std::path::PathBuf::from("-");
 
-        let results: std::sync::Arc<[domain::ScrapedContent]> = std::sync::Arc::from(Vec::new());
+        let results: std::sync::Arc<[crate::domain::ScrapedContent]> = std::sync::Arc::from(Vec::new());
         let exit = export_phase(
             results,
             &opts,
@@ -900,7 +900,7 @@ mod tests {
         opts.export.quick_save = true;
         opts.export.obsidian_vault = Some(vault.clone());
 
-        let results: std::sync::Arc<[domain::ScrapedContent]> = std::sync::Arc::from(Vec::new());
+        let results: std::sync::Arc<[crate::domain::ScrapedContent]> = std::sync::Arc::from(Vec::new());
         let exit = export_phase(
             results,
             &opts,
