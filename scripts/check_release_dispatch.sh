@@ -150,6 +150,7 @@ fi
 # in action_required). Either one silently restores the incident this migration
 # removed. (The old dispatch job's GH_TOKEN shape is refused too.)
 # ─────────────────────────────────────────────────────────────────────────────
+# shellcheck disable=SC2016  # intentional: '${{ ... }}' is the literal YAML text to match, not a shell expansion.
 if grep -qF -- 'GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}' "$RELEASE_PLZ_YML"; then
   echo "::error::check_release_dispatch: release-plz.yml feeds secrets.GITHUB_TOKEN to a release-plz step. Tags pushed under GITHUB_TOKEN never fire push: tags (suppression — v2.1.1), and PRs opened under it never deliver pull_request events (#1228). Both release-plz steps must run on the App token."
   step "release-plz.yml: no secrets.GITHUB_TOKEN step" "PRESENT"
@@ -157,6 +158,7 @@ if grep -qF -- 'GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}' "$RELEASE_PLZ_YML"; t
 else
   step "release-plz.yml: no secrets.GITHUB_TOKEN step" "ok"
 fi
+# shellcheck disable=SC2016  # intentional: '${{ ... }}' is the literal YAML text to match, not a shell expansion.
 if grep -qF -- 'GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}' "$RELEASE_PLZ_YML"; then
   echo "::error::check_release_dispatch: release-plz.yml still carries the old dispatch shape (GH_TOKEN from secrets.GITHUB_TOKEN). The dispatch job is deleted; nothing in this file may push or call out under GITHUB_TOKEN."
   step "release-plz.yml: no dispatch-era GH_TOKEN" "PRESENT"
