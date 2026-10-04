@@ -434,6 +434,15 @@ impl ScraperError {
                 }
             },
             Self::Network(e) if is_transient_network(e.as_ref()) => ErrorClass::TransientRetriable,
+            // DNS resolution and TLS handshake failures are transport failures,
+            // not code bugs (#1824). The `Io` arm below gets its distinction
+            // from `io::ErrorKind`; std has no DNS/TLS kind, so the explicit
+            // DNS/TLS arm reads the transport text instead — an enumerated,
+            // documented signal, mirroring the Io arm's kind-based approach
+            // rather than an accident of the fallback.
+            Self::Network(e) if is_dns_or_tls_transport_failure(e.as_ref()) => {
+                ErrorClass::TransientRetriable
+            },
             Self::Http { status, .. } if *status >= 500 => ErrorClass::TransientRetriable,
             Self::Http { status, .. } if *status == 429 => ErrorClass::TransientBackoff,
             Self::GlobalTimeout => ErrorClass::TransientBackoff,
@@ -505,8 +514,11 @@ impl ScraperError {
             // exit-2 override (`empty_discovery_exit_for`) matches variants
             // directly and is unaffected.
             Self::SitemapEmpty | Self::SitemapNotFound(_) => ErrorClass::DomainRecoverable,
-            // Non-transient Network (e.g. DNS resolution, TLS errors)
-            Self::Network(_) => ErrorClass::InternalFatal,
+            // #1824: any other Network error is still a transport failure —
+            // the remote service was unavailable (EX_UNAVAILABLE, 69), never a
+            // webfang bug. InternalFatal is unreachable from the Network
+            // variant.
+            Self::Network(_) => ErrorClass::TransientRetriable,
         }
     }
 }
@@ -562,6 +574,64 @@ fn is_transient_network(e: &(dyn std::error::Error + 'static)) -> bool {
             tracing::debug!(
                 error = %err,
                 "is_transient_network: classified transient via source-chain text heuristic"
+            );
+            return true;
+        }
+        current = err.source();
+    }
+    false
+}
+
+/// Check if a boxed error is a DNS resolution or TLS handshake transport
+/// failure (#1824).
+///
+/// [`ScraperError::classify`]'s `Io` arm gets its transient/permanent
+/// distinction from `io::ErrorKind`; std has no DNS/TLS kind, so transport
+/// TEXT is the signal. The patterns are conservative and enumerated — the
+/// DNS list covers the resolver literals emitted by glibc, macOS/BSD and
+/// Windows stacks plus the internal wrappers that reword them
+/// (`DownloadError::Dns` via `strip_display_marker`, the SSRF validating
+/// resolver); the TLS list covers the certificate/handshake vocabulary the
+/// TLS stacks report. The FULL `Error::source()` chain is walked —
+/// deliberately WITHOUT the io-downcast early return of
+/// `is_transient_network`, because the synthetic-io path
+/// (`io_error_for_network_message`) carries the transport text INSIDE an
+/// `ErrorKind::Other` io error's message, where the early return would hide it.
+fn is_dns_or_tls_transport_failure(e: &(dyn std::error::Error + 'static)) -> bool {
+    /// DNS resolution failure fragments, lowercased.
+    const DNS_PATTERNS: [&str; 11] = [
+        "name or service not known",
+        "temporary failure in name resolution",
+        "name resolution failed",
+        "no such host",
+        "nodename nor servname",
+        "nxdomain",
+        "domain not found",
+        "failed to lookup",
+        "could not resolve",
+        "dns error",
+        "dns lookup",
+    ];
+    /// TLS handshake failure fragments, lowercased.
+    const TLS_PATTERNS: [&str; 3] = ["tls", "handshake", "certificate"];
+
+    let mut current: Option<&(dyn std::error::Error + 'static)> = Some(e);
+    while let Some(err) = current {
+        // Typed io kind first: a synthetic `ErrorKind::AddrNotAvailable`
+        // source (the DNS mapping of `io_error_for_network_message`) is DNS
+        // by construction even when the message text drifts.
+        if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
+            if io_err.kind() == std::io::ErrorKind::AddrNotAvailable {
+                return true;
+            }
+        }
+        let msg = err.to_string().to_ascii_lowercase();
+        if DNS_PATTERNS.iter().any(|p| msg.contains(p))
+            || TLS_PATTERNS.iter().any(|p| msg.contains(p))
+        {
+            tracing::debug!(
+                error = %err,
+                "is_dns_or_tls_transport_failure: classified DNS/TLS via source-chain text"
             );
             return true;
         }
@@ -1999,5 +2069,176 @@ mod tests {
         );
         assert!(rendered.contains("512"), "missing limit: {rendered}");
         assert!(rendered.contains("1024"), "missing actual: {rendered}");
+    }
+
+    // ========================================================================
+    // #1824: DNS resolution and TLS handshake failures are transport
+    // failures — the Network variant is unreachable from InternalFatal.
+    // ========================================================================
+
+    #[test]
+    fn classify_dns_text_is_transient_retriable() {
+        // Resolver literals from the platforms this repo ships on (glibc,
+        // macOS/BSD, Windows) plus the canonical wrapper text webfang emits
+        // itself (`strip_display_marker` → "name resolution failed"; the
+        // observed real wreq DNS error on the #1824 red run was
+        // "DNS error: name resolution failed").
+        let dns_messages = [
+            "dns error: name resolution failed",
+            "Name or service not known",
+            "failed to lookup address information: Name or service not known",
+            "Temporary failure in name resolution",
+            "name resolution failed",
+            "no such host is known.",
+            "nodename nor servname provided, or not known",
+            "Domain name not found: NXDOMAIN",
+            "could not resolve hostname",
+            "dns lookup failed",
+        ];
+        for msg in dns_messages {
+            let err = ScraperError::Network(Box::new(std::io::Error::other(msg)));
+            assert_eq!(
+                err.classify(),
+                ErrorClass::TransientRetriable,
+                "DNS text {msg:?} must classify TransientRetriable (#1824)"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_tls_text_is_transient_retriable() {
+        let tls_messages = [
+            "tls handshake failed",
+            "tlsv1 alert internal error",
+            "certificate verify failed",
+            "certificate has expired",
+            "handshake failure",
+        ];
+        for msg in tls_messages {
+            let err = ScraperError::Network(Box::new(std::io::Error::other(msg)));
+            assert_eq!(
+                err.classify(),
+                ErrorClass::TransientRetriable,
+                "TLS text {msg:?} must classify TransientRetriable (#1824)"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_dns_tls_text_walks_source_chain() {
+        // A wrapper erasing the concrete type must not hide the transport
+        // text: the chain walk reaches the DNS/TLS leaf (#1824). Mirrors the
+        // wrapper/leaf stubs of `test_is_transient_network_walks_source_chain`.
+        #[derive(Debug)]
+        struct TextLeaf(&'static str);
+        impl std::fmt::Display for TextLeaf {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.0)
+            }
+        }
+        impl std::error::Error for TextLeaf {}
+
+        #[derive(Debug)]
+        struct TextWrapper(&'static str, Option<TextLeaf>);
+        impl std::fmt::Display for TextWrapper {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str(self.0)
+            }
+        }
+        impl std::error::Error for TextWrapper {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                self.1.as_ref().map(|e| e as _)
+            }
+        }
+
+        let err = ScraperError::Network(Box::new(TextWrapper(
+            "download failed",
+            Some(TextLeaf("Name or service not known")),
+        )));
+        assert_eq!(
+            err.classify(),
+            ErrorClass::TransientRetriable,
+            "DNS leaf behind a wrapper must classify TransientRetriable (#1824)"
+        );
+
+        let err = ScraperError::Network(Box::new(TextWrapper(
+            "download failed",
+            Some(TextLeaf("certificate verify failed")),
+        )));
+        assert_eq!(
+            err.classify(),
+            ErrorClass::TransientRetriable,
+            "TLS leaf behind a wrapper must classify TransientRetriable (#1824)"
+        );
+    }
+
+    #[test]
+    fn classify_synthetic_io_other_kind_with_dns_text_is_transient_retriable() {
+        // The io-downcast early-return trap (#1824): `is_transient_network`
+        // returns false at the FIRST io link when the kind is not transient,
+        // so the CrawlError-synthetic path (transport text INSIDE an
+        // `ErrorKind::Other` message) must be covered by the explicit DNS/TLS
+        // arm instead.
+        let err = ScraperError::Network(Box::new(std::io::Error::other(
+            "dns error: name resolution failed",
+        )));
+        assert_eq!(
+            err.classify(),
+            ErrorClass::TransientRetriable,
+            "DNS text inside ErrorKind::Other must classify TransientRetriable (#1824)"
+        );
+
+        // End-to-end through the layer conversion: CrawlError::Network's
+        // flattened message reaches the synthetic io error, and the class
+        // survives `From<CrawlError>`.
+        let crawl_err = CrawlError::Network {
+            message: "tls handshake failed: certificate verify failed".to_string(),
+            status_code: None,
+        };
+        let scraper_err = ScraperError::from(crawl_err);
+        assert_eq!(
+            scraper_err.classify(),
+            ErrorClass::TransientRetriable,
+            "TLS text through From<CrawlError> must classify TransientRetriable (#1824)"
+        );
+    }
+
+    #[test]
+    fn classify_network_variant_never_internal_fatal() {
+        // Pin (#1824): the Network variant is unreachable from InternalFatal —
+        // exit 69 (EX_UNAVAILABLE) is the whole network family's contract.
+        let cases: Vec<ScraperError> = vec![
+            // Transient io kinds.
+            ScraperError::Network(Box::new(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "request timeout",
+            ))),
+            ScraperError::Network(Box::new(std::io::Error::new(
+                std::io::ErrorKind::ConnectionRefused,
+                "refused",
+            ))),
+            // DNS + TLS flavors.
+            ScraperError::Network(Box::new(std::io::Error::other(
+                "dns error: name resolution failed",
+            ))),
+            ScraperError::Network(Box::new(std::io::Error::other("certificate expired"))),
+            // Unknown transport text — conservatively unrecognized by the
+            // enumerated arm, but still a transport failure
+            // (EX_UNAVAILABLE), never an internal bug.
+            ScraperError::Network(Box::new(std::io::Error::other(
+                "genuinely unknown transport failure",
+            ))),
+            // The wreq-shaped connect wrapper.
+            ScraperError::Network(Box::new(std::io::Error::other(
+                "error sending request for uri (https://x.invalid/): client error (Connect)",
+            ))),
+        ];
+        for err in &cases {
+            assert_ne!(
+                err.classify(),
+                ErrorClass::InternalFatal,
+                "Network variant must never classify InternalFatal (#1824), got {err:?}"
+            );
+        }
     }
 }
