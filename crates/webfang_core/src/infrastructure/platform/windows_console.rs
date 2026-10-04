@@ -100,6 +100,7 @@ pub async fn console_event() -> &'static str {
 #[cfg(windows)]
 async fn console_event_source() -> &'static str {
     use tokio::sync::broadcast::error::RecvError;
+    use tracing::warn;
 
     let mut rx = match handler::ensure_source() {
         Some(sender) => sender.subscribe(),
