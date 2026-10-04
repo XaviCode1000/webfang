@@ -177,7 +177,13 @@ pub type Result<T> = std::result::Result<T, SitemapError>;
 /// discovery polls it from `tokio::spawn`-ed crawl tasks on the
 /// multi-threaded runtime.
 pub trait SitemapParserPort: Send + Sync {
-    /// Parse sitemap from URL (streaming, zero-allocation)
+    /// Parse sitemap from URL (bounded buffered parse).
+    ///
+    /// The implementation buffers the response body up to its configured
+    /// `max_response_size` and decompressed-size caps, and holds the
+    /// aggregate URL set of a sitemap index under `memory_limit_mb`
+    /// ([`SitemapError::MemoryLimitExceeded`] beyond it, #1822). It does not
+    /// stream.
     ///
     /// # Arguments
     ///

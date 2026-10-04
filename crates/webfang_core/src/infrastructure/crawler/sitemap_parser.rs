@@ -1,7 +1,17 @@
 //! Sitemap Parser Module
 //!
-//! Zero-allocation streaming parser for XML sitemaps.
+//! Bounded buffered parser for XML sitemaps.
 //! Supports gzip compression and sitemap index recursion.
+//!
+//! # Memory contract (issue #1822)
+//!
+//! The parser buffers, it does not stream: each response body is accumulated
+//! up to `SitemapConfig::max_response_size`, decompressed up to
+//! `SitemapConfig::max_decompressed_size`, and the aggregate URL set of a
+//! sitemap index is held under `SitemapConfig::memory_limit_mb` (typed
+//! [`SitemapError::MemoryLimitExceeded`] beyond it). Children of an index are
+//! parsed with bounded concurrency and the combined result is deduplicated
+//! and sorted.
 //!
 //! # Examples
 //!
@@ -25,6 +35,7 @@
 //! - HTTP request fails
 //! - XML parsing fails
 //! - No `<loc>` elements found
+//! - The aggregate URL set exceeds the configured memory limit
 
 use super::batch_processor::BatchProcessor;
 use super::compression_handler::CompressionHandler;
@@ -109,9 +120,16 @@ pub fn resolve_url(base: &Url, input: &str) -> Option<Url> {
     }
 }
 
-/// Zero-allocation streaming sitemap parser
+/// Bounded buffered sitemap parser.
 ///
-/// Following mem-streaming-large-data: streaming parser, no buffer accumulation
+/// The parser buffers, it does not stream (#1822): the response body is
+/// accumulated up to `SitemapConfig::max_response_size`, decompressed up to
+/// `SitemapConfig::max_decompressed_size`, and the aggregate URL set of a
+/// sitemap index is held under `SitemapConfig::memory_limit_mb`. Only one
+/// body buffer (raw or decompressed) is retained while parsing; during
+/// decompression itself the compressed input and the decompressed output
+/// coexist transiently — inherent to the bounded two-layer re-sniff design
+/// (#757) — and both sides are capped.
 pub struct SitemapParser {
     config: SitemapConfig,
     compression_handler: CompressionHandler,
@@ -220,21 +238,14 @@ impl SitemapParser {
             .map_err(|e| CrawlError::Internal(format!("failed to build sitemap client: {e}")))
     }
 
-    /// Parse sitemap from URL (streaming, zero-allocation)
+    /// Parse sitemap from URL (bounded buffered parse).
     ///
-    /// # Arguments
-    ///
-    /// * `url` - Sitemap URL (supports .xml and .xml.gz)
-    ///
-    /// # Returns
-    ///
-    /// Vector of valid URLs found in sitemap
-    ///
-    /// # Errors
-    ///
-    /// Returns `SitemapError` if parsing fails or no URLs found
-    ///
-    /// Parse sitemap from URL (streaming, zero-allocation)
+    /// The response body is buffered up to `SitemapConfig::max_response_size`
+    /// and decompressed up to `SitemapConfig::max_decompressed_size`; for a
+    /// sitemap index, children are parsed with bounded concurrency and the
+    /// aggregate URL set is held under `SitemapConfig::memory_limit_mb`
+    /// ([`SitemapError::MemoryLimitExceeded`] beyond it, #1822). The combined
+    /// result is deduplicated and sorted.
     ///
     /// # Arguments
     ///
@@ -581,7 +592,8 @@ impl SitemapParser {
         Ok(urls)
     }
 
-    /// Parse XML sitemap (zero-allocation streaming) with metadata extraction
+    /// Parse XML sitemap (bounded buffered parse over the in-memory body)
+    /// with metadata extraction
     ///
     /// Extracts `<loc>`, `<lastmod>`, `<priority>`, and `<changefreq>` from
     /// `<url>` entries per sitemaps.org spec. Also handles `<sitemap>` entries
@@ -882,7 +894,7 @@ impl SitemapParserPort for SitemapParser {
     }
 }
 
-/// Shared core streaming parser for sitemap XML.
+/// Shared core parser for sitemap XML over an in-memory buffered body.
 ///
 /// Extracts `<loc>`, `<lastmod>`, `<priority>`, and `<changefreq>` from `<url>`
 /// entries. When `handle_sitemap_index` is true, also handles `<sitemap>`
