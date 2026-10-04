@@ -23,6 +23,9 @@ pub mod network;
 pub mod observability;
 pub mod obsidian;
 pub mod output;
+// Platform-specific process plumbing: the process-wide Windows console-event
+// source and the UTF-8 console code page (#1808 — XP-S-02 / XP-K-03).
+pub mod platform;
 pub mod scraper;
 // Pure SSRF IP validation + redirect policy guard (#703). Shared by the MCP
 // entry-point validator and the `wreq` redirect callbacks.
