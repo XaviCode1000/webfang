@@ -817,10 +817,12 @@ impl SitemapParser {
             // Defensive: `ensure_within_budget` never touches disk; map any
             // unexpected variant through the same bucket the per-parse memory
             // check uses so the stratification holds.
+            // LCOV_EXCL_START defensive: ensure_within_budget never touches disk, unreachable from the aggregate budget path
             MemoryError::DiskSwapFailed(msg) => SitemapError::HttpError {
                 status: 0,
                 message: format!("memory management failed: {msg}"),
             },
+            // LCOV_EXCL_STOP
         };
         log_scrape_error(
             &err,
