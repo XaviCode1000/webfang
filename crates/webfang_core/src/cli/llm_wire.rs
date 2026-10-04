@@ -145,8 +145,25 @@ pub async fn build_embedding_provider(
                 .to_string(),
         ));
     }
-    let adapter =
-        RemoteEmbeddingAdapter::new(config).map_err(|e| CliExit::ConfigError(e.to_string()))?;
+    // Issue #1814 (slice B, AC3): `new` resolves the credential synchronously —
+    // `std::fs::metadata` + file reads + `age::Decryptor` work in
+    // `auth_source::resolve` — and must not occupy a Tokio worker while it
+    // runs. Move the owned `ProviderConfig` onto the blocking pool; building
+    // the `wreq` client there is fine too. Error mapping is unchanged:
+    // `ProviderInitError` still renders through `CliExit::ConfigError`.
+    tracing::debug!(
+        provider_id = %config.id,
+        "resolving remote embedding credential on the blocking pool"
+    );
+    let adapter = tokio::task::spawn_blocking(move || {
+        RemoteEmbeddingAdapter::new(config).map_err(|e| CliExit::ConfigError(e.to_string()))
+    })
+    .await
+    .map_err(|e| {
+        CliExit::ConfigError(format!(
+            "la construcción del provider de embeddings falló en el pool de bloqueo: {e}"
+        ))
+    })??;
     adapter.probe_dim().await.map_err(|e| {
         CliExit::ConfigError(format!(
             "el provider de embeddings '{}' no pasó la verificación inicial: {e}",
