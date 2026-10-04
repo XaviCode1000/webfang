@@ -137,7 +137,11 @@ async fn index_children_under_budget_still_succeed() {
         .await
         .unwrap();
 
-    assert_eq!(urls.len(), 2 * URLS_PER_CHILD, "all child URLs must survive");
+    assert_eq!(
+        urls.len(),
+        2 * URLS_PER_CHILD,
+        "all child URLs must survive"
+    );
 }
 
 /// A standalone (non-index) sitemap just under the budget — 500 URLs =
@@ -163,5 +167,9 @@ async fn single_sitemap_just_under_budget_still_succeeds() {
         .await
         .unwrap();
 
-    assert_eq!(urls.len(), 500, "the full under-budget set must be returned");
+    assert_eq!(
+        urls.len(),
+        500,
+        "the full under-budget set must be returned"
+    );
 }
