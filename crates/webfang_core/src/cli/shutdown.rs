@@ -15,11 +15,8 @@
 
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tracing::info;
 use tracing::Instrument;
-
-#[cfg(unix)]
-use tracing::warn;
+use tracing::{info, warn};
 
 /// Owns the run's signal listener and its [`CancellationToken`].
 ///
@@ -73,19 +70,27 @@ async fn wait_for_signal(token: CancellationToken) {
     }
 }
 
-/// Resolve when SIGINT (or, on unix, SIGTERM/SIGHUP) arrives.
+/// Resolve when a termination event arrives, returning nothing — the caller
+/// only needs to know that one happened, not which.
 ///
-/// SIGHUP joins the set (XP-S-03, #1608): closing the terminal or dropping
-/// the connection no longer kills the run abruptly — it drains like
-/// SIGINT/SIGTERM. A rejected registration must never abort the run: degrade
-/// to whatever registered and say so, matching the engine's handler (#509).
+/// Unix: SIGINT + SIGTERM + SIGHUP. SIGHUP joins the set (XP-S-03, #1608):
+/// closing the terminal or dropping the connection no longer kills the run
+/// abruptly — it drains like SIGINT/SIGTERM. Windows: Ctrl+C/Ctrl+Break plus
+/// the console close / logoff / shutdown events `ctrl_c()` never sees
+/// (XP-S-02, #1808). A rejected registration must never abort the run:
+/// degrade to whatever registered and say so, matching the engine's handler
+/// (#509).
 async fn next_termination_signal() {
     #[cfg(unix)]
     wait_for_unix_termination_signal().await;
     #[cfg(not(unix))]
     {
-        tokio::signal::ctrl_c().await.ok();
-        info!("received interrupt — draining in-flight work");
+        match crate::infrastructure::platform::first_termination_event().await {
+            Some(name) => info!("received {name} — draining in-flight work"),
+            None => warn!(
+                "interrupt handler registration failed — shutdown will only respond to an explicit cancel"
+            ),
+        }
     }
 }
 

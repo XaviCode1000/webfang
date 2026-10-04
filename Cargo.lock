@@ -6871,6 +6871,7 @@ dependencies = [
  "walkdir",
  "webfang_test_utils",
  "whatlang",
+ "windows-sys 0.60.2",
  "wiremock",
  "wreq",
  "wreq-util",

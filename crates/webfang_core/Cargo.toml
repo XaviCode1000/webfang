@@ -297,3 +297,11 @@ keyring = { version = "3", default-features = false, features = ["apple-native"]
 
 [target.'cfg(target_os = "windows")'.dependencies]
 keyring = { version = "3", default-features = false, features = ["windows-native"] }
+
+# Win32 console API for the process-wide console-event source and the UTF-8
+# console code page (#1808 — XP-S-02 / XP-K-03). `cfg(windows)` also matches
+# `cfg(target_os = "windows")`; both tables apply on Windows and Cargo merges
+# them. 0.60.2 is already in Cargo.lock, so no new crate enters the graph and
+# no non-Windows build compiles any of it.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true }

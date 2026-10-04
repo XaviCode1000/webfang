@@ -30,6 +30,8 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
+use webfang_core::infrastructure::platform::first_termination_event;
+
 use super::auth::{validate_auth, AuthState};
 use super::panic_containment::{self, IdSource, RecoveredRequestId};
 use super::panic_hook::setup_panic_hook;
@@ -1032,25 +1034,32 @@ pub async fn start_mcp_server(
     Ok(())
 }
 
-/// Future that resolves when a shutdown is requested (Ctrl+C or SIGTERM).
+/// Future that resolves when a shutdown is requested (Ctrl+C, SIGTERM or a
+/// Windows console close/logoff/shutdown).
 ///
 /// Drives the OS signal handler in the background and cancels the supplied
-/// [`CancellationToken`] on Ctrl+C. Returns a `'static` future (it owns its
+/// [`CancellationToken`]. Returns a `'static` future (it owns its
 /// own clone of the token) so it is suitable for
 /// `axum::serve(...).with_graceful_shutdown(...)`.
+///
+/// The console-event source (#1808 — XP-S-02) only *fires* this: the token
+/// stays the server's one shutdown authority. Off Windows it is compiled out
+/// and this is exactly the historical Ctrl+C wait.
 async fn shutdown_signal(token: CancellationToken) {
-    if let Err(e) = tokio::signal::ctrl_c().await {
-        tracing::warn!(
-            error = %e,
-            "SIGINT handler unavailable — server will keep running and rely on SIGTERM"
-        );
-        // Without a working Ctrl+C handler, wait on the token directly so the
-        // server can still be torn down via an explicit cancel().
-        token.cancelled().await;
-        return;
+    match first_termination_event().await {
+        Some(name) => {
+            info!("{name} received — MCP server shutting down");
+            token.cancel();
+        },
+        None => {
+            tracing::warn!(
+                "interrupt handler unavailable — server will keep running and rely on an explicit cancel()"
+            );
+            // Without a working Ctrl+C handler, wait on the token directly so the
+            // server can still be torn down via an explicit cancel().
+            token.cancelled().await;
+        },
     }
-    info!("MCP server shutting down");
-    token.cancel();
 }
 
 #[cfg(test)]
