@@ -236,7 +236,7 @@ fn numeric_binding(id: &str) -> Option<ValueParser> {
         "download_concurrency" => Some(str_fn(super::args::crawler::parse_download_concurrency)),
         "selector" => Some(str_fn(super::args::crawler::parse_selector)),
         "max_depth" => Some(str_fn(super::args::crawler::parse_max_depth)),
-        "max_tokens" => Some(ValueParser::from(clap::value_parser!(usize))),
+        "max_tokens" => Some(clap_ai_numeric_binding()),
         "download_timeout" => Some(str_fn(super::args::crawler::parse_download_timeout)),
         "delay_ms"
         | "backoff_base_ms"
@@ -246,6 +246,31 @@ fn numeric_binding(id: &str) -> Option<ValueParser> {
         "verbose" | "sitemap_depth" => Some(ValueParser::from(clap::value_parser!(u8))),
         "max_retries" => Some(ValueParser::from(clap::value_parser!(u32))),
         _ => None,
+    }
+}
+
+/// `value_parser` for the AI group's only numeric flag (`--max-tokens`).
+///
+/// Split out of [`numeric_binding`] so the `ai` gate lives in exactly one
+/// place: `numeric_binding` itself is compiled unconditionally, and the spec
+/// validator it would reference (`args::ai::parse_max_tokens`) exists only
+/// under `cfg(feature = "ai")`. With the gate off the AI group emits ZERO args
+/// (`ai_args`'s `cfg(not(feature = "ai"))` arm), so an unbound id can never be
+/// reached — and a raw `value_parser!(usize)` fallback would be the T1 defect
+/// class all over again: a `NumericPolicy` declared in the spec that the parser
+/// silently bypasses (#1813 slice T2).
+fn clap_ai_numeric_binding() -> ValueParser {
+    #[cfg(feature = "ai")]
+    {
+        str_fn(super::args::ai::parse_max_tokens)
+    }
+    #[cfg(not(feature = "ai"))]
+    {
+        // Unreachable: `ai_args` returns `Vec::new()` without the feature, so
+        // `build_arg` never reaches this binding for `max_tokens`. Kept
+        // total (no panic, no `unwrap`) because `numeric_binding` is a plain
+        // `match` arm that must type-check in both configurations.
+        ValueParser::from(clap::value_parser!(usize))
     }
 }
 

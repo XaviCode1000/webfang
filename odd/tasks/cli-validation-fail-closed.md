@@ -26,16 +26,24 @@ Four CLI surfaces accept values they should reject and silently do nothing
    degraded to the derived default in silence. (Numeric garbage — `0`,
    out-of-`u32` — already hard-errors in Spanish.)
 
-> **Exit-code convention (corrected in T1, applies to every task).** The issue
-> text says "typed config error (exit 64)". That is wrong about this codebase:
+> **Exit-code convention (corrected twice — read carefully).** The issue text
+> says "typed config error (exit 64)". That is wrong about this codebase:
 > `CliExit::ConfigError` → **78** (`EXIT_CONFIG`, sysexits `EX_CONFIG`) and
-> `CliExit::UsageError` → 64 (`cli/error.rs:30-36,383-385`). The repo already
-> pins 78 for this exact flag in two shipped tests
-> (`budget_override_test.rs` `cli_rate_limit_burst_zero_hard_errors`,
-> `toml_rate_limit_burst_zero_hard_errors`). **This feature uses 78 for every
-> typed config rejection**, keeping one convention and preserving `0`'s
-> existing contract. Switching to 64 would be a behavior change to shipped,
-> tested behavior, so it is not done.
+> `CliExit::UsageError` → 64 (`cli/error.rs:30-36,383-385`).
+>
+> **The real rule, established in T2: the exit code is decided by WHERE the
+> bound is enforced, not by what is invalid.**
+>
+> | Stage | Mechanism | Exit | Examples |
+> |---|---|---|---|
+> | clap boundary (`value_parser`) | `str_fn` binding → `ValueValidation` → `UsageError` | **64** | `--max-tokens` (T2), `--max-pages` 100k cap, `--timeout-secs`, `--download-concurrency`, `--threshold`, `--url` |
+> | preflight staging (`stage_*`) | `Err` at `normalize()` → `ConfigError` | **78** | `--rate-limit-burst` (T1) |
+>
+> So T1 legitimately emits 78 (it defers validation to preflight by design) and
+> T2 legitimately emits 64 (it binds a real typed parser). Forcing 78 on a
+> spec-driven bound would require a second parallel validator — the exact
+> duplication that caused the T1 panic. **One convention per stage, not one
+> exit code for the feature.**
 2. `--max-tokens` is unbounded and accepts zero
    (`domain/options_spec/ai.rs:49-65`, `kind: ValueKind::uint_unbounded()`).
    The `NumericPolicy { min, max }` machinery already exists in
@@ -106,10 +114,33 @@ per the mime.rs nuance above.
       strict clippy 0 warnings; `cargo fmt --all -- --check` clean;
       `cargo nextest run -p webfang_core` 3534 passed / 21 skipped;
       rustdoc `-D warnings` clean.
-- [ ] T2 — `--max-tokens` gets `min = 1` plus a documented maximum via
-      `NumericPolicy` (`options_spec/ai.rs:61`). Open decision: the max value
-      (proposed: `1_048_576`, one order above any real chunk guard — maintainer
-      confirms). Zero and above-max → Spanish bound error, exit 64.
+- [x] T2 — `--max-tokens` gets real bounds: `min = 1`, `max = 32_768`, via
+      `ValueKind::uint(NumericPolicy::positive(…).capped(32_768, …))`
+      (`options_spec/ai.rs`). Enforced end-to-end through the existing spec →
+      `value_parser` machinery via a new `args::ai::parse_max_tokens`; exit
+      **64** (the clap stage's genuine code — see the exit-code table).
+      **Why 32,768 == the default, deliberately:** the ceiling is provably
+      dead above that value. The model
+      (`granite-embedding-97m-multilingual-r2`, 311m-r2 fallback) documents Max
+      Sequence Length 32,768, and `MiniLmTokenizer` truncates with
+      `.min(self.max_length)` at the same 32,768 — so nothing can ever reach
+      the guard with more, and a higher cap would accept a value that silently
+      changes nothing. The operator may only LOWER the guard.
+      `min = 1` because `seq_len() > 0` is true for every non-empty chunk, so
+      `0` is a guard that rejects all of them.
+      Enforced on argv AND env (`WEBFANG_MAX_TOKENS` attaches the same
+      parser — not a softer front door). No config-file field exists
+      (`ConfigDefaults` has no `max_tokens`), so nothing to enforce there.
+      Same programmatic-`Args` narrowing as T1, unreachable in production.
+      RED→GREEN: 8 new tests (`tests/max_tokens_bound_test.rs`, 6 behavioral +
+      2 unit, all `#![cfg(feature = "ai")]`), 4 RED first including
+      `env_max_tokens_zero_fails_closed`; 22/22 GREEN under
+      `--features ai`. Boundary triangulation: 32768 and 1 both accepted,
+      32769 and 0 rejected.
+      Verification: check/clippy/fmt/rustdoc clean; `webfang_core` 3534 passed
+      (unchanged — T2 is invisible without the `ai` feature, see below);
+      `webfang_ai --features ai` 226 passed; `burst` filter 38/38 (no T1
+      regression); `--features ai,adaptive-selectors` 3608 passed.
 - [ ] T3 — `--adaptive-selectors` on a non-adaptive build fails closed with a
       message naming the feature (mirror the `preflight.rs` rejection style,
       not the hidden-placeholder path in `spec_command.rs:160-162`).
@@ -182,16 +213,32 @@ carries `Closes #1813`.
 
 ### Open items carried forward
 
-- **Cross-slice exit code**: T2/T3 were specced for 64; the convention is now
-  **78** everywhere. Reconcile when T2 starts.
-- **Semantic narrowing**: a programmatic `Args` that sets
-  `crawler.rate_limit_burst` *without* `ArgSources::capture` now receives the
-  derived default instead of the override. No production caller does this
-  (`webfang_mcp` builds `CrawlOptions` directly), but it is a real narrowing.
+- **T6 verification must pass feature flags.** `webfang_core`'s default set is
+  `["images", "documents"]` — it excludes `ai`. A bare
+  `cargo nextest run -p webfang_core` compiles the T2 test file to ZERO tests
+  and still reads green. T6 must run `--features ai` (and
+  `ai,adaptive-selectors` for the two `--help` snapshots) or T2 ships
+  unverified.
+- **New finding, NOT in #1813's scope:** `cargo nextest run -p webfang_ai`
+  reports "no tests to run" on a clean tree — `webfang_ai` declares no
+  `default` feature, so its entire suite is `cfg(feature = "ai")`-gated and
+  silently skipped. This is the SAME defect class as acceptance criterion 5
+  (F-25 / the `webfang_mcp` gates) but in a crate that criterion does not
+  name. Findings do not authorize scope expansion → raise as a follow-up
+  issue for the maintainer rather than absorbing it here.
+- **Semantic narrowing (T1 + T2):** a programmatic `Args` that sets
+  `crawler.rate_limit_burst` / `ai.max_tokens` *without* going through clap now
+  bypasses the bound and receives the derived default. No production caller
+  does this (`webfang_mcp` builds `CrawlOptions` directly), but it is a real
+  narrowing of the previous panic-y behavior.
 - `cli::preflight_notes` is vestigial; removal deferred (needs `cli/mod.rs`
   + `main.rs`, outside every slice's surface).
+- `NumericPolicy::above_max_message` cannot interpolate the offending value
+  (`&'static str`); clap's own error frame supplies the number. Accepted.
 
 ## Next step
 
-T2 — `--max-tokens` `NumericPolicy { min = 1, max }`. Needs a decision on the
-maximum (proposed `1_048_576`) before implementation.
+T3 — `--adaptive-selectors` must fail closed on a non-adaptive build with a
+message naming the feature. Same writer discipline; the open question is
+whether it can reuse the preflight stage (exit 78) or must bind a parser
+(exit 64) — decide from the mechanism, and report which.

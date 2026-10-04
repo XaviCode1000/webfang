@@ -1,6 +1,5 @@
 ---
 source: crates/webfang_core/tests/cli_binary_test.rs
-assertion_line: 71
 expression: "redact_nondeterministic(Path::new(\"__no_temp__\"), &stdout)"
 ---
 CLI Arguments for the webfang binary.
@@ -452,7 +451,7 @@ AI Settings:
           [default: 0.3]
 
       --max-tokens <MAX_TOKENS>
-          Maximum tokens per chunk before rejection (a chunk-size guard, not a context-window setting; chunks exceeding this fail)
+          Maximum tokens per chunk before rejection, 1-32768 (a chunk-size guard, not a context-window setting; 32768 is the model's max sequence length and chunks exceeding this fail)
           
           [env: WEBFANG_MAX_TOKENS=]
           [default: 32768]

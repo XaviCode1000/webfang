@@ -16,7 +16,7 @@
 //! default/help/heading/feature_gate) and the defer reason; the bound
 //! and parser live in `cli::args::ai::parse_threshold`, the binding in
 //! `cli::spec_command::ai_args`'s `AiSlot::Manual` arm.
-use super::{DefaultValue, OptionSpec, ValueKind};
+use super::{DefaultValue, NumericPolicy, OptionSpec, ValueKind};
 
 /// `--threshold <THRESHOLD>` (env `WEBFANG_THRESHOLD`, f32 0.0..=1.0).
 ///
@@ -46,6 +46,31 @@ pub const THRESHOLD: OptionSpec = OptionSpec {
 };
 
 /// `--max-tokens <MAX_TOKENS>` (env `WEBFANG_MAX_TOKENS`, usize).
+///
+/// FULLY migrated (#1813 slice T2): bound enforced through
+/// [`OptionSpec::parse_uint`] via `super::args::ai::parse_max_tokens`, which
+/// `cli::spec_command::numeric_binding` binds as the clap `value_parser`.
+///
+/// # Why the ceiling is 32_768 AND equals the default
+///
+/// The value is the semantic cleaner's chunk-size guard
+/// (`if input.seq_len() > self.config.max_tokens` →
+/// `SemanticError::ChunkTooLarge`), and nothing upstream of it can produce a
+/// longer input:
+///
+/// - the default model `granite-embedding-97m-multilingual-r2` (and the 311m-r2
+///   fallback) documents a Max Sequence Length of 32 768;
+/// - `MiniLmTokenizer::DEFAULT_MAX_LENGTH` is 32 768 and tokenization truncates
+///   with `.min(self.max_length)`.
+///
+/// So a cap above 32_768 would be **provably dead**: no input could ever reach
+/// the guard with more tokens, so the ceiling could never fire and the operator
+/// would be invited to configure a value that silently changes nothing. Setting
+/// `max` equal to the default is deliberate — the operator may only LOWER the
+/// guard, which is the only direction that has an observable effect.
+///
+/// The lower bound is 1 for the same reason `seq_len() > 0` is true for every
+/// non-empty chunk: `0` is a guard that rejects all of them.
 pub const MAX_TOKENS: OptionSpec = OptionSpec {
     id: "max_tokens",
     value_name: "MAX_TOKENS",
@@ -56,9 +81,15 @@ pub const MAX_TOKENS: OptionSpec = OptionSpec {
     default: Some(DefaultValue::Uint(32768)),
     nullable: false,
     description_override: None,
-    help: "Maximum tokens per chunk before rejection (a chunk-size guard, not a context-window setting; chunks exceeding this fail)",
+    help: "Maximum tokens per chunk before rejection, 1-32768 (a chunk-size guard, not a context-window setting; 32768 is the model's max sequence length and chunks exceeding this fail)",
     heading: Some("AI Settings"),
-    kind: ValueKind::uint_unbounded(),
+    kind: ValueKind::uint(
+        NumericPolicy::positive("--max-tokens debe ser >= 1 (0 rechazaría todos los chunks)")
+            .capped(
+                32_768,
+                "--max-tokens debe ser <= 32768 (máximo de secuencia del modelo)",
+            ),
+    ),
     visible_aliases: &[],
     feature_gate: Some("ai"),
     value_delimiter: None,

@@ -1,0 +1,9 @@
+---
+source: crates/webfang_core/tests/max_tokens_bound_test.rs
+expression: redacted
+---
+error: invalid value '0' for '--max-tokens <MAX_TOKENS>': --max-tokens debe ser >= 1 (0 rechazaría todos los chunks)
+
+For more information, try '--help'.
+
+Error: invalid arguments
