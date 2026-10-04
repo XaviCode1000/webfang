@@ -45,9 +45,12 @@ pub const CTRL_LOGOFF_EVENT: u32 = 5;
 /// `CTRL_SHUTDOWN_EVENT` — the system is shutting down.
 pub const CTRL_SHUTDOWN_EVENT: u32 = 6;
 
-/// Name logged for the Ctrl+C path, so a log line names the event that
-/// actually arrived rather than a bare "interrupt".
-const CTRL_C_EVENT_NAME: &str = "CTRL_C_EVENT";
+// Name logged for the Ctrl+C path, so a log line names the event that
+// actually arrived rather than a bare "interrupt". Owned by the application
+// layer (`application::crawler::ports::CTRL_C_EVENT_NAME`) and imported here,
+// so the crawl engine, the CLI shutdown guard and the MCP server cannot drift
+// apart on what a Ctrl+C interruption is called.
+use crate::application::crawler::ports::CTRL_C_EVENT_NAME;
 
 /// Buffer for the console-event fan-out.
 ///

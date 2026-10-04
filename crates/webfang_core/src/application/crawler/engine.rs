@@ -42,6 +42,7 @@ use super::crawl_task::{handle_crawl_result, run_crawl_task};
 use super::progress::CrawlProgress;
 use super::session::{CheckpointAction, CrawlExec, CrawlSession};
 use crate::application::crawler::crawl_task_ctx::CrawlTaskCtx;
+use crate::application::crawler::ports::TerminationSource;
 use crate::application::pipeline::{OutputStage, PipelineExecutor};
 use crate::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
 use crate::domain::budget::BudgetModel;
@@ -145,6 +146,16 @@ pub struct Engine {
     /// Defaults to the sysinfo-backed production impl; tests inject a fake.
     /// ADR-0012 sub-slice 3.B-1c.
     ram_probe: Arc<dyn RamProbePort>,
+    /// Process-level termination source this run drains on (#1808).
+    ///
+    /// Injected, never named: the concrete source (the Win32 console-event
+    /// fan-out) is infrastructure, and `application` may only reach inward, so
+    /// the composition root builds it
+    /// (`application::container::build_termination_source`) and it arrives
+    /// here through the [`TerminationSource`] port. Defaults to Ctrl+C only,
+    /// so a caller that asks for no platform plumbing keeps today's
+    /// semantics.
+    termination_source: TerminationSource,
 }
 
 /// Rate-limiter burst source derived from the budget model (design D4/D1):
@@ -153,66 +164,6 @@ pub struct Engine {
 /// the token-bucket burst unchanged.
 fn rate_limiter_config(config: &CrawlerConfig, budget: &BudgetModel) -> RateLimiterConfig {
     RateLimiterConfig::new(config.delay_ms, budget.burst().get())
-}
-
-/// Unix signal set for the engine's shutdown: SIGINT + SIGTERM + SIGHUP,
-/// degrading per-signal when a registration is rejected (never panic,
-/// always say so — #509; SIGHUP added by XP-S-03, #1608).
-#[cfg(unix)]
-async fn wait_for_unix_termination_signal() {
-    use tokio::signal::unix::{signal, SignalKind};
-
-    let mut sigterm = signal(SignalKind::terminate());
-    let mut sighup = signal(SignalKind::hangup());
-    // LCOV_EXCL_START defensive: signal-registration — the OS rejects a handler only on an invariant break
-    if let Err(e) = &sigterm {
-        warn!(
-            error = %e,
-            "SIGTERM handler registration failed — graceful shutdown will only respond to SIGINT"
-        );
-    }
-    if let Err(e) = &sighup {
-        warn!(
-            error = %e,
-            "SIGHUP handler registration failed — closing the terminal will terminate the run"
-        );
-    }
-    // LCOV_EXCL_STOP
-
-    let name = first_termination_signal(sigterm.as_mut().ok(), sighup.as_mut().ok()).await;
-    info!("Received {name} — initiating graceful shutdown");
-}
-
-/// Await the FIRST termination signal among those that registered and
-/// return its name (SIGINT always registers via `ctrl_c`).
-///
-/// A flat `futures::future::select_all` over boxed waits — no nested
-/// `select!` arms — keeps this under the #516 complexity ratchet while
-/// handling every subset of registered signals uniformly.
-#[cfg(unix)]
-async fn first_termination_signal(
-    sigterm: Option<&mut tokio::signal::unix::Signal>,
-    sighup: Option<&mut tokio::signal::unix::Signal>,
-) -> &'static str {
-    let mut names: Vec<&'static str> = vec!["SIGINT"];
-    let mut waits: Vec<std::pin::Pin<Box<dyn futures::Future<Output = ()> + Send>>> =
-        vec![Box::pin(async {
-            tokio::signal::ctrl_c().await.ok();
-        })];
-    if let Some(sigterm) = sigterm {
-        names.push("SIGTERM");
-        waits.push(Box::pin(async move {
-            sigterm.recv().await;
-        }));
-    }
-    if let Some(sighup) = sighup {
-        names.push("SIGHUP");
-        waits.push(Box::pin(async move {
-            sighup.recv().await;
-        }));
-    }
-    let (_, index, _) = futures::future::select_all(waits).await;
-    names[index]
 }
 
 impl Engine {
@@ -304,6 +255,10 @@ impl Engine {
             // The factory is domain-side: `application` must not name the
             // infrastructure concrete (ADR-0012-B cheap win).
             ram_probe: system_default(),
+            // Ctrl+C only until the composition root injects the real source:
+            // `build_machinery` is application-local and cannot know the
+            // platform, so the default must be the host-agnostic floor.
+            termination_source: TerminationSource::default(),
         })
     }
 
@@ -325,6 +280,14 @@ impl Engine {
         let transport = session.transport.clone();
         let config = session.config().as_ref().clone();
         let mut engine = Engine::build_machinery(config)?;
+        // Platform-aware termination source (XP-S-02, #1808): built by the
+        // composition root, which is the one `application → infrastructure`
+        // edge this crate allowlists. Injected here — at the ONLY constructor
+        // — so every production path that starts a crawl (crawl, sitemap
+        // crawl, batch, CLI discovery, MCP crawl tool, benchmark) drains on
+        // the console close/logoff/shutdown events `ctrl_c()` never sees.
+        engine = engine
+            .with_termination_source(crate::application::container::build_termination_source());
         // Adopt the session's single-minted identity: every page shares
         // its trace_id by construction (P6-2 identity requirement).
         engine.correlation_id = session.identity().root.clone();
@@ -637,6 +600,20 @@ impl Engine {
         self
     }
 
+    /// Override the process-level termination source this run drains on
+    /// (#1808, XP-S-02).
+    ///
+    /// Tests inject a source that fires on demand so the drain path is
+    /// exercised without delivering an OS signal. Production wiring injects
+    /// the platform source through the composition root
+    /// ([`Engine::from_session`]); the default stays Ctrl+C only, which is
+    /// why every construction site that never calls this keeps compiling and
+    /// keeps today's semantics.
+    pub(crate) fn with_termination_source(mut self, source: TerminationSource) -> Self {
+        self.termination_source = source;
+        self
+    }
+
     /// Save the current checkpoint to disk (non-blocking wrapper).
     async fn save_checkpoint(&self) {
         if let Some(path) = &self.checkpoint_path {
@@ -688,26 +665,24 @@ impl Engine {
     /// (and, on unix, SIGHUP — XP-S-03, #1608; on Windows, the console
     /// close/logoff/shutdown events `ctrl_c()` never sees — XP-S-02, #1808).
     ///
-    /// Also fires the cancellation token (#509) so workers blocked on
-    /// rate-limit or resource-governor waits abort instead of hanging. The
-    /// console-event source only *fires* it: this token stays the run's one
-    /// shutdown authority (ADR-0016).
+    /// WHICH events exist is the injected [`TerminationSource`]'s business,
+    /// never this method's: the platform plumbing lives in infrastructure and
+    /// is reached through the port. Also fires the cancellation token (#509)
+    /// so workers blocked on rate-limit or resource-governor waits abort
+    /// instead of hanging. The source only *fires* it: this token stays the
+    /// run's one shutdown authority (ADR-0016).
     fn spawn_signal_handler(
         shutdown: ShutdownSignal,
         cancel: CancellationToken,
+        termination_source: TerminationSource,
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(
             async move {
-                #[cfg(unix)]
-                wait_for_unix_termination_signal().await;
-                #[cfg(not(unix))]
-                {
-                    match crate::infrastructure::platform::first_termination_event().await {
-                        Some(name) => info!("Received {name} — initiating graceful shutdown"),
-                        None => warn!(
-                            "interrupt handler registration failed — graceful shutdown will only respond to an explicit cancel"
-                        ),
-                    }
+                match termination_source.wait().await {
+                    Some(name) => info!("Received {name} — initiating graceful shutdown"),
+                    None => warn!(
+                        "interrupt handler registration failed — graceful shutdown will only respond to an explicit cancel"
+                    ),
                 }
                 shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
                 cancel.cancel();
@@ -755,6 +730,7 @@ impl Engine {
         self.signal_handle = Some(Self::spawn_signal_handler(
             Arc::clone(&self.shutdown),
             self.cancel_token.clone(),
+            self.termination_source.clone(),
         ));
 
         // Load checkpoint state if resuming
@@ -2770,5 +2746,91 @@ mod tests {
             duration_ms <= span_ms,
             "the summary is emitted inside the span, so its elapsed time ({duration_ms}ms) cannot exceed the span lifetime ({span_ms}ms)"
         );
+    }
+
+    /// Source that resolves immediately with a fixed event name.
+    ///
+    /// Stands in for the platform console source without touching the OS, so
+    /// the assertion is about the engine's contract (drain on the INJECTED
+    /// source) rather than about a signal a test may not deliver.
+    fn immediate_source(name: &'static str) -> TerminationSource {
+        TerminationSource::new(Arc::new(move || {
+            let name: &'static str = name;
+            Box::pin(async move { Some(name) })
+        }))
+    }
+
+    /// Source that never resolves — the shape a degraded/absent platform
+    /// source has.
+    fn pending_source() -> TerminationSource {
+        TerminationSource::new(Arc::new(|| Box::pin(std::future::pending())))
+    }
+
+    /// #1808: the engine drains on the source it was given, not on one it
+    /// reaches for itself. Before the port existed, `spawn_signal_handler`
+    /// named the infrastructure console source directly, so an injected source
+    /// could not be observed at all — and `application` reached outward.
+    #[tokio::test]
+    async fn an_injected_termination_source_drives_the_engine_shutdown() {
+        let shutdown: ShutdownSignal = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel = CancellationToken::new();
+        let handle = Engine::spawn_signal_handler(
+            Arc::clone(&shutdown),
+            cancel.clone(),
+            immediate_source("TEST_TERMINATION_EVENT"),
+        );
+
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("the handler must return once the injected source fires")
+            .expect("the handler task must not panic");
+
+        assert!(
+            shutdown.load(std::sync::atomic::Ordering::SeqCst),
+            "the injected source must set the run's shutdown flag"
+        );
+        assert!(
+            cancel.is_cancelled(),
+            "the injected source must fire the run's single cancellation authority (ADR-0016)"
+        );
+    }
+
+    /// Negative case for the same contract: a source that never delivers
+    /// leaves the run alone. This is what a rejected Windows console-event
+    /// registration degrades to, and it must NOT be read as "shutting down
+    /// now" by the handler itself.
+    #[tokio::test]
+    async fn a_never_delivering_source_leaves_the_run_alone() {
+        let shutdown: ShutdownSignal = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel = CancellationToken::new();
+        let handle =
+            Engine::spawn_signal_handler(Arc::clone(&shutdown), cancel.clone(), pending_source());
+        assert!(!handle.is_finished(), "a pending source must not resolve");
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            !shutdown.load(std::sync::atomic::Ordering::SeqCst),
+            "an undelivered event must not set the shutdown flag"
+        );
+        assert!(
+            !cancel.is_cancelled(),
+            "an undelivered event must not cancel the run"
+        );
+        handle.abort();
+    }
+
+    /// The default is the Ctrl+C-only source: awaiting it installs nothing
+    /// that panics and stays cancellable, which is what every construction
+    /// site that never injects a platform source relies on.
+    #[tokio::test]
+    async fn the_default_source_is_a_cancellable_ctrl_c_wait() {
+        let waiter = tokio::spawn(TerminationSource::default().wait());
+        tokio::task::yield_now().await;
+        assert!(
+            !waiter.is_finished(),
+            "no test may deliver Ctrl+C, so the default source must stay pending"
+        );
+        waiter.abort();
+        assert!(waiter.await.is_err(), "abort must release the wait");
     }
 }
