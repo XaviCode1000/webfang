@@ -526,15 +526,23 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - name: Download all artifacts
+      - name: Download build archives
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         with:
           path: artifacts
-          # Same two globs as the `attest` job — `webfang-*` alone omits the
-          # `checksums` artifact and therefore SHA256SUMS.txt.
-          pattern: |
-            webfang-*
-            checksums
+          # `actions/download-artifact` builds ONE Minimatch from the whole
+          # `pattern` string, so a multiline value matches nothing (observed on
+          # v2.6.5: zero archives downloaded here, the sign step survived on
+          # the two attest-metadata files and the release shipped binary-less).
+          # One glob per step — same split as the `attest` job.
+          pattern: webfang-*
+          merge-multiple: true
+
+      - name: Download checksums manifest
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          path: artifacts
+          pattern: checksums
           merge-multiple: true
 
       - name: Download attestable metadata
