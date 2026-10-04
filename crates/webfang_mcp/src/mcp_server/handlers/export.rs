@@ -1372,9 +1372,10 @@ mod handler_tests {
     /// per item + JSONL serialization) must run on the blocking pool, never on
     /// the rmcp Tokio worker.
     ///
-    /// Deterministic off-runtime proof: a ~20 MiB session makes the export
-    /// seconds of REAL work at `opt-level = 0`, far above the 1 s scheduling
-    /// budget below. The tick anchors on the export's ENTRY into
+    /// Deterministic off-runtime proof: a ~80 MiB session (160 x 512 KiB
+    /// items) makes the export seconds of REAL work at `opt-level = 0`, far
+    /// above the 1 s scheduling budget below. The tick anchors on the export's
+    /// ENTRY into
     /// `process_results` (its first act is `create_dir_all(output_dir)`) so
     /// the earlier session-snapshot `spawn_blocking` window cannot let the
     /// tick land before the heavy inline section starts; the budget is
