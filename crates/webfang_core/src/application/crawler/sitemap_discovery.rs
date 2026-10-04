@@ -393,6 +393,14 @@ async fn parse_sitemap(
                 SitemapError::DecompressionError(e) => {
                     CrawlError::Parse(format!("decompression failed: {e}"))
                 },
+                // #1822: the aggregate index budget is a typed resource stop.
+                // Wired like its closest siblings ResponseTooLarge /
+                // DecompressedTooLarge (parse-level limit → CrawlError::Parse →
+                // exit 69 via Internal); the variant stays matchable here if
+                // the exit-code contract ever needs its own row.
+                SitemapError::MemoryLimitExceeded(mb) => {
+                    CrawlError::Parse(format!("sitemap memory limit exceeded: {mb} MB"))
+                },
                 // All children FAILED to fetch/parse (HTTP errors) — this is an
                 // infrastructure failure (exit 69 via Parse→Internal), NOT a
                 // fully-empty sitemap (which is NoUrlsFound→SitemapEmpty→exit 2).

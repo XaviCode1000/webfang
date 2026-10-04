@@ -28,7 +28,7 @@
 
 use super::batch_processor::BatchProcessor;
 use super::compression_handler::CompressionHandler;
-use super::memory_manager::MemoryManager;
+use super::memory_manager::{MemoryError, MemoryManager};
 use super::retry_policy::RetryPolicy;
 use super::url_validator::UrlValidator;
 use crate::domain::crawler_port::sitemap::SitemapParserPort;
@@ -178,12 +178,16 @@ impl SitemapParser {
     ) -> std::result::Result<Self, CrawlError> {
         let http_client = Self::build_client(tls_emulation)?;
         let max_decompressed_size = config.max_decompressed_size;
+        let memory_limit_mb = config.memory_limit_mb;
         Ok(Self {
             config,
             compression_handler: CompressionHandler::with_max_size(max_decompressed_size),
             url_validator: UrlValidator::with_profile(tls_emulation)?,
             retry_policy: RetryPolicy::new(),
-            memory_manager: MemoryManager::new(),
+            // #1822: honor the configured budget instead of a second hardcoded
+            // 500 MB (`MemoryManager::new()`). The builder's default is still
+            // 500 MB, so callers that never set `memory_limit_mb` see no change.
+            memory_manager: MemoryManager::with_memory_limit(memory_limit_mb),
             batch_processor: BatchProcessor::new(),
             tls_emulation,
             http_client,
@@ -596,7 +600,12 @@ impl SitemapParser {
         let mut all_urls = Vec::new();
         let mut failures = Vec::new();
 
-        let results = stream::iter(sitemap_urls.iter().cloned())
+        // #1822: process children incrementally instead of collecting every
+        // child's URL list up front. Results stream in submission order over
+        // the SAME bounded-concurrency stream, so the aggregate budget check
+        // below runs after every successful child and stops scheduling new
+        // fetches once the combined URL set exceeds `memory_limit_mb`.
+        let mut results = stream::iter(sitemap_urls.iter().cloned())
             .map(|sitemap_url| {
                 let visited = visited.clone();
                 let child_correlation = correlation.child();
@@ -608,13 +617,21 @@ impl SitemapParser {
                     (url, result, child_correlation)
                 }
             })
-            .buffered(self.config.concurrency)
-            .collect::<Vec<_>>()
-            .await;
+            .buffered(self.config.concurrency);
 
-        for (url, result, child_correlation) in results {
+        let mut children_completed = 0usize;
+        while let Some((url, result, child_correlation)) = results.next().await {
+            children_completed += 1;
             match result {
-                Ok(urls) => all_urls.extend(urls),
+                Ok(urls) => {
+                    all_urls.extend(urls);
+                    self.enforce_aggregate_budget(
+                        &all_urls,
+                        url.as_str(),
+                        children_completed,
+                        correlation,
+                    )?;
+                },
                 Err(e) => {
                     log_scrape_error(
                         &e,
@@ -687,6 +704,59 @@ impl SitemapParser {
             dedup_and_sort_sitemap_urls(&mut all_urls);
             Ok(all_urls)
         }
+    }
+
+    /// Enforce the aggregate memory budget across all index children (#1822).
+    ///
+    /// [`MemoryManager::ensure_within_budget`] charges ~2 KB per URL against
+    /// `SitemapConfig::memory_limit_mb`; the check runs after every successful
+    /// child so the combined URL set of the index can never grow past the
+    /// budget. On exceed, the failure is reported through [`log_scrape_error`]
+    /// with `stage = "sitemap.index"` and a structured warn records the run's
+    /// progress (children completed, URLs accumulated, configured limit) so
+    /// the abort is reconstructable from the trace JSONL.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SitemapError::MemoryLimitExceeded`] when the aggregate URL
+    /// set exceeds the configured budget, or the same `HttpError` mapping the
+    /// per-parse memory check uses should the manager report anything else.
+    fn enforce_aggregate_budget(
+        &self,
+        all_urls: &[SitemapUrl],
+        child_url: &str,
+        children_completed: usize,
+        correlation: &CorrelationId,
+    ) -> Result<()> {
+        let Err(memory_err) = self.memory_manager.ensure_within_budget(all_urls) else {
+            return Ok(());
+        };
+        let err = match memory_err {
+            MemoryError::MemoryLimitExceeded(estimated_mb) => {
+                SitemapError::MemoryLimitExceeded(estimated_mb)
+            },
+            // Defensive: `ensure_within_budget` never touches disk; map any
+            // unexpected variant through the same bucket the per-parse memory
+            // check uses so the stratification holds.
+            MemoryError::DiskSwapFailed(msg) => SitemapError::HttpError {
+                status: 0,
+                message: format!("memory management failed: {msg}"),
+            },
+        };
+        log_scrape_error(
+            &err,
+            child_url,
+            "sitemap.index",
+            Some(correlation),
+            "aggregate sitemap URL set exceeded the configured memory limit",
+        );
+        tracing::warn!(
+            children_completed = children_completed,
+            urls_accumulated = all_urls.len(),
+            limit_mb = self.memory_manager.memory_limit_mb(),
+            "sitemap index aggregate exceeded the memory budget; aborting remaining children"
+        );
+        Err(err)
     }
 
     /// Check if gzip is enabled in config
