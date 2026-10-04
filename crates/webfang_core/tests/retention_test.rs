@@ -77,7 +77,7 @@ async fn opt_in_retention_prunes_aged_exports_and_keeps_this_run() {
         "the 30-day-old file must be pruned by --retention-days 7"
     );
     assert!(
-        t.find_files("md").len() >= 1,
+        !t.find_files("md").is_empty(),
         "this run's fresh export must survive retention"
     );
     insta::assert_snapshot!(

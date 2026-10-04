@@ -773,10 +773,9 @@ pub async fn setup_schema(pool: &Pool) -> Result<(), ScraperError> {
 /// cleanup step must never fail the run.
 pub async fn prune_older_than(pool: &Pool, cutoff_iso: &str) -> Result<u64, ScraperError> {
     let cutoff = cutoff_iso.to_owned();
-    let conn = pool
-        .get()
-        .await
-        .map_err(|e| ScraperError::persistence(format!("retention: obtener conexión del pool: {e}")))?;
+    let conn = pool.get().await.map_err(|e| {
+        ScraperError::persistence(format!("retention: obtener conexión del pool: {e}"))
+    })?;
     conn.interact(move |c| -> Result<u64, rusqlite::Error> {
         c.execute_batch("PRAGMA foreign_keys = ON;")?;
         let mut removed: u64 = 0;

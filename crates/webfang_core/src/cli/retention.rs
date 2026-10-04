@@ -54,7 +54,10 @@ pub(crate) async fn apply_retention(opts: &CrawlOptions) -> RetentionOutcome {
     };
 
     if outcome.is_empty() {
-        tracing::debug!(retention_days = days, "retention: nothing older than the cutoff");
+        tracing::debug!(
+            retention_days = days,
+            "retention: nothing older than the cutoff"
+        );
         return outcome;
     }
     tracing::info!(
@@ -167,7 +170,10 @@ mod tests {
     /// Age a file's mtime into the past via std (`File::set_times`,
     /// stable since 1.75) — no extra dev-dependency needed.
     fn age_file(path: &Path, days_ago: u64) {
-        let f = File::options().append(true).open(path).expect("open for times");
+        let f = File::options()
+            .append(true)
+            .open(path)
+            .expect("open for times");
         let past = SystemTime::now() - Duration::from_secs(days_ago * 86_400);
         f.set_times(std::fs::FileTimes::new().set_modified(past))
             .expect("set mtime");
@@ -216,7 +222,10 @@ mod tests {
 
     #[test]
     fn missing_output_root_is_a_noop() {
-        let removed = prune_dir_and_count(Path::new("/nonexistent/webfang-retention"), cutoff_days_ago(7));
+        let removed = prune_dir_and_count(
+            Path::new("/nonexistent/webfang-retention"),
+            cutoff_days_ago(7),
+        );
         assert_eq!(removed, 0);
     }
 
@@ -283,15 +292,13 @@ mod tests {
             .await
             .expect("conn")
             .interact(|c| {
-                Ok::<_, rusqlite::Error>(
-                    c.query_row(
-                        "SELECT (SELECT count(*) FROM resources) + \
-                         (SELECT count(*) FROM chunks) + \
-                         (SELECT count(*) FROM notes) + \
-                         (SELECT count(*) FROM note_chunks)",
-                        [],
-                        |r| r.get::<_, u64>(0),
-                    )?,
+                c.query_row(
+                    "SELECT (SELECT count(*) FROM resources) + \
+                          (SELECT count(*) FROM chunks) + \
+                          (SELECT count(*) FROM notes) + \
+                          (SELECT count(*) FROM note_chunks)",
+                    [],
+                    |r| r.get::<_, u64>(0),
                 )
             })
             .await
