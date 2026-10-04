@@ -414,17 +414,25 @@ jobs:
       # artifacts. No target is needed: nothing is compiled here.
       - uses: dtolnay/rust-toolchain@688313b0823df1393bcebb1b4add0438a6d36884
 
-      - name: Download all artifacts
+      # One glob per download step: download-artifact builds a SINGLE Minimatch
+      # over the whole `pattern` input, so a multiline pattern matches nothing
+      # and the attest below fails with "no statement subjects" (observed on
+      # v2.6.4: download "succeeded" with zero artifacts). The archives come
+      # from the `build` matrix and SHA256SUMS.txt from the separate
+      # `checksums` artifact, hence two steps; the manifest is what
+      # `subject-checksums` reads.
+      - name: Download build archives
         uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
         with:
           path: artifacts
-          # Two globs, not one: the archives come from the `build` matrix and
-          # SHA256SUMS.txt from the separate `checksums` artifact. A single
-          # `webfang-*` pattern would silently omit the manifest, and the
-          # manifest is the artifact `subject-checksums` reads.
-          pattern: |
-            webfang-*
-            checksums
+          pattern: webfang-*
+          merge-multiple: true
+
+      - name: Download checksums manifest
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          path: artifacts
+          pattern: checksums
           merge-multiple: true
 
       # `attest-build-provenance` also accepts `subject-checksums`, which reads
