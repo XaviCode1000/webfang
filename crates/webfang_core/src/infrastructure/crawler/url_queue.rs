@@ -271,18 +271,34 @@ impl UrlQueue {
     ///
     /// `BinaryHeap::iter()` yields in internal array order, NOT priority order,
     /// so truncating a plain snapshot would discard an arbitrary subset of the
-    /// frontier. This pops from a clone: `BinaryHeap::pop` is exactly the
-    /// priority order the crawl itself follows. Used by the bounded checkpoint
+    /// frontier. This pops up to `n` items and pushes them back while holding
+    /// the lock (no `.await` inside — AL-2): the queue is not consumed and
+    /// nothing proportional to the whole frontier is cloned — O(n log n) time,
+    /// O(n) transient space. `PrioritizedUrl`'s `Ord` is a total order over
+    /// (priority, reversed URL) and the `seen` set guarantees distinct URLs,
+    /// so the popped sequence is exactly the priority order the crawl itself
+    /// follows regardless of heap layout, and re-pushing the popped items
+    /// restores the identical multiset. Used by the bounded checkpoint
     /// frontier (#1234 / F-39).
     pub async fn snapshot_urls_bounded(&self, n: usize) -> Vec<String> {
-        let mut heap = self.queue.lock().await.clone();
-        let mut urls = Vec::with_capacity(n.min(heap.len()));
+        let mut queue = self.queue.lock().await;
+        let mut heap = std::mem::take(&mut *queue);
+        let capacity = n.min(heap.len());
+        let mut popped = Vec::with_capacity(capacity);
+        let mut urls = Vec::with_capacity(capacity);
         while urls.len() < n {
             match heap.pop() {
-                Some(priority) => urls.push(priority.url.url.to_string()),
+                Some(prioritized) => {
+                    urls.push(prioritized.url.url.to_string());
+                    popped.push(prioritized);
+                },
                 None => break,
             }
         }
+        for prioritized in popped {
+            heap.push(prioritized);
+        }
+        *queue = heap;
         urls
     }
 
@@ -691,6 +707,130 @@ mod tests {
         assert_eq!(drained[0].url.path(), "/high");
         assert_eq!(drained[1].url.path(), "/mid");
         assert_eq!(drained[2].url.path(), "/low");
+    }
+
+    // -- snapshot_urls_bounded (#1823) --
+
+    #[tokio::test]
+    async fn test_snapshot_urls_bounded_top_n_in_priority_order() {
+        let queue = UrlQueue::new();
+
+        assert!(
+            queue
+                .push_prioritized(create_test_url("/low"), UrlSource::Link)
+                .await
+        );
+        assert!(
+            queue
+                .push_prioritized(create_test_url("/high"), UrlSource::Seed)
+                .await
+        );
+        assert!(
+            queue
+                .push_prioritized(create_test_url("/mid"), UrlSource::Sitemap)
+                .await
+        );
+
+        // The bounded snapshot must yield the same order the crawler pops.
+        let urls = queue.snapshot_urls_bounded(2).await;
+        assert_eq!(urls.len(), 2);
+        assert!(urls[0].ends_with("/high"), "got {urls:?}");
+        assert!(urls[1].ends_with("/mid"), "got {urls:?}");
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_urls_bounded_reversed_url_tiebreak() {
+        let queue = UrlQueue::new();
+
+        // Equal priorities: the total order breaks ties by the REVERSED URL,
+        // so the lexicographically smallest URL pops first (F-13).
+        assert!(queue.push(create_test_url("/b")).await);
+        assert!(queue.push(create_test_url("/a")).await);
+
+        let urls = queue.snapshot_urls_bounded(2).await;
+        assert_eq!(urls.len(), 2);
+        assert!(urls[0].ends_with("/a"), "got {urls:?}");
+        assert!(urls[1].ends_with("/b"), "got {urls:?}");
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_urls_bounded_does_not_consume() {
+        let queue = UrlQueue::new();
+
+        for i in 0..3 {
+            assert!(queue.push(create_test_url(&format!("/page{i}"))).await);
+        }
+
+        let urls = queue.snapshot_urls_bounded(2).await;
+        assert_eq!(urls.len(), 2);
+        assert_eq!(queue.len().await, 3, "snapshot must not consume the queue");
+
+        // A later drain still yields everything.
+        let drained = queue.drain_all().await;
+        assert_eq!(drained.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_urls_bounded_larger_than_queue_returns_all() {
+        let queue = UrlQueue::new();
+
+        assert!(queue.push(create_test_url("/one")).await);
+        assert!(queue.push(create_test_url("/two")).await);
+
+        let urls = queue.snapshot_urls_bounded(10).await;
+        assert_eq!(urls.len(), 2);
+        assert_eq!(queue.len().await, 2, "oversized n must not consume either");
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_urls_bounded_zero_returns_empty() {
+        let queue = UrlQueue::new();
+
+        assert!(queue.push(create_test_url("/one")).await);
+
+        let urls = queue.snapshot_urls_bounded(0).await;
+        assert!(urls.is_empty());
+        assert_eq!(queue.len().await, 1);
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_urls_bounded_empty_queue_returns_empty() {
+        let queue = UrlQueue::new();
+        assert!(queue.snapshot_urls_bounded(5).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_snapshot_urls_bounded_matches_drain_all_order() {
+        let queue = UrlQueue::new();
+
+        assert!(
+            queue
+                .push_prioritized(create_test_url("/low"), UrlSource::Link)
+                .await
+        );
+        assert!(
+            queue
+                .push_prioritized(create_test_url("/high"), UrlSource::Seed)
+                .await
+        );
+        assert!(
+            queue
+                .push_prioritized(create_test_url("/mid"), UrlSource::Sitemap)
+                .await
+        );
+        assert!(
+            queue
+                .push_prioritized(create_test_url("/another-low"), UrlSource::Link)
+                .await
+        );
+
+        // Snapshot first (non-consuming), then drain: the bounded snapshot
+        // must equal the first n of the true pop order.
+        let snapshot = queue.snapshot_urls_bounded(3).await;
+        let drained = queue.drain_all().await;
+        let expected: Vec<String> = drained.iter().take(3).map(|d| d.url.to_string()).collect();
+
+        assert_eq!(snapshot, expected);
     }
 
     #[tokio::test]
