@@ -49,6 +49,16 @@ env:
   CARGO_PROFILE_RELEASE_LTO: "fat"
   CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
 
+# All `run:` steps execute in bash on every OS. Without this, GitHub runs
+# Windows steps in pwsh by default (docs: workflow-syntax#shell), and every
+# bash-idiom step on the Windows path (Derive SOURCE_DATE_EPOCH, deterministic
+# zip, reproducibility assert) dies there — this silently blocked all binary
+# publishing from v2.4.2 on. Git Bash ships on windows-latest, so `bash`
+# always resolves (same docs table).
+defaults:
+  run:
+    shell: bash
+
 jobs:
   # ============================================================================
   # PREFLIGHT: L1 Provenance Gate + Release Channel + Version Match
