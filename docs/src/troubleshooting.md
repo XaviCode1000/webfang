@@ -264,3 +264,55 @@ even though no writer is running.
 file is a permanent sentinel that is created on demand and intentionally never
 removed; the real mutual exclusion is the advisory `flock` on that file, which
 the kernel releases when the process exits (including after SIGKILL).
+
+---
+
+## Windows: output is mojibake
+
+**Symptom.** Accented or `ñ` characters render as garbage in the terminal.
+
+webfang switches the Windows console code page to UTF-8 as its first action
+(#1808, XP-K-03), so this normally cannot happen. If it does, the code page
+was most likely reset afterwards — some terminals and CI shells re-apply the
+profile default when they attach. Fix it in that shell, not in webfang:
+
+```powershell
+chcp 65001
+```
+
+---
+
+## Windows: a deeply nested output path fails to write
+
+**Symptom.** A crawl into a deeply nested `--output` directory fails with a
+path error while the same crawl succeeds elsewhere.
+
+**Known limitation (XP-P-07).** Windows caps a path at `MAX_PATH` — 260
+characters for the *whole* path, which is a separate limit from the
+255-character-per-component rule webfang enforces and validates. webfang
+validates every component, but it does **not** rewrite paths into the extended
+`\\?\` form: that form disables `.`/`..` normalization and changes UNC handling,
+so applying it at every call site would trade a documented limit for a set of
+subtle ones.
+
+**Workaround.** Either shorten the output root, or enable long paths for the
+machine (administrator PowerShell, then sign out and back in):
+
+```powershell
+New-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\FileSystem" `
+  -Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force
+```
+
+---
+
+## Windows: closing the console window kills the run without draining
+
+**Should not happen.** A console close, logoff, or shutdown event now drives
+the same graceful drain as Ctrl+C (#1808, XP-S-02) — in-flight pages are
+persisted and a bounded checkpoint is written before exit.
+
+One residual, stated plainly: the console host allows a close-event handler
+about **five seconds** before it kills the process. That window belongs to
+Windows, not to webfang, so console-close draining is best-effort. Logoff and
+shutdown events are generous. If you interrupt a long crawl repeatedly, prefer
+Ctrl+C, which has no such deadline.

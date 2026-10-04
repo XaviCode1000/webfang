@@ -35,6 +35,7 @@ The issue mandates ONE unified design before any per-finding PR.
 | Concern | Owner | Rationale |
 | :--- | :--- | :--- |
 | **Interruption** (SIGINT/SIGTERM/cancel) | `Engine` — its `ShutdownSignal` (atomic flag) + `CancellationToken` (#509). Nothing else may decide to stop the run. | One flag, one token, one handler task; workers already treat cancellation as a control signal, not a failure. |
+| **Termination-event source** (which OS event was observed) | `infrastructure::platform` — the process-wide console-event source. It only *fires* the owning token; it never owns one. | One `SetConsoleCtrlHandler` registration for the whole process, four awaiters, zero second authorities. |
 | **Durable page lifecycle truth** | `RecordStore` — the 8-state `PageStatus` (`DISCOVERED → … → COMMITTED`) persisted per domain. | The record survives crashes and signals; it is the only cross-run truth. Skip-on-resume happens ONLY from `COMMITTED`-proven records through the typed gate (`application/resume.rs::filter_committed`). |
 | **Scheduling state** (visited/frontier/banned domains) | `CrawlCheckpoint` — engine-internal, versioned, bounded. | It is an execution artefact, not a lifecycle map (already documented in `domain/page_state/mod.rs`). Its IO mechanics belong to #1289. |
 
@@ -42,6 +43,10 @@ The issue mandates ONE unified design before any per-finding PR.
 
 ```text
 SIGINT/SIGTERM (or cancel_handle())
+  [Windows only: SIGINT/SIGTERM ⇄ Ctrl+C / Ctrl+Break, PLUS the console
+   CTRL_CLOSE / CTRL_LOGOFF / CTRL_SHUTDOWN events — XP-S-02, #1808.
+   Same authority, same drain; the OS gives a console-close handler only
+   ~5 s before the process is killed, so that arm drains best-effort.]
   → shutdown flag = true AND cancel token fires
   → drain: no NEW fetches; waits blocked on rate-limit/governor abort as
     control signals (never classified as retries or errors)
@@ -80,6 +85,33 @@ evidence test pins: classified error survives crash + resume; success clears
 | :--- | :--- | :--- |
 | F-07 | `record_store_transaction_test.rs` — `f07_*`-prefixed deterministic tests; the multi-process behavioral test stays `#[ignore]`d as a DOCUMENTED stress check (real contention is not deterministic; un-ignoring would violate the absolute-determinism rule) | deterministic, in-process |
 | F-39 | `f39_sigint_checkpoint_frontier_is_bounded` | E2E, real SIGINT, wiremock |
+
+### Windows termination events (XP-S-02, #1808)
+
+`tokio::signal::ctrl_c()` observes **only** `CTRL_C_EVENT`/`CTRL_BREAK_EVENT`
+on Windows, so closing the console window, logging off, and system shutdown
+reached nothing: the run was killed with no drain, no in-flight persist, no
+bounded checkpoint. A single process-wide `SetConsoleCtrlHandler`
+(`infrastructure::platform::windows_console`, installed once via `OnceLock`)
+now observes the three missing events and fans them out by name to every
+awaiting shutdown site.
+
+What did **not** change, deliberately:
+
+- **Ownership.** The console source only fires the existing
+  `ShutdownSignal`/`CancellationToken`. It is a signal *source*, never a
+  second authority.
+- **No double-fire.** `CTRL_C_EVENT`/`CTRL_BREAK_EVENT` still belong to
+  tokio's handler; the console handler returns 0 for them, passing them down
+  the chain.
+- **Degradation, never panic.** A rejected registration warns once and leaves
+  the source pending forever, so each site keeps its explicit-cancel path
+  (#509's philosophy).
+- **A residual, stated plainly.** The console host allows a `CTRL_CLOSE_EVENT`
+  handler roughly five seconds before killing the process. Logoff and shutdown
+  are generous. That window cannot be widened from user code — it is a
+  property of the console host, and console-close draining is therefore
+  best-effort while logoff/shutdown draining is complete.
 | P8-4 | `p84_resume_after_completion_is_idempotent` | E2E, zero page fetches on re-run |
 | P8-5 | `p85_sigint_shutdown_is_resumable` + `p85_sigterm_shutdown_is_resumable` | E2E, deterministic trigger: signal delivered after the k-th request observed by wiremock (crash-matrix pattern) |
 | P8-6 | `p86_failed_record_is_redriven_and_error_cleared_on_success` | deterministic, in-process |

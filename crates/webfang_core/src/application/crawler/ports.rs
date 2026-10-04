@@ -214,6 +214,187 @@ impl CrawlResultCollector for ProductionCollector {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Process termination source (#1808 — XP-S-02)
+// ---------------------------------------------------------------------------
+
+/// Name logged when the process is interrupted through tokio's Ctrl+C source.
+///
+/// Single definition, owned by the application layer: the infrastructure
+/// console source imports THIS constant, so a Ctrl+C interruption is logged
+/// under the same name from every shutdown site (the crawl engine, the CLI
+/// shutdown guard, the MCP server) instead of each layer keeping its own
+/// literal that could drift apart.
+pub const CTRL_C_EVENT_NAME: &str = "CTRL_C_EVENT";
+
+/// Resolves with the NAME of the first process-level termination event, or
+/// `None` when no source could be registered.
+///
+/// `None` means "the OS refused the handler", never "nothing happened": the
+/// awaiting site degrades to its own explicit-cancel path (#509) and says so
+/// in its log line.
+pub type TerminationWait = BoxFuture<'static, Option<&'static str>>;
+
+/// The process-level termination source a crawl run drains on.
+///
+/// Port for the OS plumbing a graceful shutdown needs. On Windows a crawl must
+/// also drain on console close / logoff / shutdown, events
+/// `tokio::signal::ctrl_c()` never observes (XP-S-02, #1808) — but that
+/// source is Win32 code, i.e. infrastructure, and `application` may only reach
+/// inward. The engine therefore never names it: the composition root
+/// (`application::container::build_termination_source`) injects the platform
+/// source through this port, and the engine only ever calls
+/// [`wait`](Self::wait).
+///
+/// Two properties the design depends on:
+///
+/// - **Never a second shutdown authority (ADR-0016).** The source *reports* an
+///   event name; firing the run's `CancellationToken`/atomic stays with the
+///   awaiting site, so there is still exactly one decision per run.
+/// - **Shared, not per-engine.** The value is a cheap handle over an `Arc`;
+///   cloning it shares one source, so every engine built from the same
+///   composition-root call observes the same events.
+#[derive(Clone)]
+pub struct TerminationSource {
+    wait: Arc<dyn Fn() -> TerminationWait + Send + Sync>,
+}
+
+impl TerminationSource {
+    /// Wrap a wait function as a termination source.
+    ///
+    /// `wait` is called once per drain, so it may register OS handlers lazily
+    /// — nothing happens at construction time.
+    #[must_use]
+    pub fn new(wait: Arc<dyn Fn() -> TerminationWait + Send + Sync>) -> Self {
+        Self { wait }
+    }
+
+    /// The default source: tokio's Ctrl+C handler, named.
+    ///
+    /// This is the documented equivalent of the pre-#1808 behaviour — Ctrl+C
+    /// and nothing else. A **rejected** Ctrl+C registration resolves with
+    /// `None` (so the caller degrades to its explicit-cancel path, #509) and
+    /// never panics.
+    ///
+    /// It is an [`Engine`](crate::application::crawler::engine::Engine)'s
+    /// default when nothing is injected, so every construction site that never
+    /// asked for platform plumbing keeps exactly today's semantics.
+    #[must_use]
+    pub fn ctrl_c_only() -> Self {
+        Self::new(Arc::new(|| {
+            Box::pin(async {
+                tokio::signal::ctrl_c()
+                    .await
+                    .ok()
+                    .map(|()| CTRL_C_EVENT_NAME)
+            })
+        }))
+    }
+
+    /// The signal set this host actually has.
+    ///
+    /// SIGINT + SIGTERM + SIGHUP on Unix (SIGHUP added by XP-S-03, #1608, so
+    /// dropping the terminal drains instead of killing the run); Ctrl+C only
+    /// everywhere else. This is what production wiring injects off Windows,
+    /// where the console-event source replaces it.
+    ///
+    /// `cfg(not(windows))` because on Windows nothing calls it: the platform
+    /// console source is injected instead, and an uncalled constructor would be
+    /// a `dead_code` warning in a lane nobody runs locally.
+    #[cfg(not(windows))]
+    #[must_use]
+    pub fn host_signals() -> Self {
+        #[cfg(unix)]
+        let source = Self::unix_signals();
+        #[cfg(not(unix))]
+        let source = Self::ctrl_c_only();
+        source
+    }
+
+    /// SIGINT + SIGTERM + SIGHUP, degrading per-signal when a registration is
+    /// rejected (never panic, always say so — #509).
+    ///
+    /// SIGINT always registers through tokio's `ctrl_c`, so the set is never
+    /// empty even when the OS refuses both extra handlers.
+    #[cfg(unix)]
+    #[must_use]
+    pub fn unix_signals() -> Self {
+        Self::new(Arc::new(|| Box::pin(wait_for_unix_signals())))
+    }
+
+    /// Await the first termination event and report its name.
+    pub fn wait(&self) -> TerminationWait {
+        (self.wait)()
+    }
+}
+
+/// Ctrl+C is the default: a source every host has, needing no platform
+/// plumbing. See [`TerminationSource::ctrl_c_only`].
+impl Default for TerminationSource {
+    fn default() -> Self {
+        Self::ctrl_c_only()
+    }
+}
+
+/// Await SIGINT + SIGTERM + SIGHUP and return the name of the one that
+/// arrived first.
+#[cfg(unix)]
+async fn wait_for_unix_signals() -> Option<&'static str> {
+    use tokio::signal::unix::{signal, SignalKind};
+    use tracing::warn;
+
+    let mut sigterm = signal(SignalKind::terminate());
+    let mut sighup = signal(SignalKind::hangup());
+    // LCOV_EXCL_START defensive: signal-registration — the OS rejects a handler only on an invariant break
+    if let Err(e) = &sigterm {
+        warn!(
+            error = %e,
+            "SIGTERM handler registration failed — graceful shutdown will only respond to SIGINT"
+        );
+    }
+    if let Err(e) = &sighup {
+        warn!(
+            error = %e,
+            "SIGHUP handler registration failed — closing the terminal will terminate the run without draining"
+        );
+    }
+    // LCOV_EXCL_STOP
+
+    Some(first_unix_signal(sigterm.as_mut().ok(), sighup.as_mut().ok()).await)
+}
+
+/// Await the FIRST Unix signal among those that registered and return its name
+/// (SIGINT always registers via `ctrl_c`).
+///
+/// A flat `futures::future::select_all` over boxed waits — no nested
+/// `select!` arms — keeps this under the #516 complexity ratchet while
+/// handling every subset of registered signals uniformly.
+#[cfg(unix)]
+async fn first_unix_signal(
+    sigterm: Option<&mut tokio::signal::unix::Signal>,
+    sighup: Option<&mut tokio::signal::unix::Signal>,
+) -> &'static str {
+    let mut names: Vec<&'static str> = vec!["SIGINT"];
+    let mut waits: Vec<std::pin::Pin<Box<dyn futures::Future<Output = ()> + Send>>> =
+        vec![Box::pin(async {
+            tokio::signal::ctrl_c().await.ok();
+        })];
+    if let Some(sigterm) = sigterm {
+        names.push("SIGTERM");
+        waits.push(Box::pin(async move {
+            sigterm.recv().await;
+        }));
+    }
+    if let Some(sighup) = sighup {
+        names.push("SIGHUP");
+        waits.push(Box::pin(async move {
+            sighup.recv().await;
+        }));
+    }
+    let (_, index, _) = futures::future::select_all(waits).await;
+    names[index]
+}
+
 /// Check whether a [`CrawlError`] represents a WAF challenge.
 ///
 /// Inspects the [`CrawlError::Download`] source chain for

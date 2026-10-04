@@ -43,6 +43,7 @@ use tracing::instrument;
 
 use crate::application::crawl_options::CrawlOptions;
 use crate::application::crawl_result_repository::CrawlResultRepositoryImpl;
+use crate::application::crawler::ports::TerminationSource;
 use crate::application::deduplicator::UrlDeduplicator;
 use crate::application::elastic_ingestion::ElasticIngestion;
 use crate::application::http_client::{HttpClient, HttpClientConfig};
@@ -250,6 +251,31 @@ pub(crate) fn build_robots_fetcher(
     Ok(Arc::new(
         crate::infrastructure::crawler::robots_utils::RobotsFetcher::new(profile, timeout_secs)?,
     ))
+}
+
+/// Build the crawl's process-level termination source (XP-S-02, #1808).
+///
+/// Composition-root factory, same shape as [`build_robots_fetcher`]: the
+/// Win32 console-event fan-out (`infrastructure::platform`) is named only
+/// here — the one place this crate allowlists the
+/// `application → infrastructure` edge — and `application::crawler::engine`
+/// consumes the erased [`TerminationSource`] port.
+///
+/// Windows gets the console source, so closing the console window, logging off
+/// or shutting the machine down drives the same graceful drain as Ctrl+C.
+/// Every other host gets [`TerminationSource::host_signals`] — SIGINT +
+/// SIGTERM + SIGHUP on Unix (XP-S-03, #1608), Ctrl+C only off Unix — which is
+/// exactly what the engine did inline before the port existed. Nothing is
+/// registered here: the source only binds an OS handler when the run first
+/// awaits it.
+pub(crate) fn build_termination_source() -> TerminationSource {
+    #[cfg(windows)]
+    let source = TerminationSource::new(std::sync::Arc::new(|| {
+        Box::pin(crate::infrastructure::platform::first_termination_event())
+    }));
+    #[cfg(not(windows))]
+    let source = TerminationSource::host_signals();
+    source
 }
 
 /// Composition-root factories for the concrete exporters (ADR-0012-B 3.H).

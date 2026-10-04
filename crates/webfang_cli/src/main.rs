@@ -37,11 +37,18 @@ use webfang_core::cli::preflight;
 use webfang_core::cli::preflight::ArgSources;
 #[cfg(feature = "ai")]
 use webfang_core::domain::semantic_cleaner::SemanticCleaner;
+use webfang_core::infrastructure::platform::init_console_output_encoding;
 #[cfg(feature = "adaptive-selectors")]
 use webfang_core::infrastructure::scraper::dom_inspector::DefaultDomInspector;
 use webfang_core::{init_logging_dual, is_no_color, Args, Commands};
 #[tokio::main]
 pub async fn main() -> CliExit {
+    // XP-K-03 (#1808): UTF-8 console code page. FIRST statement of the
+    // process, before the tracing subscriber and before any user-facing
+    // write, because a code page set after output has started leaves the
+    // earlier lines mojibake. Documented no-op off Windows.
+    init_console_output_encoding();
+
     // D6 crash-injection harness: arm BEFORE anything else so every pinned
     // site (even the earliest pipeline stage) sees the same parsed spec.
     // Inert unless WEBFANG_CRASH_AT is set (one OnceLock write).
