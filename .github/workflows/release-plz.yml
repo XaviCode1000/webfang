@@ -1,20 +1,29 @@
 # Release-plz — automated version bump + CHANGELOG + Release PR + v* tags.
 #
 # Flow: push to main -> release-plz-release pushes the `v{{ version }}` tag for
-# an already-merged version bump -> dispatch-release calls release.yml via
-# workflow_dispatch to build the binaries and publish the GitHub Release.
+# an already-merged version bump -> that tag push fires release.yml's
+# `push: tags` trigger NATIVELY, which builds the binaries and publishes the
+# GitHub Release. One hand-off path, no dispatcher in between.
 #
-# The tag push does NOT trigger release.yml by itself. GitHub suppresses workflow
-# runs caused by events generated with GITHUB_TOKEN, so the tags release-plz
-# pushes as github-actions[bot] never fired release.yml's `push: tags` trigger:
-# v2.1.0 shipped its binaries only via a MANUAL dispatch, and v2.1.1 ended with a
-# tag and no Release at all. workflow_dispatch IS an exception to that
-# suppression, so the hand-off is an explicit call instead of an event.
-# (Verified in-repo: run 35403760298, event=workflow_dispatch,
-# actor=github-actions[bot].)
+# The tag push triggers release.yml BY ITSELF. Both release-plz jobs mint a
+# GitHub App token (RELEASE_PLZ_APP_ID + RELEASE_PLZ_APP_PRIVATE_KEY), and
+# GitHub only suppresses workflow runs for events generated with GITHUB_TOKEN —
+# so App-pushed tags fire `push: tags` like any human push. That is why there
+# is no `dispatch-release` job in this file: with the native push trigger live,
+# an explicit workflow_dispatch hand-off would run release.yml TWICE per
+# release (the sweep resolves in seconds, the builds take minutes, and there
+# is no concurrency group to collapse them).
 #
-# The Release PR itself is created MANUALLY (see #1339): the release-plz-pr job
-# cannot open one, see the note on that job below.
+# History: under GITHUB_TOKEN the same tags never fired `push: tags`
+# (suppression), so the hand-off used to be an explicit workflow_dispatch call
+# plus a daily sweep — v2.1.0 shipped its binaries only via a MANUAL dispatch,
+# and v2.1.1 ended with a tag and no Release at all. That suppression no longer
+# applies to this pipeline; do not reintroduce a dispatch job alongside
+# App-token tag pushes.
+#
+# `release-reconcile.yml` remains the daily backstop: a push trigger that never
+# fires is silent by construction (no run to observe), so the scheduled sweep
+# over the shared trust predicate still catches any tag left without binaries.
 #
 # Config: release-plz.toml + cliff.toml. No registry publishing (git_only).
 
@@ -45,8 +54,9 @@ env:
 
 jobs:
   # Publish already-merged release commits: pushes the v* tag.
-  # That tag push does NOT trigger release.yml (GITHUB_TOKEN suppression) — the
-  # dispatch-release job below performs the hand-off explicitly.
+  # That tag push fires release.yml's `push: tags` trigger natively — the tag
+  # is pushed with a GitHub App token, and GitHub only suppresses runs for
+  # GITHUB_TOKEN-generated events. No dispatch job: one hand-off path.
   release-plz-release:
     name: Release-plz release
     runs-on: ubuntu-latest
@@ -67,6 +77,20 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      # App token (slice 2 of the App migration): tags pushed with GITHUB_TOKEN
+      # never deliver `push: tags` events, so release.yml used to need an
+      # explicit workflow_dispatch hand-off. Minted from
+      # RELEASE_PLZ_APP_ID (Client ID — `client-id` is canonical in
+      # create-github-app-token v3) + RELEASE_PLZ_APP_PRIVATE_KEY, scoped to
+      # contents write ONLY — this job never opens PRs, so it gets no
+      # pull-requests scope (least privilege, mirroring the release-pr job).
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.RELEASE_PLZ_APP_ID }}
+          private-key: ${{ secrets.RELEASE_PLZ_APP_PRIVATE_KEY }}
+          permission-contents: write
       # The duplicate-tag 422 (webfang#1341) makes `release-plz release` exit 1
       # AFTER it has created the correct tag, inside the SAME run — measured on
       # v2.1.1, where the tag is authored by this bot at 18:04:23, inside the run
@@ -86,7 +110,7 @@ jobs:
         with:
           command: release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
       # The decision lives in scripts/verify-release-tag.sh: it is testable there
       # (a bash block embedded in YAML is not), and it keeps the trust predicate in
       # one place. It fails the job on anything that is not a verified correct tag.
@@ -94,68 +118,6 @@ jobs:
         env:
           RELEASE_OUTCOME: ${{ steps.release.outcome }}
         run: bash scripts/verify-release-tag.sh
-
-  # Hand the freshly created tag to release.yml.
-  #
-  # Exists because a tag pushed with GITHUB_TOKEN does not trigger release.yml's
-  # `push: tags` trigger — GitHub suppresses workflow runs for GITHUB_TOKEN events.
-  # workflow_dispatch is an explicit exception, so this is a direct call.
-  #
-  # Runs even when release-plz-release FAILED: the known duplicate-tag 422
-  # (webfang#1341) leaves a correct tag behind while exiting 1, and that tag still
-  # needs its binaries. A cancelled run is skipped instead — a human cancel must
-  # not silently become a release.
-  dispatch-release:
-    name: Dispatch binary release
-    needs: [release-plz-release]
-    if: >-
-      ${{
-        always() &&
-        needs.release-plz-release.result != 'cancelled' &&
-        github.repository_owner == 'XaviCode1000'
-      }}
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      actions: write # required to create the workflow_dispatch run
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
-        with:
-          fetch-depth: 0
-          # release-plz creates the tag through the GitHub API inside the sibling
-          # job, and the candidate resolution reads the whole tag history, so
-          # tags must be fetched. This fresh checkout is taken AFTER that job
-          # completed, which is also why the API-created tag is visible here
-          # (webfang#1535, Bug A).
-          fetch-tags: true
-          persist-credentials: false
-
-      - name: Dispatch release.yml for a tag missing a complete GitHub Release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # The subject of the commit this run is processing. Passed explicitly
-          # so the "release commit with no tag anywhere" check cannot depend on
-          # how the caller resolved HEAD.
-          HEAD_COMMIT_SUBJECT: ${{ github.event.head_commit.message }}
-        run: |
-          set -euo pipefail
-          bash scripts/sweep-releases.sh --head-commit-subject "$HEAD_COMMIT_SUBJECT"
-
-      # Why the shared sweep and not a HEAD-scoped lookup (webfang#1674):
-      # `git tag --points-at HEAD` finds the tag only when it lands on the
-      # commit being pushed. A Release PR merged by squash creates a NEW commit
-      # on main while the tag release-plz pushed still points at the PR's
-      # pre-squash head — unreachable from HEAD. Measured on v2.4.0 (PR #1554):
-      # 0 candidates, "Dispatch binary release" green in 6 s, 0 release.yml runs.
-      # A merge commit breaks the same lookup identically — PR #1668
-      # (`chore: release v2.4.1`) was merged with one, and run 36625232646 again
-      # reported "Dispatch binary release" success in 6 s with nothing
-      # dispatched; v2.4.1 shipped only ~16.5 h later, via the daily sweep.
-      # A silent success is worse than a red, so the sweep also refuses to
-      # green-light the one shape that is genuinely broken — a release commit on
-      # HEAD with no trusted tag anywhere — and reports every no-op as an
-      # explicit, visible skip instead of an empty success.
 
   # Release PR generator. Re-enabled after upstream release-plz 0.3.168 shipped
   # #3058 ("reconstruct git-only releases without creating crate archives"),
@@ -226,15 +188,12 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
-      # App token (slice 1 of the App migration): PRs opened with GITHUB_TOKEN
-      # never deliver pull_request events, so Release PR checks sat in
-      # action_required until a human-token rerun (#1228). Minted from
+      # App token (full migration, slice 2 closed #1205): PRs opened with
+      # GITHUB_TOKEN never deliver pull_request events, so Release PR checks
+      # sat in action_required until a human-token rerun (#1228). Minted from
       # RELEASE_PLZ_APP_ID (Client ID — `client-id` is canonical in
       # create-github-app-token v3) + RELEASE_PLZ_APP_PRIVATE_KEY, scoped to
-      # contents + pull-requests write like upstream does. The release/tag job
-      # above deliberately stays on GITHUB_TOKEN + dispatch-release until the
-      # full migration; with GITHUB_TOKEN the tag cannot double-trigger
-      # release.yml, so no concurrent-run race exists in this slice.
+      # contents + pull-requests write like upstream does.
       - name: Generate GitHub App token
         id: app-token
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
