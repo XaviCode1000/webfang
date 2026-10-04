@@ -182,10 +182,33 @@ per the mime.rs nuance above.
       `--no-default-features` actually disables it (unified `get_mime_type`
       table, single gate). Rewrite the justification per the mime.rs nuance
       (divergent tables, not unswitchable features).
-- [ ] T5 — MCP integration tests run under default `nextest` (remove the
-      per-file `cfg(feature = "mcp")` gates or add the `default` key —
-      whichever keeps `--no-default-features` semantics honest). Proof is
-      structural: `cargo nextest list` shows the 22 files in a default run.
+- [~] T5 — MCP integration tests under default `nextest`. **DELEGATED WHOLE to
+      #1852, deliberately NOT implemented here.** Reasoning:
+      1. **Zero marginal value.** T5 is literally the `webfang_mcp` half of
+         #1852 — same file (`crates/webfang_mcp/Cargo.toml:12-13`), same one-line
+         fix, same analysis already written up with measurements.
+      2. **Overlap would serialize the merges.** Two PRs editing the same
+         feature line cannot batch (AGENTS.md requires disjoint files per PR),
+         so whichever landed second would re-do the first's work.
+      3. **Different concern.** #1813 is `type:bug` about validation failing
+         open. A `default-features` change is a build-surface decision in the
+         "Ask first" bucket — a different owner, a different review.
+      4. **It is not a CI hole.** Measured: CI runs
+         `cargo nextest run --all-features` (`ci.yml:567`), so all 173 gated
+         MCP tests DO execute in CI. The defect is a local false-green, which
+         is exactly #1852's framing.
+      Measured evidence for the delegation: `cargo nextest list -p webfang_mcp`
+         → 515 tests; `--features mcp` → 688 (173 gated files contribute 0 by
+         default: `mcp_panic_containment_test`, `ssrf_probe_test`,
+         `mcp_behavioral_test` all absent).
+      #1852 additionally records the asymmetry that makes this a real decision:
+         `default = ["mcp"]` is free (`webfang_core/mcp` is an empty marker,
+         `webfang_core/Cargo.toml:28`) but `default = ["ai"]` for `webfang_ai`
+         would pull `ort` into every default workspace build — explicitly
+         recommended against.
+      ⇒ #1813 ships 4 of its 5 acceptance criteria; criterion 5 is satisfied
+      transitively when #1852 lands, and a comment on #1813 records the
+      delegation so the criterion is never mistaken for delivered work.
 - [ ] T6 — Verification chain + sequential PRs (`type:bug`, `Closes #1813`
       on the final slice, `Closes part of #1813` before that).
 
@@ -203,6 +226,7 @@ CI workflow edits, support-line backports.
       → **exit 78** (preflight stage), not 64
 - [ ] `images` + `documents` collapsed; `--no-default-features` disables it
 - [ ] `webfang_mcp` integration tests run in the default `nextest` invocation
+      → **delegated to #1852**, not implemented here (see T5)
 
 ## Applicable checks (per task)
 
