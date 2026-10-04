@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.2] - 2026-10-04
+
+
+### 🔧 Fixed
+
+- Assert the granite-97m RSS budget per engine spec ([#1576](https://github.com/XaviCode1000/webfang/pull/1576)) ([#1806](https://github.com/XaviCode1000/webfang/pull/1806))
+
+### 🧪 Testing
+
+- Quarantine the mock fan-out timing benchmark ([#1561](https://github.com/XaviCode1000/webfang/pull/1561)) ([#1803](https://github.com/XaviCode1000/webfang/pull/1803))
 ## [2.6.1] - 2026-10-03
 
 
