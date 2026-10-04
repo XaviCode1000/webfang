@@ -16,6 +16,9 @@
 use webfang_core::domain::crawler_port::SitemapConfig;
 use webfang_core::domain::CorrelationId;
 use webfang_core::infrastructure::crawler::{SitemapError, SitemapParser};
+
+// Ephemeral adapters: wiremock mocks the sitemap origin on loopback, and
+// EnvGuard disarms the SSRF entry guard for that loopback mock (#1382/#1369).
 use webfang_test_utils::EnvGuard;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
