@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.3] - 2026-10-04
+
+
+### 🔧 Fixed
+
+- Propagate export exit code from batch export phase ([#1830](https://github.com/XaviCode1000/webfang/pull/1830))
 ## [2.6.2] - 2026-10-04
 
 
