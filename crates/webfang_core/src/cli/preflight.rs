@@ -1396,6 +1396,48 @@ fn check_clean_ai_feature_with(ai_enabled: bool, opts: &CrawlOptions) -> Result<
     ))
 }
 
+/// Preflight: `--adaptive-selectors` on a binary built WITHOUT the
+/// `adaptive-selectors` feature must fail before any network request (#1813).
+///
+/// Direct sibling of [`check_clean_ai_feature`] (#761), and the same shape as
+/// the `--elastic`/`persistence` gate ([`check_elastic_sink`]): an explicitly
+/// requested capability the binary was not compiled to honor is a
+/// build-configuration problem, never a silent no-op. Before this gate the
+/// flag survived argv parsing as the hidden compatibility placeholder built in
+/// `cli::spec_command`, `From<Args>` carried `true` into
+/// [`CrawlOptions::adaptive_selectors`], and `build_adaptive_engine`
+/// (`webfang_cli`, `#[cfg(feature = "adaptive-selectors")]`) was compiled out
+/// entirely — so the run reached the network and exited 0 having done nothing.
+///
+/// The placeholder is deliberately KEPT: it is the parse half of this
+/// two-part gate. Deleting it would turn a named, actionable build error into
+/// clap's "unexpected argument" (exit 64) with no mention of the feature.
+///
+/// # Errors
+///
+/// Returns [`crate::CliExit::ConfigError`] (exit 78) when
+/// `adaptive_selectors` is requested and the `adaptive-selectors` feature is
+/// not compiled in.
+pub fn check_adaptive_selectors_feature(opts: &CrawlOptions) -> Result<(), CliExit> {
+    check_adaptive_selectors_feature_with(cfg!(feature = "adaptive-selectors"), opts)
+}
+
+/// Feature-injectable core of [`check_adaptive_selectors_feature`] — `cfg!`
+/// is a compile-time constant and cannot be toggled per test.
+fn check_adaptive_selectors_feature_with(
+    adaptive_enabled: bool,
+    opts: &CrawlOptions,
+) -> Result<(), CliExit> {
+    if !opts.adaptive_selectors || adaptive_enabled {
+        return Ok(());
+    }
+    Err(CliExit::ConfigError(
+        "--adaptive-selectors requiere un binario compilado con la feature \
+             `adaptive-selectors`; recompilá con --features adaptive-selectors"
+            .into(),
+    ))
+}
+
 /// Preflight: `--export-format vector` without `--clean-ai` must fail before
 /// any network request (#796).
 ///
@@ -2226,6 +2268,59 @@ mod tests {
     fn no_clean_ai_ok_without_feature() {
         let opts = CrawlOptions::default();
         assert!(check_clean_ai_feature_with(false, &opts).is_ok());
+    }
+
+    // ========================================================================
+    // #1813 — --adaptive-selectors preflight feature check
+    // ========================================================================
+
+    /// Build opts with `--adaptive-selectors` requested.
+    fn adaptive_selectors_opts() -> CrawlOptions {
+        CrawlOptions {
+            adaptive_selectors: true,
+            ..CrawlOptions::default()
+        }
+    }
+
+    /// `--adaptive-selectors` without the feature: config error naming the
+    /// feature, before any network request (#1813).
+    #[test]
+    fn adaptive_selectors_without_feature_errors() {
+        let err = check_adaptive_selectors_feature_with(false, &adaptive_selectors_opts())
+            .expect_err("non-adaptive build must reject --adaptive-selectors in preflight");
+        match err {
+            CliExit::ConfigError(msg) => assert!(
+                msg.contains("--adaptive-selectors") && msg.contains("`adaptive-selectors`"),
+                "config error must name the flag and the feature, got: {msg}"
+            ),
+            other => panic!("expected ConfigError, got: {other:?}"),
+        }
+    }
+
+    /// `--adaptive-selectors` with the feature compiled in: passes.
+    #[test]
+    fn adaptive_selectors_with_feature_ok() {
+        assert!(check_adaptive_selectors_feature_with(true, &adaptive_selectors_opts()).is_ok());
+    }
+
+    /// No `--adaptive-selectors`: passes regardless of the feature state, so
+    /// the gate never blocks a run that did not ask for the capability.
+    #[test]
+    fn no_adaptive_selectors_ok_without_feature() {
+        assert!(check_adaptive_selectors_feature_with(false, &CrawlOptions::default()).is_ok());
+    }
+
+    /// The gate is a build-capability check, not a value check: `--clean-ai`
+    /// on the SAME non-adaptive build still resolves through its own #761 gate
+    /// and must not be swallowed by this one (#1813).
+    #[test]
+    fn adaptive_gate_does_not_shadow_the_clean_ai_gate() {
+        let opts = CrawlOptions {
+            ai: true,
+            ..adaptive_selectors_opts()
+        };
+        assert!(check_clean_ai_feature_with(true, &opts).is_ok());
+        assert!(check_adaptive_selectors_feature_with(false, &opts).is_err());
     }
 
     // ========================================================================

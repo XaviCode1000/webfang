@@ -211,6 +211,16 @@ async fn __main() -> CliExit {
         return exit;
     }
 
+    // 6e2. Adaptive-selectors feature preflight (#1813): --adaptive-selectors
+    // on a non-adaptive build parses as a hidden compatibility placeholder, so
+    // without this gate the flag would exit 0 having done nothing — the engine
+    // builder is `#[cfg]`-gated out entirely. Same shape and exit code (78) as
+    // 6e; the placeholder in `cli::spec_command` is deliberately kept as the
+    // parse half of this two-part gate.
+    if let Err(exit) = preflight::check_adaptive_selectors_feature(&opts) {
+        return exit;
+    }
+
     // 6f. Obsidian vault/output conflict preflight (#762): an explicit
     // --vault redirect cannot coexist with a custom non-default -o/WEBFANG_OUTPUT.
     if let Err(exit) = webfang_core::cli::commands::validate_vault_output_conflict(&opts) {

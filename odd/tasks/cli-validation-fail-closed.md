@@ -141,11 +141,43 @@ per the mime.rs nuance above.
       (unchanged — T2 is invisible without the `ai` feature, see below);
       `webfang_ai --features ai` 226 passed; `burst` filter 38/38 (no T1
       regression); `--features ai,adaptive-selectors` 3608 passed.
-- [ ] T3 — `--adaptive-selectors` on a non-adaptive build fails closed with a
-      message naming the feature (mirror the `preflight.rs` rejection style,
-      not the hidden-placeholder path in `spec_command.rs:160-162`).
-      Behavioral test: flag on a `--no-default-features`-style build without
-      `adaptive-selectors` → exit 64 naming `adaptive-selectors`.
+- [x] T3 — `--adaptive-selectors` fails closed on a non-adaptive build, exit
+      **78**. New `preflight::check_adaptive_selectors_feature`
+      (`preflight.rs:1421`) wired as step **6e2** in `main.rs`, right after
+      the `#761` `check_clean_ai_feature` call — it mirrors that sibling
+      gate exactly, which is the repo's own precedent for build-capability
+      gates (`check_elastic_sink`, `check_js_dependencies`,
+      `check_export_format_vector` all return `ConfigError` = 78). The user
+      passed a perfectly valid boolean; the binary lacks the capability, so
+      this is a build-configuration error, which is what those gates
+      classify as 78. Binding a clap parser was rejected: the arg is
+      `ArgAction::SetTrue` (no value to validate) and 64 would have required
+      a second parallel validator.
+      **The hidden placeholder stays** (`spec_command.rs:160-162`) — it is
+      the *parse half* of the two-part gate; deleting it would downgrade a
+      named error to clap's generic "unexpected argument" (64) that never
+      names the feature. Comment added so nobody "fixes" it later.
+      **Correction: `clean_ai` was NEVER latent-broken.** `check_clean_ai_feature`
+      (`preflight.rs:1382`, issue #761) already rejected it with exit 78. Only
+      `adaptive_selectors` lacked its gate; the issue's framing of both flags
+      as broken is wrong. A test now pins the two gates as independent.
+      Testability (the hard part — CI runs `--all-features`, so the defect is
+      invisible there): a `check_*_with(feature_enabled: bool, opts)` injection
+      seam (the repo's #761/#796 pattern) makes the negative case run under
+      `--all-features`, PLUS a mutually-`cfg`'d behavioral file
+      `tests/adaptive_selectors_gate_test.rs` whose two lanes each prove
+      non-empty. `webfang_path()` rebuilds the CLI with the test crate's exact
+      feature set, so the negative lane runs a genuinely non-adaptive binary.
+      RED captured live: exit 0 with the page fetched and extracted
+      (`Status: ... [Completed, 85 chars]`). GREEN: exit 78 with **zero**
+      requests against the wiremock. Env-var entry point
+      (`WEBFANG_ADAPTIVE_SELECTORS=true`) was fail-open too and is now closed.
+      Behavioral delta: only on builds WITHOUT the feature and only when the
+      capability is requested (argv or env): exit 0 → 78, before any network
+      I/O. On adaptive builds: unchanged.
+      Verification: `--all-features` 3689 passed / 21 skipped; negative lane
+      `ai,persistence,console` 3629 passed / 21 skipped; `burst`+`max_tokens`
+      filter 46/46 (no T1/T2 regression); check/clippy/fmt/rustdoc clean.
 - [ ] T4 — Collapse `images` + `documents` into one feature; verify
       `--no-default-features` actually disables it (unified `get_mime_type`
       table, single gate). Rewrite the justification per the mime.rs nuance
@@ -167,7 +199,8 @@ CI workflow edits, support-line backports.
 
 - [ ] Invalid rate-limit burst → typed config error (exit 64), never a panic
 - [ ] `--max-tokens` rejects zero and has a documented maximum
-- [ ] `--adaptive-selectors` on a non-adaptive build fails closed naming the feature
+- [x] `--adaptive-selectors` on a non-adaptive build fails closed naming the feature
+      → **exit 78** (preflight stage), not 64
 - [ ] `images` + `documents` collapsed; `--no-default-features` disables it
 - [ ] `webfang_mcp` integration tests run in the default `nextest` invocation
 
@@ -213,19 +246,26 @@ carries `Closes #1813`.
 
 ### Open items carried forward
 
+- **Cross-crate feature skew (pre-existing, NOT fixed here):** if
+  `webfang_core` is built with `adaptive-selectors` but `webfang_cli` is not,
+  the gate passes (it checks core's own cfg) while
+  `build_adaptive_engine` is still compiled out — the original fail-open
+  survives that combination. This belongs to the #433 feature-direction
+  policy and is outside every slice's surface. Worth its own issue.
 - **T6 verification must pass feature flags.** `webfang_core`'s default set is
   `["images", "documents"]` — it excludes `ai`. A bare
   `cargo nextest run -p webfang_core` compiles the T2 test file to ZERO tests
-  and still reads green. T6 must run `--features ai` (and
-  `ai,adaptive-selectors` for the two `--help` snapshots) or T2 ships
-  unverified.
-- **New finding, NOT in #1813's scope:** `cargo nextest run -p webfang_ai`
-  reports "no tests to run" on a clean tree — `webfang_ai` declares no
-  `default` feature, so its entire suite is `cfg(feature = "ai")`-gated and
-  silently skipped. This is the SAME defect class as acceptance criterion 5
-  (F-25 / the `webfang_mcp` gates) but in a crate that criterion does not
-  name. Findings do not authorize scope expansion → raise as a follow-up
-  issue for the maintainer rather than absorbing it here.
+  and still reads green. T6 must run `--all-features` (covers T2 + T3) plus
+  the negative lane `--features ai,persistence,console` (T3's fail-closed
+  case) or T2/T3 ship unverified.
+- **Follow-up issue filed: #1852** — the default `nextest` invocation
+  silently skips 173 `webfang_mcp` tests and 226 `webfang_ai` tests. Measured
+  (`nextest list -p webfang_mcp`: 515 default vs 688 with `--features mcp`).
+  CI covers them via `--all-features`, so it is a local false-green, not a CI
+  hole; the two crates are NOT symmetric — `default = ["mcp"]` is free
+  (`webfang_core/mcp` is an empty marker) but `default = ["ai"]` would drag
+  `ort` into every default build, which the issue explicitly recommends
+  against.
 - **Semantic narrowing (T1 + T2):** a programmatic `Args` that sets
   `crawler.rate_limit_burst` / `ai.max_tokens` *without* going through clap now
   bypasses the bound and receives the derived default. No production caller
@@ -235,10 +275,13 @@ carries `Closes #1813`.
   + `main.rs`, outside every slice's surface).
 - `NumericPolicy::above_max_message` cannot interpolate the offending value
   (`&'static str`); clap's own error frame supplies the number. Accepted.
+- No `warn!`/tracing added in T3, deliberately: every sibling build-capability
+  gate returns silently and lets `CliExit`'s stderr path print.
 
 ## Next step
 
-T3 — `--adaptive-selectors` must fail closed on a non-adaptive build with a
-message naming the feature. Same writer discipline; the open question is
-whether it can reuse the preflight stage (exit 78) or must bind a parser
-(exit 64) — decide from the mechanism, and report which.
+T4 — collapse `images` + `documents` into one feature. This is the only slice
+that changes public feature semantics AND touches `Cargo.toml` (the repo's
+"Ask first" bucket), so the maintainer confirms the design before it lands.
+T5 (`webfang_mcp` test gates) overlaps #1852 and may be narrowed or deferred
+to it — decide before starting.

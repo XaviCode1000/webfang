@@ -157,6 +157,14 @@ fn build_arg(spec: &'static OptionSpec, headings: Headings) -> clap::Arg {
     // byte-for-byte (identity/env/default/parse behavior stay identical; only
     // visibility and help text differ). Aliases already applied above match
     // both configurations because hidden args render nothing.
+    //
+    // #1813: DO NOT "fix" the placeholder by deleting the arg. Hiding is what
+    // makes the flag PARSE; deleting it would turn an actionable
+    // build-capability error into clap's "unexpected argument" (exit 64) that
+    // never names the missing feature. The rejection half lives in
+    // `preflight::check_adaptive_selectors_feature` /
+    // `preflight::check_clean_ai_feature` (exit 78, before any network I/O),
+    // and it can only see the request because this arg still parses it.
     if !spec.active() {
         arg = arg.help(hidden_placeholder_help(spec)).hide(true);
     }
