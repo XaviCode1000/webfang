@@ -514,6 +514,9 @@ impl SitemapParser {
     /// Observability: runs inside the caller's `sitemap.parse_url` span; every
     /// failure path logs through [`log_scrape_error`] with the caller's
     /// correlation (#1318).
+    // The parameters mirror the caller's span state one-to-one; bundling them
+    // into a struct would add a type for a single private call site.
+    #[allow(clippy::too_many_arguments)]
     async fn parse_decompressed_body(
         &self,
         body: &[u8],
