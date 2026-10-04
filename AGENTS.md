@@ -1021,24 +1021,21 @@ merge PR to main
          version bump ([workspace.package] in Cargo.toml) + CHANGELOG.md (cliff.toml)
    merge Release PR (human review — the ONE place to polish changelog text)
    └─> release-plz-release job: pushes tag v{{ version }} (single lockstep version)
-         │   The tag push does NOT trigger release.yml — see the note below.
-         └─> dispatch-release job: calls release.yml via workflow_dispatch
-             └─> release.yml: 4 binaries + SHA256SUMS + GitHub Release
-                 (linux x86_64/aarch64, macOS Apple Silicon, Windows x86_64 —
-                 Intel macOS is not built: ONNX Runtime dropped x64 macOS as of
-                 1.24.1, so the `ai` feature has no prebuilt to link against)
+       └─> tag push fires release.yml natively (push: tags — App token, no suppression)
+           └─> release.yml: 4 binaries + SHA256SUMS + GitHub Release
+               (linux x86_64/aarch64, macOS Apple Silicon, Windows x86_64 —
+               Intel macOS is not built: ONNX Runtime dropped x64 macOS as of
+               1.24.1, so the `ai` feature has no prebuilt to link against)
 ```
 
-> ⚠️ **The `v*` tag push does NOT trigger `release.yml`, and never did (#1478).** GitHub
-> suppresses workflow runs caused by `GITHUB_TOKEN`-generated events, and `release-plz` pushes
-> the tag as `github-actions[bot]` — so `release.yml`'s `push: tags: v*` trigger never fired for
-> an automated tag. Evidence: `v2.0.0` (human tagger) ran `release.yml` via `event: push`, while
-> `v2.1.0` shipped its binaries only through a **manual** dispatch and `v2.1.1` ended with a tag
-> and **no Release at all**. The hand-off is therefore an explicit `workflow_dispatch` call from
-> the `dispatch-release` job — `workflow_dispatch` and `repository_dispatch` are the documented
-> exceptions to that suppression (proven in-repo: run 35403760298,
-> `actor=github-actions[bot]`). Do not "restore" a tag-push-based hand-off: under `GITHUB_TOKEN`
-> it cannot work.
+> ⚠️ **The `v*` tag push IS the hand-off — `release.yml` triggers on `push: tags` natively.**
+> Both release-plz jobs mint a GitHub App token, and GitHub only suppresses workflow runs
+> for `GITHUB_TOKEN`-generated events, so App-pushed tags fire the trigger like any human
+> push. History: under `GITHUB_TOKEN` the same tags never fired it — `v2.1.0` shipped its
+> binaries only through a **manual** dispatch and `v2.1.1` ended with a tag and **no Release
+> at all** (#1478) — and the hand-off was an explicit `workflow_dispatch` call from a
+> `dispatch-release` job. Do not reintroduce that job: with the native trigger live it would
+> run `release.yml` twice per release.
 
 Configuration lives in `release-plz.toml` (workspace: `git_only = true`, `git_tag_name = "v{{
 version }}"`, `version_group = "webfang"` on every processed crate, `publish = false`) and
@@ -1046,22 +1043,19 @@ version }}"`, `version_group = "webfang"` on every processed crate, `publish = f
 
 - All crates share ONE version and ONE tag per release — the tag must keep the `v*` shape or
   the dispatcher filter and `release.yml` preflight reject it (`git_tag_name` is load-bearing).
-- The hand-off from `release-plz` to `release.yml` is `workflow_dispatch`, never the tag push
-  (see the note above). The dispatcher only ever fires for a tag that both sits at the pushed
-  commit and carries the `release-plz` fingerprint (`tagger=github-actions[bot]` + subject
-  `chore: Release package …`), so historical or human tags are never built and published.
+- The hand-off from `release-plz` to `release.yml` is the `push: tags` trigger, never a
+  dispatch call (see the note above). A tag is trusted only if it both sits at the pushed
+  commit and carries the `release-plz` fingerprint (tagger `github-actions[bot]` pre-migration
+  or the App bot since slice 2 + subject `chore: Release package …`), so historical or human
+  tags are never built and published.
 - `webfang_benchmark` and `webfang_test_utils` are excluded (`release = false`).
 - Breaking changes: declare `BREAKING CHANGE: <why>` in the commit footer → major bump; `feat:`
   → minor; `fix:`/`perf:` → patch.
 - The tag must never be created by hand anymore (except emergency recoveries); release-plz owns it.
-- Release PRs use `GITHUB_TOKEN` deliberately (#1205): GitHub does not deliver `pull_request`
-  events for GITHUB_TOKEN-created PRs, so pr-validation never runs on `chore/release-*`
-  branches (whose ISO-8601 names would fail the branch regex). Do NOT migrate to a PAT
-  without first allowing that branch shape in `pr-validation.yml`.
-  (Slice 1 landed: the `release-pr` job mints a GitHub App token, so Release PRs now
-  trigger checks; the `chore/release-*` exemption is already in `pr-validation.yml`
-  (#1474) and #1177 carries `status:approved`. The tag/release job stays on
-  `GITHUB_TOKEN` + dispatch until the full migration.)
+- Both release-plz jobs mint a GitHub App token (the full migration closed #1205):
+  App-opened Release PRs deliver `pull_request` events so checks run without a human-token
+  rerun, and App-pushed tags fire `push: tags` with no dispatch job. The `chore/release-*`
+  exemption stays in `pr-validation.yml` (#1474) and #1177 carries `status:approved`.
 
 ### Pre-commit gate (every commit)
 
