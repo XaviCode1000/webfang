@@ -88,6 +88,12 @@ pub(crate) async fn run_batch(
         Err(e) => return e,
     };
 
+    // Issue #1814 (slice B, AC4): share the slice with the blocking-pool
+    // export (same rationale as orchestrator::run) — `batch_exit_code` still
+    // needs `results.len()` after the export, and an `Arc` move never clones
+    // page content.
+    let results: std::sync::Arc<[domain::ScrapedContent]> = std::sync::Arc::from(results);
+
     // Resume mode (#637): construct the state store so `export_phase` can mark
     // each URL as processed — no URL filtering, they were already crawled.
     let state_store = match build_batch_resume_store(&opts) {
@@ -112,9 +118,11 @@ pub(crate) async fn run_batch(
     let _ = report_phase(&results, &failures, 0, opts.verbosity);
 
     #[cfg(feature = "ai")]
-    let export_exit = export_phase(&results, &opts, state_store.as_deref(), ai_cleaner).await;
+    let export_exit =
+        export_phase(std::sync::Arc::clone(&results), &opts, state_store.as_deref(), ai_cleaner)
+            .await;
     #[cfg(not(feature = "ai"))]
-    let export_exit = export_phase(&results, &opts, state_store.as_deref()).await;
+    let export_exit = export_phase(std::sync::Arc::clone(&results), &opts, state_store.as_deref()).await;
 
     // Final exit code aggregates BOTH crawl-level and extraction-level outcomes
     // with `#537` severity routing: partial success -> 69, all-fail with an

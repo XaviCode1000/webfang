@@ -128,16 +128,28 @@ fn sidecar_path_for(export_path: &Path) -> PathBuf {
 /// On success a provenance sidecar is written next to the export (PI-9) and its
 /// path is named in the response, so the boundary travels with the bytes rather
 /// than only with this tool result.
-fn export_results(
-    results: &[ScrapedContent],
+///
+/// Issue #1814 (slice B, AC4): `process_results` is sync filesystem I/O plus a
+/// SHA-256 per item plus resume-gate state writes, so it runs on the blocking
+/// pool. The handler already owns `results` (a snapshot copy of the session
+/// buffer), so the owned `Vec` moves into the blocking task — no content
+/// clone, and the provenance/error mapping is unchanged.
+async fn export_results(
+    results: Vec<ScrapedContent>,
     output_dir: PathBuf,
     format: ExportFormat,
-    filename: &SanitizedFilename,
+    filename: SanitizedFilename,
 ) -> Result<CallToolResult, McpError> {
     let count = results.len();
-    match process_results(results, output_dir.clone(), format, filename.as_str(), None) {
-        Ok(_) => {
-            let path = resolve_export_path(&output_dir, filename, format);
+    let name = filename.as_str().to_string();
+    let work_dir = output_dir.clone();
+    let outcome = tokio::task::spawn_blocking(move || {
+        process_results(&results, work_dir, format, &name, None)
+    })
+    .await;
+    match outcome {
+        Ok(Ok(_)) => {
+            let path = resolve_export_path(&output_dir, &filename, format);
             write_provenance_sidecar(&path, format, count);
             tracing::info!(documents = count, path = %path.display(), "export completed");
             Ok(provenance::local_text(&format!(
@@ -148,9 +160,15 @@ fn export_results(
                 sidecar_path_for(&path).display()
             )))
         },
-        Err(e) => Ok(provenance::neutralized_error(&format!(
+        Ok(Err(e)) => Ok(provenance::neutralized_error(&format!(
             "error al exportar: {e}"
         ))),
+        Err(join) => {
+            tracing::warn!(error = %join, "export_spawn_blocking_join_failed");
+            Ok(provenance::neutralized_error(&format!(
+                "error al exportar: la tarea de exportación falló en el pool de bloqueo: {join}"
+            )))
+        },
     }
 }
 
@@ -437,7 +455,7 @@ impl McpHandler {
         span.record("filename", filename.as_str());
         span.record("results", results.len());
 
-        export_results(&results, output_dir, ExportFormat::Jsonl, &filename)
+        export_results(results, output_dir, ExportFormat::Jsonl, filename).await
     }
 
     /// Export the current session's crawl results with embeddings for external vector-database loading
@@ -475,7 +493,7 @@ impl McpHandler {
         span.record("filename", filename.as_str());
         span.record("results", results.len());
 
-        export_results(&results, output_dir, ExportFormat::Vector, &filename)
+        export_results(results, output_dir, ExportFormat::Vector, filename).await
     }
 
     /// Full export pipeline: scrape (when `url` is given) → export synchronously
@@ -572,7 +590,7 @@ impl McpHandler {
                 REASON_PATH_NOT_ALLOWED,
             )
         })?;
-        export_results(&results, output_dir, format, &filename)
+        export_results(results, output_dir, format, filename).await
     }
 }
 

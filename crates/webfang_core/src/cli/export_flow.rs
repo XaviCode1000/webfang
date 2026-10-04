@@ -33,9 +33,16 @@ use crate::error::ErrorClass;
 // ============================================================================
 
 /// Configuration for the export flow.
+///
+/// `results` is shared ownership (`Arc<[ScrapedContent]>`) rather than a
+/// borrow: the export itself runs on the blocking pool (issue #1814, slice B
+/// AC4), which requires `'static` data, while the caller (`orchestrator` /
+/// `batch_flow`) keeps its own `Arc` handle for `report_phase` after the
+/// export. Sharing the slice costs one refcount increment — never a clone of
+/// page content.
 #[allow(dead_code)]
 pub struct ExportConfig<'a> {
-    pub(crate) results: &'a [ScrapedContent],
+    pub(crate) results: std::sync::Arc<[ScrapedContent]>,
     pub(crate) output_dir: PathBuf,
     pub(crate) format: OutputFormat,
     pub(crate) export_format: ExportFormat,
@@ -62,14 +69,14 @@ pub async fn run_export(
 ) -> Result<Vec<String>, CliExit> {
     if config.clean_ai {
         match ai_cleaner {
-            Some(cleaner) => run_ai_export(&config, cleaner).await,
+            Some(cleaner) => run_ai_export(config, cleaner).await,
             None => Err(CliExit::ConfigError(
                 "Se solicitó limpieza semántica AI pero el limpiador no está disponible (no se propagó una falla de inicialización)"
                     .into(),
             )),
         }
     } else {
-        run_standard_export(&config)
+        run_standard_export(config).await
     }
 }
 
@@ -83,7 +90,7 @@ pub async fn run_export(config: ExportConfig<'_>) -> Result<Vec<String>, CliExit
                 .into(),
         ));
     }
-    run_standard_export(&config)
+    run_standard_export(config).await
 }
 
 /// Surface the shared Spanish unreadable-state notice on the export resume
@@ -97,25 +104,41 @@ fn warn_unreadable_resume_state(record_store: &Option<crate::infrastructure::exp
 }
 
 /// Standard export path (backward compatible).
-fn run_standard_export(config: &ExportConfig<'_>) -> Result<Vec<String>, CliExit> {
+///
+/// Issue #1814 (slice B, AC4): `process_results` is sync filesystem I/O plus a
+/// SHA-256 per item plus resume-gate state writes, so it runs on the blocking
+/// pool. The owned `RecordStore` and the shared `Arc<[ScrapedContent]>` move
+/// into the closure — the D3 resume-gate ordering is untouched, only where the
+/// work executes.
+async fn run_standard_export(config: ExportConfig<'_>) -> Result<Vec<String>, CliExit> {
     // Bridge the state-store port onto the v2 RecordStore seam (shared
     // helper — same directory + domain derivation as the scrape path).
+    // Built BEFORE the spawn: `config.state_store` is a borrow of caller
+    // state, while the owned bridge is what moves into the blocking task.
     let record_store = config.state_store.map(record_store_bridge);
     warn_unreadable_resume_state(&record_store);
-    let ctx = record_store
-        .as_ref()
-        .map(|store| export_factory::ResumeContext::new(store).with_resume(config.resume));
-    match export_factory::process_results(
-        config.results,
-        config.output_dir.clone(),
-        config.export_format,
-        "export",
-        ctx.as_ref(),
-    ) {
-        Ok(urls) => Ok(urls),
-        Err(e) => {
-            warn!(error = %e, format = ?config.export_format, "export of scrape results failed");
+    let resume = config.resume;
+    let output_dir = config.output_dir;
+    let export_format = config.export_format;
+    let results = config.results;
+    let outcome = tokio::task::spawn_blocking(move || {
+        let ctx = record_store
+            .as_ref()
+            .map(|store| export_factory::ResumeContext::new(store).with_resume(resume));
+        export_factory::process_results(&results, output_dir, export_format, "export", ctx.as_ref())
+    })
+    .await;
+    match outcome {
+        Ok(Ok(urls)) => Ok(urls),
+        Ok(Err(e)) => {
+            warn!(error = %e, format = ?export_format, "export of scrape results failed");
             Err(CliExit::IoError(e.to_string()))
+        },
+        Err(join) => {
+            warn!(error = %join, format = ?export_format, "export task failed on the blocking pool");
+            Err(CliExit::IoError(format!(
+                "la exportación falló en el pool de bloqueo: {join}"
+            )))
         },
     }
 }
@@ -123,7 +146,7 @@ fn run_standard_export(config: &ExportConfig<'_>) -> Result<Vec<String>, CliExit
 /// AI semantic cleaning export path.
 #[cfg(feature = "ai")]
 async fn run_ai_export(
-    config: &ExportConfig<'_>,
+    config: ExportConfig<'_>,
     cleaner: std::sync::Arc<dyn SemanticCleaner>,
 ) -> Result<Vec<String>, CliExit> {
     info!(
@@ -137,7 +160,7 @@ async fn run_ai_export(
     let record_store = config.state_store.map(record_store_bridge);
     warn_unreadable_resume_state(&record_store);
 
-    let cleaned_chunks = clean_all_pages(config.results, &cleaner).await?;
+    let cleaned_chunks = clean_all_pages(&config.results, &cleaner).await?;
 
     info!(
         "AI cleaning complete: {} chunks from {} pages",
@@ -145,21 +168,37 @@ async fn run_ai_export(
         config.results.len()
     );
 
-    let ctx = record_store
-        .as_ref()
-        .map(|store| export_factory::ResumeContext::new(store).with_resume(config.resume));
-
-    match export_factory::process_results_with_chunks(
-        &cleaned_chunks,
-        config.output_dir.clone(),
-        config.export_format,
-        "export",
-        ctx.as_ref(),
-    ) {
-        Ok(urls) => Ok(urls),
-        Err(e) => {
-            warn!(error = %e, format = ?config.export_format, "export of AI-cleaned results failed");
+    // Issue #1814 (slice B, AC4): `process_results_with_chunks` is sync
+    // filesystem I/O + SHA-256 per chunk + resume-gate state writes — dispatch
+    // it to the blocking pool with the owned chunks and record store. The
+    // D3 ordering (claim/decide/commit/final_persist) is unchanged.
+    let resume = config.resume;
+    let output_dir = config.output_dir;
+    let export_format = config.export_format;
+    let outcome = tokio::task::spawn_blocking(move || {
+        let ctx = record_store
+            .as_ref()
+            .map(|store| export_factory::ResumeContext::new(store).with_resume(resume));
+        export_factory::process_results_with_chunks(
+            &cleaned_chunks,
+            output_dir,
+            export_format,
+            "export",
+            ctx.as_ref(),
+        )
+    })
+    .await;
+    match outcome {
+        Ok(Ok(urls)) => Ok(urls),
+        Ok(Err(e)) => {
+            warn!(error = %e, format = ?export_format, "export of AI-cleaned results failed");
             Err(CliExit::IoError(e.to_string()))
+        },
+        Err(join) => {
+            warn!(error = %join, format = ?export_format, "AI export task failed on the blocking pool");
+            Err(CliExit::IoError(format!(
+                "la exportación falló en el pool de bloqueo: {join}"
+            )))
         },
     }
 }
