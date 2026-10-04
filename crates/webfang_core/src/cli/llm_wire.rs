@@ -685,10 +685,9 @@ mod tests {
         let identity = age::x25519::Identity::generate();
         let recipient = identity.to_public();
         let ciphertext = {
-            let encryptor = age::Encryptor::with_recipients(std::iter::once(
-                &recipient as &dyn age::Recipient,
-            ))
-            .expect("encryptor");
+            let encryptor =
+                age::Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient))
+                    .expect("encryptor");
             let mut out = encryptor.wrap_output(Vec::new()).expect("wrap_output");
             out.write_all(b"sk-fifo-secret").expect("write payload");
             out.finish().expect("finish")
@@ -731,7 +730,8 @@ mod tests {
         // Act: the build runs as a concurrent task while a tick task asserts
         // the scheduler is live; the tick must land within 1 s even though the
         // credential read is still in flight.
-        let build = tokio::spawn(async move { build_embedding_provider(&opts, &providers, false).await });
+        let build =
+            tokio::spawn(async move { build_embedding_provider(&opts, &providers, false).await });
         let tick = tokio::spawn(async {
             tokio::time::sleep(Duration::from_millis(100)).await;
         });

@@ -118,11 +118,20 @@ pub(crate) async fn run_batch(
     let _ = report_phase(&results, &failures, 0, opts.verbosity);
 
     #[cfg(feature = "ai")]
-    let export_exit =
-        export_phase(std::sync::Arc::clone(&results), &opts, state_store.as_deref(), ai_cleaner)
-            .await;
+    let export_exit = export_phase(
+        std::sync::Arc::clone(&results),
+        &opts,
+        state_store.as_deref(),
+        ai_cleaner,
+    )
+    .await;
     #[cfg(not(feature = "ai"))]
-    let export_exit = export_phase(std::sync::Arc::clone(&results), &opts, state_store.as_deref()).await;
+    let export_exit = export_phase(
+        std::sync::Arc::clone(&results),
+        &opts,
+        state_store.as_deref(),
+    )
+    .await;
 
     // Final exit code aggregates BOTH crawl-level and extraction-level outcomes
     // with `#537` severity routing: partial success -> 69, all-fail with an

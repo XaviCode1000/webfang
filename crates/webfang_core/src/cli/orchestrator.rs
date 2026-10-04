@@ -267,11 +267,20 @@ pub async fn run(
     // partial-success crawl silently discarded all its content (exit 69 with an
     // empty output directory), unlike batch mode which always exports.
     #[cfg(feature = "ai")]
-    let export_exit =
-        export_phase(std::sync::Arc::clone(&results), &opts, state_store.as_deref(), ai_cleaner)
-            .await;
+    let export_exit = export_phase(
+        std::sync::Arc::clone(&results),
+        &opts,
+        state_store.as_deref(),
+        ai_cleaner,
+    )
+    .await;
     #[cfg(not(feature = "ai"))]
-    let export_exit = export_phase(std::sync::Arc::clone(&results), &opts, state_store.as_deref()).await;
+    let export_exit = export_phase(
+        std::sync::Arc::clone(&results),
+        &opts,
+        state_store.as_deref(),
+    )
+    .await;
 
     // Special cell — Cancelled (error-classification-matrix): cooperative
     // cancellation is a control signal, not an operational failure, so it
@@ -851,7 +860,8 @@ mod tests {
         let mut opts = CrawlOptions::default();
         opts.export.output_dir = std::path::PathBuf::from("-");
 
-        let results: std::sync::Arc<[crate::domain::ScrapedContent]> = std::sync::Arc::from(Vec::new());
+        let results: std::sync::Arc<[crate::domain::ScrapedContent]> =
+            std::sync::Arc::from(Vec::new());
         let exit = export_phase(
             results,
             &opts,
@@ -900,7 +910,8 @@ mod tests {
         opts.export.quick_save = true;
         opts.export.obsidian_vault = Some(vault.clone());
 
-        let results: std::sync::Arc<[crate::domain::ScrapedContent]> = std::sync::Arc::from(Vec::new());
+        let results: std::sync::Arc<[crate::domain::ScrapedContent]> =
+            std::sync::Arc::from(Vec::new());
         let exit = export_phase(
             results,
             &opts,
