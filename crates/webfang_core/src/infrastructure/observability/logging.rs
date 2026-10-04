@@ -12,7 +12,7 @@ use tracing_appender::non_blocking::WorkerGuard;
 use tracing_appender::rolling::{RollingFileAppender, Rotation};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-use crate::error::Result as ScraperResult;
+use crate::error::{Result as ScraperResult, ScraperError};
 
 /// Guard for JSON logging - ensures flush on drop (RAII)
 ///
@@ -110,6 +110,13 @@ pub fn init_json_logging(
 /// * `no_color` - If true, disable ANSI colors
 /// * `log_dir` - Optional directory for log files
 /// * `app_name` - Application name for log file naming
+///
+/// # Errors
+///
+/// Returns [`ScraperError::Config`] when the tracing subscriber cannot be
+/// installed (e.g. a global subscriber already exists in this process): the
+/// process would run without the requested log output, so the failure must
+/// surface instead of being swallowed (issue #1814, fail closed).
 pub fn init_json_logging_dual(
     level: &str,
     quiet: bool,
@@ -164,10 +171,14 @@ pub fn init_json_logging_dual(
             .with_target(true)
             .json();
 
-        subscriber.with(json_layer).try_init().ok();
+        subscriber.with(json_layer).try_init().map_err(|e| {
+            ScraperError::Config(format!("no se pudo instalar el subscriber de logging: {e}"))
+        })?;
         Ok(log_guard)
     } else {
-        subscriber.try_init().ok();
+        subscriber.try_init().map_err(|e| {
+            ScraperError::Config(format!("no se pudo instalar el subscriber de logging: {e}"))
+        })?;
         Ok(LogGuard::no_op())
     }
 }
@@ -201,6 +212,33 @@ mod tests {
         // Should not panic - initializes with default settings
         let result = init_json_logging("info", None, "test-app");
         assert!(result.is_ok());
+    }
+
+    /// Issue #1814 (defect 1): a subscriber that cannot be installed must
+    /// surface as a typed error, not be swallowed by `.ok()`.
+    ///
+    /// Deterministic under cargo-nextest (one process per test): the
+    /// `set_global_default` below is the install that makes `try_init` fail.
+    /// Under a shared-process libtest run an earlier test may have installed a
+    /// global subscriber already — either way the fallible init must return
+    /// `Err`, so the assertion holds in both runners.
+    #[test]
+    fn init_json_logging_dual_propagates_subscriber_install_failure() {
+        // Arrange: a global subscriber is already installed.
+        let _ = tracing::subscriber::set_global_default(tracing::subscriber::NoSubscriber::new());
+
+        // Act
+        let result = init_json_logging_dual("info", false, false, None, "subscriber-conflict");
+
+        // Assert: a typed Config error naming the failure, in Spanish.
+        let Err(err) = result else {
+            panic!("init must fail when a global subscriber is already installed");
+        };
+        assert!(
+            err.to_string()
+                .contains("no se pudo instalar el subscriber de logging"),
+            "error must name the subscriber failure in Spanish, got: {err}"
+        );
     }
 
     #[test]

@@ -1,0 +1,7 @@
+---
+source: crates/webfang_core/tests/behavioral/main.rs
+assertion_line: 47
+expression: redacted
+---
+Error: Configuración: no se pudo crear el archivo de trazas en '<OUT_DIR>/blocker/trace.jsonl': [IO_ERROR]
+  Sugerencia: verifique que la ruta padre de --trace-file exista y sea escribible, o elija otra ruta
