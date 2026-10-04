@@ -224,6 +224,15 @@ jobs:
       # webfang_core depending on cli/mcp/ai, or mcp on cli).
       - name: Dependency direction gate
         run: bash scripts/check_dependency_direction.sh
+      # Semantics harness for the gate above (#1825): proves on mktemp
+      # fixtures that a deliberately introduced forbidden edge fails the
+      # gate (negative control), that the [dev-dependencies] tier into
+      # webfang_test_utils is accepted, that a [dependencies] edge into the
+      # test harness is still rejected, and that the dotted-key form
+      # (`webfang_core.workspace = true`) is extracted rather than silently
+      # invisible. Offline, no repo state touched.
+      - name: Dependency direction gate semantics harness
+        run: bash scripts/test_dependency_direction.sh
       # Regression guard for #990 (ADR-0010): intra-crate Clean Architecture
       # layering `infrastructure → adapters → application → domain` (inward only).
       # Fails if `application` imports `infrastructure` etc. (see

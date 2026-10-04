@@ -5,12 +5,15 @@
 #                   Mutates ONLY the lines changed in the PR diff (--in-diff),
 #                   so cost is proportional to the change. cargo-mutants exits
 #                   2 when a mutant survives -> PR is blocked.
-#   - mutants-weekly: weekly baseline over the full hot-path scope, split into
-#                   64 deterministic shards (--shard k/64, --no-shuffle). The
-#                   shards partition the ~600 hot-path mutants (~9-10 per shard,
-#                   half the old per-shard draw — at that size 14 shards hit the
-#                   90-minute wall, #1436) so each job finishes well inside the
-#                   timeout. Report-only.
+  #   - mutants-weekly: weekly baseline over the full hot-path scope, split into
+  #                   64 deterministic shards (--shard k/64, --no-shuffle). The
+  #                   shards partition the ~600 hot-path mutants (~9-10 per shard,
+  #                   half the old per-shard draw — at that size 14 shards hit the
+  #                   90-minute wall, #1436) so each job finishes well inside the
+  #                   timeout. Report-only. #1825 widened the scope
+  #                   (export_factory.rs + adapters/**), so the per-shard draw
+  #                   rises accordingly; if the weekly wall is hit again,
+  #                   rebalance the shard count before assuming a regression.
 #   - report:        aggregates shard outcomes.json into a single summary.
 #
 # Fixed in this version (was broken):

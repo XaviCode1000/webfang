@@ -1638,6 +1638,10 @@ mod tests {
     /// (#758). The Obscura binary itself is supplied through a controlled
     /// PATH pointing at a tempdir with a fake `obscura` file, so this test
     /// stays free of process-global env mutation.
+    // The fake obscura binary is a `#!/bin/sh` script resolved through an
+    // extension-less PATH lookup — unix semantics with no Windows equivalent
+    // to assert (#1825).
+    #[cfg(unix)]
     #[test]
     fn hybrid_strategy_ok_without_chromium_feature() {
         let tmp = tempfile::TempDir::new().expect("tempdir");

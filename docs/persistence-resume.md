@@ -134,6 +134,14 @@ persist"). Cancelled runs exit **0** (cancellation beats error-class
 routing), and every persisted status is honest — no invented states. A
 following `--resume` re-drives everything not `COMMITTED`, exactly once.
 
+**Windows termination events (#1808, XP-S-02)**: the same drain is driven by
+Ctrl+C **and** by the console close/logoff/shutdown events that
+`tokio::signal::ctrl_c()` never observes. One process-wide
+`SetConsoleCtrlHandler` sources them; the owning `CancellationToken` is
+unchanged, so there is still exactly one shutdown authority. The console-close
+arm carries a ~5 s OS deadline — see ADR-0016 for why that residual cannot be
+engineered away.
+
 ---
 
 ## Crash matrix (SIGKILL injection harness)
