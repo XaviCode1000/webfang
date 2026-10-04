@@ -54,7 +54,6 @@ use async_compression::tokio::bufread::GzipDecoder;
 use futures::future::BoxFuture;
 use quick_xml::events::Event;
 use quick_xml::Reader;
-use std::borrow::Cow;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 use tracing::Instrument;
@@ -323,16 +322,16 @@ impl SitemapParser {
     /// (#1318).
     ///
     /// Body handling is bounded, not streaming (#1822): the response is
-    /// accumulated up to `max_response_size`, then handed to
-    /// [`Self::parse_decompressed_body`] — as a borrow when the body needed
-    /// no decompression, or after releasing the compressed input otherwise —
-    /// so only one body buffer stays live during the parse.
+    /// accumulated up to `max_response_size`, then decompressed by
+    /// [`Self::parse_decompressed_body`]'s caller — decompression consumes
+    /// the raw buffer, returning the same allocation when no compression was
+    /// detected — so only one body buffer stays live during the parse.
     // The #1318 migration replaced four inline `warn!` one-liners with
     // `log_scrape_error` calls that carry the correlation at each failure
     // stage; the fetch→validate→stream sequence stays one cohesive span body
     // above the line ratchet — same treatment as `parse_xml_sitemap` and
-    // `scrape_single_url_inner`. (#1822 moved the post-decompression tail
-    // into `parse_decompressed_body` to release the compressed input early.)
+    // `scrape_single_url_inner`. (#1822 extracted the post-decompression
+    // tail into `parse_decompressed_body`.)
     #[allow(clippy::too_many_lines)]
     #[tracing::instrument(
         level = "debug",
@@ -455,61 +454,39 @@ impl SitemapParser {
         }
 
         // [3.4] CompressionHandler integration: detect and decompress content.
-        // Returns a borrow of `raw_bytes` when no compression is detected —
-        // the single live body buffer — or an owned decompressed copy
-        // otherwise. Both sides are capped (`max_response_size` /
+        // Consumes `raw_bytes`: when no compression is detected the same
+        // allocation comes back — the single live body buffer — otherwise the
+        // decompressed output replaces it and the compressed input drops.
+        // Both sides are capped (`max_response_size` /
         // `max_decompressed_size`); during the decompression itself the
         // compressed input and the decompressed output coexist transiently,
         // which is inherent to the bounded two-layer re-sniff design (#757).
-        let decompressed = self
+        let body = self
             .compression_handler
-            .detect_and_decompress(&raw_bytes, url)
+            .detect_and_decompress(raw_bytes, url)
             .await
             .map_err(|e| SitemapError::DecompressionError(e.to_string()))?;
 
-        match decompressed {
-            // No compression: `body` aliases `raw_bytes`, which stays the one
-            // live buffer for the whole parse.
-            Cow::Borrowed(body) => {
-                self.parse_decompressed_body(
-                    body,
-                    url,
-                    &base_url,
-                    status.as_u16(),
-                    &content_type,
-                    depth,
-                    visited,
-                    correlation,
-                )
-                .await
-            },
-            // Owned decompressed copy: the compressed input is dead weight —
-            // release it so only one body buffer stays live during the parse
-            // (#1822).
-            Cow::Owned(decompressed) => {
-                drop(raw_bytes);
-                self.parse_decompressed_body(
-                    &decompressed,
-                    url,
-                    &base_url,
-                    status.as_u16(),
-                    &content_type,
-                    depth,
-                    visited,
-                    correlation,
-                )
-                .await
-            },
-        }
+        self.parse_decompressed_body(
+            &body,
+            url,
+            &base_url,
+            status.as_u16(),
+            &content_type,
+            depth,
+            visited,
+            correlation,
+        )
+        .await
     }
 
     /// Shared tail of [`Self::parse_with_depth`]: WAF inspection, XML parse,
     /// the per-parse memory gate, then index recursion or the crawl-budget
     /// pass.
     ///
-    /// Splitting the tail out lets the caller release the compressed input
-    /// buffer before this point whenever decompression produced an owned copy,
-    /// so only one body buffer stays live during the parse (#1822).
+    /// Splitting the tail out keeps `parse_with_depth` under the line ratchet
+    /// and carries the single-buffer contract (#1822): the body handed here
+    /// is the only live body buffer for the whole parse.
     ///
     /// Observability: runs inside the caller's `sitemap.parse_url` span; every
     /// failure path logs through [`log_scrape_error`] with the caller's
