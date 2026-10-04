@@ -47,6 +47,11 @@ examine_globs = [
   "crates/webfang_core/src/infrastructure/export/state_store.rs",
   "crates/webfang_core/src/infrastructure/crawler/checkpoint.rs",
   "crates/webfang_core/src/infrastructure/downloader/**",
+  # 2026-10 scope (#1825): the export factory — the #1235 comment already
+  # claimed export coverage but only state_store.rs was gated — and the
+  # adapters layer, the inbound side of the hexagon no glob reached before.
+  "crates/webfang_core/src/application/export_factory.rs",
+  "crates/webfang_core/src/adapters/**",
 ]
 
 # Re-exports and module glue add no mutation signal.

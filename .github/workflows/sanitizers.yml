@@ -68,6 +68,13 @@ jobs:
         run: sudo apt-get install -y cmake
       - name: Run TSan on concurrency modules
         # #515: include the ResourceGovernor semaphore path under TSan.
+        # #1825: webfang_ai is deliberately OUT of this job, documented as
+        # accepted. Exercising InferencePool's concurrency (inference_engine.rs:
+        # worker threads + bounded mpsc + Arc<Mutex<Session>>) requires
+        # --features ai, which drags the ort/ONNX-Runtime native build plus a
+        # real model download into a -Zbuild-std job with a 45-minute ceiling.
+        # The pool is covered by regular-CI unit tests; revisit only if a
+        # model-free TSan harness becomes possible.
         run: |
           RUSTFLAGS="-Zsanitizer=thread" \
           cargo +nightly test -Zbuild-std \
