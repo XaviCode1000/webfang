@@ -685,10 +685,13 @@ impl Engine {
     }
 
     /// Spawn a signal handler that sets the shutdown flag on SIGINT/SIGTERM
-    /// (and, on unix, SIGHUP — XP-S-03, #1608).
+    /// (and, on unix, SIGHUP — XP-S-03, #1608; on Windows, the console
+    /// close/logoff/shutdown events `ctrl_c()` never sees — XP-S-02, #1808).
     ///
     /// Also fires the cancellation token (#509) so workers blocked on
-    /// rate-limit or resource-governor waits abort instead of hanging.
+    /// rate-limit or resource-governor waits abort instead of hanging. The
+    /// console-event source only *fires* it: this token stays the run's one
+    /// shutdown authority (ADR-0016).
     fn spawn_signal_handler(
         shutdown: ShutdownSignal,
         cancel: CancellationToken,
@@ -699,8 +702,12 @@ impl Engine {
                 wait_for_unix_termination_signal().await;
                 #[cfg(not(unix))]
                 {
-                    tokio::signal::ctrl_c().await.ok();
-                    info!("Received interrupt — initiating graceful shutdown");
+                    match crate::infrastructure::platform::first_termination_event().await {
+                        Some(name) => info!("Received {name} — initiating graceful shutdown"),
+                        None => warn!(
+                            "interrupt handler registration failed — graceful shutdown will only respond to an explicit cancel"
+                        ),
+                    }
                 }
                 shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
                 cancel.cancel();
