@@ -198,9 +198,9 @@ pub(crate) enum CheckpointAction {
 }
 
 /// Outcome of [`CrawlSession::finish`]: the close facts the engine needs
-/// for its close trace event. The checkpoint IO already happened — the
-/// engine only reacts by clearing its own IO handle on [`CheckpointAction::Delete`]
-/// so its shutdown save cannot re-create the removed file.
+/// for its close trace event. The checkpoint IO already happened here —
+/// decided close verdicts are the ONLY checkpoint writers at close time;
+/// the engine's `shutdown()` performs no checkpoint I/O (#1823).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SessionClose {
     /// Human-readable run tag (seed host by default).
