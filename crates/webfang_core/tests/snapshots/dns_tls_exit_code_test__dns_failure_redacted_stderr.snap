@@ -1,0 +1,5 @@
+---
+source: crates/webfang_core/tests/dns_tls_exit_code_test.rs
+expression: redacted
+---
+Status: https://webfang-dns-test.invalid/ [Started] Status: https://webfang-dns-test.invalid/ [Fetching] <TIMESTAMP> ERROR <MODULE>: page scrape failed, error: error de red: DNS error: <RESOLVER>, url: https://webfang-dns-test.invalid/, stage: scrape, trace_id: "<TRACE_ID>" at <FILE>.rs:<LINE> Status: https://webfang-dns-test.invalid/ [Failed: Other error: error de red: DNS error: <RESOLVER>] Finished: 1 total, 0 succeeded, 1 failed Failed to scrape https://webfang-dns-test.invalid/: error de red: DNS error: <RESOLVER> No pages were successfully scraped Error: No pages were successfully scraped
