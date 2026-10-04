@@ -24,29 +24,37 @@ pub(crate) fn parse_download_concurrency(s: &str) -> Result<usize, String> {
 /// Validate `--rate-limit-burst`: explicit rate-limiter burst override
 /// (`WEBFANG_RATE_LIMIT_BURST`, budget model decision Q1/D1).
 ///
+/// This function is the SINGLE validating authority for the burst. Every
+/// non-empty value is either accepted or rejected — there is no arm that
+/// degrades silently to the hardware-derived default:
+///
 /// - Numeric values that fit `u32` and are >= 1 are accepted (the derived
 ///   default never produces 0, so neither may the operator).
 /// - `0` is rejected with a Spanish usage error (same "Zero Silent Loss"
 ///   philosophy as `--download-concurrency`).
-/// - A value spelled as an integer but OUT of `u32` range is rejected with a
-///   Spanish usage error (see below).
-/// - Genuinely non-numeric input warns and falls back to the hardware-derived
-///   default (consistent with the `ConcurrencyConfig` "auto" parser behavior).
+/// - A value spelled as an integer but OUT of `u32` range is rejected.
+/// - A value that is not a number at all is rejected.
+/// - An EMPTY or whitespace-only value means "not set" (`Ok(None)`), so
+///   `WEBFANG_RATE_LIMIT_BURST=""` keeps working as a neutraliser.
 ///
-/// # Why out-of-range is an error and not a warning
+/// # Why non-numeric is now an error too (#1813)
 ///
-/// The two inputs share a `ParseIntError` but are not the same request. `auto`
-/// is a keyword asking for the derived default; `4294967296` is an explicit
-/// number that cannot be honoured. Collapsing both into warn-and-default made
-/// an operator's typed burst silently become the hardware tier — a different
-/// cadence, reported only in a log line. Rejecting it keeps the boundary
-/// honest, and the `Err(String)` already routes to `CliExit::ConfigError`
-/// (exit 78) at the preflight call site, so no new error type is needed.
+/// This arm used to `record()` a note and return `Ok(None)`, on the theory
+/// that it matched the `ConcurrencyConfig` "auto" parser. That comparison does
+/// not hold: `auto` is a keyword the parser *understands*, whereas `banana` is
+/// a typo. Degrading a typo'd burst silently changed the request cadence the
+/// operator asked for, and the only evidence was one WARN line — the same class
+/// of defect as the out-of-range arm below, just quieter.
+///
+/// # Why the `Err(String)` shape
+///
+/// `Err(String)` already routes to `CliExit::ConfigError` (exit 78) at the
+/// preflight call site (`stage_budget_overrides`), so no new error type is
+/// needed and the exit code matches the `0` and out-of-range rejections exactly.
 ///
 /// Nothing ever overflowed `governor`: `s.parse::<u32>()` fails before the
 /// value reaches `Quota::allow_burst`, so this is a semantic fix, not a
 /// memory-safety one.
-#[allow(clippy::unnecessary_wraps)] // non-numeric deliberately warns instead of erroring
 pub(crate) fn parse_rate_limit_burst(s: &str) -> Result<Option<u32>, String> {
     let s = s.trim();
     if s.is_empty() {
@@ -63,16 +71,13 @@ pub(crate) fn parse_rate_limit_burst(s: &str) -> Result<Option<u32>, String> {
             "--rate-limit-burst «{s}» está fuera del rango admitido (debe estar entre 1 y {})",
             u32::MAX
         )),
-        Err(_) => {
-            // #1431: this runs before `init_logging_dual` installs the
-            // subscriber, so a `tracing::warn!` here would be dropped.
-            // Record the notice instead; the binary replays it once
-            // logging is live. The note names the offending raw value.
-            crate::cli::preflight_notes::record(format!(
-                "invalid rate-limit burst «{s}», using derived default"
-            ));
-            Ok(None)
-        },
+        // Not a number at all (#1813): a typo, not an `auto` request. Same
+        // rejection shape as the out-of-range arm so the operator sees one
+        // consistent Spanish message for every invalid burst.
+        Err(_) => Err(format!(
+            "--rate-limit-burst «{s}» no es un número (debe estar entre 1 y {})",
+            u32::MAX
+        )),
     }
 }
 
@@ -479,12 +484,30 @@ mod tests {
     }
 
     #[test]
-    fn parse_rate_limit_burst_non_numeric_warns_and_defaults() {
-        // Consistent with the ConcurrencyConfig "auto" parser: invalid input
-        // degrades to the derived default instead of aborting the run.
-        assert_eq!(parse_rate_limit_burst("abc"), Ok(None));
-        assert_eq!(parse_rate_limit_burst("auto"), Ok(None));
+    fn parse_rate_limit_burst_non_numeric_fails_closed_with_spanish_error() {
+        // #1813: the last fail-open arm. A typo'd value used to degrade to the
+        // derived default in silence (only a pre-logging note), so the operator
+        // got a different request cadence than the one they asked for.
+        for raw in ["abc", "auto", "1_0", "12x"] {
+            let err = parse_rate_limit_burst(raw)
+                .err()
+                .unwrap_or_else(|| panic!("{raw} must be rejected, not defaulted"));
+            assert!(
+                err.starts_with("--rate-limit-burst") && err.contains("no es un número"),
+                "expected a Spanish not-a-number error for {raw}, got: {err}"
+            );
+        }
+    }
+
+    /// The one deliberate carve-out: an EMPTY value still means "not set",
+    /// not "invalid". `parse_rate_limit_burst` is only ever called on a
+    /// `Some(raw)` the operator actually supplied, and `WEBFANG_RATE_LIMIT_BURST=""`
+    /// is a common way to neutralise a variable — hard-failing that would break
+    /// scripts for no safety gain.
+    #[test]
+    fn parse_rate_limit_burst_treats_empty_as_unset() {
         assert_eq!(parse_rate_limit_burst(""), Ok(None));
+        assert_eq!(parse_rate_limit_burst("   "), Ok(None));
     }
 
     /// #P4-4 item 6: an integer too wide for `u32` is an explicit request that

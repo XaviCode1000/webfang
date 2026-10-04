@@ -482,22 +482,31 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
             llm_provider: args.llm.llm_provider.clone(),
             embedding_provider: args.llm.embedding_provider.clone(),
             budget_overrides: crate::domain::budget::BudgetOverrides {
-                // #897 item 2 ("Zero Silent Loss"): an explicit `0` is
-                // rejected by `parse_rate_limit_burst`, and that rejection
-                // must mirror the preflight pipeline's hard error — never
-                // a silent degrade to the derived default. The legacy
-                // `From<Args>` path cannot return `Result`, so — like the
-                // `url` field above — a rejected value panics; the binary
-                // validates via `normalize()` before this conversion.
-                rate_burst: args.crawler.rate_limit_burst.as_deref().and_then(|raw| {
-                    let parsed = crate::cli::args::crawler::parse_rate_limit_burst(raw)
-                        .unwrap_or_else(|err| panic!("{err}"));
-                    parsed.map(|v| {
-                        crate::domain::budget::BurstPermits::new(v).unwrap_or_else(|_| {
-                            panic!("--rate-limit-burst debe ser >= 1 (recibido {v})")
-                        })
-                    })
-                }),
+                // #1813: `--rate-limit-burst` is resolved by ONE authority —
+                // `preflight::stage_budget_overrides`, reached through
+                // `preflight::normalize`, which `webfang_cli::main` runs
+                // (step 6b) BEFORE this conversion (step 6b). It rejects `0`,
+                // out-of-`u32` and non-numeric values with a Spanish
+                // `CliExit::ConfigError` (exit 78), and `merge_budget_overrides`
+                // carries its validated `BurstPermits` into the final options
+                // (`cli_capture.rate_burst.or(staged.rate_burst)`).
+                //
+                // This field used to parse the raw string a SECOND time and
+                // `panic!` on rejection, on the claim that the binary validates
+                // first. That claim was true only for the shipped binary's
+                // argv/env path, so the panics were a live landmine for any
+                // caller constructing `Args` programmatically (library
+                // embedders, MCP, tests) — production code must not abort on
+                // user input. Since an infallible `From` cannot report an
+                // error, contributing `None` and deferring to the pipeline is
+                // the honest shape: the duplicate parse is gone, and the
+                // override is still delivered by the pipeline.
+                //
+                // `main_flow_merge_preserves_valid_burst_override`
+                // (`cli::preflight`) pins that a VALID burst survives exactly
+                // this hand-off, so removing the second parse cannot silently
+                // drop the operator's value.
+                rate_burst: None,
                 // Explicit `--concurrency` (when not "auto") feeds the
                 // model as a crawl override — same explicit-wins rule as
                 // the preflight pipeline path.
@@ -605,24 +614,62 @@ mod tests {
     }
 
     // ========================================================================
-    // #897 item 2 — Zero Silent Loss: an explicit `--rate-limit-burst 0`
-    // must NEVER silently degrade to the derived default in `From<Args>`;
-    // it must be rejected as loudly as the preflight pipeline rejects it.
+    // #1813 — the burst is validated by ONE authority, and `From<Args>` is
+    // no longer a second, panicking one.
+    //
+    // Pre-fix this test was `#[should_panic(expected = "--rate-limit-burst…")]`
+    // and proved the WRONG thing: production code panicking on user input.
+    // `normalize()` (`cli::preflight::stage_budget_overrides`) already
+    // rejected `0` with `CliExit::ConfigError` (exit 78) BEFORE this
+    // conversion runs, and the validated value travels forward through
+    // `merge_budget_overrides`. So the correct invariant for an infallible
+    // `From` is: never panic, and never smuggle an unvalidated value.
     // ========================================================================
 
     #[test]
-    #[should_panic(expected = "--rate-limit-burst debe ser >= 1")]
-    fn from_args_rate_limit_burst_zero_is_rejected_not_silently_defaulted() {
+    fn from_args_never_panics_on_invalid_rate_limit_burst() {
+        clean_env();
+        for raw in ["0", "banana", "4294967296"] {
+            let args = Args::try_parse_from([
+                "webfang",
+                "-u",
+                "https://example.com",
+                "--rate-limit-burst",
+                raw,
+            ])
+            .expect("clap accepts the raw string; validation happens in preflight");
+
+            // The whole point: an invalid burst must not abort the process.
+            let opts = crate::application::crawl_options::CrawlOptions::from(args);
+            assert_eq!(
+                opts.budget_overrides.rate_burst, None,
+                "`From<Args>` must not smuggle an unvalidated burst for {raw}; \
+                 the value is owned by the preflight pipeline"
+            );
+        }
+    }
+
+    /// A VALID burst survives the same infallible `From` — as `None`, i.e.
+    /// deliberately deferred. The pipeline test in `cli::preflight`
+    /// (`main_flow_merge_preserves_valid_burst_override`) pins that it is then
+    /// supplied by `normalize()` + `merge_budget_overrides`, so this pair
+    /// together proves the override is never lost.
+    #[test]
+    fn from_args_defers_valid_rate_limit_burst_to_the_pipeline() {
         clean_env();
         let args = Args::try_parse_from([
             "webfang",
             "-u",
             "https://example.com",
             "--rate-limit-burst",
-            "0",
+            "7",
         ])
-        .expect("clap accepts the raw string; rejection happens at conversion");
-        let _ = crate::application::crawl_options::CrawlOptions::from(args);
+        .expect("valid args");
+        let opts = crate::application::crawl_options::CrawlOptions::from(args);
+        assert_eq!(
+            opts.budget_overrides.rate_burst, None,
+            "the pipeline owns burst resolution; `From<Args>` contributes nothing here"
+        );
     }
 
     // ========================================================================

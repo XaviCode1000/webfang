@@ -671,8 +671,11 @@ fn stage_budget_overrides(
         }
     }
     // env/cli tier via the provenance map. The raw string is parsed here so
-    // CLI, env, and programmatic input share ONE accept / reject-0 /
-    // warn-and-default semantic (`parse_rate_limit_burst`).
+    // CLI, env, and programmatic input share ONE accept / reject semantic
+    // (`parse_rate_limit_burst`). This is the ONLY place the burst is
+    // validated: `From<Args>` no longer parses it (#1813), so an invalid
+    // value from argv, the env var, or TOML stops here with exit 78 before
+    // the conversion runs.
     if let Some(src) = sources.source_of("rate_limit_burst") {
         if let Some(raw) = args.crawler.rate_limit_burst.as_deref() {
             match crate::cli::args::crawler::parse_rate_limit_burst(raw) {
@@ -686,7 +689,10 @@ fn stage_budget_overrides(
                         n += 1;
                     }
                 },
-                // Non-numeric: the parser recorded the notice (replayed after logging init); the value is parsed again here for the provenance book.
+                // Empty / whitespace-only: the operator neutralised the flag
+                // (`WEBFANG_RATE_LIMIT_BURST=""`), so it means "not set" and
+                // the derived default applies. Never a silent degrade of an
+                // invalid value — those are rejected below (#1813).
                 Ok(None) => {},
                 Err(msg) => return Err(CliExit::ConfigError(msg)),
             }
@@ -2776,6 +2782,90 @@ mod normalization_pipeline_tests {
         }
         // slot untouched
         assert_eq!(book.budget_overrides.value.rate_burst, None);
+    }
+
+    // ========================================================================
+    // #1813 — the preflight pipeline is the SINGLE validating authority for
+    // `--rate-limit-burst`, and `From<Args>` no longer parses it a second time.
+    // ========================================================================
+
+    /// `burst_non_numeric_rejected_with_spanish_error` — the last fail-open
+    /// arm, at the layer that actually owns the decision.
+    #[test]
+    fn burst_non_numeric_rejected_with_spanish_error() {
+        for raw in ["banana", "auto"] {
+            let mut book = stage_defaults();
+            let mut args = dummy_args();
+            args.crawler.rate_limit_burst = Some(raw.to_string());
+            let mut sources = ArgSources::default();
+            sources.set("rate_limit_burst", ConfigSource::Cli);
+            let err = stage_budget_overrides(&mut book, &args, &sources, &dummy_config())
+                .expect_err("a non-numeric burst must be rejected, not defaulted");
+            match err {
+                CliExit::ConfigError(msg) => assert!(
+                    msg.contains("no es un número"),
+                    "unexpected error for {raw}: {msg}"
+                ),
+                other => panic!("expected ConfigError for {raw}, got {other:?}"),
+            }
+            assert_eq!(book.budget_overrides.value.rate_burst, None);
+        }
+    }
+
+    /// **The regression guard for the #1813 design itself.** `From<Args>` used
+    /// to parse the burst independently, so a valid `--rate-limit-burst` was
+    /// delivered through TWO paths. This test reproduces `main.rs` step 6b
+    /// literally — `normalize` → `into_crawl_options` → `From<Args>` →
+    /// `merge_budget_overrides` — because deleting the second parse is only
+    /// safe if the first one alone still delivers the override. If
+    /// `merge_budget_overrides` ever stops preferring `staged` when the CLI
+    /// capture is `None`, the burst would be silently dropped for every
+    /// operator and nothing else would notice.
+    #[test]
+    fn main_flow_merge_preserves_valid_burst_override() {
+        let mut args = dummy_args();
+        args.crawler.rate_limit_burst = Some("7".to_string());
+        let mut sources = ArgSources::default();
+        sources.set("rate_limit_burst", ConfigSource::Cli);
+
+        // main.rs:116
+        let normalized = normalize(&args, &sources, &dummy_config()).expect("normalize ok");
+        // main.rs:121 — the infallible projection; contributes no burst.
+        let base = crate::application::crawl_options::CrawlOptions::from(args);
+        assert_eq!(
+            base.budget_overrides.rate_burst, None,
+            "precondition: `From<Args>` supplies no burst"
+        );
+        let cli_budget = base.budget_overrides;
+        // main.rs:126
+        let projected = normalized.into_crawl_options();
+        // main.rs:156
+        let merged = merge_budget_overrides(cli_budget, projected.budget_overrides);
+
+        assert_eq!(
+            merged.rate_burst,
+            BurstPermits::new(7).ok(),
+            "a valid --rate-limit-burst 7 must still reach the engine as the \
+             rate-limiter burst after the duplicate parse was removed"
+        );
+    }
+
+    /// The env-var front door reaches the same rejection. Same provenance rank
+    /// as argv, so this is triangulation rather than a new code path — but it
+    /// is the one the #1813 acceptance criterion names explicitly.
+    #[test]
+    fn burst_non_numeric_from_env_rejected() {
+        let mut book = stage_defaults();
+        let mut args = dummy_args();
+        args.crawler.rate_limit_burst = Some("banana".to_string());
+        let mut sources = ArgSources::default();
+        sources.set("rate_limit_burst", ConfigSource::Environment);
+        let err = stage_budget_overrides(&mut book, &args, &sources, &dummy_config())
+            .expect_err("env-sourced non-numeric burst must be rejected");
+        assert!(
+            matches!(err, CliExit::ConfigError(_)),
+            "expected ConfigError, got {err:?}"
+        );
     }
 
     #[test]

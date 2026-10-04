@@ -1,18 +1,28 @@
 //! Parse-time diagnostics recorded before logging exists (#1431).
 //!
 //! Argument normalization runs BEFORE `init_logging_dual` installs the tracing
-//! subscriber (hoisted to step 6b2 in `webfang_cli::main` by #796). The burst
-//! value is parsed twice on one invocation — once by the preflight budget
-//! staging (`cli::preflight::stage_budget_overrides`) and once by the
-//! `From<Args>` projection into `CrawlOptions` — and both happen pre-subscriber,
-//! so any `tracing::warn!` emitted there is silently dropped (there is no
-//! subscriber) AND would have been emitted twice. Diagnostics that must stay
-//! visible (e.g. the `--rate-limit-burst` warn-and-default substitution
-//! notice) are instead [`record`]ed here at parse time and replayed once by
-//! the binary, immediately after `init_logging_dual`, as regular `warn!`
-//! events.
+//! subscriber (hoisted to step 6b2 in `webfang_cli::main` by #796), so any
+//! `tracing::warn!` emitted from argument parsing is silently dropped (there is
+//! no subscriber yet). Diagnostics that must stay visible are instead
+//! [`record`]ed here at parse time and replayed once by the binary,
+//! immediately after `init_logging_dual`, as regular `warn!` events.
 //!
-//! The store is a process-scoped append-only buffer behind an
+//! # Vestigial since #1813
+//!
+//! This module was built for one caller: the `--rate-limit-burst`
+//! warn-and-default substitution notice, which needed a pre-subscriber home
+//! because the burst was parsed TWICE per invocation (preflight staging plus
+//! the `From<Args>` projection) and had to be de-duplicated. #1813 removed
+//! both: the burst now fails closed in `parse_rate_limit_burst`, and
+//! `From<Args>` no longer parses it, so the replay path has no producer.
+//!
+//! [`record`] and the buffer are kept, not deleted, because
+//! `webfang_cli::main` still calls [`take`] on every run (removing the call
+//! site is outside #1813's edit surface) and a future parse-time
+//! warn-and-default would need this seam again. The infrastructure tests below
+//! keep the contract honest in the meantime.
+//!
+//! The store is a process-scoped append-only buffer behind a
 //! `OnceLock<Mutex<Vec<String>>>`: writers never block on async code, a
 //! poisoned mutex degrades to `into_inner()` instead of panicking, and
 //! [`take`] drains the buffer so each note is replayed exactly once. There is
@@ -131,7 +141,7 @@ mod tests {
                 .filter(|n| n.as_str() == "preflight-notes-test-duplicate")
                 .count(),
             1,
-            "the binary parses the burst twice (preflight + From<Args>); the operator must see one line"
+            "the same note recorded twice must collapse to one replay line"
         );
     }
 }

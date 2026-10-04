@@ -317,6 +317,150 @@ fn cli_rate_limit_burst_zero_hard_errors() {
     );
 }
 
+/// Mount a single catch-all page so a run that PASSES validation has a
+/// hermetic, instant success target instead of the real network.
+///
+/// Required for the fail-closed cases below: pre-fix they do NOT fail, so
+/// without a mock they would dial `example.com` and the RED observation would
+/// depend on the machine's connectivity (slow, and possibly a flaky 69/74
+/// instead of a clean 0).
+async fn mount_single_page_site(server: &MockServer) {
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "<html><body><article><h1>Page</h1>\
+             <p>Substantive batch content long enough to clear the fifty \
+             character minimum content guard comfortably.</p></article></body></html>",
+        ))
+        .mount(server)
+        .await;
+}
+
+/// #1813 (fail-closed family) — Zero Silent Loss, non-numeric arm:
+/// `--rate-limit-burst banana` must hard-error with a Spanish config error and
+/// exit 78, never degrade silently to the hardware-derived default.
+///
+/// This is the arm the #897 tests never covered: the parser returned
+/// `Ok(None)` plus a pre-logging note, so a typo'd burst silently changed the
+/// request cadence. Fails before any network I/O, so the mock is only there to
+/// give the pre-fix run a fast hermetic success.
+#[tokio::test]
+async fn cli_rate_limit_burst_non_numeric_fails_closed() {
+    let server = MockServer::start().await;
+    mount_single_page_site(&server).await;
+    let output = TempDir::new().expect("temp output dir");
+
+    let assert = cmd()
+        .args([
+            "--url",
+            &server.uri(),
+            "--output",
+            output.path().to_string_lossy().as_ref(),
+            "--rate-limit-burst",
+            "banana",
+        ])
+        .timeout(Duration::from_secs(60))
+        .assert()
+        .failure();
+
+    assert_eq!(
+        assert.get_output().status.code(),
+        Some(78),
+        "a non-numeric burst must exit 78 (ConfigError), not degrade to the derived default"
+    );
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    crate::assert_snapshot_redacted(
+        "burst_non_numeric_fails_closed_stderr",
+        output.path(),
+        stderr,
+    );
+}
+
+/// #1813 triangulation — the SAME fail-closed contract for an
+/// out-of-`u32`-range burst delivered through the CLI flag. `4294967296` is
+/// `u32::MAX + 1`, i.e. an explicit request that cannot be honoured.
+#[tokio::test]
+async fn cli_rate_limit_burst_out_of_range_fails_closed() {
+    let server = MockServer::start().await;
+    mount_single_page_site(&server).await;
+    let output = TempDir::new().expect("temp output dir");
+
+    let assert = cmd()
+        .args([
+            "--url",
+            &server.uri(),
+            "--output",
+            output.path().to_string_lossy().as_ref(),
+            "--rate-limit-burst",
+            "4294967296",
+        ])
+        .timeout(Duration::from_secs(60))
+        .assert()
+        .failure();
+
+    assert_eq!(
+        assert.get_output().status.code(),
+        Some(78),
+        "an out-of-u32-range burst must exit 78 (ConfigError)"
+    );
+    let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
+    crate::assert_snapshot_redacted(
+        "burst_out_of_range_fails_closed_stderr",
+        output.path(),
+        stderr,
+    );
+}
+
+/// #1813 triangulation — a VALID burst must still be accepted. Guards the
+/// fail-closed change against a false positive: rejecting everything would
+/// pass both tests above.
+#[tokio::test]
+async fn cli_rate_limit_burst_valid_value_is_accepted() {
+    let server = MockServer::start().await;
+    mount_single_page_site(&server).await;
+    let output = TempDir::new().expect("temp output dir");
+
+    cmd()
+        .args([
+            "--url",
+            &server.uri(),
+            "--output",
+            output.path().to_string_lossy().as_ref(),
+            "--rate-limit-burst",
+            "7",
+        ])
+        .timeout(Duration::from_secs(60))
+        .assert()
+        .success();
+}
+
+/// #1813 triangulation — `WEBFANG_RATE_LIMIT_BURST` reaches the same
+/// validator as argv, so a bad env var must fail closed identically rather
+/// than than being a second, softer front door.
+#[tokio::test]
+async fn env_rate_limit_burst_non_numeric_fails_closed() {
+    let server = MockServer::start().await;
+    mount_single_page_site(&server).await;
+    let output = TempDir::new().expect("temp output dir");
+
+    let assert = cmd()
+        .env("WEBFANG_RATE_LIMIT_BURST", "banana")
+        .args([
+            "--url",
+            &server.uri(),
+            "--output",
+            output.path().to_string_lossy().as_ref(),
+        ])
+        .timeout(Duration::from_secs(60))
+        .assert()
+        .failure();
+
+    assert_eq!(
+        assert.get_output().status.code(),
+        Some(78),
+        "a non-numeric WEBFANG_RATE_LIMIT_BURST must exit 78 (ConfigError)"
+    );
+}
+
 /// #897 item 2 — Zero Silent Loss, TOML path: a config-file-sourced
 /// `rate_limit_burst = 0` must also hard-error with exit 78 (ConfigError),
 /// never silently degrade to the derived default. Fails before any network
