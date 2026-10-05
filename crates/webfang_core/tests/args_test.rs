@@ -165,6 +165,7 @@ fn args_with_all_fields_set() -> Args {
             batch_concurrency: Some(8),
             pipeline: true,
             pipeline_output: webfang_core::domain::config::PipelineOutputFormat::None,
+            retention_days: 30,
         },
 
         obsidian: ObsidianArgs {
@@ -259,6 +260,7 @@ fn assert_full_parity_export(opts: &webfang_core::application::crawl_options::Cr
     assert!(opts.export.obsidian_wiki_links);
     assert!(opts.export.obsidian_relative_assets);
     assert!(opts.export.quick_save);
+    assert_eq!(opts.export.retention_days, 30);
 }
 
 fn assert_full_parity_ingestion_tuning(
