@@ -69,6 +69,15 @@ fn resolve_webfang_path() -> std::path::PathBuf {
     let mut build_args = vec!["build", "-p", "webfang_cli", "--bin", "webfang", "--quiet"];
     // Derive the exact feature set from the test crate's active features.
     // Each `cfg!()` is a compile-time constant — zero runtime cost.
+    //
+    // #1813 T4: the `images` / `documents` arms are GONE. Those markers are
+    // deleted from `webfang_core` and `webfang_cli`, so forwarding them here
+    // would make every behavioral test abort with cargo's "none of the
+    // selected packages contains these features". They gated nothing reachable
+    // from the binary — only a `pub` MIME helper with no callers — so the
+    // child build compiles the same code with and without them. Note this list
+    // is NOT the crate's whole feature set, and no `--no-default-features` is
+    // passed: the child always builds on top of `webfang_cli`'s defaults.
     let mut active_features = Vec::new();
     if cfg!(feature = "ai") {
         active_features.push("ai");
@@ -87,12 +96,6 @@ fn resolve_webfang_path() -> std::path::PathBuf {
     }
     if cfg!(feature = "dev-tracing") {
         active_features.push("dev-tracing");
-    }
-    if cfg!(feature = "images") {
-        active_features.push("images");
-    }
-    if cfg!(feature = "documents") {
-        active_features.push("documents");
     }
     let features_arg;
     if !active_features.is_empty() {
