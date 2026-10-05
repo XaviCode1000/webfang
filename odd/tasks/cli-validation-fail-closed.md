@@ -256,8 +256,40 @@ audited.
       ⇒ #1813 ships 4 of its 5 acceptance criteria; criterion 5 is satisfied
       transitively when #1852 lands, and a comment on #1813 records the
       delegation so the criterion is never mistaken for delivered work.
-- [ ] T6 — Verification chain + sequential PRs (`type:bug`, `Closes #1813`
-      on the final slice, `Closes part of #1813` before that).
+- [x] T6 — verification chain GREEN, delivered as ONE PR (`fix/cli-validation-fail-closed`).
+
+## T6 verification evidence (all commands run in the worktree, jobs limited to 4)
+
+| Lane | Result |
+| :--- | :--- |
+| `cargo fmt --all -- --check` | clean |
+| `cargo check --all-targets --all-features` | 0 errors |
+| `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines` | 0 warnings (CI-identical) |
+| `env RUSTDOCFLAGS=-D warnings cargo doc -p webfang_core --all-features --no-deps` | 0 warnings |
+| `cargo nextest run -p webfang_core --all-features` | **3691 passed, 21 skipped** (93.7 s) |
+| `cargo nextest run -p webfang_core --features ai,persistence,console` (negative lane, no `adaptive-selectors`) | **3631 passed, 21 skipped** (109.8 s) |
+| `cargo nextest run -p webfang_ai --features ai` | **226 passed, 9 skipped** |
+| `cargo nextest run -p webfang_mcp --features mcp` (T4 feature-removal regression) | **653 passed, 3 skipped** |
+| `cargo check -p webfang_core --no-default-features --features adaptive-selectors --tests` (reproduces `ci.yml:1085`) | exit 0 |
+| `cargo check --workspace --all-targets --all-features` | exit 0 |
+| `shellcheck scripts/build-llm-artifact.sh` + `bash -n` | both clean (CI's gate for the script T4 touched) |
+| `bash scripts/ci_fast_gate.sh` | **GREEN**, `PASS=27 FAIL=0 SKIP=1`; regression-naming OK (no test added without an issue/PR reference) |
+
+Both the `--all-features` and the negative lane are mandatory here: a bare
+`cargo nextest run -p webfang_core` is a documented false green (see the
+feature-unification finding), and the negative lane is the only place T3's
+fail-closed path is observable.
+
+**Delivery: ONE PR**, maintainer-decided. Rationale: the four slices are four
+faces of one defect ("argument validation fails open"), they share `cli/`, and
+AGENTS.md forbids stacked PRs in this repo — splitting would add conflicts
+without buying reviewability.
+
+## Next step
+
+Push and open the single PR (`type:bug`, `Closes #1813` — the issue already
+carries `status:approved`). Push and PR creation remain the maintainer's
+decision under ordinary repository policy.
 
 ## Authorized scope
 
