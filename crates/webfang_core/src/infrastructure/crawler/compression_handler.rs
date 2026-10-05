@@ -111,20 +111,33 @@ impl CompressionHandler {
 
     /// Detect compression format and decompress content
     ///
+    /// Consumes the input buffer: when no compression is detected the same
+    /// allocation is returned unchanged (moved through, zero-copy, #1822);
+    /// otherwise the returned buffer is the decompressed payload and the
+    /// compressed input drops at scope end.
+    ///
     /// Some servers double-encode `.gz` sitemaps (gzip-of-gzip): after
     /// stripping the first layer the payload still carries compression magic
     /// bytes. Re-sniff once and decompress at most ONE additional layer
     /// (2 total, never a loop) so double-encoded sitemaps parse instead of
-    /// feeding the second gzip layer to the XML parser.
-    pub(crate) async fn detect_and_decompress(&self, content: &[u8], url: &str) -> Result<Vec<u8>> {
-        let formats = Self::detect_compression(content, url);
+    /// feeding the second gzip layer to the XML parser. During decompression
+    /// itself the compressed input and the decompressed output coexist
+    /// transiently — inherent to the bounded two-layer design (#757); both
+    /// sides are capped.
+    pub(crate) async fn detect_and_decompress(
+        &self,
+        content: Vec<u8>,
+        url: &str,
+    ) -> Result<Vec<u8>> {
+        let formats = Self::detect_compression(&content, url);
 
         if formats.is_empty() {
-            // No compression detected, return as-is
-            return Ok(content.to_vec());
+            // No compression detected: hand the input buffer back unchanged,
+            // no copy.
+            return Ok(content);
         }
 
-        let mut decompressed = self.decompress_formats(content, &formats).await?;
+        let mut decompressed = self.decompress_formats(&content, &formats).await?;
 
         // Bounded second layer: re-sniff the decompressed payload once.
         let nested_formats = Self::detect_compression(&decompressed, url);
@@ -139,6 +152,9 @@ impl CompressionHandler {
                 .await?;
         }
 
+        // The compressed input drops at scope end; only the decompressed
+        // output is returned, so the caller never holds two body buffers
+        // (#1822).
         Ok(decompressed)
     }
 
@@ -332,14 +348,21 @@ mod tests {
     #[tokio::test]
     async fn test_detect_and_decompress_uncompressed() {
         let handler = CompressionHandler::new();
-        let content = b"<xml>test</xml>";
+        let content: Vec<u8> = b"<xml>test</xml>".to_vec();
+        let ptr = content.as_ptr();
 
         let result = handler
             .detect_and_decompress(content, "https://example.com/sitemap.xml")
             .await;
         assert!(result.is_ok());
         let decompressed = result.unwrap();
-        assert_eq!(decompressed, content);
+        // #1822: the no-compression path must hand the SAME allocation back
+        // (moved through unchanged), never allocate a redundant full copy.
+        assert!(
+            decompressed.as_ptr() == ptr,
+            "uncompressed input must be returned as the same allocation"
+        );
+        assert_eq!(decompressed.as_slice(), b"<xml>test</xml>");
     }
 
     #[test]

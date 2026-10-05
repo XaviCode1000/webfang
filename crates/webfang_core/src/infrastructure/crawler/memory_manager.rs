@@ -51,6 +51,30 @@ impl MemoryManager {
         }
     }
 
+    /// The configured memory budget, in MB.
+    ///
+    /// Exposed so the sitemap-index aggregate path can emit the limit in its
+    /// structured observability fields (#1822).
+    pub(crate) fn memory_limit_mb(&self) -> usize {
+        self.memory_limit_mb
+    }
+
+    /// Check that `urls` fits the configured memory budget without disk swap.
+    ///
+    /// Same estimator as the non-swap branch of [`Self::handle_disk_swapping`]:
+    /// each URL is charged roughly 2 KB. The sitemap-index aggregate path
+    /// calls this after every successful child so the combined URL set is
+    /// bounded even though children are processed incrementally (#1822).
+    pub(crate) fn ensure_within_budget(&self, urls: &[SitemapUrl]) -> Result<()> {
+        // Each URL takes roughly 2KB when stored in memory
+        let estimated_bytes = urls.len() * 2000;
+        let estimated_mb = estimated_bytes / (1024 * 1024);
+        if estimated_mb >= self.memory_limit_mb {
+            return Err(MemoryError::MemoryLimitExceeded(estimated_mb));
+        }
+        Ok(())
+    }
+
     /// Handle disk swapping for extremely large URL collections
     ///
     /// When the number of URLs exceeds the memory limit, this method
@@ -59,13 +83,7 @@ impl MemoryManager {
     pub(crate) fn handle_disk_swapping(&self, urls: &[SitemapUrl]) -> Result<()> {
         if !self.enable_disk_swap {
             // Disk swapping disabled, check memory limit
-            // Each URL takes roughly 2KB when stored in memory
-            let estimated_bytes = urls.len() * 2000;
-            let estimated_mb = estimated_bytes / (1024 * 1024);
-            if estimated_mb >= self.memory_limit_mb {
-                return Err(MemoryError::MemoryLimitExceeded(estimated_mb));
-            }
-            return Ok(());
+            return self.ensure_within_budget(urls);
         }
 
         // Disk swapping enabled
@@ -166,6 +184,27 @@ mod tests {
         assert!(matches!(
             result.unwrap_err(),
             MemoryError::MemoryLimitExceeded(_)
+        ));
+    }
+
+    #[cfg_attr(miri, ignore)] // 525-URL loop hangs under Miri (100x slowdown makes test exceed timeout)
+    #[test]
+    fn test_ensure_within_budget_bounds_aggregate() {
+        let manager = MemoryManager::with_memory_limit(1); // 1MB limit
+
+        // Under the budget: 400 URLs * 2000 bytes = 800,000 bytes < 1 MiB
+        let under: Vec<SitemapUrl> = (0..400)
+            .map(|i| SitemapUrl::new(Url::parse(&format!("https://example.com/p{i}")).unwrap()))
+            .collect();
+        assert!(manager.ensure_within_budget(&under).is_ok());
+
+        // Over the budget: 600 URLs * 2000 bytes = 1,200,000 bytes >= 1 MiB
+        let over: Vec<SitemapUrl> = (0..600)
+            .map(|i| SitemapUrl::new(Url::parse(&format!("https://example.com/p{i}")).unwrap()))
+            .collect();
+        assert!(matches!(
+            manager.ensure_within_budget(&over),
+            Err(MemoryError::MemoryLimitExceeded(1))
         ));
     }
 }

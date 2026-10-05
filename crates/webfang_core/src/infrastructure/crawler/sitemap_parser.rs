@@ -1,7 +1,17 @@
 //! Sitemap Parser Module
 //!
-//! Zero-allocation streaming parser for XML sitemaps.
+//! Bounded buffered parser for XML sitemaps.
 //! Supports gzip compression and sitemap index recursion.
+//!
+//! # Memory contract (issue #1822)
+//!
+//! The parser buffers, it does not stream: each response body is accumulated
+//! up to `SitemapConfig::max_response_size`, decompressed up to
+//! `SitemapConfig::max_decompressed_size`, and the aggregate URL set of a
+//! sitemap index is held under `SitemapConfig::memory_limit_mb` (typed
+//! [`SitemapError::MemoryLimitExceeded`] beyond it). Children of an index are
+//! parsed with bounded concurrency and the combined result is deduplicated
+//! and sorted.
 //!
 //! # Examples
 //!
@@ -25,10 +35,11 @@
 //! - HTTP request fails
 //! - XML parsing fails
 //! - No `<loc>` elements found
+//! - The aggregate URL set exceeds the configured memory limit
 
 use super::batch_processor::BatchProcessor;
 use super::compression_handler::CompressionHandler;
-use super::memory_manager::MemoryManager;
+use super::memory_manager::{MemoryError, MemoryManager};
 use super::retry_policy::RetryPolicy;
 use super::url_validator::UrlValidator;
 use crate::domain::crawler_port::sitemap::SitemapParserPort;
@@ -108,9 +119,16 @@ pub fn resolve_url(base: &Url, input: &str) -> Option<Url> {
     }
 }
 
-/// Zero-allocation streaming sitemap parser
+/// Bounded buffered sitemap parser.
 ///
-/// Following mem-streaming-large-data: streaming parser, no buffer accumulation
+/// The parser buffers, it does not stream (#1822): the response body is
+/// accumulated up to `SitemapConfig::max_response_size`, decompressed up to
+/// `SitemapConfig::max_decompressed_size`, and the aggregate URL set of a
+/// sitemap index is held under `SitemapConfig::memory_limit_mb`. Only one
+/// body buffer (raw or decompressed) is retained while parsing; during
+/// decompression itself the compressed input and the decompressed output
+/// coexist transiently — inherent to the bounded two-layer re-sniff design
+/// (#757) — and both sides are capped.
 pub struct SitemapParser {
     config: SitemapConfig,
     compression_handler: CompressionHandler,
@@ -178,12 +196,16 @@ impl SitemapParser {
     ) -> std::result::Result<Self, CrawlError> {
         let http_client = Self::build_client(tls_emulation)?;
         let max_decompressed_size = config.max_decompressed_size;
+        let memory_limit_mb = config.memory_limit_mb;
         Ok(Self {
             config,
             compression_handler: CompressionHandler::with_max_size(max_decompressed_size),
             url_validator: UrlValidator::with_profile(tls_emulation)?,
             retry_policy: RetryPolicy::new(),
-            memory_manager: MemoryManager::new(),
+            // #1822: honor the configured budget instead of a second hardcoded
+            // 500 MB (`MemoryManager::new()`). The builder's default is still
+            // 500 MB, so callers that never set `memory_limit_mb` see no change.
+            memory_manager: MemoryManager::with_memory_limit(memory_limit_mb),
             batch_processor: BatchProcessor::new(),
             tls_emulation,
             http_client,
@@ -215,21 +237,14 @@ impl SitemapParser {
             .map_err(|e| CrawlError::Internal(format!("failed to build sitemap client: {e}")))
     }
 
-    /// Parse sitemap from URL (streaming, zero-allocation)
+    /// Parse sitemap from URL (bounded buffered parse).
     ///
-    /// # Arguments
-    ///
-    /// * `url` - Sitemap URL (supports .xml and .xml.gz)
-    ///
-    /// # Returns
-    ///
-    /// Vector of valid URLs found in sitemap
-    ///
-    /// # Errors
-    ///
-    /// Returns `SitemapError` if parsing fails or no URLs found
-    ///
-    /// Parse sitemap from URL (streaming, zero-allocation)
+    /// The response body is buffered up to `SitemapConfig::max_response_size`
+    /// and decompressed up to `SitemapConfig::max_decompressed_size`; for a
+    /// sitemap index, children are parsed with bounded concurrency and the
+    /// aggregate URL set is held under `SitemapConfig::memory_limit_mb`
+    /// ([`SitemapError::MemoryLimitExceeded`] beyond it, #1822). The combined
+    /// result is deduplicated and sorted.
     ///
     /// # Arguments
     ///
@@ -305,13 +320,18 @@ impl SitemapParser {
     /// Carries the run's [`CorrelationId`] so every failure in the chain is
     /// logged through [`log_scrape_error`] with `stage` and `trace_id`
     /// (#1318).
+    ///
+    /// Body handling is bounded, not streaming (#1822): the response is
+    /// accumulated up to `max_response_size`, then decompressed by
+    /// [`Self::parse_decompressed_body`]'s caller — decompression consumes
+    /// the raw buffer, returning the same allocation when no compression was
+    /// detected — so only one body buffer stays live during the parse.
     // The #1318 migration replaced four inline `warn!` one-liners with
     // `log_scrape_error` calls that carry the correlation at each failure
-    // stage; the span body is one cohesive fetch→validate→stream→parse
-    // sequence and splitting it would scatter the guard-chain order the
-    // fetch contract mandates (AGENTS.md), so keep it whole above the
-    // line ratchet — same treatment as `parse_xml_sitemap` and
-    // `scrape_single_url_inner`.
+    // stage; the fetch→validate→stream sequence stays one cohesive span body
+    // above the line ratchet — same treatment as `parse_xml_sitemap` and
+    // `scrape_single_url_inner`. (#1822 extracted the post-decompression
+    // tail into `parse_decompressed_body`.)
     #[allow(clippy::too_many_lines)]
     #[tracing::instrument(
         level = "debug",
@@ -433,31 +453,70 @@ impl SitemapParser {
             raw_bytes.extend_from_slice(&chunk);
         }
 
-        // [3.4] CompressionHandler integration: detect and decompress content
-        let decompressed = self
+        // [3.4] CompressionHandler integration: detect and decompress content.
+        // Consumes `raw_bytes`: when no compression is detected the same
+        // allocation comes back — the single live body buffer — otherwise the
+        // decompressed output replaces it and the compressed input drops.
+        // Both sides are capped (`max_response_size` /
+        // `max_decompressed_size`); during the decompression itself the
+        // compressed input and the decompressed output coexist transiently,
+        // which is inherent to the bounded two-layer re-sniff design (#757).
+        let body = self
             .compression_handler
-            .detect_and_decompress(&raw_bytes, url)
+            .detect_and_decompress(raw_bytes, url)
             .await
             .map_err(|e| SitemapError::DecompressionError(e.to_string()))?;
 
+        self.parse_decompressed_body(
+            &body,
+            url,
+            &base_url,
+            status.as_u16(),
+            &content_type,
+            depth,
+            visited,
+            correlation,
+        )
+        .await
+    }
+
+    /// Shared tail of [`Self::parse_with_depth`]: WAF inspection, XML parse,
+    /// the per-parse memory gate, then index recursion or the crawl-budget
+    /// pass.
+    ///
+    /// Splitting the tail out keeps `parse_with_depth` under the line ratchet
+    /// and carries the single-buffer contract (#1822): the body handed here
+    /// is the only live body buffer for the whole parse.
+    ///
+    /// Observability: runs inside the caller's `sitemap.parse_url` span; every
+    /// failure path logs through [`log_scrape_error`] with the caller's
+    /// correlation (#1318).
+    // The parameters mirror the caller's span state one-to-one; bundling them
+    // into a struct would add a type for a single private call site.
+    #[allow(clippy::too_many_arguments)]
+    async fn parse_decompressed_body(
+        &self,
+        body: &[u8],
+        url: &str,
+        base_url: &Url,
+        status: u16,
+        content_type: &str,
+        depth: u8,
+        visited: &Arc<Mutex<HashSet<Url>>>,
+        correlation: &CorrelationId,
+    ) -> Result<Vec<SitemapUrl>> {
         // Issue #879 (Option A): inspect the body BEFORE XML parsing so a WAF
         // challenge served where sitemap content should be surfaces as the
         // typed error instead of generic XML-garbage failures.
-        if let Some(err) = Self::waf_challenge_error(
-            &decompressed,
-            url,
-            status.as_u16(),
-            &content_type,
-            correlation,
-        ) {
+        if let Some(err) = Self::waf_challenge_error(body, url, status, content_type, correlation) {
             return Err(err);
         }
 
         // Parse using unified decompression handle
-        let (urls, is_index) = if decompressed.is_empty() {
+        let (urls, is_index) = if body.is_empty() {
             return Err(SitemapError::NoUrlsFound);
         } else {
-            self.parse_xml_sitemap(&decompressed, &base_url).await?
+            self.parse_xml_sitemap(body, base_url).await?
         };
 
         // [3.7] MemoryManager: handle disk swapping for large result sets
@@ -513,7 +572,8 @@ impl SitemapParser {
         Ok(urls)
     }
 
-    /// Parse XML sitemap (zero-allocation streaming) with metadata extraction
+    /// Parse XML sitemap (bounded buffered parse over the in-memory body)
+    /// with metadata extraction
     ///
     /// Extracts `<loc>`, `<lastmod>`, `<priority>`, and `<changefreq>` from
     /// `<url>` entries per sitemaps.org spec. Also handles `<sitemap>` entries
@@ -596,7 +656,12 @@ impl SitemapParser {
         let mut all_urls = Vec::new();
         let mut failures = Vec::new();
 
-        let results = stream::iter(sitemap_urls.iter().cloned())
+        // #1822: process children incrementally instead of collecting every
+        // child's URL list up front. Results stream in submission order over
+        // the SAME bounded-concurrency stream, so the aggregate budget check
+        // below runs after every successful child and stops scheduling new
+        // fetches once the combined URL set exceeds `memory_limit_mb`.
+        let mut results = stream::iter(sitemap_urls.iter().cloned())
             .map(|sitemap_url| {
                 let visited = visited.clone();
                 let child_correlation = correlation.child();
@@ -608,13 +673,21 @@ impl SitemapParser {
                     (url, result, child_correlation)
                 }
             })
-            .buffered(self.config.concurrency)
-            .collect::<Vec<_>>()
-            .await;
+            .buffered(self.config.concurrency);
 
-        for (url, result, child_correlation) in results {
+        let mut children_completed = 0usize;
+        while let Some((url, result, child_correlation)) = results.next().await {
+            children_completed += 1;
             match result {
-                Ok(urls) => all_urls.extend(urls),
+                Ok(urls) => {
+                    all_urls.extend(urls);
+                    self.enforce_aggregate_budget(
+                        &all_urls,
+                        url.as_str(),
+                        children_completed,
+                        correlation,
+                    )?;
+                },
                 Err(e) => {
                     log_scrape_error(
                         &e,
@@ -689,6 +762,61 @@ impl SitemapParser {
         }
     }
 
+    /// Enforce the aggregate memory budget across all index children (#1822).
+    ///
+    /// [`MemoryManager::ensure_within_budget`] charges ~2 KB per URL against
+    /// `SitemapConfig::memory_limit_mb`; the check runs after every successful
+    /// child so the combined URL set of the index can never grow past the
+    /// budget. On exceed, the failure is reported through [`log_scrape_error`]
+    /// with `stage = "sitemap.index"` and a structured warn records the run's
+    /// progress (children completed, URLs accumulated, configured limit) so
+    /// the abort is reconstructable from the trace JSONL.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SitemapError::MemoryLimitExceeded`] when the aggregate URL
+    /// set exceeds the configured budget, or the same `HttpError` mapping the
+    /// per-parse memory check uses should the manager report anything else.
+    fn enforce_aggregate_budget(
+        &self,
+        all_urls: &[SitemapUrl],
+        child_url: &str,
+        children_completed: usize,
+        correlation: &CorrelationId,
+    ) -> Result<()> {
+        let Err(memory_err) = self.memory_manager.ensure_within_budget(all_urls) else {
+            return Ok(());
+        };
+        let err = match memory_err {
+            MemoryError::MemoryLimitExceeded(estimated_mb) => {
+                SitemapError::MemoryLimitExceeded(estimated_mb)
+            },
+            // Defensive: `ensure_within_budget` never touches disk; map any
+            // unexpected variant through the same bucket the per-parse memory
+            // check uses so the stratification holds.
+            // LCOV_EXCL_START defensive: ensure_within_budget never touches disk, unreachable from the aggregate budget path
+            MemoryError::DiskSwapFailed(msg) => SitemapError::HttpError {
+                status: 0,
+                message: format!("memory management failed: {msg}"),
+            },
+            // LCOV_EXCL_STOP
+        };
+        log_scrape_error(
+            &err,
+            child_url,
+            "sitemap.index",
+            Some(correlation),
+            "aggregate sitemap URL set exceeded the configured memory limit",
+        );
+        tracing::warn!(
+            children_completed = children_completed,
+            urls_accumulated = all_urls.len(),
+            limit_mb = self.memory_manager.memory_limit_mb(),
+            "sitemap index aggregate exceeded the memory budget; aborting remaining children"
+        );
+        Err(err)
+    }
+
     /// Check if gzip is enabled in config
     #[must_use]
     pub fn has_gzip(&self) -> bool {
@@ -748,7 +876,7 @@ impl SitemapParserPort for SitemapParser {
     }
 }
 
-/// Shared core streaming parser for sitemap XML.
+/// Shared core parser for sitemap XML over an in-memory buffered body.
 ///
 /// Extracts `<loc>`, `<lastmod>`, `<priority>`, and `<changefreq>` from `<url>`
 /// entries. When `handle_sitemap_index` is true, also handles `<sitemap>`
