@@ -1089,6 +1089,35 @@ gh run list --workflow=ci.yml --branch "$(git branch --show-current)" --limit 1 
 
 ⚠️ Git/GitHub network ops can hang transiently. Give generous timeout (≥ 180s) and retry once. A timed-out `git push` did NOT necessarily fail — verify with `git ls-remote origin <branch>`.
 
+#### SSH port 22 outage → per-invocation 443 override
+
+Port 22 to GitHub is observed **flapping** on this network (timeout, then a healthy `Hi <user>!` minutes later), so this is a contingency, not a permanent configuration. **Never pin 443** in `~/.ssh/config` or `remote.origin.url`: a permanent pin hides the moment :22 recovered, and done as a minimal snippet it silently breaks identity for every repo and every agent on the machine.
+
+When :22 times out, override the transport **for one invocation** and keep `origin`:
+
+```bash
+GIT_SSH_COMMAND="ssh -p 443 -o Hostname=ssh.github.com" git push origin <branch>
+```
+
+**Why per-invocation `origin` and not an explicit URL** (`git push ssh://git@ssh.github.com:443/OWNER/REPO.git`): a push to a bare URL lands on the remote but does **not** update `refs/remotes/origin/*` — verified against a local bare repo, where a push to `origin` created the tracking ref and a push to a URL did not. This repo depends on those refs (`:479` and `:1234`, `git merge --ff-only origin/main`, which STOPS on failure), so a URL push would manufacture the next confusing STOP.
+
+**The identity trap:** `ssh.github.com` does **not** match a `Host github.com` block in `~/.ssh/config`, so `IdentityFile` / `IdentitiesOnly` are silently lost (`ssh -G ssh.github.com` reports `identitiesonly no` and only the default identity names). SSH then authenticates via the **agent** alone — true while the key happens to be loaded, fatal with a cold agent. Pass the identity explicitly:
+
+```bash
+GIT_SSH_COMMAND="ssh -p 443 -o Hostname=ssh.github.com -o IdentitiesOnly=yes -i ~/.ssh/<your_github_key>" git push origin <branch>
+```
+
+⚠️ Substitute your own key path — this file is shared, so a literal `-i ~/.ssh/id_ed25519_github` would be machine-specific.
+
+The same override covers `fetch`, `ls-remote`, `gh repo clone` and `gh pr checkout` (`gh config get git_protocol` = `ssh` here). `gh` **API** calls (`gh pr view`, `gh run list`, `gh pr merge`) are HTTPS and unaffected: a :22 outage breaks git transport, not the merge automation.
+
+**The verification gap:** the `git ls-remote origin <branch>` above hangs for the same reason the push did — when :22 is down, the verification step is itself unreachable. Fall back to the override, or to the API:
+
+```bash
+GIT_SSH_COMMAND="ssh -p 443 -o Hostname=ssh.github.com" git ls-remote origin <branch>
+gh api repos/{owner}/{repo}/git/ref/heads/<branch> --jq '.object.sha'
+```
+
 ### PR checklist
 
 - [ ] `bash scripts/ci_fast_gate.sh` GREEN (lane-aware local gate: runs the cargo gates below only when code changed)
