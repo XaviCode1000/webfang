@@ -211,15 +211,22 @@ async fn __main() -> CliExit {
         return exit;
     }
 
-    // 6e2. Adaptive-selectors feature preflight (#1813): --adaptive-selectors
-    // on a non-adaptive build parses as a hidden compatibility placeholder, so
-    // without this gate the flag would exit 0 having done nothing — the engine
-    // builder is `#[cfg]`-gated out entirely. Same shape and exit code (78) as
-    // 6e; the placeholder in `cli::spec_command` is deliberately kept as the
-    // parse half of this two-part gate.
-    if let Err(exit) = preflight::check_adaptive_selectors_feature(&opts) {
-        return exit;
-    }
+    // 6e2. The `--adaptive-selectors` capability gate (#1813) is NOT here.
+    //
+    // It used to be this step, mirroring 6e. That was a fail-open waiting to
+    // happen: a check wired into ONE caller is skipped by every other caller,
+    // and the sibling `--rate-limit-burst` fix (#1813 T1) had already moved its
+    // validation into the shared staging pipeline for exactly that reason. The
+    // gate now runs inside `preflight::normalize` (step 6b, above), which every
+    // `Args` front door traverses.
+    //
+    // This call site was provably dead once that moved: `normalize` runs at
+    // :116 and returns before reaching here, and `From<Args>` copies
+    // `args.crawler.adaptive_selectors` into `opts.adaptive_selectors`
+    // unchanged, so `opts.adaptive_selectors` cannot be true when `normalize`
+    // passed. Keeping it would have left a reader believing this was the
+    // enforcement point. `preflight::check_adaptive_selectors_feature` remains
+    // public for a caller that builds `CrawlOptions` directly.
 
     // 6f. Obsidian vault/output conflict preflight (#762): an explicit
     // --vault redirect cannot coexist with a custom non-default -o/WEBFANG_OUTPUT.

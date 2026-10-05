@@ -767,7 +767,25 @@ fn validate_stage(book: &FieldBook) -> Result<(), CliExit> {
 /// Normalize configuration through the single rank-guarded pipeline (design D3).
 ///
 /// Fixed stage order: defaults → config file → env/cli → cross-field →
-/// validation → `NormalizedConfig`.
+/// budget overrides → field validation → capability gates → `NormalizedConfig`.
+///
+/// # Capability gates are part of the pipeline, not a caller's job
+///
+/// The last step is the `--adaptive-selectors` capability gate (#1813,
+/// `check_adaptive_selectors_capability`). It is HERE, at the end, rather than
+/// in the CLI binary's step list, for the reason `stage_budget_overrides` is
+/// here: a check a caller must remember to invoke is a check some front door
+/// will skip. Every route into this function — argv,
+/// `WEBFANG_ADAPTIVE_SELECTORS`, or a programmatically built `Args` —
+/// passes through it, so there is exactly one place where "this build cannot
+/// do what you asked" is decided.
+///
+/// It runs LAST on purpose: `validate_stage` keeps the field errors it has
+/// always reported, so a run that is already misconfigured for another reason
+/// still sees that other reason first. The gate itself is still far ahead of
+/// anything that matters — `main.rs` calls `normalize` at step 6b, before
+/// logging, before any engine construction, and long before `build_and_run`
+/// opens a socket.
 ///
 /// # Errors
 ///
@@ -787,6 +805,7 @@ pub fn normalize(
     total += apply_cross_field_rules(&mut book);
     total += stage_budget_overrides(&mut book, args, sources, config)?;
     validate_stage(&book)?;
+    check_adaptive_selectors_capability(args)?;
     tracing::Span::current().record("fields_written", total);
     info!(fields_written = total, "normalization_complete");
     Ok(NormalizedConfig::from_book(book))
@@ -1396,6 +1415,33 @@ fn check_clean_ai_feature_with(ai_enabled: bool, opts: &CrawlOptions) -> Result<
     ))
 }
 
+/// The single Spanish message every `--adaptive-selectors` capability
+/// rejection emits (#1813).
+///
+/// It names both the flag and the feature, because the actionable fix is a
+/// recompile with `--features adaptive-selectors`, not a different argument.
+/// Shared by both call shapes so the two can never drift into telling the
+/// operator two different things about the same missing capability.
+const ADAPTIVE_SELECTORS_UNAVAILABLE: &str = "--adaptive-selectors requiere un binario compilado con la feature `adaptive-selectors`; recompilá con --features adaptive-selectors";
+
+/// The ONE semantic behind every `--adaptive-selectors` capability check
+/// (#1813): a requested capability the build cannot honour is a
+/// build-configuration problem (exit 78), never a silent no-op.
+///
+/// Both entry shapes funnel here — [`check_adaptive_selectors_capability_with`]
+/// reads the request off `Args` during [`normalize`], and
+/// [`check_adaptive_selectors_feature_with`] reads it off `CrawlOptions` for a
+/// programmatic builder — so the accept/reject decision is stated once and the
+/// only thing a caller chooses is where the flag lives.
+fn adaptive_selectors_unavailable(adaptive_enabled: bool, requested: bool) -> Result<(), CliExit> {
+    if !requested || adaptive_enabled {
+        return Ok(());
+    }
+    Err(CliExit::ConfigError(
+        ADAPTIVE_SELECTORS_UNAVAILABLE.to_string(),
+    ))
+}
+
 /// Preflight: `--adaptive-selectors` on a binary built WITHOUT the
 /// `adaptive-selectors` feature must fail before any network request (#1813).
 ///
@@ -1413,6 +1459,10 @@ fn check_clean_ai_feature_with(ai_enabled: bool, opts: &CrawlOptions) -> Result<
 /// two-part gate. Deleting it would turn a named, actionable build error into
 /// clap's "unexpected argument" (exit 64) with no mention of the feature.
 ///
+/// The [`CrawlOptions`]-shaped half is kept for a programmatic caller that
+/// builds options directly. The shipped CLI does NOT use it — it goes through
+/// `check_adaptive_selectors_capability`, which runs inside [`normalize`].
+///
 /// # Errors
 ///
 /// Returns [`crate::CliExit::ConfigError`] (exit 78) when
@@ -1428,14 +1478,61 @@ fn check_adaptive_selectors_feature_with(
     adaptive_enabled: bool,
     opts: &CrawlOptions,
 ) -> Result<(), CliExit> {
-    if !opts.adaptive_selectors || adaptive_enabled {
-        return Ok(());
-    }
-    Err(CliExit::ConfigError(
-        "--adaptive-selectors requiere un binario compilado con la feature \
-             `adaptive-selectors`; recompilá con --features adaptive-selectors"
-            .into(),
-    ))
+    adaptive_selectors_unavailable(adaptive_enabled, opts.adaptive_selectors)
+}
+
+/// #1813 — the SAME capability check, reached from the SHARED staging
+/// pipeline instead of from one call site in the CLI binary.
+///
+/// ## Why it moved out of `main.rs`
+///
+/// T1 established the rule this follows: a validation that only one front door
+/// runs is not a validation, it is a suggestion. `--rate-limit-burst` went into
+/// [`stage_budget_overrides`] precisely so argv, env, TOML and programmatic
+/// `Args` all share ONE accept/reject semantic. This gate was wired straight
+/// into `webfang_cli/src/main.rs` step 6e2 instead, so it was reachable from
+/// exactly one caller — and `main.rs:116` (`normalize`) runs long before
+/// `main.rs:220` (the gate), which is the ordering proof that every `Args`
+/// front door passes through the staging pipeline on its way to the binary.
+///
+/// ## Why `Args`, not `CrawlOptions`
+///
+/// `normalize` stages [`Args`]; `CrawlOptions` does not exist yet at that point
+/// (it is built from `Args` afterwards, `main.rs:121`). The request itself is
+/// unambiguous — `From<Args>` copies `args.crawler.adaptive_selectors` verbatim
+/// into [`CrawlOptions::adaptive_selectors`], so the two can never disagree —
+/// and `ConfigDefaults::adaptive_selectors` (`domain/config.rs:98`) is declared
+/// but read by NOTHING, so TOML is not a fourth front door for this flag.
+///
+/// # Errors
+///
+/// Returns [`crate::CliExit::ConfigError`] (exit 78) when the request is
+/// present and the feature is not compiled in — the same value the
+/// `CrawlOptions`-shaped check returns, from
+/// [`ADAPTIVE_SELECTORS_UNAVAILABLE`].
+///
+/// # Deliberately independent of [`ArgSources`]
+///
+/// Every field the `FieldBook` stages is rank-guarded: it lands only when
+/// provenance recorded it, so a value present in `Args` without a recorded
+/// source never reaches the book and the derived default wins. This check is
+/// NOT rank-guarded and deliberately reads `Args` directly. An unranked
+/// boolean that arrives from argv or from the env var carries no ambiguity to
+/// resolve — there is no lower-ranked value it could lose to — and making the
+/// gate depend on a provenance entry would mean a front door that forgot to
+/// record one silently regains the fail-open this is meant to close.
+fn check_adaptive_selectors_capability(args: &Args) -> Result<(), CliExit> {
+    check_adaptive_selectors_capability_with(cfg!(feature = "adaptive-selectors"), args)
+}
+
+/// Feature-injectable core of [`check_adaptive_selectors_capability`] — the
+/// #761/#796 injection seam, so the negative case is runnable in the
+/// `--all-features` lane that CI uses.
+fn check_adaptive_selectors_capability_with(
+    adaptive_enabled: bool,
+    args: &Args,
+) -> Result<(), CliExit> {
+    adaptive_selectors_unavailable(adaptive_enabled, args.crawler.adaptive_selectors)
 }
 
 /// Preflight: `--export-format vector` without `--clean-ai` must fail before
@@ -2323,6 +2420,73 @@ mod tests {
         assert!(check_adaptive_selectors_feature_with(false, &opts).is_err());
     }
 
+    // ---- #1813 S1: the gate is reached from the SHARED staging pipeline ----
+
+    /// `Args` that request the capability, i.e. what argv or
+    /// `WEBFANG_ADAPTIVE_SELECTORS` produces before `normalize` runs.
+    fn adaptive_selectors_args() -> Args {
+        let mut args = Args::default();
+        args.crawler.adaptive_selectors = true;
+        args
+    }
+
+    /// The regression S1 is about, in the lane CI actually runs.
+    ///
+    /// The gate used to be reachable ONLY from `webfang_cli/src/main.rs` step
+    /// 6e2, so this `Args`-shaped seam did not exist at all. Now the same
+    /// request, read off `Args` exactly the way `normalize` reads it, is
+    /// rejected with exit 78 and the feature-naming message.
+    ///
+    /// This runs in EVERY lane including `--all-features`, which is the whole
+    /// point of the injection seam: without it, a gate wired this way would be
+    /// invisible to CI for the same reason the original defect was.
+    #[test]
+    fn adaptive_capability_gate_from_args_rejects_request_without_the_feature() {
+        let err = check_adaptive_selectors_capability_with(false, &adaptive_selectors_args())
+            .expect_err("a non-adaptive build must reject the request during normalization");
+        match err {
+            CliExit::ConfigError(msg) => assert!(
+                msg.contains("--adaptive-selectors") && msg.contains("`adaptive-selectors`"),
+                "config error must name the flag and the feature, got: {msg}"
+            ),
+            other => panic!("expected ConfigError, got: {other:?}"),
+        }
+    }
+
+    /// With the feature: the same `Args` passes, so the gate never blocks a
+    /// run on a build that CAN honor the request.
+    #[test]
+    fn adaptive_capability_gate_from_args_accepts_request_with_the_feature() {
+        assert!(check_adaptive_selectors_capability_with(true, &adaptive_selectors_args()).is_ok());
+    }
+
+    /// No request: passes regardless of the feature state.
+    #[test]
+    fn adaptive_capability_gate_from_args_is_silent_without_the_request() {
+        assert!(check_adaptive_selectors_capability_with(false, &Args::default()).is_ok());
+    }
+
+    /// The two input shapes must not drift into two different decisions — they
+    /// share one semantic, and a run reaching `normalize` is subject to exactly
+    /// the same verdict a programmatic `CrawlOptions` builder would get.
+    #[test]
+    fn adaptive_capability_gate_agrees_across_both_input_shapes() {
+        for adaptive_enabled in [false, true] {
+            let from_args = check_adaptive_selectors_capability_with(
+                adaptive_enabled,
+                &adaptive_selectors_args(),
+            );
+            let from_opts =
+                check_adaptive_selectors_feature_with(adaptive_enabled, &adaptive_selectors_opts());
+            assert_eq!(
+                from_args.is_ok(),
+                from_opts.is_ok(),
+                "the Args-shaped and CrawlOptions-shaped gates must reach the same \
+                 verdict (adaptive_enabled={adaptive_enabled})"
+            );
+        }
+    }
+
     // ========================================================================
     // #796 — --export-format vector preflight gate (mirrors #703/#652, #761)
     // ========================================================================
@@ -2598,6 +2762,106 @@ mod normalization_pipeline_tests {
         assert_eq!(written, 0);
         assert_eq!(book.max_pages.value, 10);
         assert_eq!(book.max_pages.source, ConfigSource::Cli);
+    }
+
+    /// #1813 S1 — the `--adaptive-selectors` capability gate is a step of
+    /// [`normalize`], not a call in the CLI binary's step list.
+    ///
+    /// ## Why these two tests are mutually `cfg`-gated
+    ///
+    /// `normalize` reads the feature state from `cfg!`, which is a
+    /// compile-time constant, so no runtime argument can make the real pipeline
+    /// fail in an `--all-features` build. The two lanes therefore each prove
+    /// something different, and BOTH are non-empty:
+    ///
+    /// - `#[cfg(not(feature = "adaptive-selectors"))]` (negative lane) — the
+    ///   REJECTION, driving the real `normalize`. This is the test that says
+    ///   "the gate is inside the shared pipeline", not merely that a helper
+    ///   function rejects the same input.
+    /// - `#[cfg(feature = "adaptive-selectors")]` (`--all-features` lane) —
+    ///   the NON-REGRESSION guard: on a build that HAS the feature, the same
+    ///   `normalize` call with the same request must still succeed, so moving
+    ///   the gate into the pipeline cannot have broken the working case.
+    ///
+    /// `cargo nextest list -p webfang_core -E 'test(adaptive)'` on each lane is
+    /// the proof that neither compiles to nothing. The end-to-end CLI proof
+    /// (real spawned binary, real exit code, zero network requests) lives in
+    /// `tests/adaptive_selectors_gate_test.rs`.
+    #[cfg(not(feature = "adaptive-selectors"))]
+    #[test]
+    fn normalize_rejects_adaptive_selectors_on_a_non_adaptive_build() {
+        let mut args = dummy_args();
+        args.crawler.adaptive_selectors = true;
+
+        let err = normalize(&args, &ArgSources::default(), &dummy_config())
+            .expect_err("the shared pipeline must reject the capability it cannot honor");
+        match err {
+            CliExit::ConfigError(msg) => assert!(
+                msg.contains("--adaptive-selectors") && msg.contains("`adaptive-selectors`"),
+                "normalize's rejection must name the flag and the feature, got: {msg}"
+            ),
+            other => panic!("expected ConfigError, got: {other:?}"),
+        }
+    }
+
+    /// Non-regression guard for the positive lane: with the feature compiled in,
+    /// `--adaptive-selectors` through the same pipeline must still succeed.
+    ///
+    /// The assertion is on the pipeline SUCCEEDING, which is the whole point:
+    /// the flag used to work on this lane and must keep working. `adaptive_selectors`
+    /// itself is deliberately not asserted on the projected options —
+    /// `NormalizedConfig::into_crawl_options` has never carried it; it travels
+    /// via `CrawlOptions::from(Args)` — so pinning it here would pin a
+    /// projection detail this change did not touch.
+    #[cfg(feature = "adaptive-selectors")]
+    #[test]
+    fn normalize_accepts_adaptive_selectors_on_an_adaptive_build() {
+        let mut args = dummy_args();
+        args.crawler.adaptive_selectors = true;
+
+        normalize(&args, &ArgSources::default(), &dummy_config())
+            .expect("an adaptive build must normalize a --adaptive-selectors request");
+    }
+
+    /// A run that did NOT ask for the capability must never be failed closed by
+    /// the new pipeline step — in EITHER lane. This one is deliberately not
+    /// `cfg`-gated, so it is the single test that holds in both.
+    #[test]
+    fn normalize_does_not_gate_a_run_that_did_not_request_adaptive_selectors() {
+        let args = dummy_args();
+        assert!(
+            !args.crawler.adaptive_selectors,
+            "precondition: the default Args does not request the capability"
+        );
+        normalize(&args, &ArgSources::default(), &dummy_config())
+            .expect("normalize must not fail closed on a default request set");
+    }
+
+    /// Field errors keep their existing precedence over the new capability
+    /// step. The gate runs LAST inside `normalize` precisely so a run that is
+    /// already misconfigured reports the misconfiguration it always did.
+    ///
+    /// `max_pages` is staged only when the provenance map records it — the
+    /// pipeline is rank-guarded, so an `Args` value with no recorded source is
+    /// not a staged value and the book keeps its default. Recording the source
+    /// is what makes this the conflict case it claims to be.
+    #[test]
+    fn normalize_reports_field_errors_before_the_capability_gate() {
+        let mut args = dummy_args();
+        args.crawler.adaptive_selectors = true;
+        args.crawler.max_pages = 0;
+        let mut sources = ArgSources::default();
+        sources.set("max_pages", ConfigSource::Cli);
+
+        let err = normalize(&args, &sources, &dummy_config())
+            .expect_err("max_pages 0 must still be rejected");
+        match err {
+            CliExit::ConfigError(msg) => assert!(
+                msg.contains("max_pages"),
+                "the long-standing max_pages error must keep winning, got: {msg}"
+            ),
+            other => panic!("expected ConfigError, got: {other:?}"),
+        }
     }
 
     #[test]
@@ -2886,9 +3150,14 @@ mod normalization_pipeline_tests {
 
     /// `burst_non_numeric_rejected_with_spanish_error` — the last fail-open
     /// arm, at the layer that actually owns the decision.
+    ///
+    /// `auto` is deliberately NOT in the list: it is a keyword the sibling
+    /// `--concurrency` parser understands, not a typo, and hard-`Err`-ing on it
+    /// broke a spelling that worked on the base. See
+    /// `burst_auto_keyword_stages_as_not_set`.
     #[test]
     fn burst_non_numeric_rejected_with_spanish_error() {
-        for raw in ["banana", "auto"] {
+        for raw in ["banana", "1_0", "12x"] {
             let mut book = stage_defaults();
             let mut args = dummy_args();
             args.crawler.rate_limit_burst = Some(raw.to_string());
@@ -2904,6 +3173,29 @@ mod normalization_pipeline_tests {
                 other => panic!("expected ConfigError for {raw}, got {other:?}"),
             }
             assert_eq!(book.budget_overrides.value.rate_burst, None);
+        }
+    }
+
+    /// The `auto` counterpart, at the same layer: the keyword must stage as
+    /// "not set" — no override written, NO error — so the hardware-derived
+    /// budget applies. Asserting the empty slot matters as much as the `Ok`:
+    /// writing a value here would silently override the derived burst, which is
+    /// the other half of the same regression.
+    #[test]
+    fn burst_auto_keyword_stages_as_not_set() {
+        for raw in ["auto", "AUTO", "  auto  "] {
+            let mut book = stage_defaults();
+            let mut args = dummy_args();
+            args.crawler.rate_limit_burst = Some(raw.to_string());
+            let mut sources = ArgSources::default();
+            sources.set("rate_limit_burst", ConfigSource::Cli);
+            let written = stage_budget_overrides(&mut book, &args, &sources, &dummy_config())
+                .unwrap_or_else(|e| panic!("`{raw}` must not be rejected: {e:?}"));
+            assert_eq!(
+                book.budget_overrides.value.rate_burst, None,
+                "`{raw}` must leave the burst slot for the derived default"
+            );
+            assert_eq!(written, 0, "`{raw}` is not set, so it writes no field");
         }
     }
 

@@ -461,6 +461,82 @@ async fn env_rate_limit_burst_non_numeric_fails_closed() {
     );
 }
 
+/// #1813 regression fix — the `auto` keyword must NOT be caught by the
+/// fail-closed arm. `--rate-limit-burst auto` was a WORKING spelling on the
+/// base, so rejecting it turns a pinned configuration into a hard exit-78 break
+/// on upgrade. This is a fail-CLOSED regression, and it is the one #1813's own
+/// tests had enshrined (the unit test listed `auto` among the rejected typos).
+///
+/// Both front doors are covered because both are real deployments: argv in a
+/// shell script, env in a unit file or a container definition. Each must reach
+/// the derived default, never exit 78.
+#[tokio::test]
+async fn cli_rate_limit_burst_auto_keyword_is_accepted_as_unset() {
+    let server = MockServer::start().await;
+    mount_single_page_site(&server).await;
+    let output = TempDir::new().expect("temp output dir");
+
+    cmd()
+        .args([
+            "--url",
+            &server.uri(),
+            "--output",
+            output.path().to_string_lossy().as_ref(),
+            "--rate-limit-burst",
+            "auto",
+        ])
+        .timeout(Duration::from_secs(60))
+        .assert()
+        .success();
+}
+
+/// Same contract through the env front door: `WEBFANG_RATE_LIMIT_BURST=auto`
+/// is a container-definition spelling, and the env arm attaches the SAME
+/// validator as argv, so it must reach the derived default too.
+#[tokio::test]
+async fn env_rate_limit_burst_auto_keyword_is_accepted_as_unset() {
+    let server = MockServer::start().await;
+    mount_single_page_site(&server).await;
+    let output = TempDir::new().expect("temp output dir");
+
+    cmd()
+        .env("WEBFANG_RATE_LIMIT_BURST", "auto")
+        .args([
+            "--url",
+            &server.uri(),
+            "--output",
+            output.path().to_string_lossy().as_ref(),
+        ])
+        .timeout(Duration::from_secs(60))
+        .assert()
+        .success();
+}
+
+/// Triangulation for the keyword arm: case-insensitivity is part of the
+/// contract because the sibling `--concurrency` parser lowercases before
+/// comparing (`domain/config.rs:391-393`). If the burst parser stopped
+/// tolerating `AUTO`, a deployment that upper-cased its config would start
+/// failing closed — the same regression in a narrower spelling.
+#[tokio::test]
+async fn cli_rate_limit_burst_auto_keyword_is_case_insensitive() {
+    let server = MockServer::start().await;
+    mount_single_page_site(&server).await;
+    let output = TempDir::new().expect("temp output dir");
+
+    cmd()
+        .args([
+            "--url",
+            &server.uri(),
+            "--output",
+            output.path().to_string_lossy().as_ref(),
+            "--rate-limit-burst",
+            "AUTO",
+        ])
+        .timeout(Duration::from_secs(60))
+        .assert()
+        .success();
+}
+
 /// #897 item 2 — Zero Silent Loss, TOML path: a config-file-sourced
 /// `rate_limit_burst = 0` must also hard-error with exit 78 (ConfigError),
 /// never silently degrade to the derived default. Fails before any network
