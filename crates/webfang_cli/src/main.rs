@@ -32,7 +32,7 @@ use webfang_ai::{ModelConfig, SemanticCleanerImpl, SemanticError};
 use webfang_core::application::adaptive_engine::{AdaptiveSelectorEngine, AdaptiveSelectorOptions};
 use webfang_core::application::crawl_options::CrawlOptions;
 use webfang_core::cli::config::{load_config_defaults, resolve_config_path, ConfigDefaults};
-use webfang_core::cli::error::CliExit;
+use webfang_core::cli::error::{CliError, CliExit};
 use webfang_core::cli::preflight;
 use webfang_core::cli::preflight::ArgSources;
 #[cfg(feature = "ai")]
@@ -157,18 +157,25 @@ async fn __main() -> CliExit {
 
     // 6b2. Initialize logging (hoisted above the preflight gates on purpose):
     // the 6c-6f2 gates emit `warn!` diagnostics, and a subscriber is only
-    // installed by `init_logging_dual` (`try_init` makes repeated calls a
-    // no-op, so nothing downstream needs updating). A gate that fails fast
-    // must leave its reason on stderr — otherwise the WARN would be silently
-    // dropped (#796). Still stderr-only, respects quiet + NO_COLOR.
+    // installed by `init_logging_dual`. A gate that fails fast must leave its
+    // reason on stderr — otherwise the WARN would be silently dropped (#796).
+    // Still stderr-only, respects quiet + NO_COLOR.
     let no_color = is_no_color();
     let log_level =
         resolve_log_level_with_config(opts.verbosity, config_defaults.log_level.as_deref());
-    let file_trace_layer = build_file_trace_layer(trace_file);
+    // #1814: the trace file is an explicitly requested artifact — a failure to
+    // create it aborts the run (exit 78) instead of continuing untraced.
+    let file_trace_layer = match build_file_trace_layer(trace_file) {
+        Ok(layer) => layer,
+        Err(e) => return CliExit::ConfigError(e.to_string()),
+    };
 
-    // Initialize logging (stderr + optional JSONL file trace layer)
-    #[allow(clippy::let_unit_value)]
-    let _guard = init_logging_dual(log_level, opts.export.quiet, no_color, file_trace_layer);
+    // Initialize logging (stderr + optional JSONL file trace layer).
+    // #1814: a subscriber that cannot be installed fails the run — silently
+    // continuing without the requested log output hid the misconfiguration.
+    if let Err(e) = init_logging_dual(log_level, opts.export.quiet, no_color, file_trace_layer) {
+        return CliExit::ConfigError(e.to_string());
+    }
 
     // #1431: replay parse-time diagnostics recorded before the subscriber
     // existed (e.g. the --rate-limit-burst substitution notice). The note
@@ -363,18 +370,29 @@ mod log_level_tests {
 }
 
 /// Create FileTraceLayer when --trace-file is present (always available, no feature gate).
+///
+/// The trace file is an explicitly requested artifact: a failure to create it
+/// must abort the run (fail closed) instead of silently continuing without the
+/// requested trace output (issue #1814).
 fn build_file_trace_layer(
     trace_file: Option<std::path::PathBuf>,
-) -> Option<webfang_core::infrastructure::observability::FileTraceLayer> {
-    trace_file.and_then(|path| {
-        match webfang_core::infrastructure::observability::FileTraceLayer::new(path) {
-            Ok(layer) => Some(layer),
-            Err(e) => {
-                eprintln!("Error: no se pudo crear archivo de trazas: {e}");
-                None
-            },
-        }
-    })
+) -> Result<Option<webfang_core::infrastructure::observability::FileTraceLayer>, CliError> {
+    match trace_file {
+        Some(path) => {
+            webfang_core::infrastructure::observability::FileTraceLayer::new(path.clone())
+                .map(Some)
+                .map_err(|e| CliError::ConfigFile {
+                    msg: format!(
+                        "no se pudo crear el archivo de trazas en '{}': {e}",
+                        path.display()
+                    ),
+                    suggestion:
+                        "verifique que la ruta padre de --trace-file exista y sea escribible, o elija otra ruta"
+                            .to_string(),
+                })
+        },
+        None => Ok(None),
+    }
 }
 
 /// Tier 2 wiring regression tests (#702): the adaptive engine must expose the

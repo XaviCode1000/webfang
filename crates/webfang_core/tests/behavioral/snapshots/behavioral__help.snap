@@ -349,6 +349,12 @@ Output:
           [env: WEBFANG_EXPORT_FORMAT=]
           [default: jsonl]
 
+      --retention-days <RETENTION_DAYS>
+          Prune exports and vault-DB rows older than N days at the end of a successful run (0 = disabled)
+          
+          [env: WEBFANG_RETENTION_DAYS=]
+          [default: 0]
+
 Elastic Ingestion:
       --cpu-cores <CPU_CORES>
           CPU core override for the elastic ingestion Rayon pool (else auto-detect)

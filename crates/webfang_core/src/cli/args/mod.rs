@@ -459,6 +459,7 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
                 obsidian_wiki_links: args.obsidian.obsidian_wiki_links,
                 obsidian_relative_assets: args.obsidian.obsidian_relative_assets,
                 quick_save: args.obsidian.quick_save,
+                retention_days: args.export.retention_days,
             },
             elastic: IngestionTuning {
                 enabled: args.export.elastic,

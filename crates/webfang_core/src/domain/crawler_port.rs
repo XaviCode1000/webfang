@@ -85,14 +85,29 @@ pub struct SitemapConfig {
     /// Maximum decompressed gzip size in bytes (default: 100MB)
     pub max_decompressed_size: usize,
     /// Enable pagination for large sitemaps (default: false)
+    ///
+    /// Reserved (A-09): currently NOT consumed by the sitemap parser. The
+    /// field stays part of the public config surface, but no code path reads
+    /// it; wiring pagination is tracked separately and is out of scope for
+    /// #1822.
     pub pagination_enabled: bool,
     /// Batch size for pagination (default: 10,000)
+    ///
+    /// Reserved (A-09): currently NOT consumed by the sitemap parser. The
+    /// field stays part of the public config surface, but no code path reads
+    /// it; wiring pagination is tracked separately and is out of scope for
+    /// #1822.
     pub batch_size: usize,
     /// Supported compression types (default: [`crate::domain::CompressionType::Gzip`])
     pub compression_types: Vec<CompressionType>,
     /// Enable URL validation and filtering (default: false)
     pub url_validation_enabled: bool,
     /// Memory limit in MB for processing (default: 500)
+    ///
+    /// Enforced by the parser's
+    /// [`MemoryManager`](crate::infrastructure::crawler::memory_manager::MemoryManager):
+    /// the per-parse URL set and the aggregate URL set of a sitemap index are
+    /// both checked against this budget (~2 KB estimated per URL, #1822).
     pub memory_limit_mb: usize,
     /// Enable crawl budget optimization (default: false)
     pub crawl_budget_enabled: bool,

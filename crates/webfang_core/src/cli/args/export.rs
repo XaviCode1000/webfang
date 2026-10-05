@@ -52,6 +52,10 @@ pub struct ExportArgs {
 
     /// Pipeline output format: jsonl (default), none
     pub pipeline_output: PipelineOutputFormat,
+
+    /// Prune exports and vault-DB rows older than N days at the end of a
+    /// successful run (0 = disabled)
+    pub retention_days: u32,
 }
 
 impl clap::FromArgMatches for ExportArgs {
@@ -71,6 +75,7 @@ impl clap::FromArgMatches for ExportArgs {
             batch_concurrency: extract::opt(m, "batch_concurrency"),
             pipeline: m.get_flag("pipeline"),
             pipeline_output: extract::value(m, "pipeline_output")?,
+            retention_days: extract::value(m, "retention_days")?,
         })
     }
 
