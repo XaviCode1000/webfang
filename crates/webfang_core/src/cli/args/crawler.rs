@@ -1158,9 +1158,23 @@ mod spec_parity_tests {
             .expect("rate-limit-burst must carry long help")
             .to_string();
         assert!(long.contains("Overrides the hardware-derived budget-model default"));
+        // The help must advertise the keyword the parser accepts, and the
+        // fail-closed contract that replaced the old warn-and-default arm
+        // (#1813). Before this it still claimed a "warn-and-default semantic"
+        // in both directions, which no longer exists.
+        assert!(
+            long.contains("the keyword `auto`"),
+            "long help must document the accepted `auto` keyword, got: {long}"
+        );
+        assert!(
+            long.contains("FAILS CLOSED"),
+            "long help must state the fail-closed contract, got: {long}"
+        );
         // Empirical byte truth: the LONG form keeps the final period even
         // though the SHORT form strips it.
-        assert!(long.trim_end().ends_with("warn-and-default semantic."));
+        assert!(long
+            .trim_end()
+            .ends_with(r#"only `auto` and an empty value mean "not set"."#));
     }
 
     #[test]

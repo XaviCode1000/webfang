@@ -486,10 +486,15 @@ fn manual_rate_limit_burst() -> clap::Arg {
         .long_help(
             "Explicit rate-limiter burst permits (token-bucket capacity).\n\n\
              Overrides the hardware-derived budget-model default (Q1: burst is \
-             decoupled from crawl concurrency). Raw string here ON PURPOSE: \
+             decoupled from crawl concurrency). Accepts a positive integer, \
+             or the keyword `auto` for the derived default (the same spelling \
+             `--concurrency` understands). Raw string here ON PURPOSE: \
              validation/conversion happens once in preflight staging via \
              `parse_rate_limit_burst` so CLI, env, and programmatic input all \
-             share one accept / reject-0 / warn-and-default semantic.",
+             share one semantic. That semantic FAILS CLOSED: `0`, an \
+             out-of-range value, and any other typo are rejected with exit 78 \
+             rather than degrading to the default — only `auto` and an empty \
+             value mean \"not set\".",
         )
         .help_heading("Discovery")
 }
