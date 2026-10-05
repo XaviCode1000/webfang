@@ -628,11 +628,13 @@ fn stage_env_cli(book: &mut FieldBook, args: &Args, sources: &ArgSources) -> usi
 ///   contradiction inside one struct (adversarial review M1 of PR #925).
 ///   Preferring `staged` keeps `budget_overrides.crawl` consistent with
 ///   `network.concurrency` BY CONSTRUCTION.
-/// - `rate_burst` / `batch` / `asset`: CLI-explicit wins where present;
-///   the staged value (ConfigFile/Env ranks for burst; nothing today for
-///   batch/asset) fills the rest. Where
-///   both sides hold a value it is the same CLI flag parsed twice, so the
-///   order is irrelevant.
+/// - `rate_burst`: since #1813 `From<Args>` contributes `None`, so on the
+///   shipped binary's path the staged value is the only possible source —
+///   `stage_budget_overrides` writes it at ConfigFile/Env/CommandLine rank.
+///   The `cli_capture` side remains reachable for programmatic `Args`
+///   callers that populate a capture themselves; `cli_capture` wins there.
+/// - `batch` / `asset`: CLI-explicit wins where present; the staged value
+///   fills the rest (nothing stages them today).
 #[must_use]
 pub fn merge_budget_overrides(
     cli_capture: crate::domain::budget::BudgetOverrides,
@@ -689,10 +691,11 @@ fn stage_budget_overrides(
                         n += 1;
                     }
                 },
-                // Empty / whitespace-only: the operator neutralised the flag
-                // (`WEBFANG_RATE_LIMIT_BURST=""`), so it means "not set" and
-                // the derived default applies. Never a silent degrade of an
-                // invalid value — those are rejected below (#1813).
+                // Empty / whitespace-only, or the `auto` keyword: the
+                // operator neutralised the flag (`WEBFANG_RATE_LIMIT_BURST=""`
+                // or `=auto`), so it means "not set" and the derived default
+                // applies. Never a silent degrade of an invalid value —
+                // those are rejected below (#1813).
                 Ok(None) => {},
                 Err(msg) => return Err(CliExit::ConfigError(msg)),
             }

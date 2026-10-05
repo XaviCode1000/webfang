@@ -355,10 +355,14 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
     /// This is an owned, lossless conversion — every field in `Args` maps
     /// to exactly one field in `CrawlOptions`. The `url` field is parsed
     /// from `Option<String>` into `Url` (panics if invalid; CLI validation
-    /// guarantees validity before this point). An explicit
-    /// `--rate-limit-burst 0` likewise panics with the Spanish boundary
-    /// error (#897 item 2): the preflight pipeline rejects it first, so
-    /// reaching this conversion with 0 means validation was bypassed.
+    /// guarantees validity before this point).
+    ///
+    /// The `url` parse is the ONLY fallible-to-panic step left here:
+    /// `--rate-limit-burst` is not parsed by this conversion at all —
+    /// `rate_burst` is contributed as `None` and the preflight pipeline is
+    /// the single validating authority (`stage_budget_overrides`, exit 78
+    /// for `0` / out-of-`u32` / non-numeric, #1813). See the field comment
+    /// in the body for the full history of the removed duplicate parse.
     #[allow(clippy::too_many_lines)]
     fn from(args: Args) -> Self {
         // Capture BEFORE the move into NetworkOptions: explicit operator
