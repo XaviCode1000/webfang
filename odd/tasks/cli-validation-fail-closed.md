@@ -331,14 +331,19 @@ carries `Closes #1813`.
   and still reads green. T6 must run `--all-features` (covers T2 + T3) plus
   the negative lane `--features ai,persistence,console` (T3's fail-closed
   case) or T2/T3 ship unverified.
-- **Follow-up issue filed: #1852** — the default `nextest` invocation
-  silently skips 173 `webfang_mcp` tests and 226 `webfang_ai` tests. Measured
-  (`nextest list -p webfang_mcp`: 515 default vs 688 with `--features mcp`).
-  CI covers them via `--all-features`, so it is a local false-green, not a CI
-  hole; the two crates are NOT symmetric — `default = ["mcp"]` is free
-  (`webfang_core/mcp` is an empty marker) but `default = ["ai"]` would drag
-  `ort` into every default build, which the issue explicitly recommends
-  against.
+- **Follow-up issue filed: #1852** — two related defects with one root (feature
+  surface nobody exercises), both now recorded there with measurements:
+  1. The default `nextest` invocation silently skips 173 `webfang_mcp` tests
+     and 226 `webfang_ai` tests. Measured (`nextest list -p webfang_mcp`: 515
+     default vs 688 with `--features mcp`). CI covers them via
+     `--all-features`, so it is a local false-green, not a CI hole; the two
+     crates are NOT symmetric — `default = ["mcp"]` is free (`webfang_core/mcp`
+     is an empty marker) but `default = ["ai"]` would drag `ort` into every
+     default build, which the issue explicitly recommends against.
+  2. `--no-default-features` is a **false green** for `webfang_core` because
+     `webfang_test_utils` declares it without `default-features = false`, so
+     feature unification re-enables the defaults for every dev-target build.
+     Only `--lib`-only or `--no-dev-deps` is genuinely featureless.
 - **Semantic narrowing (T1 + T2):** a programmatic `Args` that sets
   `crawler.rate_limit_burst` / `ai.max_tokens` *without* going through clap now
   bypasses the bound and receives the derived default. No production caller
@@ -351,10 +356,20 @@ carries `Closes #1813`.
 - No `warn!`/tracing added in T3, deliberately: every sibling build-capability
   gate returns silently and lets `CliExit`'s stderr path print.
 
+### Cleanup performed
+
+- 4.9 GB leaked by `rustdoc-markdown` into the repo tree during T4 verification
+  (`crates/{core,ai,mcp,test_utils}/target/` + `docs/book/`, ~3.4 MB of
+  gitignored docs) removed with the maintainer's authorization. Cause worth
+  remembering: **`rustdoc-markdown` ignores `CARGO_TARGET_DIR`** and does a
+  full cargo build inside each crate's manifest dir, so it violates the #1267
+  target-isolation policy invisibly — `git status` stays clean.
+  The worktree's isolated target (`~/.cache/cargo-target/fix-cli-validation-fail-closed`)
+  was verified intact afterwards.
+
 ## Next step
 
-T4 — collapse `images` + `documents` into one feature. This is the only slice
-that changes public feature semantics AND touches `Cargo.toml` (the repo's
-"Ask first" bucket), so the maintainer confirms the design before it lands.
-T5 (`webfang_mcp` test gates) overlaps #1852 and may be narrowed or deferred
-to it — decide before starting.
+T6 — full verification chain and the sequential PR delivery. Verification
+MUST include the feature-flag lanes established during this feature; a bare
+`cargo nextest run -p webfang_core` is a documented false green (see the
+`--no-default-features` finding above) and proves nothing here.
