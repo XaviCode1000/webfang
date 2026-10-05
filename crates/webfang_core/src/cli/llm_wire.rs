@@ -145,8 +145,32 @@ pub async fn build_embedding_provider(
                 .to_string(),
         ));
     }
-    let adapter =
-        RemoteEmbeddingAdapter::new(config).map_err(|e| CliExit::ConfigError(e.to_string()))?;
+    // Issue #1814 (slice B, AC3): `new` resolves the credential synchronously —
+    // `std::fs::metadata` + file reads + `age::Decryptor` work in
+    // `auth_source::resolve` — and must not occupy a Tokio worker while it
+    // runs. Move the owned `ProviderConfig` onto the blocking pool; building
+    // the `wreq` client there is fine too. Error mapping is unchanged:
+    // `ProviderInitError` still renders through `CliExit::ConfigError`.
+    tracing::debug!(
+        provider_id = %config.id,
+        "resolving remote embedding credential on the blocking pool"
+    );
+    // `spawn_blocking` does not propagate the tracing context: without this,
+    // every event the constructor emits on the pool falls back to the run
+    // seed and splits the run's trace_id (trace_orphan_spawn_test caught it).
+    // The guard lives only inside the synchronous blocking task, never
+    // across an `.await` (async-rules compliant).
+    let span = tracing::Span::current();
+    let adapter = tokio::task::spawn_blocking(move || {
+        let _span_guard = span.enter();
+        RemoteEmbeddingAdapter::new(config).map_err(|e| CliExit::ConfigError(e.to_string()))
+    })
+    .await
+    .map_err(|e| {
+        CliExit::ConfigError(format!(
+            "la construcción del provider de embeddings falló en el pool de bloqueo: {e}"
+        ))
+    })??;
     adapter.probe_dim().await.map_err(|e| {
         CliExit::ConfigError(format!(
             "el provider de embeddings '{}' no pasó la verificación inicial: {e}",
@@ -627,5 +651,113 @@ mod tests {
                 Ok(_) => panic!("missing model must fail"),
             };
         assert!(matches!(err, CliExit::ConfigError(_)));
+    }
+
+    /// Issue #1814 (slice B, AC3): credential resolution (`std::fs` reads +
+    /// `age::Decryptor` work in `auth_source::resolve`) must run on the
+    /// blocking pool, never on the Tokio worker.
+    ///
+    /// Deterministic off-runtime proof: the credential "file" is a FIFO whose
+    /// writer delivers the age ciphertext immediately but keeps the pipe open
+    /// for ~4 s, so `resolve()` blocks inside `std::fs::read` for ~4 s of real
+    /// wall clock — the slow-credential-file defect, reproduced
+    /// deterministically and CPU-speed-independently. (A large-file fixture
+    /// cannot reach the 1 s budget: debug-build age decrypts 32 MiB in ~0.1 s,
+    /// and a multi-GiB fixture would be memory-hostile in CI.)
+    ///
+    /// On a `current_thread` runtime the old inline resolution monopolized the
+    /// single worker, so the tick below could not complete within its 1 s
+    /// budget and the test failed; with `spawn_blocking` the scheduler stays
+    /// responsive while the credential read is still in flight.
+    ///
+    /// nextest runs every test in its own process, so the single `EnvGuard`
+    /// (#1349 policy: one guard at a time) cannot collide with a sibling.
+    #[cfg(unix)]
+    #[cfg_attr(
+        miri,
+        ignore = "builds a real wreq client against a TCP MockServer and blocks on a FIFO read; unsupported by Miri"
+    )]
+    #[tokio::test(flavor = "current_thread")]
+    async fn credential_resolution_keeps_runtime_responsive() {
+        use std::io::Write as _;
+        use std::process::Command;
+        use std::time::Duration;
+
+        use age::secrecy::ExposeSecret as _;
+        use wiremock::MockServer;
+
+        // Arrange: encrypt a SMALL payload (the startup probe must succeed)
+        // and serve it through a FIFO held open past the tick's budget.
+        const HOLD_OPEN: Duration = Duration::from_secs(4);
+        let identity = age::x25519::Identity::generate();
+        let recipient = identity.to_public();
+        let ciphertext = {
+            let encryptor =
+                age::Encryptor::with_recipients(std::iter::once(&recipient as &dyn age::Recipient))
+                    .expect("encryptor");
+            let mut out = encryptor.wrap_output(Vec::new()).expect("wrap_output");
+            out.write_all(b"sk-fifo-secret").expect("write payload");
+            out.finish().expect("finish")
+        };
+        let tmp = tempfile::TempDir::new().expect("tmpdir");
+        let cred_path = tmp.path().join("slow-credential.age");
+        assert!(
+            Command::new("mkfifo")
+                .arg(&cred_path)
+                .status()
+                .expect("mkfifo must be available on unix")
+                .success(),
+            "mkfifo must succeed"
+        );
+
+        // The writer blocks on open until the resolver opens the read end
+        // (FIFO rendezvous), writes the ciphertext, then holds the pipe open
+        // past the tick budget before dropping it (EOF).
+        let writer = {
+            let fifo_path = cred_path.clone();
+            std::thread::spawn(move || {
+                let mut fifo = std::fs::File::create(&fifo_path).expect("open fifo for write");
+                fifo.write_all(&ciphertext).expect("write ciphertext");
+                std::thread::sleep(HOLD_OPEN);
+            })
+        };
+
+        let server = MockServer::start().await;
+        let _probe = mount_probe(&server, PROBE_SINGLE_8D).await;
+        let mut providers = remote_providers_for(&server, |_| {});
+        providers.providers[0].auth = AuthSource::EncryptedFile { path: cred_path };
+        // The env override is the CI spelling of the identity contract — no
+        // on-disk identity file, no permission dance.
+        let _identity_guard = webfang_test_utils::EnvGuard::with(&[(
+            "WEBFANG_AGE_IDENTITY",
+            identity.to_string().expose_secret().trim(),
+        )]);
+
+        let opts = opts_with_embedding(Some("ollama"));
+        // Act: the build runs as a concurrent task while a tick task asserts
+        // the scheduler is live; the tick must land within 1 s even though the
+        // credential read is still in flight.
+        let build =
+            tokio::spawn(async move { build_embedding_provider(&opts, &providers, false).await });
+        let tick = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        });
+        tokio::time::timeout(Duration::from_secs(1), tick)
+            .await
+            .expect("current_thread scheduler must stay responsive during credential resolution")
+            .expect("tick task must not panic");
+        assert!(
+            !build.is_finished(),
+            "the blocked credential read should still be in flight when the tick lands"
+        );
+
+        // Assert: the blocking work really happened and the provider serves.
+        let adapter = build
+            .await
+            .expect("build task joins")
+            .expect("provider build must succeed")
+            .expect("remote adapter is Some");
+        assert_eq!(adapter.embedding_dim(), 8);
+        writer.join().expect("writer thread joins");
     }
 }

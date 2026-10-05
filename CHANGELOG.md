@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.6.5] - 2026-10-04
+
+
+### 🔧 Fixed
+
+- Remove dormant user-agent fetch egress, document dataflow ([#1845](https://github.com/XaviCode1000/webfang/pull/1845))
+- Propagate subscriber and trace-file init failures (issue #1814 slice A) ([#1846](https://github.com/XaviCode1000/webfang/pull/1846))
 ## [2.6.4] - 2026-10-04
 
 

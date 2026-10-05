@@ -248,6 +248,13 @@ pub async fn run(
         Err(e) => return CliExit::ConfigError(e.to_string()),
     };
 
+    // Issue #1814 (slice B, AC4): the export runs on the blocking pool, which
+    // requires 'static data, while `report_phase` still needs the pages after
+    // the export. Share the slice: `Vec → Arc<[ScrapedContent]>` moves the
+    // allocation, so downstream phases pay one refcount — never a content
+    // clone.
+    let results: std::sync::Arc<[domain::ScrapedContent]> = std::sync::Arc::from(results);
+
     if let Some(ref ingestion) = elastic_ingestion {
         if let Err(e) = run_elastic_ingestion(ingestion, &results).await {
             return CliExit::IoError(format!("Falló la ingesta de vectores: {e}"));
@@ -267,9 +274,20 @@ pub async fn run(
     // partial-success crawl silently discarded all its content (exit 69 with an
     // empty output directory), unlike batch mode which always exports.
     #[cfg(feature = "ai")]
-    let export_exit = export_phase(&results, &opts, state_store.as_deref(), ai_cleaner).await;
+    let export_exit = export_phase(
+        std::sync::Arc::clone(&results),
+        &opts,
+        state_store.as_deref(),
+        ai_cleaner,
+    )
+    .await;
     #[cfg(not(feature = "ai"))]
-    let export_exit = export_phase(&results, &opts, state_store.as_deref()).await;
+    let export_exit = export_phase(
+        std::sync::Arc::clone(&results),
+        &opts,
+        state_store.as_deref(),
+    )
+    .await;
 
     // Retention after the export wrote its artifacts (#1827): runs on both
     // the success and the cancelled path (export already ran there too).
@@ -374,8 +392,13 @@ fn resolve_export_dir(opts: &CrawlOptions) -> std::path::PathBuf {
 }
 
 /// Export scraped results to files and run AI cleaning if requested.
+///
+/// `results` is shared ownership (`Arc<[ScrapedContent]>`): the export phase
+/// hands the slice to the blocking pool (issue #1814, slice B AC4), which
+/// needs 'static data, while the caller keeps its own handle for the report
+/// phase. See [`crate::cli::export_flow::ExportConfig`].
 pub(crate) async fn export_phase(
-    results: &[domain::ScrapedContent],
+    results: std::sync::Arc<[domain::ScrapedContent]>,
     opts: &CrawlOptions,
     state_store: Option<&dyn StateStorePort>,
     #[cfg(feature = "ai")] ai_cleaner: Option<std::sync::Arc<dyn SemanticCleaner>>,
@@ -420,7 +443,7 @@ pub(crate) async fn export_phase(
     };
 
     save_files(
-        results,
+        &results,
         &file_output_dir,
         &opts.export.output_format,
         &obsidian_options,
@@ -849,8 +872,10 @@ mod tests {
         let mut opts = CrawlOptions::default();
         opts.export.output_dir = std::path::PathBuf::from("-");
 
+        let results: std::sync::Arc<[crate::domain::ScrapedContent]> =
+            std::sync::Arc::from(Vec::new());
         let exit = export_phase(
-            &[],
+            results,
             &opts,
             None,
             #[cfg(feature = "ai")]
@@ -897,8 +922,10 @@ mod tests {
         opts.export.quick_save = true;
         opts.export.obsidian_vault = Some(vault.clone());
 
+        let results: std::sync::Arc<[crate::domain::ScrapedContent]> =
+            std::sync::Arc::from(Vec::new());
         let exit = export_phase(
-            &[],
+            results,
             &opts,
             None,
             #[cfg(feature = "ai")]
