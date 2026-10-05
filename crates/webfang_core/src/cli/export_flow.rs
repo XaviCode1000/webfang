@@ -121,7 +121,14 @@ async fn run_standard_export(config: ExportConfig<'_>) -> Result<Vec<String>, Cl
     let output_dir = config.output_dir;
     let export_format = config.export_format;
     let results = config.results;
+    // Re-enter the current span inside the blocking task: `spawn_blocking`
+    // does not propagate the tracing context, and spanless export events
+    // would fall back to the run seed and split the run's trace_id
+    // (trace_orphan_spawn_test caught it). The guard lives only inside the
+    // synchronous task, never across an `.await` (async-rules compliant).
+    let span = tracing::Span::current();
     let handle = tokio::task::spawn_blocking(move || {
+        let _span_guard = span.enter();
         let ctx = record_store
             .as_ref()
             .map(|store| export_factory::ResumeContext::new(store).with_resume(resume));
@@ -162,7 +169,11 @@ async fn run_ai_export(
     let resume = config.resume;
     let output_dir = config.output_dir;
     let export_format = config.export_format;
+    // Same span re-entry as `run_standard_export`: the trace context does not
+    // cross `spawn_blocking` on its own.
+    let span = tracing::Span::current();
     let handle = tokio::task::spawn_blocking(move || {
+        let _span_guard = span.enter();
         let ctx = record_store
             .as_ref()
             .map(|store| export_factory::ResumeContext::new(store).with_resume(resume));

@@ -143,7 +143,14 @@ async fn export_results(
     let count = results.len();
     let name = filename.as_str().to_string();
     let work_dir = output_dir.clone();
+    // Re-enter the current span inside the blocking task: `spawn_blocking`
+    // does not propagate the tracing context, and spanless export events
+    // would fall back to the run seed and split the run's trace_id. The
+    // guard lives only inside the synchronous task, never across an
+    // `.await` (async-rules compliant).
+    let span = tracing::Span::current();
     let outcome = tokio::task::spawn_blocking(move || {
+        let _span_guard = span.enter();
         process_results(&results, work_dir, format, &name, None)
     })
     .await;

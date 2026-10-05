@@ -155,7 +155,14 @@ pub async fn build_embedding_provider(
         provider_id = %config.id,
         "resolving remote embedding credential on the blocking pool"
     );
+    // `spawn_blocking` does not propagate the tracing context: without this,
+    // every event the constructor emits on the pool falls back to the run
+    // seed and splits the run's trace_id (trace_orphan_spawn_test caught it).
+    // The guard lives only inside the synchronous blocking task, never
+    // across an `.await` (async-rules compliant).
+    let span = tracing::Span::current();
     let adapter = tokio::task::spawn_blocking(move || {
+        let _span_guard = span.enter();
         RemoteEmbeddingAdapter::new(config).map_err(|e| CliExit::ConfigError(e.to_string()))
     })
     .await
