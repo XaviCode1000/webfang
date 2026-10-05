@@ -178,10 +178,57 @@ per the mime.rs nuance above.
       Verification: `--all-features` 3689 passed / 21 skipped; negative lane
       `ai,persistence,console` 3629 passed / 21 skipped; `burst`+`max_tokens`
       filter 46/46 (no T1/T2 regression); check/clippy/fmt/rustdoc clean.
-- [ ] T4 — Collapse `images` + `documents` into one feature; verify
-      `--no-default-features` actually disables it (unified `get_mime_type`
-      table, single gate). Rewrite the justification per the mime.rs nuance
-      (divergent tables, not unswitchable features).
+- [x] T4 — `images` + `documents` deleted (not collapsed to one — see below),
+      commit `8aa5fe9d`.
+      **Design (maintainer-approved after analysis):** delete BOTH features,
+      keep one ungated `get_mime_type` backed by the complete table. The
+      governing test: a Cargo feature is justified by what turning it off
+      buys. Here it bought nothing — not binary size (both tables are static
+      string maps, no `dep:`), not compile time, and behavior only in the
+      direction of a regression. An empty marker whose only observable effect
+      is a regression is decoration.
+      Collapsing to one surviving feature was **rejected**: it preserves the
+      exact defect shape (two compile-time paths for one `pub` function, one
+      strictly less correct), and `get_mime_type` has zero callers so nothing
+      forces the split.
+      What the reduced table actually cost: 12 extensions, **including
+      `txt` → `text/plain`** — plain text lost its MIME type. Undetected
+      because `test_get_mime_type` asserted only `png` and `pdf`, the two
+      entries both copies shared. Now 26 extensions pinned + case
+      insensitivity + two `None` cases.
+      Both manifests keep an explicit `default = []` (states the decision,
+      keeps `--no-default-features` meaningful downstream). `cli_harness.rs`
+      no longer pushes the removed names into the child `cargo build` —
+      leaving them would abort **every** behavioral test in the repo.
+      `scripts/build-llm-artifact.sh:147` carries a spelled-out per-crate
+      feature list consumed by `docs.yml:199`; every arm audited against the
+      manifests (only `webfang_core` was stale). Its comment also falsely
+      claimed to replicate `--all-features` while omitting `loom-model`.
+      Verification: `--all-features` 3691 passed / 21 skipped; mime lib tests
+      11 passed; check/clippy/fmt/rustdoc clean; the reproduced
+      `ci.yml:1085` lane exits 0; `cargo hack` is NOT installed on this
+      machine, so the `--each-feature` enumeration was substituted with 17
+      manual single-feature `--no-default-features` checks (17/17 OK).
+
+### The deeper finding behind T4: `--no-default-features` is a false green
+
+My premise that `ci.yml:1085` was the lane compiling the reduced table was
+**wrong**, and the correction matters beyond this issue:
+
+`crates/webfang_test_utils/Cargo.toml:10` declares
+`webfang_core = { workspace = true }` **without** `default-features = false`.
+That dev-dependency edge re-enables `webfang_core/default` for **every**
+dev-target build via Cargo feature unification. Therefore **every
+`--no-default-features` test lane in this repo is a false green for
+`webfang_core`** — none of them actually builds without the default features.
+Only a `--lib`-only check or a `--no-dev-deps` lane is genuinely
+featureless.
+
+Consequences: the reduced table was observable *only* in lib-only or
+`--no-dev-deps` builds, which is why no runnable test could ever catch it; and
+T4's acceptance criterion was never observably at risk in CI. The same
+unification mechanism may be false-greening other feature lanes nobody has
+audited.
 - [~] T5 — MCP integration tests under default `nextest`. **DELEGATED WHOLE to
       #1852, deliberately NOT implemented here.** Reasoning:
       1. **Zero marginal value.** T5 is literally the `webfang_mcp` half of
@@ -224,7 +271,9 @@ CI workflow edits, support-line backports.
 - [ ] `--max-tokens` rejects zero and has a documented maximum
 - [x] `--adaptive-selectors` on a non-adaptive build fails closed naming the feature
       → **exit 78** (preflight stage), not 64
-- [ ] `images` + `documents` collapsed; `--no-default-features` disables it
+- [x] `images` + `documents` collapsed; `--no-default-features` disables it
+      → **both features DELETED** (commit `8aa5fe9d`); collapsing to one
+      surviving feature was considered and explicitly rejected — see T4
 - [ ] `webfang_mcp` integration tests run in the default `nextest` invocation
       → **delegated to #1852**, not implemented here (see T5)
 
