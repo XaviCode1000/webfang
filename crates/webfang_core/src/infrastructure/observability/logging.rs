@@ -209,9 +209,25 @@ mod tests {
 
     #[test]
     fn test_init_json_logging_default() {
-        // Should not panic - initializes with default settings
-        let result = init_json_logging("info", None, "test-app");
-        assert!(result.is_ok());
+        // Should not panic - initializes with default settings.
+        //
+        // The Coverage lane runs the lib target under shared-process libtest
+        // (not nextest), and
+        // `init_json_logging_dual_propagates_subscriber_install_failure`
+        // deliberately installs a global subscriber: alphabetically it sorts
+        // first, and under parallel scheduling the install race can go either
+        // way. Both outcomes are contract-correct (#1814): `Ok` on a fresh
+        // process, or the typed Spanish conflict error when a global
+        // subscriber already exists. Any OTHER error is a real regression and
+        // still fails this assertion.
+        match init_json_logging("info", None, "test-app") {
+            Ok(_guard) => {},
+            Err(err) => assert!(
+                err.to_string()
+                    .contains("no se pudo instalar el subscriber de logging"),
+                "the only acceptable failure is the typed subscriber conflict, got: {err}"
+            ),
+        }
     }
 
     /// Issue #1814 (defect 1): a subscriber that cannot be installed must
