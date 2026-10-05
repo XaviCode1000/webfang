@@ -349,7 +349,7 @@ This project uses **sibling worktrees** for parallel development. Each active br
 - **ONE worktree per session.** Never switch branches mid-task — create a new worktree instead.
 - **`.git/worktrees/` is Git's internal state.** Never create, edit, or delete entries there by hand — use `git worktree add/remove/prune/repair`.
 - **Forbidden commands:**
-  - `git checkout`, `git switch` — they change the branch inside the current worktree. Use `git worktree add`. **Since git 2.44 this is enforced upstream, not only by local policy**: `git checkout -B <branch>` refuses a branch that is in use in another worktree (`fatal: '<branch>' is already used by worktree at …`, exit 128), and upstream marks it a breaking change — `-B` used to override the guard "by mistake". The escape hatch is `git checkout --ignore-other-worktrees -B <branch>`, and **the flag must come before `-B`**: placed after `-B` it is parsed as the refspec and the command still fails, exit 128. Verified on git 2.55.0 against a linked worktree. Treat the flag exactly like `--force` below: explicit human authorization only.
+  - `git checkout`, `git switch` — they change the branch inside the current worktree. Use `git worktree add`. **Since git 2.44 this is enforced upstream, not only by local policy**: `git checkout -B <branch>` refuses a branch that is in use in another worktree (`fatal: '<branch>' is already used by worktree at …`, exit 128), and upstream marks it a breaking change — `-B` used to override the guard "by mistake". The escape hatch is `git checkout --ignore-other-worktrees -B <branch>` (exit 0), and **the flag must come before `-B`**: placed after `-B` it is parsed as the refspec and the command still fails with exit 128. So all three forms, on a branch held by another worktree: bare `checkout -B <branch>` → 128; `checkout -B --ignore-other-worktrees <branch>` → 128; `checkout --ignore-other-worktrees -B <branch>` → 0. Verified on git 2.55.0 against a real linked worktree — note that `git init <dir>` creates an independent repository and does **not** reproduce the guard, so the check must use `git worktree add`. Treat the flag exactly like `--force` below: explicit human authorization only.
   - `git stash` / `git stash pop` / `git stash apply` / `git stash drop` — **stash storage (`refs/stash`) is shared across ALL worktrees**. A `pop` in one worktree can apply a stash from a completely different session. If you need to set work aside, commit to a throwaway branch.
   - `git worktree move`, `git worktree lock` — use `remove` + `add` instead.
   - `git worktree add --force` — it bypasses Git's native guard that refuses a branch already checked out in another worktree. Two agents on the same branch is exactly the failure that guard prevents. Only with explicit human authorization. (`--ignore-other-worktrees` is the same class of escape for `checkout -B`; see above.)
@@ -661,6 +661,13 @@ are porcelain or format-driven (`git rev-parse --show-toplevel`, `git rev-list`,
 `--jq`. Keep it that way — a new `git ...` call added to a gate must consume a
 machine-readable field, and if it ever genuinely needs advice silenced, the
 global `--no-advice` (git ≥ 2.46) does that without touching config.
+
+> **Source.** git release notes for 2.44 ("All conditional \"advice\" messages show how to
+> turn them off") and 2.48 ("The advice messages now tell the newer 'git config set' command
+> to set the advice.token configuration variable to squelch a message"). Search the release
+> notes **by version**, not by path: the file extension is not stable across releases — older
+> tags carry `Documentation/RelNotes/2.x.0.txt`, while 2.55 and later carry `.adoc`, so a
+> hardcoded extension 404s on roughly half the range.
 
 **Boundary:** initiating a review from a plain shell fails with
 `immutable_review_transport_unsupported` — the relay contract is host-only. The
