@@ -91,6 +91,13 @@ pub enum SitemapError {
     #[error("decompressed data too large: exceeds {0} bytes")]
     DecompressedTooLarge(usize),
 
+    /// The aggregate URL set of a sitemap index exceeded the configured
+    /// memory budget (`SitemapConfig::memory_limit_mb`, issue #1822). Payload
+    /// is the estimated size in MB (2 KB per URL — the same estimator the
+    /// per-parse memory check uses).
+    #[error("sitemap memory limit exceeded: {0} MB")]
+    MemoryLimitExceeded(usize),
+
     /// No sitemap found at the expected URL
     #[error("no sitemap found at {0}")]
     SitemapNotFound(String),
@@ -170,7 +177,13 @@ pub type Result<T> = std::result::Result<T, SitemapError>;
 /// discovery polls it from `tokio::spawn`-ed crawl tasks on the
 /// multi-threaded runtime.
 pub trait SitemapParserPort: Send + Sync {
-    /// Parse sitemap from URL (streaming, zero-allocation)
+    /// Parse sitemap from URL (bounded buffered parse).
+    ///
+    /// The implementation buffers the response body up to its configured
+    /// `max_response_size` and decompressed-size caps, and holds the
+    /// aggregate URL set of a sitemap index under `memory_limit_mb`
+    /// ([`SitemapError::MemoryLimitExceeded`] beyond it, #1822). It does not
+    /// stream.
     ///
     /// # Arguments
     ///
@@ -251,6 +264,12 @@ mod tests {
     fn sitemap_error_display_max_depth_exceeded() {
         let err = SitemapError::MaxDepthExceeded;
         assert_eq!(format!("{err}"), "maximum recursion depth exceeded");
+    }
+
+    #[test]
+    fn sitemap_error_display_memory_limit_exceeded() {
+        let err = SitemapError::MemoryLimitExceeded(1);
+        assert_eq!(format!("{err}"), "sitemap memory limit exceeded: 1 MB");
     }
 
     /// Fake parser returning a canned URL list. Doubles as the
