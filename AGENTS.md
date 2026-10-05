@@ -349,10 +349,10 @@ This project uses **sibling worktrees** for parallel development. Each active br
 - **ONE worktree per session.** Never switch branches mid-task — create a new worktree instead.
 - **`.git/worktrees/` is Git's internal state.** Never create, edit, or delete entries there by hand — use `git worktree add/remove/prune/repair`.
 - **Forbidden commands:**
-  - `git checkout`, `git switch` — they change the branch inside the current worktree. Use `git worktree add`.
+  - `git checkout`, `git switch` — they change the branch inside the current worktree. Use `git worktree add`. **Since git 2.44 this is enforced upstream, not only by local policy**: `git checkout -B <branch>` refuses a branch that is in use in another worktree, and the sole way through is `--ignore-other-worktrees` (upstream marked this a breaking change — `-B` used to override the guard "by mistake"). Treat that flag exactly like `--force` below: explicit human authorization only.
   - `git stash` / `git stash pop` / `git stash apply` / `git stash drop` — **stash storage (`refs/stash`) is shared across ALL worktrees**. A `pop` in one worktree can apply a stash from a completely different session. If you need to set work aside, commit to a throwaway branch.
   - `git worktree move`, `git worktree lock` — use `remove` + `add` instead.
-  - `git worktree add --force` — it bypasses Git's native guard that refuses a branch already checked out in another worktree. Two agents on the same branch is exactly the failure that guard prevents. Only with explicit human authorization.
+  - `git worktree add --force` — it bypasses Git's native guard that refuses a branch already checked out in another worktree. Two agents on the same branch is exactly the failure that guard prevents. Only with explicit human authorization. (`--ignore-other-worktrees` is the same class of escape for `checkout -B`; see above.)
 
 ### Placement & naming
 
@@ -647,6 +647,17 @@ must run `git config core.hooksPath scripts/githooks`. Decision matrix:
 The verdict is parsed from JSON, never from the exit code: `validate` exits **0
 even when `allowed: false`**. `jq` is preferred with a built-in `sed` scalar
 fallback, so a missing `jq` downgrades the parser but never disables the gate.
+
+**Never match a gate on git's human-facing prose.** Git's advice text ("hint:",
+"warning:") is not a stable interface — its wording and its off-switch hint have
+already changed across releases (2.44 added the `advice.*` off-switch hint, 2.48
+changed the suggested spelling), and it moves to **stderr** while every gate
+captures stdout. The hooks here are already safe by construction: their git calls
+are porcelain or format-driven (`git rev-parse --show-toplevel`, `git rev-list`,
+`git log -1 --format=%s`) and everything else is `gh`/`gentle-ai` JSON read with
+`--jq`. Keep it that way — a new `git ...` call added to a gate must consume a
+machine-readable field, and if it ever genuinely needs advice silenced, the
+global `--no-advice` (git ≥ 2.46) does that without touching config.
 
 **Boundary:** initiating a review from a plain shell fails with
 `immutable_review_transport_unsupported` — the relay contract is host-only. The
