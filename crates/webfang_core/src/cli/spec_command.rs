@@ -244,7 +244,7 @@ fn numeric_binding(id: &str) -> Option<ValueParser> {
         | "max_file_size"
         | "checkpoint_interval" => Some(ValueParser::from(clap::value_parser!(u64))),
         "verbose" | "sitemap_depth" => Some(ValueParser::from(clap::value_parser!(u8))),
-        "max_retries" => Some(ValueParser::from(clap::value_parser!(u32))),
+        "max_retries" | "retention_days" => Some(ValueParser::from(clap::value_parser!(u32))),
         _ => None,
     }
 }

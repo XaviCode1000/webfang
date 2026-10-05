@@ -383,9 +383,9 @@ The config base is the sibling you will also want when cleaning up:
 | `webfang/state/<domain>.json` | `--resume` | KBs, grows with processed-URL count | No — relocatable via `--state-dir` / `WEBFANG_STATE_DIR` |
 | `webfang/state/<domain>.json.lock` | every `RecordStore` write | 0 B | **No — permanent by design.** See the note below. |
 | `webfang/state/<domain>.json.bak` | migrating a stale state version | same as state | No — an existing backup is kept as-is |
-| `~/.webfang/crawl.db` — **absolute**, under `$HOME`, not the cache base | crawl/scrape runs that persist to SQLite (only with the `persistence` feature — **absent from the release binary**): extraction fingerprints, resources, chunks, notes | grows with fingerprinted pages | No — relocatable via `--db-path` / `WEBFANG_DB_PATH`; delete the file while no run is active. No automatic retention yet — tracked in #1827 |
+| `~/.webfang/crawl.db` — **absolute**, under `$HOME`, not the cache base | crawl/scrape runs that persist to SQLite (only with the `persistence` feature — **absent from the release binary**): extraction fingerprints, resources, chunks, notes | grows with fingerprinted pages | Rows older than N days are pruned (plus `VACUUM`) when a run passes `--retention-days N`; otherwise delete the file while no run is active. Relocatable via `--db-path` / `WEBFANG_DB_PATH` |
 | `huggingface/hub/` — see [below](#the-model-cache-is-the-exception) | any `--clean-ai` run, via `hf_hub` | **372 MB** default / ~1.2 GB | No — relocatable via **`HF_HOME`**, a HuggingFace variable, *not* `WEBFANG_*` |
-| `<output_dir>/` — Markdown, `export.jsonl`, `rag_dataset/`, `_inbox/` | every run | unbounded — **your data** | No — relocatable via `-o` / `WEBFANG_OUTPUT`; defaults to `output/` in the current directory |
+| `<output_dir>/` — Markdown, `export.jsonl`, `rag_dataset/`, `_inbox/` | every run | unbounded — **your data** | Opt-in: files older than N days are pruned when a run passes `--retention-days N`. Relocatable via `-o` / `WEBFANG_OUTPUT`; defaults to `output/` in the current directory |
 | `webfang/config.toml` (under the **config** base: `~/.config`, `~/Library/Application Support`, `%APPDATA%`) | you, by editing it | KBs | No — relocatable via `WEBFANG_CONFIG` or `XDG_CONFIG_HOME` |
 
 > **The `.lock` sentinel is supposed to survive.** `<domain>.json.lock` is
