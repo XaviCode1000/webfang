@@ -1,9 +1,0 @@
-{"run_id":"d12c3da3-87d6-4061-a8dc-09ab3b4e3253","line":83,"new":{"module_name":"retention_test","snapshot_name":"opt_in_retention_prunes_aged_exports_and_keeps_this_run","metadata":{"source":"crates/webfang_core/tests/retention_test.rs","assertion_line":83,"expression":"retention_line(&stdout)"},"snapshot":"Retention: 1 archivo(s) y 5 fila(s) de la vault DB purgados (> 7 días)."},"old":{"module_name":"retention_test","metadata":{},"snapshot":"Retention: 1 archivo(s) y 0 fila(s) de la vault DB purgados (> 7 días)."}}
-{"run_id":"d12c3da3-87d6-4061-a8dc-09ab3b4e3253","line":130,"new":null,"old":null}
-{"run_id":"d12c3da3-87d6-4061-a8dc-09ab3b4e3253","line":83,"new":null,"old":null}
-{"run_id":"e962834e-2c4a-4bd7-b788-964a67a71a06","line":130,"new":null,"old":null}
-{"run_id":"e962834e-2c4a-4bd7-b788-964a67a71a06","line":83,"new":null,"old":null}
-{"run_id":"f9818380-60e2-4486-b18b-df59728e8a35","line":130,"new":null,"old":null}
-{"run_id":"f9818380-60e2-4486-b18b-df59728e8a35","line":83,"new":null,"old":null}
-{"run_id":"1dcfd57d-0f5f-47b2-93c1-687e5ee1a957","line":130,"new":null,"old":null}
-{"run_id":"1dcfd57d-0f5f-47b2-93c1-687e5ee1a957","line":83,"new":null,"old":null}
