@@ -20,6 +20,7 @@
 //! reached the model.
 
 use crate::cmd;
+use assert_cmd::assert::Assert;
 use regex::Regex;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -115,6 +116,73 @@ fn assert_structured_field(stderr: &str, field: &str, value: usize) {
     );
 }
 
+/// Spawn `webfang` scraping `server`'s base URL into `output`, with `envs`
+/// applied to the child process and `extra_args` appended after the fixed
+/// `--url … --output …` prefix, returning the finished command assert.
+///
+/// No verbosity flag is added: tests that need `-v` pass it in `extra_args`,
+/// because the fail-closed family below asserts at DEFAULT verbosity.
+fn scrape(
+    server: &MockServer,
+    envs: &[(&str, &str)],
+    output: &TempDir,
+    extra_args: &[&str],
+) -> Assert {
+    let mut command = cmd();
+    for (key, value) in envs {
+        command.env(key, value);
+    }
+    command
+        .args([
+            "--url",
+            server.uri().as_str(),
+            "--output",
+            output.path().to_string_lossy().as_ref(),
+        ])
+        .args(extra_args)
+        .timeout(Duration::from_secs(60))
+        .assert()
+}
+
+/// Mount a single catch-all page so a run that PASSES validation has a
+/// hermetic, instant success target instead of the real network.
+///
+/// Required for the fail-closed cases below: pre-fix they do NOT fail, so
+/// without a mock they would dial `example.com` and the RED observation would
+/// depend on the machine's connectivity (slow, and possibly a flaky 69/74
+/// instead of a clean 0).
+async fn mount_single_page_site(server: &MockServer) {
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "<html><body><article><h1>Page</h1>\
+             <p>Substantive batch content long enough to clear the fifty \
+             character minimum content guard comfortably.</p></article></body></html>",
+        ))
+        .mount(server)
+        .await;
+}
+
+/// Arrange the fail-closed family's fixture (fresh single-page mock site +
+/// temp output dir) and run a scrape against it with `envs` applied to the
+/// child and `extra_args` appended, returning the output dir (the caller
+/// keeps it alive for snapshot redaction) plus the finished assert.
+async fn run_single_page_scrape(envs: &[(&str, &str)], extra_args: &[&str]) -> (TempDir, Assert) {
+    let server = MockServer::start().await;
+    mount_single_page_site(&server).await;
+    let output = TempDir::new().expect("temp output dir");
+    let assert = scrape(&server, envs, &output, extra_args);
+    (output, assert)
+}
+
+/// Assert a run FAILED and did so with the fail-closed ConfigError exit
+/// code (78) — the `.failure()` outcome assertion plus the exact code —
+/// returning the assert so callers can still inspect stderr.
+fn assert_exit_78(assert: Assert, context: &str) -> Assert {
+    let assert = assert.failure();
+    assert_eq!(assert.get_output().status.code(), Some(78), "{context}");
+    assert
+}
+
 /// #897 item 1: a TOML-sourced `concurrency = "2"` must reach the scrape
 /// enforcement site through normalize → into_crawl_options → the binary's
 /// final merge → BudgetModel::build. Before the fix the merge dropped the
@@ -126,22 +194,15 @@ async fn toml_concurrency_reaches_scrape_enforcement() {
     mount_two_page_site(&server).await;
     let output = TempDir::new().expect("temp output dir");
     let (_conf, conf_path) = write_toml_config("concurrency = \"2\"\n");
+    let sitemap_url = format!("{}/sitemap.xml", server.uri());
 
-    let assert = cmd()
-        .env("WEBFANG_CONFIG", &conf_path)
-        .args([
-            "--url",
-            &server.uri(),
-            "--use-sitemap",
-            "--sitemap-url",
-            &format!("{}/sitemap.xml", server.uri()),
-            "--output",
-            output.path().to_string_lossy().as_ref(),
-            "-v",
-        ])
-        .timeout(Duration::from_secs(60))
-        .assert()
-        .success();
+    let assert = scrape(
+        &server,
+        &[("WEBFANG_CONFIG", conf_path.to_string_lossy().as_ref())],
+        &output,
+        &["--use-sitemap", "--sitemap-url", &sitemap_url, "-v"],
+    )
+    .success();
 
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
     let effective = logged_scrape_concurrency(&stderr);
@@ -160,24 +221,22 @@ async fn cli_concurrency_flag_outranks_toml_config() {
     mount_two_page_site(&server).await;
     let output = TempDir::new().expect("temp output dir");
     let (_conf, conf_path) = write_toml_config("concurrency = \"2\"\n");
+    let sitemap_url = format!("{}/sitemap.xml", server.uri());
 
-    let assert = cmd()
-        .env("WEBFANG_CONFIG", &conf_path)
-        .args([
-            "--url",
-            &server.uri(),
+    let assert = scrape(
+        &server,
+        &[("WEBFANG_CONFIG", conf_path.to_string_lossy().as_ref())],
+        &output,
+        &[
             "--use-sitemap",
             "--sitemap-url",
-            &format!("{}/sitemap.xml", server.uri()),
-            "--output",
-            output.path().to_string_lossy().as_ref(),
+            &sitemap_url,
             "--concurrency",
             "5",
             "-v",
-        ])
-        .timeout(Duration::from_secs(60))
-        .assert()
-        .success();
+        ],
+    )
+    .success();
 
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
     let effective = logged_scrape_concurrency(&stderr);
@@ -235,19 +294,13 @@ async fn download_concurrency_flag_reaches_asset_tier() {
     mount_two_page_site(&server).await;
     let output = TempDir::new().expect("temp output dir");
 
-    let assert = cmd()
-        .args([
-            "--url",
-            &server.uri(),
-            "--output",
-            output.path().to_string_lossy().as_ref(),
-            "--download-concurrency",
-            "7",
-            "-v",
-        ])
-        .timeout(Duration::from_secs(60))
-        .assert()
-        .success();
+    let assert = scrape(
+        &server,
+        &[],
+        &output,
+        &["--download-concurrency", "7", "-v"],
+    )
+    .success();
 
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
     assert_structured_field(&stderr, "asset_concurrency", 7);
@@ -265,20 +318,13 @@ async fn toml_crawl_and_cli_download_survive_same_merge() {
     let output = TempDir::new().expect("temp output dir");
     let (_conf, conf_path) = write_toml_config("concurrency = \"2\"\n");
 
-    let assert = cmd()
-        .env("WEBFANG_CONFIG", &conf_path)
-        .args([
-            "--url",
-            &server.uri(),
-            "--output",
-            output.path().to_string_lossy().as_ref(),
-            "--download-concurrency",
-            "6",
-            "-v",
-        ])
-        .timeout(Duration::from_secs(60))
-        .assert()
-        .success();
+    let assert = scrape(
+        &server,
+        &[("WEBFANG_CONFIG", conf_path.to_string_lossy().as_ref())],
+        &output,
+        &["--download-concurrency", "6", "-v"],
+    )
+    .success();
 
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
     assert_eq!(
@@ -317,24 +363,6 @@ fn cli_rate_limit_burst_zero_hard_errors() {
     );
 }
 
-/// Mount a single catch-all page so a run that PASSES validation has a
-/// hermetic, instant success target instead of the real network.
-///
-/// Required for the fail-closed cases below: pre-fix they do NOT fail, so
-/// without a mock they would dial `example.com` and the RED observation would
-/// depend on the machine's connectivity (slow, and possibly a flaky 69/74
-/// instead of a clean 0).
-async fn mount_single_page_site(server: &MockServer) {
-    Mock::given(method("GET"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(
-            "<html><body><article><h1>Page</h1>\
-             <p>Substantive batch content long enough to clear the fifty \
-             character minimum content guard comfortably.</p></article></body></html>",
-        ))
-        .mount(server)
-        .await;
-}
-
 /// #1813 (fail-closed family) — Zero Silent Loss, non-numeric arm:
 /// `--rate-limit-burst banana` must hard-error with a Spanish config error and
 /// exit 78, never degrade silently to the hardware-derived default.
@@ -345,27 +373,11 @@ async fn mount_single_page_site(server: &MockServer) {
 /// give the pre-fix run a fast hermetic success.
 #[tokio::test]
 async fn cli_rate_limit_burst_non_numeric_fails_closed() {
-    let server = MockServer::start().await;
-    mount_single_page_site(&server).await;
-    let output = TempDir::new().expect("temp output dir");
+    let (output, assert) = run_single_page_scrape(&[], &["--rate-limit-burst", "banana"]).await;
 
-    let assert = cmd()
-        .args([
-            "--url",
-            &server.uri(),
-            "--output",
-            output.path().to_string_lossy().as_ref(),
-            "--rate-limit-burst",
-            "banana",
-        ])
-        .timeout(Duration::from_secs(60))
-        .assert()
-        .failure();
-
-    assert_eq!(
-        assert.get_output().status.code(),
-        Some(78),
-        "a non-numeric burst must exit 78 (ConfigError), not degrade to the derived default"
+    let assert = assert_exit_78(
+        assert,
+        "a non-numeric burst must exit 78 (ConfigError), not degrade to the derived default",
     );
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
     crate::assert_snapshot_redacted(
@@ -380,27 +392,11 @@ async fn cli_rate_limit_burst_non_numeric_fails_closed() {
 /// `u32::MAX + 1`, i.e. an explicit request that cannot be honoured.
 #[tokio::test]
 async fn cli_rate_limit_burst_out_of_range_fails_closed() {
-    let server = MockServer::start().await;
-    mount_single_page_site(&server).await;
-    let output = TempDir::new().expect("temp output dir");
+    let (output, assert) = run_single_page_scrape(&[], &["--rate-limit-burst", "4294967296"]).await;
 
-    let assert = cmd()
-        .args([
-            "--url",
-            &server.uri(),
-            "--output",
-            output.path().to_string_lossy().as_ref(),
-            "--rate-limit-burst",
-            "4294967296",
-        ])
-        .timeout(Duration::from_secs(60))
-        .assert()
-        .failure();
-
-    assert_eq!(
-        assert.get_output().status.code(),
-        Some(78),
-        "an out-of-u32-range burst must exit 78 (ConfigError)"
+    let assert = assert_exit_78(
+        assert,
+        "an out-of-u32-range burst must exit 78 (ConfigError)",
     );
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr).into_owned();
     crate::assert_snapshot_redacted(
@@ -415,22 +411,8 @@ async fn cli_rate_limit_burst_out_of_range_fails_closed() {
 /// pass both tests above.
 #[tokio::test]
 async fn cli_rate_limit_burst_valid_value_is_accepted() {
-    let server = MockServer::start().await;
-    mount_single_page_site(&server).await;
-    let output = TempDir::new().expect("temp output dir");
-
-    cmd()
-        .args([
-            "--url",
-            &server.uri(),
-            "--output",
-            output.path().to_string_lossy().as_ref(),
-            "--rate-limit-burst",
-            "7",
-        ])
-        .timeout(Duration::from_secs(60))
-        .assert()
-        .success();
+    let (_output, assert) = run_single_page_scrape(&[], &["--rate-limit-burst", "7"]).await;
+    assert.success();
 }
 
 /// #1813 triangulation — `WEBFANG_RATE_LIMIT_BURST` reaches the same
@@ -438,26 +420,12 @@ async fn cli_rate_limit_burst_valid_value_is_accepted() {
 /// than than being a second, softer front door.
 #[tokio::test]
 async fn env_rate_limit_burst_non_numeric_fails_closed() {
-    let server = MockServer::start().await;
-    mount_single_page_site(&server).await;
-    let output = TempDir::new().expect("temp output dir");
+    let (_output, assert) =
+        run_single_page_scrape(&[("WEBFANG_RATE_LIMIT_BURST", "banana")], &[]).await;
 
-    let assert = cmd()
-        .env("WEBFANG_RATE_LIMIT_BURST", "banana")
-        .args([
-            "--url",
-            &server.uri(),
-            "--output",
-            output.path().to_string_lossy().as_ref(),
-        ])
-        .timeout(Duration::from_secs(60))
-        .assert()
-        .failure();
-
-    assert_eq!(
-        assert.get_output().status.code(),
-        Some(78),
-        "a non-numeric WEBFANG_RATE_LIMIT_BURST must exit 78 (ConfigError)"
+    assert_exit_78(
+        assert,
+        "a non-numeric WEBFANG_RATE_LIMIT_BURST must exit 78 (ConfigError)",
     );
 }
 
@@ -472,22 +440,8 @@ async fn env_rate_limit_burst_non_numeric_fails_closed() {
 /// the derived default, never exit 78.
 #[tokio::test]
 async fn cli_rate_limit_burst_auto_keyword_is_accepted_as_unset() {
-    let server = MockServer::start().await;
-    mount_single_page_site(&server).await;
-    let output = TempDir::new().expect("temp output dir");
-
-    cmd()
-        .args([
-            "--url",
-            &server.uri(),
-            "--output",
-            output.path().to_string_lossy().as_ref(),
-            "--rate-limit-burst",
-            "auto",
-        ])
-        .timeout(Duration::from_secs(60))
-        .assert()
-        .success();
+    let (_output, assert) = run_single_page_scrape(&[], &["--rate-limit-burst", "auto"]).await;
+    assert.success();
 }
 
 /// Same contract through the env front door: `WEBFANG_RATE_LIMIT_BURST=auto`
@@ -495,21 +449,9 @@ async fn cli_rate_limit_burst_auto_keyword_is_accepted_as_unset() {
 /// validator as argv, so it must reach the derived default too.
 #[tokio::test]
 async fn env_rate_limit_burst_auto_keyword_is_accepted_as_unset() {
-    let server = MockServer::start().await;
-    mount_single_page_site(&server).await;
-    let output = TempDir::new().expect("temp output dir");
-
-    cmd()
-        .env("WEBFANG_RATE_LIMIT_BURST", "auto")
-        .args([
-            "--url",
-            &server.uri(),
-            "--output",
-            output.path().to_string_lossy().as_ref(),
-        ])
-        .timeout(Duration::from_secs(60))
-        .assert()
-        .success();
+    let (_output, assert) =
+        run_single_page_scrape(&[("WEBFANG_RATE_LIMIT_BURST", "auto")], &[]).await;
+    assert.success();
 }
 
 /// Triangulation for the keyword arm: case-insensitivity is part of the
@@ -519,22 +461,8 @@ async fn env_rate_limit_burst_auto_keyword_is_accepted_as_unset() {
 /// failing closed — the same regression in a narrower spelling.
 #[tokio::test]
 async fn cli_rate_limit_burst_auto_keyword_is_case_insensitive() {
-    let server = MockServer::start().await;
-    mount_single_page_site(&server).await;
-    let output = TempDir::new().expect("temp output dir");
-
-    cmd()
-        .args([
-            "--url",
-            &server.uri(),
-            "--output",
-            output.path().to_string_lossy().as_ref(),
-            "--rate-limit-burst",
-            "AUTO",
-        ])
-        .timeout(Duration::from_secs(60))
-        .assert()
-        .success();
+    let (_output, assert) = run_single_page_scrape(&[], &["--rate-limit-burst", "AUTO"]).await;
+    assert.success();
 }
 
 /// #897 item 2 — Zero Silent Loss, TOML path: a config-file-sourced

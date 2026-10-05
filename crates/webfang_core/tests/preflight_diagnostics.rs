@@ -43,6 +43,22 @@ const RUN_TIMEOUT_SECS: u64 = 120;
 /// the validation error, never on the wiring summary.
 const INVALID_FRAGMENT: &str = "no es un número";
 
+/// Every `EXIT_*` constant in `cli::error`. Both published exit tables — the
+/// `--help` `EXIT CODES` section and the `docs/src/cli-reference.md` mirror —
+/// must document exactly these codes, so the two tables cannot rot apart.
+const ALL_EXIT_CODES: &[u8] = &[
+    cli_error::EXIT_SUCCESS,
+    cli_error::EXIT_EMPTY_DISCOVERY,
+    cli_error::EXIT_SCRAPER_FAILURE,
+    cli_error::EXIT_USAGE_ERROR,
+    cli_error::EXIT_DATA_ERROR,
+    cli_error::EXIT_UNAVAILABLE,
+    cli_error::EXIT_IO_ERROR,
+    cli_error::EXIT_PROTOCOL,
+    cli_error::EXIT_FORBIDDEN,
+    cli_error::EXIT_CONFIG,
+];
+
 /// Run a single-page scrape of `url` with an explicit burst flag, returning
 /// the completed output.
 fn scrape_with_burst(url: &str, out: &tempfile::TempDir, burst: &str) -> std::process::Output {
@@ -119,19 +135,7 @@ async fn numeric_burst_is_honoured_without_validation_error() {
 #[test]
 fn help_exit_table_lists_every_exit_constant() {
     let table = help_exit_codes_table();
-    let codes: &[u8] = &[
-        cli_error::EXIT_SUCCESS,
-        cli_error::EXIT_EMPTY_DISCOVERY,
-        cli_error::EXIT_SCRAPER_FAILURE,
-        cli_error::EXIT_USAGE_ERROR,
-        cli_error::EXIT_DATA_ERROR,
-        cli_error::EXIT_UNAVAILABLE,
-        cli_error::EXIT_IO_ERROR,
-        cli_error::EXIT_PROTOCOL,
-        cli_error::EXIT_FORBIDDEN,
-        cli_error::EXIT_CONFIG,
-    ];
-    for code in codes {
+    for code in ALL_EXIT_CODES {
         assert!(
             table_contains_code(&table, *code),
             "EXIT CODES table must document exit {code}, got:\n{table}"
@@ -147,19 +151,7 @@ fn docs_exit_table_mirrors_every_exit_constant() {
     let doc_path = manifest.join("../../docs/src/cli-reference.md");
     let doc = std::fs::read_to_string(&doc_path)
         .unwrap_or_else(|e| panic!("read {}: {e}", doc_path.display()));
-    let codes: &[u8] = &[
-        cli_error::EXIT_SUCCESS,
-        cli_error::EXIT_EMPTY_DISCOVERY,
-        cli_error::EXIT_SCRAPER_FAILURE,
-        cli_error::EXIT_USAGE_ERROR,
-        cli_error::EXIT_DATA_ERROR,
-        cli_error::EXIT_UNAVAILABLE,
-        cli_error::EXIT_IO_ERROR,
-        cli_error::EXIT_PROTOCOL,
-        cli_error::EXIT_FORBIDDEN,
-        cli_error::EXIT_CONFIG,
-    ];
-    for code in codes {
+    for code in ALL_EXIT_CODES {
         assert!(
             table_contains_code(&doc, *code),
             "cli-reference.md must document exit {code}"

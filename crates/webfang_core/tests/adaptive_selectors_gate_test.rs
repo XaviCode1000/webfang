@@ -54,17 +54,49 @@ const REJECTION_MARKER: &str = "requiere un binario compilado con la feature `ad
 const BODY: &str = "<html><body><h1>Hi</h1><p>content long enough to clear the fifty \
                      character minimum content guard comfortably.</p></body></html>";
 
-/// Non-adaptive build: `--adaptive-selectors` must exit 78 with a message
-/// naming the feature, before any network request (#1813).
-#[cfg(not(feature = "adaptive-selectors"))]
-#[tokio::test]
-async fn adaptive_selectors_on_non_adaptive_build_fails_closed_naming_the_feature() {
+/// Start the single-page mock fixture and return the server plus its base
+/// URL (with the trailing slash the CLI expects).
+///
+/// Defined without `#[cfg]`: all three tests (both mutually-exclusive lanes)
+/// arrange through it, so it is live under every feature combination.
+async fn start_mock_site() -> (MockServer, String) {
     let mock_server = MockServer::start().await;
     Mock::given(method("GET"))
         .respond_with(ResponseTemplate::new(200).set_body_string(BODY))
         .mount(&mock_server)
         .await;
     let base_url = format!("{}/", mock_server.uri());
+    (mock_server, base_url)
+}
+
+/// Spawn a `--dry-run --max-pages 1` scrape of `base_url`, optionally
+/// requesting `--adaptive-selectors`, returning the finished output.
+///
+/// Each lane compiles exactly one caller (flag-absent in the negative lane,
+/// flag-present in the positive lane), so the helper is live under both
+/// feature combinations and never trips `dead_code`.
+async fn run_dry_run(base_url: &str, with_adaptive_flag: bool) -> std::process::Output {
+    let mut command = cmd();
+    if with_adaptive_flag {
+        command.arg("--adaptive-selectors");
+    }
+    command
+        .arg("--url")
+        .arg(base_url)
+        .arg("--dry-run")
+        .arg("--max-pages")
+        .arg("1")
+        .timeout(RUN_TIMEOUT)
+        .output()
+        .expect("spawn webfang")
+}
+
+/// Non-adaptive build: `--adaptive-selectors` must exit 78 with a message
+/// naming the feature, before any network request (#1813).
+#[cfg(not(feature = "adaptive-selectors"))]
+#[tokio::test]
+async fn adaptive_selectors_on_non_adaptive_build_fails_closed_naming_the_feature() {
+    let (mock_server, base_url) = start_mock_site().await;
 
     cmd()
         .arg("--url")
@@ -89,22 +121,9 @@ async fn adaptive_selectors_on_non_adaptive_build_fails_closed_naming_the_featur
 #[cfg(not(feature = "adaptive-selectors"))]
 #[tokio::test]
 async fn adaptive_gate_is_silent_when_the_flag_is_absent() {
-    let mock_server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(BODY))
-        .mount(&mock_server)
-        .await;
-    let base_url = format!("{}/", mock_server.uri());
+    let (_mock_server, base_url) = start_mock_site().await;
 
-    let output = cmd()
-        .arg("--url")
-        .arg(&base_url)
-        .arg("--dry-run")
-        .arg("--max-pages")
-        .arg("1")
-        .timeout(RUN_TIMEOUT)
-        .output()
-        .expect("spawn webfang");
+    let output = run_dry_run(&base_url, false).await;
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -125,23 +144,9 @@ async fn adaptive_gate_is_silent_when_the_flag_is_absent() {
 #[cfg(feature = "adaptive-selectors")]
 #[tokio::test]
 async fn adaptive_selectors_on_adaptive_build_is_accepted_and_reaches_the_crawl() {
-    let mock_server = MockServer::start().await;
-    Mock::given(method("GET"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(BODY))
-        .mount(&mock_server)
-        .await;
-    let base_url = format!("{}/", mock_server.uri());
+    let (mock_server, base_url) = start_mock_site().await;
 
-    let output = cmd()
-        .arg("--url")
-        .arg(&base_url)
-        .arg("--adaptive-selectors")
-        .arg("--dry-run")
-        .arg("--max-pages")
-        .arg("1")
-        .timeout(RUN_TIMEOUT)
-        .output()
-        .expect("spawn webfang");
+    let output = run_dry_run(&base_url, true).await;
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
