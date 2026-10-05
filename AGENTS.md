@@ -349,7 +349,7 @@ This project uses **sibling worktrees** for parallel development. Each active br
 - **ONE worktree per session.** Never switch branches mid-task — create a new worktree instead.
 - **`.git/worktrees/` is Git's internal state.** Never create, edit, or delete entries there by hand — use `git worktree add/remove/prune/repair`.
 - **Forbidden commands:**
-  - `git checkout`, `git switch` — they change the branch inside the current worktree. Use `git worktree add`. **Since git 2.44 this is enforced upstream, not only by local policy**: `git checkout -B <branch>` refuses a branch that is in use in another worktree, and the sole way through is `--ignore-other-worktrees` (upstream marked this a breaking change — `-B` used to override the guard "by mistake"). Treat that flag exactly like `--force` below: explicit human authorization only.
+  - `git checkout`, `git switch` — they change the branch inside the current worktree. Use `git worktree add`. **Since git 2.44 this is enforced upstream, not only by local policy**: `git checkout -B <branch>` refuses a branch that is in use in another worktree (`fatal: '<branch>' is already used by worktree at …`, exit 128), and upstream marks it a breaking change — `-B` used to override the guard "by mistake". The escape hatch is `git checkout --ignore-other-worktrees -B <branch>`, and **the flag must come before `-B`**: placed after `-B` it is parsed as the refspec and the command still fails, exit 128. Verified on git 2.55.0 against a linked worktree. Treat the flag exactly like `--force` below: explicit human authorization only.
   - `git stash` / `git stash pop` / `git stash apply` / `git stash drop` — **stash storage (`refs/stash`) is shared across ALL worktrees**. A `pop` in one worktree can apply a stash from a completely different session. If you need to set work aside, commit to a throwaway branch.
   - `git worktree move`, `git worktree lock` — use `remove` + `add` instead.
   - `git worktree add --force` — it bypasses Git's native guard that refuses a branch already checked out in another worktree. Two agents on the same branch is exactly the failure that guard prevents. Only with explicit human authorization. (`--ignore-other-worktrees` is the same class of escape for `checkout -B`; see above.)
@@ -649,10 +649,13 @@ even when `allowed: false`**. `jq` is preferred with a built-in `sed` scalar
 fallback, so a missing `jq` downgrades the parser but never disables the gate.
 
 **Never match a gate on git's human-facing prose.** Git's advice text ("hint:",
-"warning:") is not a stable interface — its wording and its off-switch hint have
-already changed across releases (2.44 added the `advice.*` off-switch hint, 2.48
-changed the suggested spelling), and it moves to **stderr** while every gate
-captures stdout. The hooks here are already safe by construction: their git calls
+"warning:") is not a stable interface. Its wording has already changed across
+releases — as of 2.44 every conditional advice message carries an off-switch hint,
+and 2.48 changed that hint to name the newer `git config set` command instead of the
+older spelling (observable on 2.55.0, where a malformed-ref error prints
+`hint: Disable this message with "git config set advice.refSyntax false"`). It moves to
+**stderr** while every gate captures stdout. The hooks here are already safe by
+construction: their git calls
 are porcelain or format-driven (`git rev-parse --show-toplevel`, `git rev-list`,
 `git log -1 --format=%s`) and everything else is `gh`/`gentle-ai` JSON read with
 `--jq`. Keep it that way — a new `git ...` call added to a gate must consume a
@@ -1110,7 +1113,7 @@ When :22 times out, override the transport **for one invocation** and keep `orig
 GIT_SSH_COMMAND="ssh -p 443 -o Hostname=ssh.github.com" git push origin <branch>
 ```
 
-**Why per-invocation `origin` and not an explicit URL** (`git push ssh://git@ssh.github.com:443/OWNER/REPO.git`): a push to a bare URL lands on the remote but does **not** update `refs/remotes/origin/*` — verified against a local bare repo, where a push to `origin` created the tracking ref and a push to a URL did not. This repo depends on those refs (`:479` and `:1234`, `git merge --ff-only origin/main`, which STOPS on failure), so a URL push would manufacture the next confusing STOP.
+**Why per-invocation `origin` and not an explicit URL** (`git push ssh://git@ssh.github.com:443/OWNER/REPO.git`): a push to a bare URL lands on the remote but does **not** update `refs/remotes/origin/*` — verified against a local bare repo, where a push to `origin` created the tracking ref and a push to a URL did not. This repo depends on those refs in two places — the post-merge runbook step *"Sync local main (ff-only)"*, and the *"No stacked PRs"* sequential-delivery list — both of which run `git merge --ff-only origin/main` and STOP when it fails. So a URL push would manufacture the next confusing STOP. (Referenced by section name on purpose: a line-number citation in this file is invalidated by any edit above it, including these ones.)
 
 **The identity trap:** `ssh.github.com` does **not** match a `Host github.com` block in `~/.ssh/config`, so `IdentityFile` / `IdentitiesOnly` are silently lost (`ssh -G ssh.github.com` reports `identitiesonly no` and only the default identity names). SSH then authenticates via the **agent** alone — true while the key happens to be loaded, fatal with a cold agent. Pass the identity explicitly:
 
@@ -1122,7 +1125,7 @@ GIT_SSH_COMMAND="ssh -p 443 -o Hostname=ssh.github.com -o IdentitiesOnly=yes -i 
 
 The same override covers `fetch`, `ls-remote`, `gh repo clone` and `gh pr checkout` (`gh config get git_protocol` = `ssh` here). `gh` **API** calls (`gh pr view`, `gh run list`, `gh pr merge`) are HTTPS and unaffected: a :22 outage breaks git transport, not the merge automation.
 
-**The verification gap:** the `git ls-remote origin <branch>` above hangs for the same reason the push did — when :22 is down, the verification step is itself unreachable. Fall back to the override, or to the API:
+**The verification gap:** the `git ls-remote origin <branch>` above uses the same SSH transport as the push, so **when :22 is down the verification step is unreachable too**. That is an inference from the shared transport, not a measurement — the two were never observed hanging together. Fall back to the override, or to the API:
 
 ```bash
 GIT_SSH_COMMAND="ssh -p 443 -o Hostname=ssh.github.com" git ls-remote origin <branch>
