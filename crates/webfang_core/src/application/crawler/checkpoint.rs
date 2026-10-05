@@ -850,6 +850,13 @@ mod tests {
         );
     }
 
+    // Miri trap (#1794 family): discarding the stale version calls
+    // `preserve_pre_migration_backup`, whose `std::fs::copy` lowers to the
+    // copy_file_range(326) syscall that Miri does not support. It is the last
+    // in-filter test reaching that copy without the gate — `record_store.rs`
+    // copies outside the Miri (core) module filter, and
+    // `preserve_abandoned_bytes` writes instead of copying.
+    #[cfg_attr(miri, ignore = "copy_file_range(326) unsupported by Miri")]
     #[test]
     fn test_stale_version_preserves_bak() {
         // #1587: discarding a stale checkpoint version must preserve the

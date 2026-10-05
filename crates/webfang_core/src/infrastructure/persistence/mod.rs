@@ -15,5 +15,6 @@ pub mod sqlite;
 
 pub use fingerprint::SqliteFingerprintRepository;
 pub use sqlite::{
-    create_memory_pool, create_pool, setup_schema, SqliteVectorRepository, SCHEMA_VERSION,
+    create_memory_pool, create_pool, prune_older_than, setup_schema, SqliteVectorRepository,
+    SCHEMA_VERSION,
 };

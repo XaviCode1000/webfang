@@ -72,7 +72,11 @@ async fn mount_crash_fixture(t: &BehavioralTest) -> String {
 
 /// Assert the child process was killed by SIGKILL (signal death, not a clean
 /// exit code and not some other signal).
-fn assert_killed_by_sigkill(status: &ExitStatus) {
+///
+/// `child_stderr` travels in the panic message so a death by a DIFFERENT
+/// signal (observed once as SIGABRT on `macos-latest` with the export on the
+/// blocking pool) names its own cause instead of leaving a bare wait status.
+fn assert_killed_by_sigkill(status: &ExitStatus, child_stderr: &str) {
     assert!(
         !status.success(),
         "armed crash point must terminate the child by signal, got clean exit"
@@ -83,7 +87,7 @@ fn assert_killed_by_sigkill(status: &ExitStatus) {
         assert_eq!(
             status.signal(),
             Some(9),
-            "child must die by SIGKILL(9); exit code {status:?}"
+            "child must die by SIGKILL(9); exit code {status:?}; child stderr: {child_stderr}"
         );
     }
 }
@@ -178,7 +182,7 @@ async fn crash_row(point: &str) {
         .env(webfang_core::cli::crash_points::ENV_VAR, point)
         .output()
         .expect("spawn crashed run");
-    assert_killed_by_sigkill(&crashed.status);
+    assert_killed_by_sigkill(&crashed.status, &String::from_utf8_lossy(&crashed.stderr));
 
     // Attempt 2: same state dir, crash env REMOVED, resume gate active.
     let resumed = t

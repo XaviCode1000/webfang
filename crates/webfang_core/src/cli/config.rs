@@ -5,6 +5,8 @@
 use std::io::IsTerminal as _;
 use std::path::{Path, PathBuf};
 
+use crate::cli::error::CliError;
+
 /// Default configuration values that can be overridden by a TOML file.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[serde(default)]
@@ -266,8 +268,13 @@ pub fn should_emit_emoji() -> bool {
 }
 
 /// Initialize logging with configurable level, routing ALL output to stderr.
-pub fn init_logging(level: &str) {
-    init_logging_dual(level, false, is_no_color(), None);
+///
+/// # Errors
+///
+/// Returns [`CliError::ConfigFile`] when the tracing subscriber cannot be
+/// installed (e.g. a global subscriber already exists in this process).
+pub fn init_logging(level: &str) -> Result<(), CliError> {
+    init_logging_dual(level, false, is_no_color(), None)
 }
 
 /// Dual-mode logging: forces stderr, supports quiet mode and NO_COLOR.
@@ -278,12 +285,20 @@ pub fn init_logging(level: &str) {
 /// * `quiet` - If true, only warn+level output is shown
 /// * `no_color` - If true, ANSI colors are disabled
 /// * `file_trace_layer` - Optional file trace layer for JSONL output
+///
+/// # Errors
+///
+/// Returns [`CliError::ConfigFile`] when the tracing subscriber cannot be
+/// installed: the run would proceed without its requested log output, so the
+/// failure must abort the caller instead of being swallowed (issue #1814,
+/// fail closed). It fails legitimately in test processes that already hold a
+/// global subscriber.
 pub fn init_logging_dual(
     level: &str,
     quiet: bool,
     no_color: bool,
     file_trace_layer: Option<crate::infrastructure::observability::FileTraceLayer>,
-) {
+) -> Result<(), CliError> {
     use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
     // Per-layer filters (#489): the console filter respects the user's
@@ -311,7 +326,12 @@ pub fn init_logging_dual(
         .with(file_trace_layer.with_filter(trace_filter))
         .with(fmt_layer)
         .try_init()
-        .ok();
+        .map_err(|e| CliError::ConfigFile {
+            msg: format!("no se pudo instalar el subscriber de logging: {e}"),
+            suggestion:
+                "verifique que este proceso no tenga ya un subscriber de tracing global instalado antes de invocar webfang"
+                    .to_string(),
+        })
 }
 
 #[cfg(test)]
@@ -374,6 +394,34 @@ max_pages = 20
         // Default should be false (no env var set in test)
         let val = is_no_color();
         assert!(!val);
+    }
+
+    /// Issue #1814 (defect 1): `init_logging_dual` must propagate a failed
+    /// subscriber install as a typed [`CliError`] instead of swallowing it
+    /// with `.ok()`.
+    ///
+    /// Deterministic under cargo-nextest (one process per test): the
+    /// `set_global_default` below is the install that makes `try_init` fail.
+    /// Under a shared-process libtest run an earlier test may have installed a
+    /// global subscriber already — either way the fallible init must return
+    /// `Err`, so the assertion holds in both runners.
+    #[test]
+    fn init_logging_dual_fails_when_global_subscriber_is_set() {
+        // Arrange: a global subscriber is already installed.
+        let _ = tracing::subscriber::set_global_default(tracing::subscriber::NoSubscriber::new());
+
+        // Act
+        let result = init_logging_dual("info", false, true, None);
+
+        // Assert: a typed CliError whose Spanish message names the cause.
+        let Err(err) = result else {
+            panic!("init must fail when a global subscriber is already installed");
+        };
+        assert!(
+            err.to_string()
+                .contains("no se pudo instalar el subscriber de logging"),
+            "error must name the subscriber failure in Spanish, got: {err}"
+        );
     }
 
     #[test]

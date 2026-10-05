@@ -267,6 +267,25 @@ pub const PIPELINE_OUTPUT: OptionSpec = OptionSpec {
     value_delimiter: None,
 };
 
+/// `--retention-days <RETENTION_DAYS>`
+pub const RETENTION_DAYS: OptionSpec = OptionSpec {
+    id: "retention_days",
+    value_name: "RETENTION_DAYS",
+    long: "retention-days",
+    short: None,
+    aliases: &[],
+    env: Some("WEBFANG_RETENTION_DAYS"),
+    default: Some(DefaultValue::Uint(0)),
+    help: "Prune exports and vault-DB rows older than N days at the end of a successful run (0 = disabled)",
+    heading: Some("Output"),
+    kind: ValueKind::uint_unbounded(),
+    visible_aliases: &[],
+    nullable: false,
+    description_override: None,
+    feature_gate: None,
+    value_delimiter: None,
+};
+
 /// All export-group options, in `ExportArgs` field-declaration order.
 pub const GROUP: &[OptionSpec] = &[
     OUTPUT,
@@ -282,4 +301,5 @@ pub const GROUP: &[OptionSpec] = &[
     BATCH_CONCURRENCY,
     PIPELINE,
     PIPELINE_OUTPUT,
+    RETENTION_DAYS,
 ];

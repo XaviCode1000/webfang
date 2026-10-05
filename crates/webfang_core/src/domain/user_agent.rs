@@ -29,11 +29,12 @@ impl UserAgentPool {
 
 /// Domain port for user-agent provisioning.
 ///
-/// Infrastructure (`UserAgentCache`) implements this trait with
-/// TTL-based caching and network fetch. Application uses the port
+/// Infrastructure (`UserAgentCache`) implements this trait over the
+/// hardcoded fallback pool — provisioning is pure and offline (#1827
+/// removed the dormant network fetch). Application uses the port
 /// via `Arc<dyn UserAgentProvider>`.
 pub trait UserAgentProvider: Send + Sync {
-    /// Load the current pool (cache hit or fallback).
+    /// Load the current pool (the hardcoded fallback).
     ///
     /// Implementations should never return an empty vec — fallback
     /// to hardcoded agents on failure.

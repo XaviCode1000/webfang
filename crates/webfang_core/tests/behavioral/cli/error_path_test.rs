@@ -112,6 +112,88 @@ fn unknown_h2_profile_exits_78_with_spanish_message() {
 }
 
 // ---------------------------------------------------------------------------
+// Uncreatable --trace-file → exit 78 (EX_CONFIG), fail closed (#1814)
+// ---------------------------------------------------------------------------
+
+/// A `--trace-file` whose parent is a REGULAR FILE cannot be created:
+/// `FileTraceLayer::new` runs `create_dir_all` on the parent first, and mkdir
+/// through an existing file fails with ENOTDIR. The user explicitly requested
+/// this artifact, so the run must abort (exit 78, EX_CONFIG) with a Spanish
+/// message instead of silently continuing without the requested trace output
+/// (issue #1814, defect 2: the old fail-open path only printed to stderr and
+/// ran untraced).
+#[test]
+fn uncreatable_trace_file_exits_78_with_spanish_message() {
+    // No wiremock / network needed: the trace file is created BEFORE any fetch
+    // or preflight gate, so the run is fully hermetic (same shape as the
+    // `unknown_h2_profile_*` tests in this file).
+    let tmp = tempfile::TempDir::new().expect("temp dir");
+    let blocker = tmp.path().join("blocker");
+    std::fs::write(&blocker, "a regular file, not a directory").expect("write blocker file");
+    let trace_path = blocker.join("trace.jsonl");
+
+    let output = cmd()
+        .arg("--url")
+        .arg("http://127.0.0.1:1")
+        .arg("--single-page")
+        .arg("--trace-file")
+        .arg(&trace_path)
+        .arg("--quiet")
+        .output()
+        .expect("run webfang");
+
+    // Semantic invariants (the contract under test): exit 78 (EX_CONFIG) and
+    // the Spanish message naming the requested artifact. Asserted explicitly so
+    // they hold even if the snapshot below drifts.
+    assert_eq!(
+        output.status.code(),
+        Some(78),
+        "an uncreatable --trace-file must abort the run with exit 78 (EX_CONFIG)"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("archivo de trazas"),
+        "stderr must name the trace file failure in Spanish, got: {stderr}"
+    );
+
+    // The io::Error text after the quoted path is OS-specific ("Not a directory
+    // (os error 20)" on Linux, a different wording and code on Windows); collapse
+    // everything between the closing quote and the next line to a stable marker
+    // so the snapshot pins the Spanish message and the offending path shape, not
+    // the platform's strerror.
+    //
+    // Platform normalization happens HERE, before redaction: Windows renders
+    // the same message with `\` separators, so the raw text never matches the
+    // committed snapshot. The temp dir is redacted in its NORMALIZED spelling
+    // (the shared chain's own separator rule is token-anchored and only sees
+    // raw-separator forms); the later redaction inside
+    // `assert_snapshot_redacted` becomes a no-op on already-redacted text.
+    // `split_once` strips the delimiter, so the newline before `Sugerencia`
+    // is re-added explicitly.
+    let stderr = stderr.replace('\\', "/");
+    let dir_norm = tmp.path().to_string_lossy().replace('\\', "/");
+    let head = stderr
+        .split_once("': ")
+        .map_or(stderr.as_str(), |(h, _)| h)
+        .replace(&dir_norm, "<OUT_DIR>");
+    assert!(
+        head.ends_with("no se pudo crear el archivo de trazas en '<OUT_DIR>/blocker/trace.jsonl"),
+        "message head must pin the Spanish text and the offending path shape, got: {head}"
+    );
+    let tail = stderr.split_once("': ").map_or("", |(_, t)| t);
+    let rest = tail.split_once('\n').map_or("", |(_, r)| r);
+    let normalized = format!("{head}': [IO_ERROR]\n{rest}");
+    assert!(
+        normalized.contains("[IO_ERROR]"),
+        "the io error detail must be present in the raw stderr, got: {stderr}"
+    );
+
+    // Snapshot the normalized stderr, routed through the crate-root helper so it
+    // lands in `tests/behavioral/snapshots/` alongside the other snapshots.
+    assert_snapshot_redacted("uncreatable_trace_file_stderr", tmp.path(), normalized);
+}
+
+// ---------------------------------------------------------------------------
 // Slow server → timeout → exit error
 // ---------------------------------------------------------------------------
 
