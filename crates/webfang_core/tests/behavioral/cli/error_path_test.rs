@@ -160,16 +160,29 @@ fn uncreatable_trace_file_exits_78_with_spanish_message() {
     // (os error 20)" on Linux, a different wording and code on Windows); collapse
     // everything between the closing quote and the next line to a stable marker
     // so the snapshot pins the Spanish message and the offending path shape, not
-    // the platform's strerror. `split_once` strips the delimiter, so the newline
-    // before `Sugerencia` is re-added explicitly. The temp-dir prefix is redacted
-    // by the crate-root helper token.
-    let normalized = match stderr.split_once("': ") {
-        Some((head, tail)) => {
-            let (_, rest) = tail.split_once('\n').unwrap_or((tail, ""));
-            format!("{head}': [IO_ERROR]\n{rest}")
-        },
-        None => stderr.to_string(),
-    };
+    // the platform's strerror.
+    //
+    // Platform normalization happens HERE, before redaction: Windows renders
+    // the same message with `\` separators, so the raw text never matches the
+    // committed snapshot. The temp dir is redacted in its NORMALIZED spelling
+    // (the shared chain's own separator rule is token-anchored and only sees
+    // raw-separator forms); the later redaction inside
+    // `assert_snapshot_redacted` becomes a no-op on already-redacted text.
+    // `split_once` strips the delimiter, so the newline before `Sugerencia`
+    // is re-added explicitly.
+    let stderr = stderr.replace('\\', "/");
+    let dir_norm = tmp.path().to_string_lossy().replace('\\', "/");
+    let head = stderr
+        .split_once("': ")
+        .map_or(stderr.as_str(), |(h, _)| h)
+        .replace(&dir_norm, "<OUT_DIR>");
+    assert!(
+        head.ends_with("no se pudo crear el archivo de trazas en '<OUT_DIR>/blocker/trace.jsonl"),
+        "message head must pin the Spanish text and the offending path shape, got: {head}"
+    );
+    let tail = stderr.split_once("': ").map_or("", |(_, t)| t);
+    let rest = tail.split_once('\n').map_or("", |(_, r)| r);
+    let normalized = format!("{head}': [IO_ERROR]\n{rest}");
     assert!(
         normalized.contains("[IO_ERROR]"),
         "the io error detail must be present in the raw stderr, got: {stderr}"
