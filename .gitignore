@@ -65,10 +65,16 @@ STATE.md
 # GitHub Copilot
 .copilot/
 
-# General AI agents
-.agents/
+# General AI agents — shared project skills are tracked (one `!` line per adopted skill, see #1869); everything else under .agents/ stays ignored.
+.agents/*
+!.agents/skills/
+.agents/skills/*
+!.agents/skills/jscpd/
+!.agents/skills/dry-refactoring/
+!.agents/skills/codebase-refactoring/
+!.agents/skills/webfang-architecture/
 .agent/
-skills/
+/skills/
 .opencode/
 .pi/
 .zcode/
