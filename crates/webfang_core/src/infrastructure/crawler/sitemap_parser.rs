@@ -1122,11 +1122,58 @@ pub fn parse_sitemap(
     Ok(urls)
 }
 
+/// Shared fetch-and-parse arrange for the sitemap unit tests (#1889, T7
+/// slice-14): serves each `(mount path, response)` on the caller's mock
+/// server, then runs `parse_from_url` against `entry_path` on that server.
+///
+/// The mock → parser → parse skeleton lives here, once, so the WAF and
+/// compression tests keep only their template construction and result
+/// assertions. The server lifecycle and the entry-guard posture stay at the
+/// call site (index bodies embed `mock.uri()`, and each test holds its own
+/// `EnvGuard` disarmer across the call, exactly as before).
 #[cfg(all(test, not(miri)))]
-mod waf_inspection_tests {
+mod test_support {
     use super::*;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Serve a single body at `mount_path`, then parse `entry_path`.
+    pub(crate) async fn serve_and_parse(
+        mock: &MockServer,
+        mount_path: &str,
+        response: ResponseTemplate,
+        entry_path: &str,
+    ) -> Result<Vec<SitemapUrl>> {
+        serve_many_and_parse(mock, vec![(mount_path, response)], entry_path).await
+    }
+
+    /// Serve several bodies, then parse `entry_path` (sitemap-index cases).
+    pub(crate) async fn serve_many_and_parse(
+        mock: &MockServer,
+        mounts: Vec<(&str, ResponseTemplate)>,
+        entry_path: &str,
+    ) -> Result<Vec<SitemapUrl>> {
+        for (mount_path, response) in mounts {
+            Mock::given(method("GET"))
+                .and(path(mount_path))
+                .respond_with(response)
+                .mount(mock)
+                .await;
+        }
+        let parser = SitemapParser::new().unwrap();
+        parser
+            .parse_from_url(
+                &format!("{}{}", mock.uri(), entry_path),
+                &CorrelationId::new(),
+            )
+            .await
+    }
+}
+
+#[cfg(all(test, not(miri)))]
+mod waf_inspection_tests {
+    use super::*;
+    use wiremock::{MockServer, ResponseTemplate};
     // One-layer entry disarmer for loopback mocks (#1382/#1369), canonical in
     // `webfang_test_utils::EnvGuard::entry_guard_off` since #1396: wiremock binds
     // 127.0.0.1, which the parser's entry guard now rejects pre-socket in
@@ -1186,23 +1233,15 @@ mod waf_inspection_tests {
                 .expect("test runtime");
             rt.block_on(async {
                 let mock = MockServer::start().await;
-                Mock::given(method("GET"))
-                    .and(path("/sitemap.xml"))
-                    .respond_with(
-                        ResponseTemplate::new(200)
-                            .insert_header("content-type", "text/html")
-                            .set_body_string(CHALLENGE_HTML),
-                    )
-                    .mount(&mock)
-                    .await;
-
-                let parser = SitemapParser::new().unwrap();
-                let result = parser
-                    .parse_from_url(
-                        &format!("{}/sitemap.xml", mock.uri()),
-                        &CorrelationId::new(),
-                    )
-                    .await;
+                let result = test_support::serve_and_parse(
+                    &mock,
+                    "/sitemap.xml",
+                    ResponseTemplate::new(200)
+                        .insert_header("content-type", "text/html")
+                        .set_body_string(CHALLENGE_HTML),
+                    "/sitemap.xml",
+                )
+                .await;
 
                 match result {
                     Err(SitemapError::WafChallenge { url, provider }) => {
@@ -1232,34 +1271,29 @@ mod waf_inspection_tests {
     async fn index_child_waf_challenge_propagates_typed_error() {
         let _entry_off = EnvGuard::entry_guard_off();
         let mock = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/sitemap.xml"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
-                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+        let result = test_support::serve_many_and_parse(
+            &mock,
+            vec![
+                (
+                    "/sitemap.xml",
+                    ResponseTemplate::new(200).set_body_string(format!(
+                        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
                  <sitemapindex xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">\
                  <sitemap><loc>{}/child.xml</loc></sitemap>\
                  </sitemapindex>",
-                mock.uri()
-            )))
-            .mount(&mock)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/child.xml"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "text/html")
-                    .set_body_string(CHALLENGE_HTML),
-            )
-            .mount(&mock)
-            .await;
-
-        let parser = SitemapParser::new().unwrap();
-        let result = parser
-            .parse_from_url(
-                &format!("{}/sitemap.xml", mock.uri()),
-                &CorrelationId::new(),
-            )
-            .await;
+                        mock.uri()
+                    )),
+                ),
+                (
+                    "/child.xml",
+                    ResponseTemplate::new(200)
+                        .insert_header("content-type", "text/html")
+                        .set_body_string(CHALLENGE_HTML),
+                ),
+            ],
+            "/sitemap.xml",
+        )
+        .await;
 
         match result {
             Err(SitemapError::WafChallenge { url, .. }) => {
@@ -1280,23 +1314,15 @@ mod waf_inspection_tests {
             <url><loc>https://example.com/page1</loc></url>
         </urlset>"#;
         let mock = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/sitemap.xml"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .insert_header("content-type", "application/xml")
-                    .set_body_string(xml),
-            )
-            .mount(&mock)
-            .await;
-
-        let parser = SitemapParser::new().unwrap();
-        let result = parser
-            .parse_from_url(
-                &format!("{}/sitemap.xml", mock.uri()),
-                &CorrelationId::new(),
-            )
-            .await;
+        let result = test_support::serve_and_parse(
+            &mock,
+            "/sitemap.xml",
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/xml")
+                .set_body_string(xml),
+            "/sitemap.xml",
+        )
+        .await;
         assert!(
             !matches!(result, Err(SitemapError::WafChallenge { .. })),
             "benign vendor mention must not raise WafChallenge, got: {result:?}"
@@ -1459,24 +1485,16 @@ mod tests {
     #[tokio::test]
     async fn test_sitemap_404_yields_http_error_not_content_type() {
         let _entry_off = EnvGuard::entry_guard_off();
-        use wiremock::matchers::path;
-        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use wiremock::{MockServer, ResponseTemplate};
 
-        let server = MockServer::start().await;
-        let port = server.address().port();
-
-        Mock::given(path("/sitemap.xml"))
-            .respond_with(ResponseTemplate::new(404).set_body_string("Not Found"))
-            .mount(&server)
-            .await;
-
-        let parser = SitemapParser::new().unwrap();
-        let result = parser
-            .parse_from_url(
-                &format!("http://127.0.0.1:{port}/sitemap.xml"),
-                &CorrelationId::new(),
-            )
-            .await;
+        let mock = MockServer::start().await;
+        let result = test_support::serve_and_parse(
+            &mock,
+            "/sitemap.xml",
+            ResponseTemplate::new(404).set_body_string("Not Found"),
+            "/sitemap.xml",
+        )
+        .await;
 
         match result {
             Err(SitemapError::HttpError { message, .. }) => {
@@ -1511,11 +1529,9 @@ mod tests {
     #[tokio::test]
     async fn test_sitemap_gz_with_content_encoding_header() {
         let _entry_off = EnvGuard::entry_guard_off();
-        use wiremock::matchers::path;
-        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use wiremock::{MockServer, ResponseTemplate};
 
-        let server = MockServer::start().await;
-        let port = server.address().port();
+        let mock = MockServer::start().await;
 
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
         <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
@@ -1523,23 +1539,16 @@ mod tests {
             <url><loc>https://developer.mozilla.org/en-US/docs/page2</loc></url>
         </urlset>"#;
 
-        Mock::given(path("/sitemap.xml.gz"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_raw(gzip_compress(xml.as_bytes()).await, "application/gzip")
-                    .insert_header("content-encoding", "gzip"),
-            )
-            .mount(&server)
-            .await;
-
-        let parser = SitemapParser::new().unwrap();
-        let urls = parser
-            .parse_from_url(
-                &format!("http://127.0.0.1:{port}/sitemap.xml.gz"),
-                &CorrelationId::new(),
-            )
-            .await
-            .expect("body gzip + content-encoding gzip must parse (#757)");
+        let urls = test_support::serve_and_parse(
+            &mock,
+            "/sitemap.xml.gz",
+            ResponseTemplate::new(200)
+                .set_body_raw(gzip_compress(xml.as_bytes()).await, "application/gzip")
+                .insert_header("content-encoding", "gzip"),
+            "/sitemap.xml.gz",
+        )
+        .await
+        .expect("body gzip + content-encoding gzip must parse (#757)");
         assert_eq!(urls.len(), 2);
     }
 
@@ -1549,33 +1558,24 @@ mod tests {
     #[tokio::test]
     async fn test_sitemap_gz_body_without_content_encoding() {
         let _entry_off = EnvGuard::entry_guard_off();
-        use wiremock::matchers::path;
-        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use wiremock::{MockServer, ResponseTemplate};
 
-        let server = MockServer::start().await;
-        let port = server.address().port();
+        let mock = MockServer::start().await;
 
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
         <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
             <url><loc>https://example.com/page1</loc></url>
         </urlset>"#;
 
-        Mock::given(path("/manual.xml.gz"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_raw(gzip_compress(xml.as_bytes()).await, "application/gzip"),
-            )
-            .mount(&server)
-            .await;
-
-        let parser = SitemapParser::new().unwrap();
-        let urls = parser
-            .parse_from_url(
-                &format!("http://127.0.0.1:{port}/manual.xml.gz"),
-                &CorrelationId::new(),
-            )
-            .await
-            .expect("gzip body without content-encoding must still decompress");
+        let urls = test_support::serve_and_parse(
+            &mock,
+            "/manual.xml.gz",
+            ResponseTemplate::new(200)
+                .set_body_raw(gzip_compress(xml.as_bytes()).await, "application/gzip"),
+            "/manual.xml.gz",
+        )
+        .await
+        .expect("gzip body without content-encoding must still decompress");
         assert_eq!(urls.len(), 1);
     }
 
@@ -1586,30 +1586,23 @@ mod tests {
     #[tokio::test]
     async fn test_sitemap_lying_gz_extension_with_plain_body() {
         let _entry_off = EnvGuard::entry_guard_off();
-        use wiremock::matchers::path;
-        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use wiremock::{MockServer, ResponseTemplate};
 
-        let server = MockServer::start().await;
-        let port = server.address().port();
+        let mock = MockServer::start().await;
 
         let xml = r#"<?xml version="1.0" encoding="UTF-8"?>
         <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
             <url><loc>https://example.com/page1</loc></url>
         </urlset>"#;
 
-        Mock::given(path("/sitemap.xml.gz"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(xml))
-            .mount(&server)
-            .await;
-
-        let parser = SitemapParser::new().unwrap();
-        let urls = parser
-            .parse_from_url(
-                &format!("http://127.0.0.1:{port}/sitemap.xml.gz"),
-                &CorrelationId::new(),
-            )
-            .await
-            .expect("plain body behind .gz URL must pass through (#757)");
+        let urls = test_support::serve_and_parse(
+            &mock,
+            "/sitemap.xml.gz",
+            ResponseTemplate::new(200).set_body_string(xml),
+            "/sitemap.xml.gz",
+        )
+        .await
+        .expect("plain body behind .gz URL must pass through (#757)");
         assert_eq!(urls.len(), 1);
     }
 

@@ -4,7 +4,7 @@
 //! covering happy paths, edge cases, and error conditions per R-INT-02.
 
 use webfang_core::domain::CorrelationId;
-use webfang_core::infrastructure::crawler::{SitemapError, SitemapParser};
+use webfang_core::infrastructure::crawler::{SitemapError, SitemapParser, SitemapUrl};
 use webfang_test_utils::EnvGuard;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -49,6 +49,43 @@ fn parser() -> SitemapParser {
     SitemapParser::new().unwrap()
 }
 
+/// Shared fetch-and-parse arrange (#1889, T7 slice-14): serve a single body
+/// at `mount_path` on the caller's mock server, then run `parse_from_url`
+/// against `entry_path` on that server. Mirrors the unit-level helper shape
+/// (serve → parse → result), parameterized for the integration level instead
+/// of forked: the server lifecycle and entry-guard posture stay at the call
+/// site (index bodies embed `mock.uri()`), each test keeps its template
+/// construction and result assertions.
+async fn serve_and_parse(
+    mock: &MockServer,
+    mount_path: &str,
+    response: ResponseTemplate,
+    entry_path: &str,
+) -> Result<Vec<SitemapUrl>, SitemapError> {
+    serve_many_and_parse(mock, vec![(mount_path, response)], entry_path).await
+}
+
+/// Multi-mount variant for sitemap-index cases (index + children).
+async fn serve_many_and_parse(
+    mock: &MockServer,
+    mounts: Vec<(&str, ResponseTemplate)>,
+    entry_path: &str,
+) -> Result<Vec<SitemapUrl>, SitemapError> {
+    for (mount_path, response) in mounts {
+        Mock::given(method("GET"))
+            .and(path(mount_path))
+            .respond_with(response)
+            .mount(mock)
+            .await;
+    }
+    parser()
+        .parse_from_url(
+            &format!("{}{}", mock.uri(), entry_path),
+            &CorrelationId::new(),
+        )
+        .await
+}
+
 // ===== HAPPY PATH =====
 
 /// Parse a valid sitemap served by wiremock — extracts all URLs.
@@ -56,22 +93,16 @@ fn parser() -> SitemapParser {
 async fn test_parse_valid_sitemap_from_mock_server() {
     let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/sitemap.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(SITEMAP_XML)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-
-    let parser = parser();
-    let url = format!("{}/sitemap.xml", mock.uri());
-    let urls = parser
-        .parse_from_url(&url, &CorrelationId::new())
-        .await
-        .unwrap();
+    let urls = serve_and_parse(
+        &mock,
+        "/sitemap.xml",
+        ResponseTemplate::new(200)
+            .set_body_string(SITEMAP_XML)
+            .insert_header("content-type", "application/xml"),
+        "/sitemap.xml",
+    )
+    .await
+    .unwrap();
 
     assert_eq!(urls.len(), 3, "should extract 3 URLs from sitemap");
 
@@ -86,22 +117,16 @@ async fn test_parse_valid_sitemap_from_mock_server() {
 async fn test_parse_sitemap_deduplicates_urls() {
     let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/sitemap.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(SITEMAP_WITH_DUPLICATES)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-
-    let parser = parser();
-    let url = format!("{}/sitemap.xml", mock.uri());
-    let urls = parser
-        .parse_from_url(&url, &CorrelationId::new())
-        .await
-        .unwrap();
+    let urls = serve_and_parse(
+        &mock,
+        "/sitemap.xml",
+        ResponseTemplate::new(200)
+            .set_body_string(SITEMAP_WITH_DUPLICATES)
+            .insert_header("content-type", "application/xml"),
+        "/sitemap.xml",
+    )
+    .await
+    .unwrap();
 
     assert_eq!(urls.len(), 2, "duplicates should be deduplicated");
 }
@@ -111,22 +136,16 @@ async fn test_parse_sitemap_deduplicates_urls() {
 async fn test_parse_sitemap_with_namespaces() {
     let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/sitemap.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(SITEMAP_NAMESPACES)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-
-    let parser = parser();
-    let url = format!("{}/sitemap.xml", mock.uri());
-    let urls = parser
-        .parse_from_url(&url, &CorrelationId::new())
-        .await
-        .unwrap();
+    let urls = serve_and_parse(
+        &mock,
+        "/sitemap.xml",
+        ResponseTemplate::new(200)
+            .set_body_string(SITEMAP_NAMESPACES)
+            .insert_header("content-type", "application/xml"),
+        "/sitemap.xml",
+    )
+    .await
+    .unwrap();
 
     assert_eq!(urls.len(), 1, "should extract the one loc URL");
     assert_eq!(urls[0].url.as_str(), "https://example.com/gallery");
@@ -139,19 +158,15 @@ async fn test_parse_sitemap_with_namespaces() {
 async fn test_parse_empty_sitemap_returns_error() {
     let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/sitemap.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(SITEMAP_EMPTY)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-
-    let parser = parser();
-    let url = format!("{}/sitemap.xml", mock.uri());
-    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
+    let result = serve_and_parse(
+        &mock,
+        "/sitemap.xml",
+        ResponseTemplate::new(200)
+            .set_body_string(SITEMAP_EMPTY)
+            .insert_header("content-type", "application/xml"),
+        "/sitemap.xml",
+    )
+    .await;
 
     assert!(
         matches!(result, Err(SitemapError::NoUrlsFound)),
@@ -166,19 +181,15 @@ async fn test_parse_malformed_xml_returns_error() {
     let mock = MockServer::start().await;
     // Null bytes are not valid XML — quick_xml will reject them
     let bad_xml = vec![0x00, 0x00, 0x00, 0x3C, 0x00];
-    Mock::given(method("GET"))
-        .and(path("/feed"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_bytes(bad_xml)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-
-    let parser = parser();
-    let url = format!("{}/feed", mock.uri());
-    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
+    let result = serve_and_parse(
+        &mock,
+        "/feed",
+        ResponseTemplate::new(200)
+            .set_body_bytes(bad_xml)
+            .insert_header("content-type", "application/xml"),
+        "/feed",
+    )
+    .await;
 
     // Null bytes cause XmlError or NoUrlsFound depending on parser behavior
     assert!(
@@ -196,19 +207,15 @@ async fn test_parse_non_xml_content_type_returns_error() {
     let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
     // Use non-.xml path so content-type check actually applies
-    Mock::given(method("GET"))
-        .and(path("/feed"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("<html><body>Not a sitemap</body></html>")
-                .insert_header("content-type", "text/html"),
-        )
-        .mount(&mock)
-        .await;
-
-    let parser = parser();
-    let url = format!("{}/feed", mock.uri());
-    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
+    let result = serve_and_parse(
+        &mock,
+        "/feed",
+        ResponseTemplate::new(200)
+            .set_body_string("<html><body>Not a sitemap</body></html>")
+            .insert_header("content-type", "text/html"),
+        "/feed",
+    )
+    .await;
 
     assert!(
         matches!(result, Err(SitemapError::InvalidContentType(_))),
@@ -223,15 +230,13 @@ async fn test_parse_non_xml_content_type_returns_error() {
 async fn test_parse_http_404_returns_no_urls() {
     let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/sitemap.xml"))
-        .respond_with(ResponseTemplate::new(404))
-        .mount(&mock)
-        .await;
-
-    let parser = parser();
-    let url = format!("{}/sitemap.xml", mock.uri());
-    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
+    let result = serve_and_parse(
+        &mock,
+        "/sitemap.xml",
+        ResponseTemplate::new(404),
+        "/sitemap.xml",
+    )
+    .await;
 
     assert!(
         matches!(result, Err(SitemapError::HttpError { .. })),
@@ -245,18 +250,14 @@ async fn test_parse_http_404_returns_no_urls() {
 async fn test_parse_sitemap_no_content_type_accepted() {
     let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
-    Mock::given(method("GET"))
-        .and(path("/sitemap.xml"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(SITEMAP_XML))
-        .mount(&mock)
-        .await;
-
-    let parser = parser();
-    let url = format!("{}/sitemap.xml", mock.uri());
-    let urls = parser
-        .parse_from_url(&url, &CorrelationId::new())
-        .await
-        .unwrap();
+    let urls = serve_and_parse(
+        &mock,
+        "/sitemap.xml",
+        ResponseTemplate::new(200).set_body_string(SITEMAP_XML),
+        "/sitemap.xml",
+    )
+    .await
+    .unwrap();
 
     assert_eq!(urls.len(), 3, "should parse sitemap without Content-Type");
 }
@@ -302,40 +303,32 @@ async fn test_parse_sitemap_index_recurses() {
     let base_url = mock.uri();
     let index_xml = sitemap_index_with_base(&base_url);
 
-    Mock::given(method("GET"))
-        .and(path("/sitemap-index.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(index_xml)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/sitemap1.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(SITEMAP_1)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/sitemap2.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(SITEMAP_2)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-
-    let parser = parser();
-    let url = format!("{}/sitemap-index.xml", mock.uri());
-    let urls = parser
-        .parse_from_url(&url, &CorrelationId::new())
-        .await
-        .unwrap();
+    let urls = serve_many_and_parse(
+        &mock,
+        vec![
+            (
+                "/sitemap-index.xml",
+                ResponseTemplate::new(200)
+                    .set_body_string(index_xml)
+                    .insert_header("content-type", "application/xml"),
+            ),
+            (
+                "/sitemap1.xml",
+                ResponseTemplate::new(200)
+                    .set_body_string(SITEMAP_1)
+                    .insert_header("content-type", "application/xml"),
+            ),
+            (
+                "/sitemap2.xml",
+                ResponseTemplate::new(200)
+                    .set_body_string(SITEMAP_2)
+                    .insert_header("content-type", "application/xml"),
+            ),
+        ],
+        "/sitemap-index.xml",
+    )
+    .await
+    .unwrap();
 
     assert_eq!(
         urls.len(),
@@ -357,36 +350,27 @@ async fn test_sitemap_index_partial_failure_continues() {
     let base_url = mock.uri();
     let index_xml = sitemap_index_with_base(&base_url);
 
-    Mock::given(method("GET"))
-        .and(path("/sitemap-index.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(index_xml)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/sitemap1.xml"))
-        .respond_with(ResponseTemplate::new(404))
-        .mount(&mock)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/sitemap2.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(SITEMAP_2)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-
-    let parser = parser();
-    let url = format!("{}/sitemap-index.xml", mock.uri());
-    let urls = parser
-        .parse_from_url(&url, &CorrelationId::new())
-        .await
-        .unwrap();
+    let urls = serve_many_and_parse(
+        &mock,
+        vec![
+            (
+                "/sitemap-index.xml",
+                ResponseTemplate::new(200)
+                    .set_body_string(index_xml)
+                    .insert_header("content-type", "application/xml"),
+            ),
+            ("/sitemap1.xml", ResponseTemplate::new(404)),
+            (
+                "/sitemap2.xml",
+                ResponseTemplate::new(200)
+                    .set_body_string(SITEMAP_2)
+                    .insert_header("content-type", "application/xml"),
+            ),
+        ],
+        "/sitemap-index.xml",
+    )
+    .await
+    .unwrap();
 
     // Should still parse the successful child
     assert_eq!(
@@ -407,29 +391,21 @@ async fn test_sitemap_index_all_children_failed() {
     let base_url = mock.uri();
     let index_xml = sitemap_index_with_base(&base_url);
 
-    Mock::given(method("GET"))
-        .and(path("/sitemap-index.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(index_xml)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/sitemap1.xml"))
-        .respond_with(ResponseTemplate::new(404))
-        .mount(&mock)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/sitemap2.xml"))
-        .respond_with(ResponseTemplate::new(500))
-        .mount(&mock)
-        .await;
-
-    let parser = parser();
-    let url = format!("{}/sitemap-index.xml", mock.uri());
-    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
+    let result = serve_many_and_parse(
+        &mock,
+        vec![
+            (
+                "/sitemap-index.xml",
+                ResponseTemplate::new(200)
+                    .set_body_string(index_xml)
+                    .insert_header("content-type", "application/xml"),
+            ),
+            ("/sitemap1.xml", ResponseTemplate::new(404)),
+            ("/sitemap2.xml", ResponseTemplate::new(500)),
+        ],
+        "/sitemap-index.xml",
+    )
+    .await;
 
     assert!(
         matches!(result, Err(SitemapError::AllChildrenFailed(count, _)) if count == 2),
@@ -449,33 +425,26 @@ async fn test_sitemap_index_malformed_child_included_in_error() {
     let base_url = mock.uri();
     let index_xml = sitemap_index_with_base(&base_url);
 
-    Mock::given(method("GET"))
-        .and(path("/sitemap-index.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(index_xml)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/sitemap1.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("not valid xml {{{")
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/sitemap2.xml"))
-        .respond_with(ResponseTemplate::new(404))
-        .mount(&mock)
-        .await;
-
-    let parser = parser();
-    let url = format!("{}/sitemap-index.xml", mock.uri());
-    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
+    let result = serve_many_and_parse(
+        &mock,
+        vec![
+            (
+                "/sitemap-index.xml",
+                ResponseTemplate::new(200)
+                    .set_body_string(index_xml)
+                    .insert_header("content-type", "application/xml"),
+            ),
+            (
+                "/sitemap1.xml",
+                ResponseTemplate::new(200)
+                    .set_body_string("not valid xml {{{")
+                    .insert_header("content-type", "application/xml"),
+            ),
+            ("/sitemap2.xml", ResponseTemplate::new(404)),
+        ],
+        "/sitemap-index.xml",
+    )
+    .await;
 
     assert!(
         matches!(result, Err(SitemapError::AllChildrenFailed(count, _)) if count == 2),
@@ -503,19 +472,15 @@ async fn test_sitemap_index_self_reference_loop_detected() {
 </sitemapindex>"#
     );
 
-    Mock::given(method("GET"))
-        .and(path("/sitemap-index.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(self_ref_index)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-
-    let parser = parser();
-    let url = format!("{}/sitemap-index.xml", mock.uri());
-    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
+    let result = serve_and_parse(
+        &mock,
+        "/sitemap-index.xml",
+        ResponseTemplate::new(200)
+            .set_body_string(self_ref_index)
+            .insert_header("content-type", "application/xml"),
+        "/sitemap-index.xml",
+    )
+    .await;
 
     // Should detect the loop and return NoUrlsFound (no children parsed)
     // or AllChildrenFailed if it tries to fetch itself again
@@ -543,28 +508,25 @@ async fn test_sitemap_index_mutual_reference_loop_detected() {
 </sitemapindex>"#
     );
 
-    Mock::given(method("GET"))
-        .and(path("/index-a.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(index_a)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/index-b.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(index_b)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-
-    let parser = parser();
-    let url = format!("{}/index-a.xml", mock.uri());
-    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
+    let result = serve_many_and_parse(
+        &mock,
+        vec![
+            (
+                "/index-a.xml",
+                ResponseTemplate::new(200)
+                    .set_body_string(index_a)
+                    .insert_header("content-type", "application/xml"),
+            ),
+            (
+                "/index-b.xml",
+                ResponseTemplate::new(200)
+                    .set_body_string(index_b)
+                    .insert_header("content-type", "application/xml"),
+            ),
+        ],
+        "/index-a.xml",
+    )
+    .await;
 
     // Should detect the loop and not infinite recurse
     assert!(result.is_err(), "mutual reference sitemap should fail");
@@ -597,40 +559,32 @@ async fn test_sitemap_index_mixed_valid_and_loop() {
 </sitemapindex>"#
     );
 
-    Mock::given(method("GET"))
-        .and(path("/mixed-index.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(mixed_index)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/valid-child.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(valid_child)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/loop-index.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(loop_index)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-
-    let parser = parser();
-    let url = format!("{}/mixed-index.xml", mock.uri());
-    let urls = parser
-        .parse_from_url(&url, &CorrelationId::new())
-        .await
-        .unwrap();
+    let urls = serve_many_and_parse(
+        &mock,
+        vec![
+            (
+                "/mixed-index.xml",
+                ResponseTemplate::new(200)
+                    .set_body_string(mixed_index)
+                    .insert_header("content-type", "application/xml"),
+            ),
+            (
+                "/valid-child.xml",
+                ResponseTemplate::new(200)
+                    .set_body_string(valid_child)
+                    .insert_header("content-type", "application/xml"),
+            ),
+            (
+                "/loop-index.xml",
+                ResponseTemplate::new(200)
+                    .set_body_string(loop_index)
+                    .insert_header("content-type", "application/xml"),
+            ),
+        ],
+        "/mixed-index.xml",
+    )
+    .await
+    .unwrap();
 
     // Should parse the valid child and skip the loop
     assert_eq!(urls.len(), 1, "should parse valid child, skip loop");
@@ -664,40 +618,32 @@ async fn test_sitemap_index_deduplicates_across_children() {
     <url><loc>https://example.com/page3</loc></url>
 </urlset>"#;
 
-    Mock::given(method("GET"))
-        .and(path("/index-overlap.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(index_with_overlap)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/sitemap-a.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(sitemap_a)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/sitemap-b.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(sitemap_b)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-
-    let parser = parser();
-    let url = format!("{}/index-overlap.xml", mock.uri());
-    let urls = parser
-        .parse_from_url(&url, &CorrelationId::new())
-        .await
-        .unwrap();
+    let urls = serve_many_and_parse(
+        &mock,
+        vec![
+            (
+                "/index-overlap.xml",
+                ResponseTemplate::new(200)
+                    .set_body_string(index_with_overlap)
+                    .insert_header("content-type", "application/xml"),
+            ),
+            (
+                "/sitemap-a.xml",
+                ResponseTemplate::new(200)
+                    .set_body_string(sitemap_a)
+                    .insert_header("content-type", "application/xml"),
+            ),
+            (
+                "/sitemap-b.xml",
+                ResponseTemplate::new(200)
+                    .set_body_string(sitemap_b)
+                    .insert_header("content-type", "application/xml"),
+            ),
+        ],
+        "/index-overlap.xml",
+    )
+    .await
+    .unwrap();
 
     assert_eq!(urls.len(), 3, "should deduplicate page2 across children");
     let strings: Vec<String> = urls.iter().map(|u| u.url.to_string()).collect();
