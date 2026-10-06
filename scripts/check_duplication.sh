@@ -35,6 +35,18 @@ if ! command -v jscpd >/dev/null 2>&1; then
 fi
 JSCPD="jscpd"
 
+# Detector identity pin (#1893): jscpd-rs and kucherenko/jscpd install the
+# same binary name, and measuring with the wrong detector false-greens
+# (jscpd-rs reports ~7.6k lines against a v5 ~13k baseline, always under it).
+# Refuse loudly instead. Exact match is deliberate: any detector bump is a
+# conscious PR, not silent drift.
+JSCPD_EXPECTED_VERSION="jscpd 5.4.0"
+JSCPD_VERSION="$($JSCPD --version 2>/dev/null | head -1 || true)"
+if [ "$JSCPD_VERSION" != "$JSCPD_EXPECTED_VERSION" ]; then
+  echo "::error::jscpd es '$JSCPD_VERSION', se esperaba '$JSCPD_EXPECTED_VERSION' (kucherenko/jscpd v5). Instala con: cargo +stable install jscpd --version 5.4.0 --locked (toolchain >= 1.96; el workspace sigue en 1.88, binario solamente)"
+  exit 1
+fi
+
 echo "Running jscpd over crates/ (baseline duplicated-lines: $BASELINE)..."
 # jscpd's json reporter writes to <output-dir>/jscpd-report.json (--output is a dir).
 # A non-zero jscpd exit fails the gate (no `|| true` swallow).
