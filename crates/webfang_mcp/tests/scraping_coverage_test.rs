@@ -31,9 +31,13 @@ use webfang_mcp::mcp_server::state::McpState;
 
 // Canonical HTML page fixture, shared with every other MCP test binary
 // (#1371). Imported by name, not `use common::*`: this file still owns its
-// own server/session prologue, and a glob would collide with it.
+// own server prologue (`start_test_server` declares the system temp dir as
+// its export root) plus the crawl-specific helpers below — and a glob would
+// collide with those. The JSON-RPC client (`call_tool`,
+// `init_session_with_name`, `tool_text`, `is_tool_error`) is shared via
+// `common` (mcp_request/extract_json live there too).
 mod common;
-use common::mount_page_200;
+use common::{call_tool, init_session_with_name, is_tool_error, mount_page_200, tool_text};
 
 /// Minimal article HTML that Readability extracts deterministically (mirrors
 /// mcp_behavioral_test.rs), so scraped pages produce real content.
@@ -102,10 +106,12 @@ fn init_ssrf_disabled() {
     });
 }
 
-// ============================================================================
-// Harness helpers — local copies (each integration test binary is standalone).
-// ============================================================================
-
+// Server prologue — stays local: unlike `common::start_test_server`, this
+// harness declares the SYSTEM temp dir as its export root so absolute
+// `checkpoint_dir` (and `TempDir`) paths under it stay reachable now that
+// `checkpoint_dir` shares the #696/#1588 root gate. NOT the production
+// default — production ships with no export roots (fail-closed) until the
+// operator sets `--export-roots`.
 async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
     // Disable SSRF before building the router
     init_ssrf_disabled();
@@ -150,106 +156,6 @@ async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
     (base_url, handle)
 }
 
-fn mcp_request(method: &str, params: Value) -> Value {
-    json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": method,
-        "params": params,
-    })
-}
-
-fn extract_json(body: &str) -> Option<Value> {
-    if body.contains("data: ") {
-        body.lines()
-            .filter(|line| line.starts_with("data: "))
-            .filter_map(|line| {
-                let json_str = line.strip_prefix("data: ").unwrap_or(line);
-                serde_json::from_str::<Value>(json_str).ok()
-            })
-            .next()
-    } else {
-        serde_json::from_str::<Value>(body).ok()
-    }
-}
-
-async fn init_session(client: &Client, base_url: &str) -> String {
-    let init_body = mcp_request(
-        "initialize",
-        json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": { "name": "scraping-coverage-test", "version": "1.0.0" }
-        }),
-    );
-    let resp = client
-        .post(format!("{base_url}/mcp"))
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
-        .json(&init_body)
-        .send()
-        .await
-        .expect("initialize should succeed");
-    let session_id = resp
-        .headers()
-        .get("mcp-session-id")
-        .and_then(|v| v.to_str().ok())
-        .map(String::from)
-        .expect("initialize must return mcp-session-id");
-
-    let _ = client
-        .post(format!("{base_url}/mcp"))
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
-        .header("mcp-session-id", &session_id)
-        .json(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
-        .send()
-        .await;
-
-    session_id
-}
-
-async fn call_tool(
-    client: &Client,
-    base_url: &str,
-    session_id: &str,
-    name: &str,
-    args: Value,
-) -> Value {
-    let body = mcp_request("tools/call", json!({ "name": name, "arguments": args }));
-    let resp = client
-        .post(format!("{base_url}/mcp"))
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
-        .header("mcp-session-id", session_id)
-        .json(&body)
-        .send()
-        .await
-        .expect("tools/call should succeed");
-    let text = resp.text().await.expect("read response body");
-    extract_json(&text).expect("response must parse as JSON-RPC")
-}
-
-fn tool_text(result: &Value) -> String {
-    // #1600: strip the provenance envelope when present (see common::payload_text).
-    common::payload_text(
-        result
-            .get("content")
-            .and_then(|c| c.as_array())
-            .and_then(|arr| arr.first())
-            .and_then(|first| first.get("text"))
-            .and_then(|t| t.as_str())
-            .unwrap_or_default(),
-    )
-}
-
-fn is_tool_error(result: &Value) -> bool {
-    result
-        .get("isError")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-}
-
 /// Call a single-URL tool against `target_uri` and return the extracted
 /// `result` object from the JSON-RPC envelope.
 async fn call_single_url_tool_result(
@@ -278,7 +184,7 @@ async fn call_single_url_tool_result(
 async fn crawl_tool_parsed(tool: &str, params: Value) -> Value {
     let (base_url, _server) = start_test_server().await;
     let client = Client::new();
-    let session = init_session(&client, &base_url).await;
+    let session = init_session_with_name(&client, &base_url, "scraping-coverage-test").await;
     let resp = call_tool(&client, &base_url, &session, tool, params).await;
     let result = resp
         .get("result")
@@ -302,7 +208,7 @@ async fn crawl_tool_parsed(tool: &str, params: Value) -> Value {
 async fn test_scrape_url_invalid_url_is_invalid_params() {
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
+    let session_id = init_session_with_name(&client, &base_url, "scraping-coverage-test").await;
 
     let resp = call_tool(
         &client,
@@ -342,7 +248,7 @@ async fn test_scrape_url_http_error_is_honest_error() {
 
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
+    let session_id = init_session_with_name(&client, &base_url, "scraping-coverage-test").await;
 
     let result =
         call_single_url_tool_result(&client, &base_url, &session_id, "scrape_url", &mock.uri())
@@ -373,7 +279,7 @@ async fn test_scrape_url_js_shell_is_error_result() {
 
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
+    let session_id = init_session_with_name(&client, &base_url, "scraping-coverage-test").await;
 
     let result =
         call_single_url_tool_result(&client, &base_url, &session_id, "scrape_url", &mock.uri())
@@ -419,7 +325,7 @@ async fn test_discover_urls_extracts_internal_and_external_links() {
 
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
+    let session_id = init_session_with_name(&client, &base_url, "scraping-coverage-test").await;
 
     let resp = call_tool(
         &client,
@@ -471,7 +377,7 @@ async fn test_detect_spa_short_content_with_root_marker() {
 
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
+    let session_id = init_session_with_name(&client, &base_url, "scraping-coverage-test").await;
 
     let resp = call_tool(
         &client,
@@ -530,7 +436,7 @@ async fn test_detect_spa_sufficient_content_not_spa() {
 
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
+    let session_id = init_session_with_name(&client, &base_url, "scraping-coverage-test").await;
 
     let resp = call_tool(
         &client,
@@ -577,7 +483,7 @@ async fn test_detect_spa_predicts_scrape_verdict_on_js_shell() {
 
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
+    let session_id = init_session_with_name(&client, &base_url, "scraping-coverage-test").await;
 
     // 1. detect_spa must predict the SPA verdict (JSON with markers), not the
     //    pre-fix "not an SPA - sufficient content found" literal.
@@ -715,7 +621,7 @@ async fn test_scrape_batch_partial_results_on_failure() {
 
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
+    let session_id = init_session_with_name(&client, &base_url, "scraping-coverage-test").await;
 
     let resp = call_tool(
         &client,
@@ -824,7 +730,7 @@ async fn test_scrape_batch_delay_ms_spaces_fetches() {
 
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
+    let session_id = init_session_with_name(&client, &base_url, "scraping-coverage-test").await;
 
     let start = std::time::Instant::now();
     let resp = call_tool(
@@ -896,7 +802,7 @@ async fn test_crawl_site_max_depth_zero_single_page() {
 
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
+    let session_id = init_session_with_name(&client, &base_url, "scraping-coverage-test").await;
 
     let resp = call_tool(
         &client,
@@ -1235,7 +1141,7 @@ async fn crawl_then_export_text(tool_args: Value, out_name: &str) -> String {
         .try_init();
     let (base_url, _server) = start_test_server().await;
     let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
+    let session_id = init_session_with_name(&client, &base_url, "scraping-coverage-test").await;
 
     let crawl = call_tool(&client, &base_url, &session_id, "crawl_site", tool_args).await;
     let crawl_result = crawl

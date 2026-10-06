@@ -44,114 +44,11 @@ use webfang_mcp::mcp_server::state::McpState;
 
 // Canonical HTML page fixture, shared across the MCP test binaries (#1371).
 // Imported by name, not `use common::*`: this file keeps its own local
-// server/session harness (a glob would collide with `mcp_request`,
-// `init_session`, `call_tool`, `tool_text`, `is_tool_error`).
+// server bootstrap below. The JSON-RPC client (`call_tool`,
+// `init_session_with_name`, `tool_text`, `is_tool_error`) is shared via
+// `common` (mcp_request/extract_json live there too).
 mod common;
-use common::mount_page_200;
-
-// ============================================================================
-// JSON-RPC harness — local copies (each integration test binary is standalone)
-// ============================================================================
-
-fn mcp_request(method: &str, params: Value) -> Value {
-    json!({
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": method,
-        "params": params,
-    })
-}
-
-fn extract_json(body: &str) -> Option<Value> {
-    if body.contains("data: ") {
-        body.lines()
-            .filter(|line| line.starts_with("data: "))
-            .filter_map(|line| {
-                let json_str = line.strip_prefix("data: ").unwrap_or(line);
-                serde_json::from_str::<Value>(json_str).ok()
-            })
-            .next()
-    } else {
-        serde_json::from_str::<Value>(body).ok()
-    }
-}
-
-async fn init_session(client: &Client, base_url: &str) -> String {
-    let init_body = mcp_request(
-        "initialize",
-        json!({
-            "protocolVersion": "2024-11-05",
-            "capabilities": {},
-            "clientInfo": { "name": "cli-mcp-parity-test", "version": "1.0.0" }
-        }),
-    );
-    let resp = client
-        .post(format!("{base_url}/mcp"))
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
-        .json(&init_body)
-        .send()
-        .await
-        .expect("initialize should succeed");
-    let session_id = resp
-        .headers()
-        .get("mcp-session-id")
-        .and_then(|v| v.to_str().ok())
-        .map(String::from)
-        .expect("initialize must return mcp-session-id");
-
-    let _ = client
-        .post(format!("{base_url}/mcp"))
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
-        .header("mcp-session-id", &session_id)
-        .json(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}))
-        .send()
-        .await;
-
-    session_id
-}
-
-async fn call_tool(
-    client: &Client,
-    base_url: &str,
-    session_id: &str,
-    name: &str,
-    args: Value,
-) -> Value {
-    let body = mcp_request("tools/call", json!({ "name": name, "arguments": args }));
-    let resp = client
-        .post(format!("{base_url}/mcp"))
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
-        .header("mcp-session-id", session_id)
-        .json(&body)
-        .send()
-        .await
-        .expect("tools/call should succeed");
-    let text = resp.text().await.expect("read response body");
-    extract_json(&text).expect("response must parse as JSON-RPC")
-}
-
-fn tool_text(result: &Value) -> String {
-    // #1600: strip the provenance envelope when present (see common::payload_text).
-    common::payload_text(
-        result
-            .get("content")
-            .and_then(|c| c.as_array())
-            .and_then(|arr| arr.first())
-            .and_then(|first| first.get("text"))
-            .and_then(|t| t.as_str())
-            .unwrap_or_default(),
-    )
-}
-
-fn is_tool_error(result: &Value) -> bool {
-    result
-        .get("isError")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(false)
-}
+use common::{call_tool, init_session_with_name, is_tool_error, mount_page_200, tool_text};
 
 /// Unwrap the JSON-RPC envelope: the tool payload lives under `result`
 /// (same convention as the shared `export_coverage`/`mcp_behavioral` harness).
@@ -381,7 +278,7 @@ async fn mount_parity_site(site: &MockServer) {
 async fn mcp_export_records(seed: &str) -> Vec<Value> {
     let (mcp_base, _mcp_server, _mcp_tmp) = start_server().await;
     let client = Client::new();
-    let session_id = init_session(&client, &mcp_base).await;
+    let session_id = init_session_with_name(&client, &mcp_base, "cli-mcp-parity-test").await;
 
     let crawl = tool_result(
         call_tool(
