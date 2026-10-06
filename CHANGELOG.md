@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.1] - 2026-10-06
+
+
+### 🏗️ Architecture Improvements
+
+- Extract shared JSONL-metadata helper in scraping handler ([#1892](https://github.com/XaviCode1000/webfang/pull/1892))
+- Remove dead duplicate infrastructure/llm/validation.rs ([#1876](https://github.com/XaviCode1000/webfang/pull/1876))
+
+### 🔧 Fixed
+
+- Argument validation fails open on four flags ([#1865](https://github.com/XaviCode1000/webfang/pull/1865))
 ## [2.7.0] - 2026-10-06
 
 
