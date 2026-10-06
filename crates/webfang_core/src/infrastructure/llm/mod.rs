@@ -4,4 +4,3 @@
 pub mod client;
 pub mod provider;
 pub mod remote_embedding;
-pub mod validation;
