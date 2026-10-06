@@ -239,7 +239,14 @@ def check_zip(archive):
             expected = None
             if epoch >= DOS_EPOCH:
                 st = time.gmtime(epoch)
-                expected = (st.tm_year, st.tm_mon, st.tm_mday, st.tm_hour, st.tm_min, st.tm_sec)
+                # The expectation is the epoch expressed in the format's own
+                # resolution, not the raw epoch: MS-DOS time stores seconds/2
+                # (PKWARE APPNOTE 6.3.10, section 4.4.6: "2 second precision"),
+                # so an odd second is not representable — zipfile truncates it
+                # on write and every readback is even. Comparing exact seconds
+                # would fail every archive whose committer date is odd, which
+                # is a property of the calendar, not of the build.
+                expected = (st.tm_year, st.tm_mon, st.tm_mday, st.tm_hour, st.tm_min, (st.tm_sec // 2) * 2)
             for info in infos:
                 if info.is_dir():
                     fail(archive, "entry {} is a directory; only a regular file may ship".format(info.filename))
@@ -283,7 +290,7 @@ for path in archives:
     # uid/gid, no owner names and no gzip header; saying "gzip mtime 0" about a
     # .zip would be a false claim in a gate whose entire job is to state facts.
     if path.endswith(".zip"):
-        detail = "sorted entries, mtime={}, mode 0755, create_system=Unix, deflate".format(epoch)
+        detail = "sorted entries, mtime~{} (DOS 2-second resolution), mode 0755, create_system=Unix, deflate".format(epoch)
     else:
         detail = "sorted entries, uid/gid 0, no owner names, mtime={}, gzip mtime 0".format(epoch)
     print("reproducibility invariants OK: {} ({})".format(path, detail))
