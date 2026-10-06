@@ -9,24 +9,32 @@ captures scrape output.
 
 | Crate | File | Gate | What it covers |
 |:------|:-----|:-----|:---------------|
-| `behavioral` | `tests/behavioral/main.rs` | default features | Single-page scrape, CLI help, unreachable host, slow server, obsidian frontmatter |
-| `cli_binary` | `tests/cli_binary_test.rs` | default features | `--version`, `--help`, network-error exit codes |
-| `cli_behavioral` | `tests/cli_behavioral_test.rs` | `feature = "images"` **and** `feature = "documents"` | Obsidian tag/metadata/wiki-link conversion, CSS-selector extraction, full-page extraction |
+| `behavioral` | `tests/behavioral/main.rs` | none (always built) | Single-page scrape, CLI help, unreachable host, slow server, obsidian frontmatter, CSS-selector and full-page extraction (`tests/behavioral/cli/`) |
+| `cli_binary` | `tests/cli_binary_test.rs` | none (always built) | `--version`, `--help`, network-error exit codes |
 
-`cli_behavioral` is `#![cfg(all(feature = "images", feature = "documents"))]`. It is built
-and run by default; with `--no-default-features` it is skipped entirely (no `compile_error!`).
+**No E2E crate is feature-gated.** An earlier revision of this table listed a
+`cli_behavioral` crate gated on `images` **and** `documents`; that crate does not
+exist and that `#![cfg(all(feature = "images", feature = "documents"))]` gate
+never existed anywhere in the source tree — its coverage (obsidian
+tag/metadata/wiki-link conversion) lives ungated inside `behavioral`, at
+`tests/behavioral/cli/obsidian_test.rs`.
+
+The `images` and `documents` marker features themselves were **deleted** in
+#1813: they selected no capability, and turning them off silently shrank a MIME
+table instead of shrinking anything else. Do not reintroduce them as empty
+markers — add a feature when it gates something real.
 
 ## Running tests
 
 ```bash
 # all E2E crates
-cargo nextest run --test behavioral --test cli_binary --test cli_behavioral
+cargo nextest run --test behavioral --test cli_binary
 
 # a single crate
-cargo nextest run --test cli_behavioral
+cargo nextest run --test behavioral
 
 # a single test (libtest, prints the full snapshot diff on mismatch)
-cargo test --test cli_behavioral test_selector_h3_extracts_only_h3
+cargo test --test behavioral selector_h3_extracts_only_h3
 ```
 
 Ignored tests (e.g. optional live-site checks) are excluded by default; run them with
@@ -46,15 +54,15 @@ a silent boolean flip.
    `*.snap.new` pending file is written next to it:
 
    ```bash
-   cargo nextest run --test cli_behavioral
+   cargo nextest run --test behavioral
    ```
 
 2. **GREEN** — regenerate and accept the pending snapshots, then re-run with no flag to
    confirm they are now stable (no new `*.snap.new` should appear):
 
    ```bash
-   INSTA_UPDATE=always cargo nextest run --test cli_behavioral
-   cargo nextest run --test cli_behavioral        # must stay green
+   INSTA_UPDATE=always cargo nextest run --test behavioral
+   cargo nextest run --test behavioral        # must stay green
    ```
 
 3. Inspect the generated `*.snap` files, then stage them with the code change.
@@ -70,7 +78,7 @@ snapshots land where the suite expects:
 
 - `tests/behavioral/snapshots/` — root `behavioral` snapshots
 - `tests/behavioral/cli/snapshots/` — obsidian snapshots (local helper inside `cli/obsidian_test.rs`)
-- `tests/snapshots/` — `cli_binary__*.snap` and `cli_behavioral__*.snap`
+- `tests/snapshots/` — `cli_binary__*.snap`
 
 ## Redaction conventions
 
@@ -102,7 +110,7 @@ component) that the helper cannot catch, so `assert_content_snapshot` applies an
 ## Lint
 
 ```bash
-cargo clippy -p webfang_core --test behavioral --test cli_binary --test cli_behavioral -- -D warnings
+cargo clippy -p webfang_core --test behavioral --test cli_binary -- -D warnings
 ```
 
 Gate clippy on the specific test crates (not `--tests`): `webfang_core`'s own lib

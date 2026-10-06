@@ -10,9 +10,12 @@ repository.workspace = true
 homepage.workspace = true
 
 [features]
-default = ["images", "documents"]
-images = ["webfang_core/images"]
-documents = ["webfang_core/documents"]
+# #1813 T4: emptied alongside `webfang_core`. The forwarded `images` /
+# `documents` markers selected nothing but a divergent MIME table; every other
+# feature here is capability-backed (`ai` pulls `webfang_ai`, the rest forward a
+# `webfang_core` feature that gates code or dependencies). Same explicit-empty
+# reasoning as the core manifest.
+default = []
 ai = ["dep:webfang_ai", "webfang_ai/ai", "webfang_core/ai"]
 adaptive-selectors = ["webfang_core/adaptive-selectors"]
 chromium = ["webfang_core/chromium"]
