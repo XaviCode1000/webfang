@@ -1515,7 +1515,6 @@ mod tests {
     use serial_test::serial;
     use tempfile::TempDir;
 
-    use webfang_core::infrastructure::crawler::robots_utils::RobotsFetcher;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1528,19 +1527,12 @@ mod tests {
         (McpHandler::new(state), tmp)
     }
 
-    /// Build a state with a real robots fetcher for #749 enforcement tests.
-    /// Offline-friendly: construction never touches the network.
-    async fn test_handler_with_robots() -> (McpHandler, TempDir) {
-        let (state, tmp) = test_state().await;
-        let state = state.with_robots_fetcher(std::sync::Arc::new(
-            RobotsFetcher::with_default_profile(5).expect("fetcher construction is offline"),
-        ));
-        (McpHandler::new(state), tmp)
-    }
-
-    /// Shared state construction for `test_handler` / `test_handler_with_robots`.
-    /// The `TempDir` is returned so the caller keeps the configured
-    /// `output_dir` alive.
+    /// Shared state construction for `test_handler`. The `TempDir` is returned
+    /// so the caller keeps the configured `output_dir` alive.
+    ///
+    /// Robots-enforcement tests use the shared
+    /// [`test_support::test_handler_with_robots_and_no_ssrf`] fixture
+    /// instead of a local robots handler (issue #1885).
     async fn test_state() -> (McpState, TempDir) {
         let tmp = TempDir::new().expect("create temp dir");
         let container = test_support::container(&tmp).await;
@@ -1714,24 +1706,6 @@ mod tests {
 </article>
 </body>
 </html>"#;
-
-    /// Mount a robots.txt disallowing `/private/*` and a 200 page at
-    /// `/{path}` on the same origin — the fetcher keys its rule cache on the
-    /// page URL's origin, so both routes must sit on one `MockServer`.
-    async fn mount_robots_site(server: &MockServer, page_path: &str) {
-        Mock::given(method("GET"))
-            .and(path("/robots.txt"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string("User-agent: *\nDisallow: /private\n"),
-            )
-            .mount(server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path(format!("/{page_path}")))
-            .respond_with(ResponseTemplate::new(200).set_body_string(ARTICLE_HTML))
-            .mount(server)
-            .await;
-    }
 
     /// Count requests that are NOT the robots.txt probe — zero proves the
     /// gate short-circuited BEFORE any page fetch.
@@ -1983,23 +1957,13 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn scrape_url_robots_disallowed_returns_error_and_zero_page_hits() {
-        // Lift both guards for this test only (wiremock binds 127.0.0.1):
-        // the MCP entry validator and the shared core literal-IP entry
-        // guard (F-06 + F-32, #1217). EnvGuard restores the originals on
-        // drop, so the "1"s cannot leak into siblings (#1126).
-        let _guard = webfang_test_utils::EnvGuard::with(&[
-            (
-                webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
-                "1",
-            ),
-            (
-                webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
-                "1",
-            ),
-        ]);
-        let (handler, _tmp) = test_handler_with_robots().await;
-        let server = MockServer::start().await;
-        mount_robots_site(&server, "private/page").await;
+        // Shared robots harness (test_support): both SSRF hatches off, a
+        // robots-fetcher handler, and wiremock serving the canonical
+        // `/robots.txt` (`Disallow: /private`). See the fixture docs for
+        // why both hatches (F-06 + F-32, #1217, #1301) and the drop-restore
+        // (#1126).
+        let (handler, _tmp, _guard, server) =
+            test_support::test_handler_with_robots_and_no_ssrf().await;
 
         let res = handler
             .scrape_url(Parameters(ScrapeUrlParams {
@@ -2023,23 +1987,18 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn scrape_url_robots_allowed_still_scrapes_page() {
-        // Lift both guards for this test only (wiremock binds 127.0.0.1):
-        // the MCP entry validator and the shared core literal-IP entry
-        // guard (F-06 + F-32, #1217). EnvGuard restores the originals on
-        // drop, so the "1"s cannot leak into siblings (#1126).
-        let _guard = webfang_test_utils::EnvGuard::with(&[
-            (
-                webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
-                "1",
-            ),
-            (
-                webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
-                "1",
-            ),
-        ]);
-        let (handler, _tmp) = test_handler_with_robots().await;
-        let server = MockServer::start().await;
-        mount_robots_site(&server, "public/page").await;
+        // Shared robots harness (test_support): both SSRF hatches off, a
+        // robots-fetcher handler, and wiremock serving the canonical
+        // `/robots.txt` (`Disallow: /private`). The positive path needs the
+        // page route too, so it is mounted here — the fixture mounts only
+        // the robots route.
+        let (handler, _tmp, _guard, server) =
+            test_support::test_handler_with_robots_and_no_ssrf().await;
+        Mock::given(method("GET"))
+            .and(path("/public/page"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(ARTICLE_HTML))
+            .mount(&server)
+            .await;
 
         let res = handler
             .scrape_url(Parameters(ScrapeUrlParams {
@@ -2073,16 +2032,7 @@ mod tests {
         // Lift both guards for this test only (wiremock binds 127.0.0.1):
         // the MCP entry validator and the shared core literal-IP entry
         // guard (F-06 + F-32, #1217).
-        let _guard = webfang_test_utils::EnvGuard::with(&[
-            (
-                webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
-                "1",
-            ),
-            (
-                webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
-                "1",
-            ),
-        ]);
+        let _guard = webfang_test_utils::EnvGuard::ssrf_hatches_off();
         let (handler, _tmp) = test_handler().await;
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -2126,16 +2076,9 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn discover_sitemap_drops_external_and_literal_loc_entries() {
-        let _guard = webfang_test_utils::EnvGuard::with(&[
-            (
-                webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
-                "1",
-            ),
-            (
-                webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
-                "1",
-            ),
-        ]);
+        // Same both-hatch lift as the discover_urls filter test above
+        // (wiremock loopback literal, no robots chain here).
+        let _guard = webfang_test_utils::EnvGuard::ssrf_hatches_off();
         let (handler, _tmp) = test_handler().await;
         let server = MockServer::start().await;
         let base = server.uri();
@@ -2183,23 +2126,13 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn discover_urls_robots_disallowed_returns_error_and_zero_page_hits() {
-        // Lift both guards for this test only (wiremock binds 127.0.0.1):
-        // the MCP entry validator and the shared core literal-IP entry
-        // guard (F-06 + F-32, #1217). EnvGuard restores the originals on
-        // drop, so the "1"s cannot leak into siblings (#1126).
-        let _guard = webfang_test_utils::EnvGuard::with(&[
-            (
-                webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
-                "1",
-            ),
-            (
-                webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
-                "1",
-            ),
-        ]);
-        let (handler, _tmp) = test_handler_with_robots().await;
-        let server = MockServer::start().await;
-        mount_robots_site(&server, "private/list").await;
+        // Shared robots harness (test_support): both SSRF hatches off, a
+        // robots-fetcher handler, and wiremock serving the canonical
+        // `/robots.txt` (`Disallow: /private`). See the fixture docs for
+        // why both hatches (F-06 + F-32, #1217, #1301) and the drop-restore
+        // (#1126).
+        let (handler, _tmp, _guard, server) =
+            test_support::test_handler_with_robots_and_no_ssrf().await;
 
         let res = handler
             .discover_urls(Parameters(DiscoverUrlsParams {
@@ -2222,23 +2155,13 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn detect_spa_robots_disallowed_returns_error_and_zero_page_hits() {
-        // Lift both guards for this test only (wiremock binds 127.0.0.1):
-        // the MCP entry validator and the shared core literal-IP entry
-        // guard (F-06 + F-32, #1217). EnvGuard restores the originals on
-        // drop, so the "1"s cannot leak into siblings (#1126).
-        let _guard = webfang_test_utils::EnvGuard::with(&[
-            (
-                webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
-                "1",
-            ),
-            (
-                webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
-                "1",
-            ),
-        ]);
-        let (handler, _tmp) = test_handler_with_robots().await;
-        let server = MockServer::start().await;
-        mount_robots_site(&server, "private/app").await;
+        // Shared robots harness (test_support): both SSRF hatches off, a
+        // robots-fetcher handler, and wiremock serving the canonical
+        // `/robots.txt` (`Disallow: /private`). See the fixture docs for
+        // why both hatches (F-06 + F-32, #1217, #1301) and the drop-restore
+        // (#1126).
+        let (handler, _tmp, _guard, server) =
+            test_support::test_handler_with_robots_and_no_ssrf().await;
 
         let res = handler
             .detect_spa(Parameters(DetectSpaParams {
@@ -2362,16 +2285,7 @@ mod tests {
         // the MCP entry validator and the shared core literal-IP entry
         // guard (F-06 + F-32, #1217). EnvGuard restores the originals on
         // drop, so the "1"s cannot leak into siblings (#1126).
-        let _guard = webfang_test_utils::EnvGuard::with(&[
-            (
-                webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
-                "1",
-            ),
-            (
-                webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
-                "1",
-            ),
-        ]);
+        let _guard = webfang_test_utils::EnvGuard::ssrf_hatches_off();
         let (handler, _tmp) = test_handler().await;
         let server = MockServer::start().await;
         let base = server.uri();

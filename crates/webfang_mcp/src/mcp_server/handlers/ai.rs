@@ -296,10 +296,6 @@ mod tests {
     use serial_test::serial;
     use tempfile::TempDir;
 
-    use webfang_core::infrastructure::crawler::robots_utils::RobotsFetcher;
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
     /// REQ-02/04 contract: `honest_error` produces a `CallToolResult` that
     /// serializes with `isError:true` and carries the exact Spanish text —
     /// never a protocol error, never a false success. Mirrors the slice-1
@@ -344,20 +340,13 @@ mod tests {
         (McpHandler::new(state), tmp)
     }
 
-    /// Build a state with a real robots fetcher for #749 enforcement tests.
-    /// Offline-friendly: construction never touches the network.
-    async fn test_handler_with_robots() -> (McpHandler, TempDir) {
-        let (state, tmp) = test_state().await;
-        let state = state.with_robots_fetcher(std::sync::Arc::new(
-            RobotsFetcher::with_default_profile(5).expect("fetcher construction is offline"),
-        ));
-        (McpHandler::new(state), tmp)
-    }
-
-    /// Shared state construction for `test_handler` /
-    /// `test_handler_with_robots` (kept in one place so both states build on
-    /// the identical baseline). The `TempDir` is returned so the caller keeps
-    /// the configured `output_dir` alive.
+    /// Shared state construction for `test_handler` (kept in one place so the
+    /// baseline stays identical). The `TempDir` is returned so the caller
+    /// keeps the configured `output_dir` alive.
+    ///
+    /// Robots-enforcement tests use the shared
+    /// [`test_support::test_handler_with_robots_and_no_ssrf`] fixture
+    /// instead of a local robots handler (issue #1885).
     async fn test_state() -> (McpState, TempDir) {
         let tmp = TempDir::new().expect("create temp dir");
         let container = test_support::container(&tmp).await;
@@ -421,31 +410,14 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn semantic_cleaner_robots_disallowed_errors_before_fetch_and_cleaner_check() {
-        // Lift both guards for this test only (wiremock binds 127.0.0.1): the MCP
-        // entry validator AND the shared core literal-IP entry guard (F-06 + F-32,
-        // #1217). Lifting only the MCP one lets the robots gate be satisfied by an
-        // unrelated SSRF short-circuit instead of real rules (#1301). EnvGuard
-        // restores the originals on drop, so the "1"s cannot leak into sibling
-        // tests in a shared process (#1126).
-        let _guard = webfang_test_utils::EnvGuard::with(&[
-            (
-                webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
-                "1",
-            ),
-            (
-                webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
-                "1",
-            ),
-        ]);
-        let (handler, _tmp) = test_handler_with_robots().await;
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/robots.txt"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string("User-agent: *\nDisallow: /private\n"),
-            )
-            .mount(&server)
-            .await;
+        // Shared robots harness (test_support): both SSRF hatches off, a
+        // robots-fetcher handler, and wiremock serving the canonical
+        // `/robots.txt` (`Disallow: /private`). Both hatches are required so
+        // the denial comes from real rules, not an SSRF short-circuit
+        // (F-06 + F-32, #1217, #1301); the guard restores them on drop so
+        // the "1"s cannot leak into sibling tests (#1126).
+        let (handler, _tmp, _guard, server) =
+            test_support::test_handler_with_robots_and_no_ssrf().await;
 
         let res = handler
             .semantic_cleaner(Parameters(ScrapeUrlParams {
