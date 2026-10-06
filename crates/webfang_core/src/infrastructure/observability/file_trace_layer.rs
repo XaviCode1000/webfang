@@ -87,6 +87,32 @@ impl FileTraceLayer {
             trace_id_seed: make_trace_seed(),
         })
     }
+
+    /// Serialize one trace record as a JSONL line and append it to the file.
+    ///
+    /// Owns the whole lock → serialize → write → flush → report chain, so
+    /// every emitter shares identical failure paths. A poisoned lock is
+    /// silently skipped, matching the pre-extraction behavior at each call
+    /// site. Never blocks across `.await`: all callers are synchronous
+    /// `Layer` callbacks.
+    fn write_record(&self, record: &Value) {
+        if let Ok(mut writer) = self.writer.lock() {
+            let mut line = match serde_json::to_vec(record) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("[FileTraceLayer] serialization error: {e}");
+                    return;
+                },
+            };
+            line.push(b'\n');
+            if let Err(e) = writer.write_all(&line) {
+                eprintln!("[FileTraceLayer] write error: {e}");
+            }
+            if let Err(e) = writer.flush() {
+                eprintln!("[FileTraceLayer] flush error: {e}");
+            }
+        }
+    }
 }
 
 impl std::fmt::Debug for FileTraceLayer {
@@ -213,22 +239,7 @@ where
             record["message"] = json!(m);
         }
 
-        if let Ok(mut writer) = self.writer.lock() {
-            let mut line = match serde_json::to_vec(&record) {
-                Ok(v) => v,
-                Err(e) => {
-                    eprintln!("[FileTraceLayer] serialization error: {e}");
-                    return;
-                },
-            };
-            line.push(b'\n');
-            if let Err(e) = writer.write_all(&line) {
-                eprintln!("[FileTraceLayer] write error: {e}");
-            }
-            if let Err(e) = writer.flush() {
-                eprintln!("[FileTraceLayer] flush error: {e}");
-            }
-        }
+        self.write_record(&record);
     }
 
     fn on_close(&self, id: tracing::Id, ctx: Context<'_, S>) {
@@ -279,22 +290,7 @@ where
             }
         }
 
-        if let Ok(mut writer) = self.writer.lock() {
-            let mut line = match serde_json::to_vec(&record) {
-                Ok(v) => v,
-                Err(e) => {
-                    eprintln!("[FileTraceLayer] serialization error: {e}");
-                    return;
-                },
-            };
-            line.push(b'\n');
-            if let Err(e) = writer.write_all(&line) {
-                eprintln!("[FileTraceLayer] write error: {e}");
-            }
-            if let Err(e) = writer.flush() {
-                eprintln!("[FileTraceLayer] flush error: {e}");
-            }
-        }
+        self.write_record(&record);
     }
 }
 
