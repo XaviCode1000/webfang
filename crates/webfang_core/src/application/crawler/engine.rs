@@ -1471,6 +1471,62 @@ pub async fn crawl_site_capturing(
     crawl_site_inner(config, CorrelationId::new(), Some(sink)).await
 }
 
+/// Session-builder helper (T7 slice-6, #1881): owns the shared
+/// `content_sink`/`pipeline`/`output_stages` ports → `.identity(...)` →
+/// `.build()` → `map_err` chain of the crawl-path entries.
+///
+/// The two crawl paths differ in persistence, transport, and injected ports,
+/// so those arrive as parameters — nothing is silently unified. Session
+/// contents, error mapping, and the `log_scrape_error` url/stage/correlation
+/// contexts stay identical at every call site. The `#[cfg(test)]` session
+/// helpers keep their own chain on purpose: they fail with `.expect()` and
+/// mint a fresh root instead of reporting through `log_scrape_error`, so they
+/// are a different cluster, not this helper's.
+///
+/// Sync with no lock guards, so there is nothing to hold across an `.await`
+/// (`#![deny(clippy::await_holding_lock)]` above keeps enforcing that).
+fn build_crawl_session(
+    config: CrawlerConfig,
+    persistence: PersistenceMode,
+    transport: super::session::TransportPolicy,
+    content_sink: Option<Arc<dyn CrawlContentSink>>,
+    downloader_factory: Option<Arc<dyn DownloaderFactory>>,
+    correlation_id: CorrelationId,
+) -> Result<CrawlSession, CrawlError> {
+    let run_label = config.seed_url.host_str().unwrap_or("seed").to_string();
+    let seed_url = config.seed_url.as_str().to_string();
+    // P6-2 slice 2: build the validated run object first; the engine
+    // executes from it. A build failure (exotic seed, inconsistent
+    // transport) fails the run before any worker spawns — no silent
+    // legacy fallback (matrix rows 31/33).
+    super::session::CrawlSession::builder()
+        .config(config)
+        .persistence(persistence)
+        .transport(transport)
+        .ports(super::session::CrawlPorts {
+            session_pool: None,
+            downloader_factory,
+            content_sink,
+            pipeline: None,
+            output_stages: Vec::new(),
+        })
+        .identity(super::session::CrawlIdentity {
+            root: correlation_id.clone(),
+            run_label,
+        })
+        .build()
+        .map_err(|err| {
+            log_scrape_error(
+                &err,
+                &seed_url,
+                "session",
+                Some(&correlation_id),
+                "session build failed — refusing to run (no legacy fallback)",
+            );
+            CrawlError::from(err)
+        })
+}
+
 /// Inner implementation of [`crawl_site`].
 ///
 /// The `#[instrument]` span declares the run-root identity (`correlation_id`,
@@ -1505,16 +1561,10 @@ async fn crawl_site_inner(
     );
 
     let ignore_robots = config.ignore_robots;
-    // P6-2 slice 2: build the validated run object first; the engine
-    // executes from it. A build failure (exotic seed, inconsistent
-    // transport) fails the run before any worker spawns — no silent
-    // legacy fallback (matrix rows 31/33).
-    let run_label = config.seed_url.host_str().unwrap_or("seed").to_string();
-    let seed_url = config.seed_url.as_str().to_string();
-    let mut session = super::session::CrawlSession::builder()
-        .config(config)
-        .persistence(PersistenceMode::Disabled)
-        .transport(super::session::TransportPolicy {
+    let mut session = build_crawl_session(
+        config,
+        PersistenceMode::Disabled,
+        super::session::TransportPolicy {
             js_strategy: JsStrategy::Static,
             tls_emulation: wreq_util::Profile::Chrome145,
             ignore_waf: false,
@@ -1527,29 +1577,11 @@ async fn crawl_site_inner(
             session_pool_enabled: false,
             autoscale_enabled: false,
             ignore_robots,
-        })
-        .ports(super::session::CrawlPorts {
-            session_pool: None,
-            downloader_factory: None,
-            content_sink: content_sink.clone(),
-            pipeline: None,
-            output_stages: Vec::new(),
-        })
-        .identity(super::session::CrawlIdentity {
-            root: correlation_id.clone(),
-            run_label,
-        })
-        .build()
-        .map_err(|err| {
-            log_scrape_error(
-                &err,
-                &seed_url,
-                "session",
-                Some(&correlation_id),
-                "session build failed — refusing to run (no legacy fallback)",
-            );
-            CrawlError::from(err)
-        })?;
+        },
+        content_sink,
+        None,
+        correlation_id,
+    )?;
     session.begin();
     let mut engine = Engine::from_session(session)?;
     let result = engine.run().await;
@@ -1670,15 +1702,11 @@ async fn crawl_site_with_options_inner(
         options.ignore_robots
     );
 
-    let seed_url = config.seed_url.as_str().to_string();
-    let run_label = config.seed_url.host_str().unwrap_or("seed").to_string();
     // P6-2 slice 1: the run object carries what `EngineOptions` carried.
     // Checkpoint mode comes from the same (path, interval) pair the
     // `with_checkpoint` chain it replaced consumed. Ports the options cannot
     // prebuild (pool needs the budget tier) stay unset — `from_session`
-    // assembles them exactly as the pre-session entry body did. A build
-    // failure fails the run before any worker spawns — no silent
-    // fallback (matrix rows 31/33).
+    // assembles them exactly as the pre-session entry body did.
     let mode = match &options.checkpoint_path {
         Some(dir) => PersistenceMode::Checkpoint {
             cfg: CheckpointCfg {
@@ -1688,32 +1716,14 @@ async fn crawl_site_with_options_inner(
         },
         None => PersistenceMode::Disabled,
     };
-    let mut session = super::session::CrawlSession::builder()
-        .config(config)
-        .persistence(mode)
-        .transport(super::session::TransportPolicy::from(&options))
-        .ports(super::session::CrawlPorts {
-            session_pool: None,
-            downloader_factory: options.downloader_factory.clone(),
-            content_sink: options.content_sink.clone(),
-            pipeline: None,
-            output_stages: Vec::new(),
-        })
-        .identity(super::session::CrawlIdentity {
-            root: correlation_id.clone(),
-            run_label,
-        })
-        .build()
-        .map_err(|err| {
-            log_scrape_error(
-                &err,
-                &seed_url,
-                "session",
-                Some(&correlation_id),
-                "session build failed — refusing to run (no legacy fallback)",
-            );
-            CrawlError::from(err)
-        })?;
+    let mut session = build_crawl_session(
+        config,
+        mode,
+        super::session::TransportPolicy::from(&options),
+        options.content_sink.clone(),
+        options.downloader_factory.clone(),
+        correlation_id,
+    )?;
 
     session.begin();
     let mut engine = Engine::from_session(session)?;
