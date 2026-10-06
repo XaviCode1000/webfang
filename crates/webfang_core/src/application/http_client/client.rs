@@ -590,6 +590,68 @@ impl crate::domain::http_port::HttpClientPort for HttpClient {
     }
 }
 
+/// Shared arrange helpers for the `HttpClient` wiremock tests (T7 slice-2).
+///
+/// Every test below repeats the same scaffold — start a mock server, mount a
+/// `GET` route, build a client with a retry preset, `get` a URL — so the
+/// helpers live here once, next to the `parity_config` convention they extend.
+/// Test-only code: only referenced from `#[cfg(test)]` modules.
+#[cfg(test)]
+mod arrange {
+    use super::{HttpClient, HttpError};
+    use crate::domain::http_config::HttpClientConfig;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Fast retry preset: short backoff keeps the retry path exercised but
+    /// the test fast. Mirrors the `parity_config` shape minus its timeout.
+    pub(super) fn retry_config(max_retries: u32) -> HttpClientConfig {
+        HttpClientConfig {
+            max_retries,
+            backoff_base_ms: 10,
+            backoff_max_ms: 50,
+            ..Default::default()
+        }
+    }
+
+    /// Client with default config for status/body tests that never retry.
+    pub(super) fn default_client() -> HttpClient {
+        HttpClient::new(HttpClientConfig::default()).expect("client builds")
+    }
+
+    /// Client with the fast retry preset.
+    pub(super) fn retry_client(max_retries: u32) -> HttpClient {
+        HttpClient::new(retry_config(max_retries)).expect("client builds")
+    }
+
+    /// Mount a `GET {route}` mock answering `status` with an empty body.
+    pub(super) async fn mount_status(server: &MockServer, route: &str, status: u16) {
+        Mock::given(method("GET"))
+            .and(path(route))
+            .respond_with(ResponseTemplate::new(status))
+            .mount(server)
+            .await;
+    }
+
+    /// Mount a `GET {route}` mock answering `status` with `body`.
+    pub(super) async fn mount_body(server: &MockServer, route: &str, status: u16, body: &str) {
+        Mock::given(method("GET"))
+            .and(path(route))
+            .respond_with(ResponseTemplate::new(status).set_body_string(body))
+            .mount(server)
+            .await;
+    }
+
+    /// GET `route` against `server` through `client`.
+    pub(super) async fn get_route(
+        client: &HttpClient,
+        server: &MockServer,
+        route: &str,
+    ) -> Result<String, HttpError> {
+        client.get(&format!("{}{route}", server.uri())).await
+    }
+}
+
 #[cfg(test)]
 #[cfg(not(miri))] // all tests create wreq::Client with btls-sys FFI (unsupported by Miri)
 mod tests {
@@ -694,6 +756,7 @@ mod tests {
 #[cfg(test)]
 #[cfg(not(miri))] // all tests create wreq::Client with btls-sys FFI (unsupported by Miri)
 mod wiremock_tests {
+    use super::arrange::*;
     use super::*;
     use crate::domain::http_config::HttpClientConfig;
     use wiremock::matchers::{header, method, path};
@@ -702,20 +765,11 @@ mod wiremock_tests {
     #[tokio::test]
     async fn test_403_returns_error() {
         let mock_server = MockServer::start().await;
+        mount_status(&mock_server, "/", 403).await;
 
-        Mock::given(method("GET"))
-            .and(path("/"))
-            .respond_with(ResponseTemplate::new(403))
-            .mount(&mock_server)
-            .await;
+        let client = retry_client(1);
 
-        let config = HttpClientConfig {
-            max_retries: 1,
-            ..Default::default()
-        };
-        let client = HttpClient::new(config).unwrap();
-
-        let result = client.get(&mock_server.uri()).await;
+        let result = get_route(&client, &mock_server, "/").await;
 
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), HttpError::Forbidden));
@@ -731,16 +785,10 @@ mod wiremock_tests {
             .mount(&mock_server)
             .await;
 
-        let config = HttpClientConfig {
-            max_retries: 1,
-            backoff_base_ms: 10,
-            backoff_max_ms: 50,
-            ..Default::default()
-        };
-        let client = HttpClient::new(config).unwrap();
+        let client = retry_client(1);
 
         let start = std::time::Instant::now();
-        let result = client.get(&mock_server.uri()).await;
+        let result = get_route(&client, &mock_server, "/").await;
         let elapsed = start.elapsed();
 
         assert!(result.is_err());
@@ -751,22 +799,11 @@ mod wiremock_tests {
     #[tokio::test]
     async fn test_500_returns_error() {
         let mock_server = MockServer::start().await;
+        mount_status(&mock_server, "/", 500).await;
 
-        Mock::given(method("GET"))
-            .and(path("/"))
-            .respond_with(ResponseTemplate::new(500))
-            .mount(&mock_server)
-            .await;
+        let client = retry_client(1);
 
-        let config = HttpClientConfig {
-            max_retries: 1,
-            backoff_base_ms: 10,
-            backoff_max_ms: 50,
-            ..Default::default()
-        };
-        let client = HttpClient::new(config).unwrap();
-
-        let result = client.get(&mock_server.uri()).await;
+        let result = get_route(&client, &mock_server, "/").await;
 
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), HttpError::ServerError(500)));
@@ -775,22 +812,11 @@ mod wiremock_tests {
     #[tokio::test]
     async fn test_500_exhausts_retries() {
         let mock_server = MockServer::start().await;
+        mount_status(&mock_server, "/", 500).await;
 
-        Mock::given(method("GET"))
-            .and(path("/"))
-            .respond_with(ResponseTemplate::new(500))
-            .mount(&mock_server)
-            .await;
+        let client = retry_client(2);
 
-        let config = HttpClientConfig {
-            max_retries: 2,
-            backoff_base_ms: 10,
-            backoff_max_ms: 50,
-            ..Default::default()
-        };
-        let client = HttpClient::new(config).unwrap();
-
-        let result = client.get(&mock_server.uri()).await;
+        let result = get_route(&client, &mock_server, "/").await;
 
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), HttpError::ServerError(500)));
@@ -799,17 +825,11 @@ mod wiremock_tests {
     #[tokio::test]
     async fn test_404_returns_client_error() {
         let mock_server = MockServer::start().await;
+        mount_status(&mock_server, "/notfound", 404).await;
 
-        Mock::given(method("GET"))
-            .and(path("/notfound"))
-            .respond_with(ResponseTemplate::new(404))
-            .mount(&mock_server)
-            .await;
+        let client = default_client();
 
-        let config = HttpClientConfig::default();
-        let client = HttpClient::new(config).unwrap();
-
-        let result = client.get(&format!("{}/notfound", mock_server.uri())).await;
+        let result = get_route(&client, &mock_server, "/notfound").await;
 
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), HttpError::ClientError(404)));
@@ -820,16 +840,11 @@ mod wiremock_tests {
         let mock_server = MockServer::start().await;
 
         let expected_body = "<html><body>Hello World</body></html>";
-        Mock::given(method("GET"))
-            .and(path("/"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(expected_body))
-            .mount(&mock_server)
-            .await;
+        mount_body(&mock_server, "/", 200, expected_body).await;
 
-        let config = HttpClientConfig::default();
-        let client = HttpClient::new(config).unwrap();
+        let client = default_client();
 
-        let result = client.get(&mock_server.uri()).await;
+        let result = get_route(&client, &mock_server, "/").await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), expected_body);
@@ -871,8 +886,8 @@ mod wiremock_tests {
 #[cfg(test)]
 #[cfg(not(miri))]
 mod waf_detection_tests {
+    use super::arrange::*;
     use super::*;
-    use crate::domain::http_config::HttpClientConfig;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -896,20 +911,11 @@ mod waf_detection_tests {
 
         let challenge_body = r#"<html><head><title>Just a moment...</title></head>
         <body><div id="challenge-running">Checking your browser...</div></body></html>"#;
+        mount_body(&mock_server, "/", 200, challenge_body).await;
 
-        Mock::given(method("GET"))
-            .and(path("/"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(challenge_body))
-            .mount(&mock_server)
-            .await;
+        let client = retry_client(1);
 
-        let config = HttpClientConfig {
-            max_retries: 1,
-            ..Default::default()
-        };
-        let client = HttpClient::new(config).unwrap();
-
-        let result = client.get(&mock_server.uri()).await;
+        let result = get_route(&client, &mock_server, "/").await;
 
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), HttpError::WafChallenge(_)));
@@ -922,20 +928,11 @@ mod waf_detection_tests {
 
         let challenge_body =
             r#"<html><body><div class="g-recaptcha" data-sitekey="abc"></div></body></html>"#;
+        mount_body(&mock_server, "/", 200, challenge_body).await;
 
-        Mock::given(method("GET"))
-            .and(path("/"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(challenge_body))
-            .mount(&mock_server)
-            .await;
+        let client = retry_client(1);
 
-        let config = HttpClientConfig {
-            max_retries: 1,
-            ..Default::default()
-        };
-        let client = HttpClient::new(config).unwrap();
-
-        let result = client.get(&mock_server.uri()).await;
+        let result = get_route(&client, &mock_server, "/").await;
 
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), HttpError::WafChallenge(_)));
@@ -947,17 +944,11 @@ mod waf_detection_tests {
 
         let normal_body =
             "<html><body><article><h1>Real Content</h1><p>Normal page.</p></article></body></html>";
+        mount_body(&mock_server, "/", 200, normal_body).await;
 
-        Mock::given(method("GET"))
-            .and(path("/"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(normal_body))
-            .mount(&mock_server)
-            .await;
+        let client = default_client();
 
-        let config = HttpClientConfig::default();
-        let client = HttpClient::new(config).unwrap();
-
-        let result = client.get(&mock_server.uri()).await;
+        let result = get_route(&client, &mock_server, "/").await;
 
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), normal_body);
@@ -990,15 +981,9 @@ mod waf_detection_tests {
             .mount(&mock_server)
             .await;
 
-        let config = HttpClientConfig {
-            max_retries: 3,
-            backoff_base_ms: 10,
-            backoff_max_ms: 50,
-            ..Default::default()
-        };
-        let client = HttpClient::new(config).unwrap();
+        let client = retry_client(3);
 
-        let result = client.get(&mock_server.uri()).await;
+        let result = get_route(&client, &mock_server, "/").await;
 
         let err = result.expect_err("503 challenge must be a WAF block, not Ok");
         assert!(
@@ -1029,15 +1014,9 @@ mod waf_detection_tests {
             .mount(&mock_server)
             .await;
 
-        let config = HttpClientConfig {
-            max_retries: 1,
-            backoff_base_ms: 10,
-            backoff_max_ms: 50,
-            ..Default::default()
-        };
-        let client = HttpClient::new(config).unwrap();
+        let client = retry_client(1);
 
-        let result = client.get(&mock_server.uri()).await;
+        let result = get_route(&client, &mock_server, "/").await;
 
         assert!(
             matches!(result.unwrap_err(), HttpError::ServerError(503)),
@@ -1068,15 +1047,9 @@ mod waf_detection_tests {
             .mount(&mock_server)
             .await;
 
-        let config = HttpClientConfig {
-            max_retries: 2,
-            backoff_base_ms: 10,
-            backoff_max_ms: 50,
-            ..Default::default()
-        };
-        let client = HttpClient::new(config).unwrap();
+        let client = retry_client(2);
 
-        let result = client.get(&mock_server.uri()).await;
+        let result = get_route(&client, &mock_server, "/").await;
 
         let err = result.expect_err("generic 503 with cf-ray must not be Ok");
         assert!(
@@ -1107,15 +1080,9 @@ mod waf_detection_tests {
             .mount(&mock_server)
             .await;
 
-        let config = HttpClientConfig {
-            max_retries: 3,
-            backoff_base_ms: 10,
-            backoff_max_ms: 50,
-            ..Default::default()
-        };
-        let client = HttpClient::new(config).unwrap();
+        let client = retry_client(3);
 
-        let result = client.get(&mock_server.uri()).await;
+        let result = get_route(&client, &mock_server, "/").await;
 
         let err = result.expect_err("cf-mitigated 503 must be a WAF block, not Ok");
         assert!(
@@ -1145,15 +1112,9 @@ mod waf_detection_tests {
             .mount(&mock_server)
             .await;
 
-        let config = HttpClientConfig {
-            max_retries: 2,
-            backoff_base_ms: 10,
-            backoff_max_ms: 50,
-            ..Default::default()
-        };
-        let client = HttpClient::new(config).unwrap();
+        let client = retry_client(2);
 
-        let result = client.get(&mock_server.uri()).await;
+        let result = get_route(&client, &mock_server, "/").await;
 
         assert!(
             matches!(result.unwrap_err(), HttpError::ServerError(503)),
@@ -1179,10 +1140,9 @@ mod waf_detection_tests {
             .mount(&mock_server)
             .await;
 
-        let config = HttpClientConfig::default();
-        let client = HttpClient::new(config).unwrap();
+        let client = default_client();
 
-        let result = client.get(&mock_server.uri()).await;
+        let result = get_route(&client, &mock_server, "/").await;
 
         assert!(result.is_ok(), "JSON akamai_hash must pass, got {result:?}");
         assert_eq!(result.unwrap(), json_body);
@@ -1208,10 +1168,9 @@ mod waf_detection_tests {
             .mount(&mock_server)
             .await;
 
-        let config = HttpClientConfig::default();
-        let client = HttpClient::new(config).unwrap();
+        let client = default_client();
 
-        let result = client.get(&mock_server.uri()).await;
+        let result = get_route(&client, &mock_server, "/").await;
 
         assert!(matches!(result.unwrap_err(), HttpError::WafChallenge(_)));
         mock_server.verify().await;
@@ -1221,11 +1180,10 @@ mod waf_detection_tests {
 #[cfg(test)]
 #[cfg(not(miri))]
 mod session_pool_tests {
+    use super::arrange::*;
     use super::*;
-    use crate::domain::http_config::HttpClientConfig;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::MockServer;
 
     /// Mock SessionPort for testing.
     struct MockSessionPort {
@@ -1270,10 +1228,7 @@ mod session_pool_tests {
     #[tokio::test]
     async fn test_acquire_banned_returns_domain_banned_error() {
         let pool = MockSessionPort::new(true);
-        let config = HttpClientConfig::default();
-        let client = HttpClient::new(config)
-            .unwrap()
-            .with_session_pool(Arc::clone(&pool) as Arc<dyn SessionPort>);
+        let client = default_client().with_session_pool(Arc::clone(&pool) as Arc<dyn SessionPort>);
 
         let result = client.get("https://example.com/page").await;
 
@@ -1287,10 +1242,7 @@ mod session_pool_tests {
     #[tokio::test]
     async fn test_acquire_healthy_proceeds_with_request() {
         let pool = MockSessionPort::new(false);
-        let config = HttpClientConfig::default();
-        let client = HttpClient::new(config)
-            .unwrap()
-            .with_session_pool(Arc::clone(&pool) as Arc<dyn SessionPort>);
+        let client = default_client().with_session_pool(Arc::clone(&pool) as Arc<dyn SessionPort>);
 
         // Use a non-existent URL — we just want to verify it doesn't return DomainBanned
         let result = client.get("https://httpbin.org/get").await;
@@ -1303,19 +1255,12 @@ mod session_pool_tests {
     #[tokio::test]
     async fn test_report_outcome_success_calls_report_success() {
         let pool = MockSessionPort::new(false);
-        let config = HttpClientConfig::default();
-        let client = HttpClient::new(config)
-            .unwrap()
-            .with_session_pool(Arc::clone(&pool) as Arc<dyn SessionPort>);
+        let client = default_client().with_session_pool(Arc::clone(&pool) as Arc<dyn SessionPort>);
 
         let mock_server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
-            .mount(&mock_server)
-            .await;
+        mount_body(&mock_server, "/", 200, "ok").await;
 
-        let _ = client.get(&mock_server.uri()).await;
+        let _ = get_route(&client, &mock_server, "/").await;
 
         assert_eq!(pool.success_count.load(Ordering::SeqCst), 1);
         assert_eq!(pool.failure_count.load(Ordering::SeqCst), 0);
@@ -1324,22 +1269,12 @@ mod session_pool_tests {
     #[tokio::test]
     async fn test_report_outcome_403_calls_report_failure() {
         let pool = MockSessionPort::new(false);
-        let config = HttpClientConfig {
-            max_retries: 1,
-            ..Default::default()
-        };
-        let client = HttpClient::new(config)
-            .unwrap()
-            .with_session_pool(Arc::clone(&pool) as Arc<dyn SessionPort>);
+        let client = retry_client(1).with_session_pool(Arc::clone(&pool) as Arc<dyn SessionPort>);
 
         let mock_server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/"))
-            .respond_with(ResponseTemplate::new(403))
-            .mount(&mock_server)
-            .await;
+        mount_status(&mock_server, "/", 403).await;
 
-        let _ = client.get(&mock_server.uri()).await;
+        let _ = get_route(&client, &mock_server, "/").await;
 
         assert_eq!(pool.failure_count.load(Ordering::SeqCst), 1);
         assert_eq!(pool.last_failure_status.load(Ordering::SeqCst), 403);
@@ -1348,19 +1283,12 @@ mod session_pool_tests {
     #[tokio::test]
     async fn test_report_outcome_404_no_report_failure() {
         let pool = MockSessionPort::new(false);
-        let config = HttpClientConfig::default();
-        let client = HttpClient::new(config)
-            .unwrap()
-            .with_session_pool(Arc::clone(&pool) as Arc<dyn SessionPort>);
+        let client = default_client().with_session_pool(Arc::clone(&pool) as Arc<dyn SessionPort>);
 
         let mock_server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/notfound"))
-            .respond_with(ResponseTemplate::new(404))
-            .mount(&mock_server)
-            .await;
+        mount_status(&mock_server, "/notfound", 404).await;
 
-        let _ = client.get(&format!("{}/notfound", mock_server.uri())).await;
+        let _ = get_route(&client, &mock_server, "/notfound").await;
 
         assert_eq!(pool.success_count.load(Ordering::SeqCst), 0);
         assert_eq!(pool.failure_count.load(Ordering::SeqCst), 0);
@@ -1369,18 +1297,14 @@ mod session_pool_tests {
     #[test]
     fn test_builder_sets_session_pool() {
         let pool = MockSessionPort::new(false);
-        let config = HttpClientConfig::default();
-        let client = HttpClient::new(config)
-            .unwrap()
-            .with_session_pool(Arc::clone(&pool) as Arc<dyn SessionPort>);
+        let client = default_client().with_session_pool(Arc::clone(&pool) as Arc<dyn SessionPort>);
 
         assert!(client.session_pool.is_some());
     }
 
     #[test]
     fn test_builder_without_session_pool() {
-        let config = HttpClientConfig::default();
-        let client = HttpClient::new(config).unwrap();
+        let client = default_client();
 
         assert!(client.session_pool.is_none());
     }
@@ -1396,6 +1320,7 @@ mod timeout_retry_tests {
     //! Builder/scheme errors were already terminal pre-dial (`get` validates
     //! the scheme before any request), so no test can dial them.
 
+    use super::arrange::*;
     use super::*;
     use std::time::Duration;
     use wiremock::matchers::{method, path};
@@ -1409,11 +1334,8 @@ mod timeout_retry_tests {
     fn parity_config(max_retries: u32) -> HttpClientConfig {
         HttpClientConfig {
             timeout_secs: TIMEOUT_SECS,
-            max_retries,
             // Short backoff keeps the retry path exercised but the test fast.
-            backoff_base_ms: 10,
-            backoff_max_ms: 50,
-            ..Default::default()
+            ..retry_config(max_retries)
         }
     }
 

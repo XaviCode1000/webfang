@@ -10,21 +10,81 @@ use wiremock::{
     Mock, MockServer, ResponseTemplate,
 };
 
+// Shared arrange helpers (T7 slice-2): client builders with retry/backoff
+// presets plus mock-setup + get helpers. This mirrors the unit-test helpers
+// in `application::http_client::client` — integration tests cannot import
+// `#[cfg(test)]` items, so the small shape lives here instead.
+
+/// Fast retry preset: short backoff keeps the retry path exercised but the
+/// test fast.
+fn retry_config(max_retries: u32) -> HttpClientConfig {
+    HttpClientConfig {
+        max_retries,
+        backoff_base_ms: 10,
+        backoff_max_ms: 50,
+        ..Default::default()
+    }
+}
+
+/// Client with default config for status/body tests that never retry.
+fn default_client() -> HttpClient {
+    HttpClient::new(HttpClientConfig::default()).expect("client builds")
+}
+
+/// Client with the fast retry preset.
+fn retry_client(max_retries: u32) -> HttpClient {
+    HttpClient::new(retry_config(max_retries)).expect("client builds")
+}
+
+/// Client with a custom request timeout in seconds.
+fn timeout_client(timeout_secs: u64) -> HttpClient {
+    HttpClient::new(HttpClientConfig {
+        timeout_secs,
+        ..Default::default()
+    })
+    .expect("client builds")
+}
+
+/// Mount a `GET {route}` mock answering `status` with `body`.
+async fn mount_body(server: &MockServer, route: &str, status: u16, body: &str) {
+    Mock::given(method("GET"))
+        .and(path(route))
+        .respond_with(ResponseTemplate::new(status).set_body_string(body))
+        .mount(server)
+        .await;
+}
+
+/// Mount a `GET {route}` mock answering `status` with `body` after `delay`.
+async fn mount_delayed(server: &MockServer, route: &str, status: u16, body: &str, delay: Duration) {
+    Mock::given(method("GET"))
+        .and(path(route))
+        .respond_with(
+            ResponseTemplate::new(status)
+                .set_body_string(body)
+                .set_delay(delay),
+        )
+        .mount(server)
+        .await;
+}
+
+/// GET `route` against `server` through `client`.
+async fn get_route(
+    client: &HttpClient,
+    server: &MockServer,
+    route: &str,
+) -> Result<String, HttpError> {
+    client.get(&format!("{}{route}", server.uri())).await
+}
+
 /// Test HTTP 200 OK with mock server
 #[tokio::test]
 async fn test_mock_server_200() {
     let mock_server = MockServer::start().await;
+    mount_body(&mock_server, "/", 200, "<html>OK</html>").await;
 
-    Mock::given(method("GET"))
-        .and(path("/"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("<html>OK</html>"))
-        .mount(&mock_server)
-        .await;
+    let client = default_client();
 
-    let config = HttpClientConfig::default();
-    let client = HttpClient::new(config).unwrap();
-
-    let result = client.get(&mock_server.uri()).await;
+    let result = get_route(&client, &mock_server, "/").await;
     assert!(result.is_ok(), "Should succeed: {result:?}");
 }
 
@@ -32,18 +92,11 @@ async fn test_mock_server_200() {
 #[tokio::test]
 async fn test_mock_server_404() {
     let mock_server = MockServer::start().await;
+    mount_body(&mock_server, "/missing", 404, "Not Found").await;
 
-    Mock::given(method("GET"))
-        .and(path("/missing"))
-        .respond_with(ResponseTemplate::new(404).set_body_string("Not Found"))
-        .mount(&mock_server)
-        .await;
+    let client = default_client();
 
-    let config = HttpClientConfig::default();
-    let client = HttpClient::new(config).unwrap();
-
-    let url = format!("{}/missing", mock_server.uri());
-    let result = client.get(&url).await;
+    let result = get_route(&client, &mock_server, "/missing").await;
     // HttpClient maps 404 to ClientError(404); 4xx responses are not retried.
     assert!(
         matches!(result, Err(HttpError::ClientError(404))),
@@ -55,23 +108,11 @@ async fn test_mock_server_404() {
 #[tokio::test]
 async fn test_mock_server_500() {
     let mock_server = MockServer::start().await;
+    mount_body(&mock_server, "/error", 500, "Internal Error").await;
 
-    Mock::given(method("GET"))
-        .and(path("/error"))
-        .respond_with(ResponseTemplate::new(500).set_body_string("Internal Error"))
-        .mount(&mock_server)
-        .await;
+    let client = retry_client(1);
 
-    let config = HttpClientConfig {
-        max_retries: 1,
-        backoff_base_ms: 10,
-        backoff_max_ms: 50,
-        ..Default::default()
-    };
-    let client = HttpClient::new(config).unwrap();
-
-    let url = format!("{}/error", mock_server.uri());
-    let result = client.get(&url).await;
+    let result = get_route(&client, &mock_server, "/error").await;
     // Once retries are exhausted, 500 surfaces as ServerError(500).
     assert!(
         matches!(result, Err(HttpError::ServerError(500))),
@@ -98,16 +139,9 @@ async fn test_mock_server_429_rate_limit() {
         .mount(&mock_server)
         .await;
 
-    let config = HttpClientConfig {
-        max_retries: 1,
-        backoff_base_ms: 10,
-        backoff_max_ms: 50,
-        ..Default::default()
-    };
-    let client = HttpClient::new(config).unwrap();
+    let client = retry_client(1);
 
-    let url = format!("{}/rate-limited", mock_server.uri());
-    let result = client.get(&url).await;
+    let result = get_route(&client, &mock_server, "/rate-limited").await;
 
     // After retry, should still fail with RateLimited error
     assert!(
@@ -120,23 +154,12 @@ async fn test_mock_server_429_rate_limit() {
 #[tokio::test]
 async fn test_mock_server_429_exhausts_retries() {
     let mock_server = MockServer::start().await;
+    mount_body(&mock_server, "/429", 429, "Too Many Requests").await;
 
-    Mock::given(method("GET"))
-        .and(path("/429"))
-        .respond_with(ResponseTemplate::new(429).set_body_string("Too Many Requests"))
-        .mount(&mock_server)
-        .await;
-
-    let config = HttpClientConfig {
-        max_retries: 2,
-        backoff_base_ms: 10,
-        backoff_max_ms: 50,
-        ..Default::default()
-    };
-    let client = HttpClient::new(config).unwrap();
+    let client = retry_client(2);
 
     let start = std::time::Instant::now();
-    let result = client.get(&format!("{}/429", mock_server.uri())).await;
+    let result = get_route(&client, &mock_server, "/429").await;
     let elapsed = start.elapsed();
 
     // After 3 attempts (1 initial + 2 retries), should fail
@@ -161,23 +184,11 @@ async fn test_mock_server_429_exhausts_retries() {
 #[tokio::test]
 async fn test_mock_server_503_service_unavailable() {
     let mock_server = MockServer::start().await;
+    mount_body(&mock_server, "/unavailable", 503, "Service Unavailable").await;
 
-    Mock::given(method("GET"))
-        .and(path("/unavailable"))
-        .respond_with(ResponseTemplate::new(503).set_body_string("Service Unavailable"))
-        .mount(&mock_server)
-        .await;
+    let client = retry_client(1);
 
-    let config = HttpClientConfig {
-        max_retries: 1,
-        backoff_base_ms: 10,
-        backoff_max_ms: 50,
-        ..Default::default()
-    };
-    let client = HttpClient::new(config).unwrap();
-
-    let url = format!("{}/unavailable", mock_server.uri());
-    let result = client.get(&url).await;
+    let result = get_route(&client, &mock_server, "/unavailable").await;
 
     // After retry, should fail with ServerError(503)
     assert!(
@@ -236,25 +247,19 @@ async fn test_mock_server_handles_slow_response() {
     let mock_server = MockServer::start().await;
 
     // Simulate 500ms latency
-    Mock::given(method("GET"))
-        .and(path("/slow"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("Slow response content")
-                .set_delay(Duration::from_millis(500)),
-        )
-        .mount(&mock_server)
-        .await;
+    mount_delayed(
+        &mock_server,
+        "/slow",
+        200,
+        "Slow response content",
+        Duration::from_millis(500),
+    )
+    .await;
 
-    let config = HttpClientConfig {
-        timeout_secs: 30, // 30 second timeout - should pass
-        ..Default::default()
-    };
-    let client = HttpClient::new(config).unwrap();
+    let client = timeout_client(30); // 30 second timeout - should pass
 
     let start = std::time::Instant::now();
-    let url = format!("{}/slow", mock_server.uri());
-    let result = client.get(&url).await;
+    let result = get_route(&client, &mock_server, "/slow").await;
     let elapsed = start.elapsed();
 
     // Should succeed but take at least 500ms
@@ -275,26 +280,19 @@ async fn test_mock_server_timeout_on_slow_response() {
     let mock_server = MockServer::start().await;
 
     // Simulate 5 second latency (longer than client timeout)
-    Mock::given(method("GET"))
-        .and(path("/very-slow"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("Very slow response")
-                .set_delay(Duration::from_secs(5)),
-        )
-        .mount(&mock_server)
-        .await;
+    mount_delayed(
+        &mock_server,
+        "/very-slow",
+        200,
+        "Very slow response",
+        Duration::from_secs(5),
+    )
+    .await;
 
-    let config = HttpClientConfig {
-        timeout_secs: 1, // 1 second timeout - should fail
-        ..Default::default()
-    };
-    let client = HttpClient::new(config).unwrap();
+    let client = timeout_client(1); // 1 second timeout - should fail
 
     let start = std::time::Instant::now();
-    let result = client
-        .get(&format!("{}/very-slow", mock_server.uri()))
-        .await;
+    let result = get_route(&client, &mock_server, "/very-slow").await;
     let elapsed = start.elapsed();
 
     // Should timeout/fail
@@ -318,18 +316,11 @@ async fn test_mock_server_timeout_on_slow_response() {
 #[tokio::test]
 async fn test_mock_server_empty_body() {
     let mock_server = MockServer::start().await;
+    mount_body(&mock_server, "/empty", 200, "").await;
 
-    Mock::given(method("GET"))
-        .and(path("/empty"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(""))
-        .mount(&mock_server)
-        .await;
+    let client = default_client();
 
-    let config = HttpClientConfig::default();
-    let client = HttpClient::new(config).unwrap();
-
-    let url = format!("{}/empty", mock_server.uri());
-    let result = client.get(&url).await;
+    let result = get_route(&client, &mock_server, "/empty").await;
 
     // Should succeed but return empty string
     assert!(result.is_ok(), "Should handle empty body, got: {result:?}");
