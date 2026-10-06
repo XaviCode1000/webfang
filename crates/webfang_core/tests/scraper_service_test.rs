@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use webfang_core::application::http_client::{HttpError, HttpResponse};
+use webfang_core::application::http_client::{HttpError, HttpResponse, HttpResult};
 use webfang_core::application::scraper_service::{
     detect_spa_content, enforce_robots_policy, extract_with_selector, scrape_multiple_with_limit,
     scrape_with_config, scrape_with_readability, MAX_INSTRUMENTED_BODY_SIZE, MIN_CONTENT_CHARS,
@@ -442,20 +442,107 @@ async fn test_mock_html_returns_title_and_content() {
     }
 }
 
+// =====================================================================
+// Mocked-fetch failure rows (T7 slice-12, issue #1887): the six `Err`-based
+// failure cases share one arrange-act skeleton (`mock_scrape_error`) and are
+// grouped into a case table iterated by a single loop test. The `Ok`-shaped
+// non-200 case, the WAF provider match, and the empty/JS-shell content errors
+// keep their own tests: their arrange or match arms genuinely differ.
+// Cluster case count: 8 before, 8 after (6 table rows + 2 inline tests).
+// =====================================================================
+
+/// Expected error shape for one mocked-fetch failure row.
+enum MockFailureExpectation {
+    /// `ScraperError::Http` carrying this status.
+    HttpStatus(u16),
+    /// The error's display string must contain this substring.
+    MessageContains(&'static str),
+}
+
+/// One mocked-fetch failure row: the fixture URL, the injected fetch failure,
+/// and the expected typed error shape.
+struct MockFailureCase {
+    name: &'static str,
+    url: &'static str,
+    error: HttpError,
+    expect: MockFailureExpectation,
+}
+
+/// The six `Err`-based failure rows: HTTP statuses plus transport failures.
+fn mock_failure_cases() -> Vec<MockFailureCase> {
+    vec![
+        MockFailureCase {
+            name: "404 client error",
+            url: "https://example.com/notfound",
+            error: HttpError::ClientError(404),
+            expect: MockFailureExpectation::HttpStatus(404),
+        },
+        MockFailureCase {
+            name: "timeout",
+            url: "https://slow.example.com",
+            error: HttpError::Timeout,
+            expect: MockFailureExpectation::MessageContains("timeout"),
+        },
+        MockFailureCase {
+            name: "connection refused",
+            url: "https://unreachable.example.com",
+            error: HttpError::Connection("connection refused".into()),
+            expect: MockFailureExpectation::MessageContains("connection refused"),
+        },
+        MockFailureCase {
+            name: "403 forbidden",
+            url: "https://blocked.example.com",
+            error: HttpError::Forbidden,
+            expect: MockFailureExpectation::HttpStatus(403),
+        },
+        MockFailureCase {
+            name: "500 server error",
+            url: "https://error.example.com",
+            error: HttpError::ServerError(500),
+            expect: MockFailureExpectation::HttpStatus(500),
+        },
+        MockFailureCase {
+            name: "rate limited",
+            url: "https://api.example.com",
+            error: HttpError::RateLimited(60),
+            expect: MockFailureExpectation::MessageContains("rate limited"),
+        },
+    ]
+}
+
+/// Shared arrange-act skeleton for the mocked-fetch failure rows: register one
+/// canned fetch result and scrape it. Returns the propagated error — a success
+/// here means the failure was swallowed, so it panics instead of returning Ok.
+async fn mock_scrape_error(url: &str, response: HttpResult<HttpResponse>) -> ScraperError {
+    let parsed = url::Url::parse(url).expect("fixture URL must parse");
+    let mock = MockHttpClient::new().with_response(parsed.as_str(), response);
+    scrape_with_readability(&mock, &parsed)
+        .await
+        .expect_err("mocked failure must propagate as Err, not Ok")
+}
+
+/// Mocked fetch failures propagate as typed errors instead of being swallowed.
 #[cfg_attr(miri, ignore)] // legible/servo_arc Tree-Borrows UB
 #[tokio::test]
-async fn test_mock_404_returns_http_error() {
-    let url = url::Url::parse("https://example.com/notfound").unwrap();
-    let mock = MockHttpClient::new().with_response(url.as_str(), Err(HttpError::ClientError(404)));
-
-    let result = scrape_with_readability(&mock, &url).await;
-    assert!(result.is_err());
-
-    let err = result.unwrap_err();
-    assert!(
-        matches!(err, ScraperError::Http { status: 404, .. }),
-        "expected Http(404), got: {err}"
-    );
+async fn test_mock_fetch_failures_propagate_typed_errors() {
+    for case in mock_failure_cases() {
+        let err = mock_scrape_error(case.url, Err(case.error)).await;
+        match case.expect {
+            MockFailureExpectation::HttpStatus(status) => assert!(
+                matches!(&err, ScraperError::Http { status: s, .. } if *s == status),
+                "{}: expected Http({status}), got: {err}",
+                case.name,
+            ),
+            MockFailureExpectation::MessageContains(fragment) => {
+                let msg = err.to_string();
+                assert!(
+                    msg.contains(fragment),
+                    "{}: error should mention {fragment}: {msg}",
+                    case.name,
+                );
+            },
+        }
+    }
 }
 
 /// An empty body must fail HONESTLY with the typed minimum-content error,
@@ -516,73 +603,6 @@ async fn test_js_shell_body_fails_with_typed_error() {
 
 #[cfg_attr(miri, ignore)] // legible/servo_arc Tree-Borrows UB
 #[tokio::test]
-async fn test_mock_timeout_error_propagation() {
-    let url = url::Url::parse("https://slow.example.com").unwrap();
-    let mock = MockHttpClient::new().with_response(url.as_str(), Err(HttpError::Timeout));
-
-    let result = scrape_with_readability(&mock, &url).await;
-    assert!(result.is_err());
-
-    let err = result.unwrap_err();
-    let msg = err.to_string();
-    assert!(
-        msg.contains("timeout"),
-        "error should mention timeout: {msg}"
-    );
-}
-
-#[cfg_attr(miri, ignore)] // legible/servo_arc Tree-Borrows UB
-#[tokio::test]
-async fn test_mock_connection_error_propagation() {
-    let url = url::Url::parse("https://unreachable.example.com").unwrap();
-    let mock = MockHttpClient::new().with_response(
-        url.as_str(),
-        Err(HttpError::Connection("connection refused".into())),
-    );
-
-    let result = scrape_with_readability(&mock, &url).await;
-    assert!(result.is_err());
-
-    let err = result.unwrap_err();
-    let msg = err.to_string();
-    assert!(
-        msg.contains("connection refused"),
-        "error should mention connection: {msg}"
-    );
-}
-
-#[cfg_attr(miri, ignore)] // legible/servo_arc Tree-Borrows UB
-#[tokio::test]
-async fn test_mock_forbidden_returns_403() {
-    let url = url::Url::parse("https://blocked.example.com").unwrap();
-    let mock = MockHttpClient::new().with_response(url.as_str(), Err(HttpError::Forbidden));
-
-    let result = scrape_with_readability(&mock, &url).await;
-    assert!(result.is_err());
-
-    match result.unwrap_err() {
-        ScraperError::Http { status, .. } => assert_eq!(status, 403),
-        other => panic!("expected Http(403), got: {other}"),
-    }
-}
-
-#[cfg_attr(miri, ignore)] // legible/servo_arc Tree-Borrows UB
-#[tokio::test]
-async fn test_mock_server_error_returns_500() {
-    let url = url::Url::parse("https://error.example.com").unwrap();
-    let mock = MockHttpClient::new().with_response(url.as_str(), Err(HttpError::ServerError(500)));
-
-    let result = scrape_with_readability(&mock, &url).await;
-    assert!(result.is_err());
-
-    match result.unwrap_err() {
-        ScraperError::Http { status, .. } => assert_eq!(status, 500),
-        other => panic!("expected Http(500), got: {other}"),
-    }
-}
-
-#[cfg_attr(miri, ignore)] // legible/servo_arc Tree-Borrows UB
-#[tokio::test]
 async fn test_mock_non_200_status_returns_error() {
     let url = url::Url::parse("https://example.com").unwrap();
     let mock = MockHttpClient::new().with_response(
@@ -600,33 +620,14 @@ async fn test_mock_non_200_status_returns_error() {
 
 #[cfg_attr(miri, ignore)] // legible/servo_arc Tree-Borrows UB
 #[tokio::test]
-async fn test_mock_rate_limited_error() {
-    let url = url::Url::parse("https://api.example.com").unwrap();
-    let mock = MockHttpClient::new().with_response(url.as_str(), Err(HttpError::RateLimited(60)));
-
-    let result = scrape_with_readability(&mock, &url).await;
-    assert!(result.is_err());
-
-    let msg = result.unwrap_err().to_string();
-    assert!(
-        msg.contains("rate limited"),
-        "error should mention rate limiting: {msg}"
-    );
-}
-
-#[cfg_attr(miri, ignore)] // legible/servo_arc Tree-Borrows UB
-#[tokio::test]
 async fn test_mock_waf_challenge_error() {
-    let url = url::Url::parse("https://protected.example.com").unwrap();
-    let mock = MockHttpClient::new().with_response(
-        url.as_str(),
+    let err = mock_scrape_error(
+        "https://protected.example.com",
         Err(HttpError::WafChallenge("Cloudflare".into())),
-    );
+    )
+    .await;
 
-    let result = scrape_with_readability(&mock, &url).await;
-    assert!(result.is_err());
-
-    match result.unwrap_err() {
+    match err {
         ScraperError::WafBlocked { provider, .. } => {
             assert_eq!(provider, "Cloudflare");
         },

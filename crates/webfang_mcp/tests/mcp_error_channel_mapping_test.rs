@@ -34,16 +34,18 @@
 //! | Argument deserialization (`McpUrl` `try_from`, `deny_unknown_fields`) | inside rmcp, before the handler body | `result.isError = true`, **no** `error` member |
 //! | Handler `params.validate()?` | inside the handler body | `error.code = -32602`, **no** `result` member |
 //!
-//! The three tests below pin one row each, asserting **both** observed channels
-//! with no hedging: an "A or B" assertion here would re-create the ambiguity this
-//! file exists to remove. Every assertion message embeds the whole response, so a
-//! mismatch is diagnosable from the test output alone.
+//! The loop test below pins rows A1 and A2 (same channel, one shared skeleton;
+//! A1 additionally pins the offending scheme text), and the final test pins
+//! row A3 — asserting **both** observed channels with no hedging: an "A or B"
+//! assertion here would re-create the ambiguity this file exists to remove.
+//! Every assertion message embeds the whole response, so a mismatch is
+//! diagnosable from the test output alone.
 //!
 //! Run with: `cargo nextest run --test mcp_error_channel_mapping_test --features mcp`
 
 #![cfg(feature = "mcp")]
 
-use serde_json::json;
+use serde_json::{json, Value};
 use wreq::Client;
 
 mod common;
@@ -51,110 +53,92 @@ use common::{
     call_tool, error_code, init_session, is_tool_error, tool_text, JSONRPC_INVALID_PARAMS,
 };
 
-// ============================================================================
-// Row A1 — argument deserialization (`McpUrl` `#[serde(try_from = "String")]`,
-// `mcp_server/params.rs:52-53`).
-// ============================================================================
-
-/// EC-02 / contract row A1: a URL the `McpUrl` boundary refuses (`file://`, a
-/// scheme `ValidUrl::parse` rejects — `mcp_server/params.rs:81-93`) must arrive
-/// as a **tool error** (`result.isError == true`) with **no** top-level `error`
-/// member.
-///
-/// Why tool error and not `-32602`: the failure happens inside rmcp's
-/// `Parameters<P>` deserialization, so rmcp itself prepends
-/// `"failed to deserialize parameters:"` to whatever `McpUrl::try_from`
-/// returned. That prefix is the whole discriminator `into_tool_argument_error`
-/// looks at — the custom message does not need to fake it
-/// (`rmcp-1.8.0/src/handler/server/tool.rs:181-196` →
-/// `router/tool.rs:144-156`).
-///
-/// The reason text is asserted to name the offending scheme because the
-/// deserialization message is the only channel a client has here: unlike the
-/// protocol-error channel, `isError: true` carries no machine-readable `code`,
-/// so the content text is the diagnosis.
-#[tokio::test]
-async fn mcp_url_deserialization_failure_is_a_tool_error_not_a_protocol_error() {
+/// Shared arrange-act skeleton: start the harness, open a session, and invoke
+/// one tool. Both contract routes iterate through this single helper, so the
+/// four-line setup exists exactly once instead of once per pinned row.
+async fn invoke(tool: &str, args: Value) -> Value {
     let (base_url, _handle) = common::start_test_server().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "scrape_url",
-        json!({ "url": "file:///etc/passwd" }),
-    )
-    .await;
-
-    assert!(
-        resp.get("error").is_none(),
-        "an McpUrl deserialization failure must NOT be a JSON-RPC protocol error \
-         (rmcp downgrades it to isError:true); got a top-level `error` member in: {resp}"
-    );
-
-    let result = resp.get("result").unwrap_or_else(|| {
-        panic!("an McpUrl deserialization failure must return a `result` member, got: {resp}")
-    });
-    assert!(
-        is_tool_error(result),
-        "an McpUrl deserialization failure must set result.isError = true, got: {resp}"
-    );
-
-    let text = tool_text(result);
-    assert!(
-        text.to_lowercase().contains("file"),
-        "the tool text must name the offending `file` scheme, got: {resp}"
-    );
+    call_tool(&client, &base_url, &session_id, tool, args).await
 }
 
-// ============================================================================
-// Row A2 — argument deserialization via `#[serde(deny_unknown_fields)]`
-// (`mcp_server/params.rs:7`, per-struct attribute).
-// ============================================================================
+/// One argument-deserialization row (contract rows A1/A2): the tool, the
+/// offending arguments, and — for A1 only — the scheme text the tool error
+/// must name. Unlike the protocol-error channel, `isError: true` carries no
+/// machine-readable `code`, so the content text is the diagnosis.
+struct DeserializationCase {
+    name: &'static str,
+    tool: &'static str,
+    args: Value,
+    expected_snippet: Option<&'static str>,
+}
 
-/// EC-02 / contract row A2: an unknown JSON key must arrive as a **tool error**
-/// (`result.isError == true`) with **no** top-level `error` member.
-///
-/// Same route as A1 and for the same reason: `deny_unknown_fields` fires during
-/// the same `serde_json::from_value` call in rmcp's `Parameters<P>` extractor,
-/// so it is wrapped with the same
-/// `"failed to deserialize parameters: {error}"` prefix and downgraded to
-/// `isError: true` by `into_tool_argument_error`
-/// (`rmcp-1.8.0/src/handler/server/tool.rs:188-193` →
-/// `router/tool.rs:146-155`). This test is what upgrades A2 from *unverified*
-/// to pinned — `tests/params_rejection_test.rs:300-315` asserts `is_tool_error`
-/// but never asserts the **absence** of a protocol error, so on its own it would
-/// still pass if both channels appeared (`tests/params_rejection_test.rs:292-315`).
+/// Rows A1/A2: failures inside rmcp's `Parameters<P>` deserialization arrive
+/// as tool errors (`result.isError == true`) with no top-level `error` member.
+fn deserialization_cases() -> Vec<DeserializationCase> {
+    vec![
+        // A1: a URL the `McpUrl` boundary refuses (`file://`, a scheme
+        // `ValidUrl::parse` rejects — `mcp_server/params.rs:81-93`). The
+        // failure happens inside rmcp's deserialization, so rmcp itself
+        // prepends `"failed to deserialize parameters:"` to whatever
+        // `McpUrl::try_from` returned — that prefix is the whole discriminator
+        // `into_tool_argument_error` looks at.
+        DeserializationCase {
+            name: "McpUrl deserialization failure (row A1)",
+            tool: "scrape_url",
+            args: json!({ "url": "file:///etc/passwd" }),
+            expected_snippet: Some("file"),
+        },
+        // A2: an unknown JSON key (`deny_unknown_fields`,
+        // `mcp_server/params.rs:7`). Same route as A1 and for the same reason:
+        // it fires during the same `serde_json::from_value` call in rmcp's
+        // extractor, so it is wrapped with the same prefix and downgraded to
+        // `isError: true`. This row is what upgrades A2 from *unverified* to
+        // pinned — `tests/params_rejection_test.rs` asserts `is_tool_error`
+        // but never asserts the absence of a protocol error.
+        DeserializationCase {
+            name: "deny_unknown_fields rejection (row A2)",
+            tool: "scrape_with_options",
+            args: json!({ "url": "https://example.com", "typo_field": 1 }),
+            expected_snippet: None,
+        },
+    ]
+}
+
+/// EC-02 / contract rows A1-A2: argument-deserialization failures must arrive
+/// as **tool errors** (`result.isError == true`) with **no** top-level `error`
+/// member — never as JSON-RPC protocol errors.
 #[tokio::test]
-async fn mcp_unknown_field_is_a_tool_error_not_a_protocol_error() {
-    let (base_url, _handle) = common::start_test_server().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
+async fn argument_deserialization_failures_are_tool_errors_not_protocol_errors() {
+    for case in deserialization_cases() {
+        let resp = invoke(case.tool, case.args).await;
 
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "scrape_with_options",
-        json!({ "url": "https://example.com", "typo_field": 1 }),
-    )
-    .await;
+        assert!(
+            resp.get("error").is_none(),
+            "{}: must NOT be a JSON-RPC protocol error \
+             (rmcp downgrades it to isError:true); got a top-level `error` member in: {resp}",
+            case.name,
+        );
 
-    assert!(
-        resp.get("error").is_none(),
-        "a deny_unknown_fields rejection must NOT be a JSON-RPC protocol error \
-         (rmcp downgrades it to isError:true); got a top-level `error` member in: {resp}"
-    );
+        let result = resp
+            .get("result")
+            .unwrap_or_else(|| panic!("{}: must return a `result` member, got: {resp}", case.name));
+        assert!(
+            is_tool_error(result),
+            "{}: must set result.isError = true, got: {resp}",
+            case.name,
+        );
 
-    let result = resp.get("result").unwrap_or_else(|| {
-        panic!("a deny_unknown_fields rejection must return a `result` member, got: {resp}")
-    });
-    assert!(
-        is_tool_error(result),
-        "a deny_unknown_fields rejection must set result.isError = true, got: {resp}"
-    );
+        if let Some(snippet) = case.expected_snippet {
+            let text = tool_text(result);
+            assert!(
+                text.to_lowercase().contains(snippet),
+                "{}: the tool text must name the offending `{snippet}` scheme, got: {resp}",
+                case.name,
+            );
+        }
+    }
 }
 
 // ============================================================================
@@ -182,14 +166,7 @@ async fn mcp_unknown_field_is_a_tool_error_not_a_protocol_error() {
 /// A3 → `-32602`.
 #[tokio::test]
 async fn mcp_handler_validate_failure_is_a_protocol_error_not_a_tool_error() {
-    let (base_url, _handle) = common::start_test_server().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
+    let resp = invoke(
         "crawl_site",
         json!({ "url": "https://example.com", "max_depth": 11 }),
     )

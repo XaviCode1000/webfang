@@ -76,43 +76,47 @@ fn assert_class(resp: &Value, code: i64, reason: &str, context: &str) {
     );
 }
 
+/// Shared arrange-act skeleton: SSRF-enabled harness + session + one tool
+/// call. Every case below iterates through this single helper, so the
+/// four-line setup exists exactly once instead of once per error class.
+async fn invoke(tool: &str, args: Value) -> Value {
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+    call_tool(&client, &base_url, &session_id, tool, args).await
+}
+
+/// Policy rows: (context, probed URL, expected `data.reason` slug). Both rows
+/// carry `-32602`; the slug alone separates a literal from a resolved refusal.
+/// The `localhost` row additionally requires the resolver precondition checked
+/// in the loop test — it must resolve locally to a forbidden address,
+/// otherwise the fixture would exercise the DNS branch (infrastructure) rather
+/// than the policy branch it claims to cover.
+fn policy_cases() -> Vec<(&'static str, &'static str, &'static str)> {
+    vec![
+        (
+            "loopback literal must be a policy refusal",
+            "http://127.0.0.1:9/",
+            "forbidden_ip_literal",
+        ),
+        (
+            "hostname resolving into a forbidden range must be a policy refusal",
+            "http://localhost:9/",
+            "forbidden_ip_resolved",
+        ),
+    ]
+}
+
 // ============================================================================
 // Class 1 — POLICY: a forbidden target stays `-32602` and is labelled.
 // ============================================================================
 
-/// A loopback IP LITERAL is a policy refusal: `-32602` (unchanged) plus the
-/// `forbidden_ip_literal` slug.
+/// Policy refusals stay `-32602` (unchanged) and carry a `data.reason` slug.
 ///
 /// The code is load-bearing and was deliberately NOT moved to `-32603`:
 /// `mcp_ssrf_knob_matrix_test` pins it at exactly `-32602` and the SSRF knob
 /// docs advertise that shape. The slug is what now tells a policy refusal apart
 /// from a caller-input rejection, which shares the same code.
-#[tokio::test]
-async fn loopback_literal_is_policy_refusal_with_reason_slug() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "scrape_url",
-        json!({ "url": "http://127.0.0.1:9/" }),
-    )
-    .await;
-
-    assert_class(
-        &resp,
-        JSONRPC_INVALID_PARAMS,
-        "forbidden_ip_literal",
-        "loopback literal must be a policy refusal",
-    );
-}
-
-/// A hostname that resolves into a forbidden range is ALSO policy, and is
-/// separated from the literal case by its slug alone (`forbidden_ip_resolved`
-/// vs `forbidden_ip_literal`) — both carry `-32602`.
 ///
 /// Reached without network access: `localhost` is mapped by the local resolver
 /// straight from the hosts database, never over the wire. The preconditions are
@@ -120,12 +124,13 @@ async fn loopback_literal_is_policy_refusal_with_reason_slug() {
 /// mapping fails LOUDLY with a precise message instead of being papered over
 /// with a weakened assertion.
 #[tokio::test]
-async fn hostname_resolving_to_loopback_is_policy_refusal_with_reason_slug() {
+async fn policy_refusals_stay_32602_with_reason_slug() {
     use webfang_core::domain::ssrf_guard::is_forbidden_ip;
 
-    // Precondition: `localhost` must resolve locally, and every answer must be
-    // a forbidden address — otherwise this fixture would exercise a DNS branch
-    // (infrastructure) rather than the policy branch it claims to cover.
+    // Precondition for the `localhost` row: it must resolve locally, and every
+    // answer must be a forbidden address — otherwise that fixture would
+    // exercise a DNS branch (infrastructure) rather than the policy branch it
+    // claims to cover.
     let resolved: Vec<_> = tokio::net::lookup_host("localhost:80")
         .await
         .expect("precondition: `localhost` must resolve from the local hosts database")
@@ -140,25 +145,10 @@ async fn hostname_resolving_to_loopback_is_policy_refusal_with_reason_slug() {
         "precondition: every `localhost` answer must be a forbidden address, got: {resolved:?}"
     );
 
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "scrape_url",
-        json!({ "url": "http://localhost:9/" }),
-    )
-    .await;
-
-    assert_class(
-        &resp,
-        JSONRPC_INVALID_PARAMS,
-        "forbidden_ip_resolved",
-        "hostname resolving into a forbidden range must be a policy refusal",
-    );
+    for (context, url, reason) in policy_cases() {
+        let resp = invoke("scrape_url", json!({ "url": url })).await;
+        assert_class(&resp, JSONRPC_INVALID_PARAMS, reason, context);
+    }
 }
 
 // ============================================================================
@@ -178,18 +168,7 @@ async fn hostname_resolving_to_loopback_is_policy_refusal_with_reason_slug() {
 /// resolver's mood.
 #[tokio::test]
 async fn unresolvable_host_is_infrastructure_failure_with_reason_slug() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "scrape_url",
-        json!({ "url": UNRESOLVABLE_URL }),
-    )
-    .await;
+    let resp = invoke("scrape_url", json!({ "url": UNRESOLVABLE_URL })).await;
 
     assert_eq!(
         error_code(&resp),
@@ -224,14 +203,7 @@ async fn unresolvable_host_is_infrastructure_failure_with_reason_slug() {
 /// the taxonomy, so it carries `field` AND `reason`.
 #[tokio::test]
 async fn params_validation_rejection_keeps_field_tag_data() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
+    let resp = invoke(
         "crawl_site",
         json!({ "url": "https://example.com", "max_depth": 11 }),
     )

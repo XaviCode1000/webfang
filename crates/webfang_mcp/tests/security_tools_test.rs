@@ -41,225 +41,141 @@ fn assert_waf_blocked(result: &Value, label: &str) {
     );
 }
 
-// ============================================================================
-// detect_waf — degraded mode (no HTTP context)
-// ============================================================================
-
-/// A Challenge-tier (T1) marker blocks even in degraded mode.
-#[tokio::test]
-async fn test_detect_waf_challenge_marker_is_detected() {
+/// Shared arrange-act skeleton: SSRF-enabled harness + session + one tool
+/// call, returning the cloned `result` member. Every case below asserts on
+/// the returned value with its own shape-specific assertion, so the five-line
+/// setup exists exactly once instead of once per case.
+async fn call_security_tool(tool: &str, args: Value) -> Value {
     let (base_url, _handle) = start_test_server_ssrf_enabled().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "detect_waf",
-        json!({ "html": r#"<div id="cf-turnstile" data-sitekey="abc"></div>"# }),
-    )
-    .await;
-    let result = resp
-        .get("result")
+    let resp = call_tool(&client, &base_url, &session_id, tool, args).await;
+    resp.get("result")
         .unwrap_or_else(|| panic!("expected result, got: {resp}"))
-        .clone();
-
-    assert!(
-        !is_tool_error(&result),
-        "detect_waf should succeed: {}",
-        tool_text(&result)
-    );
-    assert_eq!(
-        tool_text(&result).trim(),
-        "WAF detected: Cloudflare Turnstile"
-    );
+        .clone()
 }
 
-/// A bare vendor fingerprint (T2) is evidence only and NEVER blocks in
-/// degraded mode — the issue #346 false-positive fix.
-#[tokio::test]
-async fn test_detect_waf_bare_fingerprint_never_blocks_degraded() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "detect_waf",
-        json!({ "html": "<html><body>powered by cloudflare</body></html>" }),
-    )
-    .await;
-    let result = resp
-        .get("result")
-        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
-        .clone();
-
-    assert!(
-        !is_tool_error(&result),
-        "detect_waf should succeed: {}",
-        tool_text(&result)
-    );
-    assert_eq!(tool_text(&result).trim(), "no WAF detected");
+/// One stable-verdict-text row: the tool, its arguments, and the exact trimmed
+/// text the tool must return.
+struct VerdictTextCase {
+    name: &'static str,
+    tool: &'static str,
+    args: Value,
+    expected: &'static str,
 }
 
-/// A clean body reports no WAF.
-#[tokio::test]
-async fn test_detect_waf_clean_body_no_waf() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "detect_waf",
-        json!({ "html": "<html><body>normal content</body></html>" }),
-    )
-    .await;
-    let result = resp
-        .get("result")
-        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
-        .clone();
-
-    assert!(
-        !is_tool_error(&result),
-        "detect_waf should succeed: {}",
-        tool_text(&result)
-    );
-    assert_eq!(tool_text(&result).trim(), "no WAF detected");
+/// Stable verdict texts: `detect_waf` degraded-mode verdicts plus the
+/// `verify_waf_integrity` passing verdicts. Every row must succeed
+/// (`isError:false`) with the exact contract text — assertions are on the
+/// stable prefix/exact string, never on localized message text.
+fn verdict_text_cases() -> Vec<VerdictTextCase> {
+    vec![
+        // A Challenge-tier (T1) marker blocks even in degraded mode.
+        VerdictTextCase {
+            name: "detect_waf T1 challenge marker",
+            tool: "detect_waf",
+            args: json!({ "html": r#"<div id="cf-turnstile" data-sitekey="abc"></div>"# }),
+            expected: "WAF detected: Cloudflare Turnstile",
+        },
+        // A bare vendor fingerprint (T2) is evidence only and NEVER blocks in
+        // degraded mode — the issue #346 false-positive fix.
+        VerdictTextCase {
+            name: "detect_waf bare T2 fingerprint",
+            tool: "detect_waf",
+            args: json!({ "html": "<html><body>powered by cloudflare</body></html>" }),
+            expected: "no WAF detected",
+        },
+        // A clean body reports no WAF.
+        VerdictTextCase {
+            name: "detect_waf clean body",
+            tool: "detect_waf",
+            args: json!({ "html": "<html><body>normal content</body></html>" }),
+            expected: "no WAF detected",
+        },
+        // Degraded mode (no status/content_type): a control header (T2
+        // fingerprint) alone never blocks on mere presence — evidence is
+        // collected but the check passes. This pins the issue #346 verdict
+        // change end-to-end.
+        VerdictTextCase {
+            name: "verify_waf_integrity T2 header alone passes degraded",
+            tool: "verify_waf_integrity",
+            args: json!({
+                "html": "<html>clean</html>",
+                "headers": { "x-datadome-response": "1" }
+            }),
+            expected: "WAF integrity check passed",
+        },
+        // Additive context: the SAME T2 body at an OK status (200) passes.
+        VerdictTextCase {
+            name: "verify_waf_integrity T2 body at OK status passes",
+            tool: "verify_waf_integrity",
+            args: json!({
+                "html": "<html>blocked by akamai</html>",
+                "status": 200,
+                "content_type": "text/html"
+            }),
+            expected: "WAF integrity check passed",
+        },
+    ]
 }
 
-// ============================================================================
-// verify_waf_integrity — degraded mode + additive context
-// ============================================================================
-
-/// Degraded mode (no status/content_type): a control header (T2 fingerprint)
-/// alone never blocks on mere presence — evidence is collected but the check
-/// passes. This pins the issue #346 verdict change end-to-end.
+/// Tool verdict texts match the stable contract: success with the exact
+/// expected text.
 #[tokio::test]
-async fn test_verify_waf_integrity_header_alone_passes_degraded() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "verify_waf_integrity",
-        json!({
-            "html": "<html>clean</html>",
-            "headers": { "x-datadome-response": "1" }
-        }),
-    )
-    .await;
-    let result = resp
-        .get("result")
-        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
-        .clone();
-
-    assert!(
-        !is_tool_error(&result),
-        "verify_waf_integrity should succeed: {}",
-        tool_text(&result)
-    );
-    assert_eq!(
-        tool_text(&result).trim(),
-        "WAF integrity check passed",
-        "T2 header alone must not block in degraded mode (#346)"
-    );
+async fn tool_verdict_texts_match_the_stable_contract() {
+    for case in verdict_text_cases() {
+        let result = call_security_tool(case.tool, case.args).await;
+        assert!(
+            !is_tool_error(&result),
+            "{}: tool should succeed: {}",
+            case.name,
+            tool_text(&result)
+        );
+        assert_eq!(
+            tool_text(&result).trim(),
+            case.expected,
+            "{}: unexpected verdict text",
+            case.name,
+        );
+    }
 }
 
-/// A Challenge-tier (T1) marker blocks even without HTTP context.
-#[tokio::test]
-async fn test_verify_waf_integrity_t1_challenge_blocks_degraded() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "verify_waf_integrity",
-        json!({ "html": "Just a moment..." }),
-    )
-    .await;
-    let result = resp
-        .get("result")
-        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
-        .clone();
-
-    assert_waf_blocked(&result, "T1 challenge must block");
+/// One block-verdict row: the arguments plus the label disambiguating the call
+/// site in `assert_waf_blocked`.
+struct BlockCase {
+    args: Value,
+    label: &'static str,
 }
 
-/// Additive context: a bare vendor fingerprint (T2) blocks when a correlated
-/// WAF status (403) is supplied.
-#[tokio::test]
-async fn test_verify_waf_integrity_t2_with_waf_status_blocks() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "verify_waf_integrity",
-        json!({
-            "html": "<html>blocked by akamai</html>",
-            "status": 403,
-            "content_type": "text/html"
-        }),
-    )
-    .await;
-    let result = resp
-        .get("result")
-        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
-        .clone();
-
-    assert_waf_blocked(&result, "T2 fingerprint + WAF status 403 must block");
+/// Block verdicts: `verify_waf_integrity` answers success (`isError:false`)
+/// with the stable ENGLISH "WAF blocked:" prefix.
+fn block_cases() -> Vec<BlockCase> {
+    vec![
+        // A Challenge-tier (T1) marker blocks even without HTTP context.
+        BlockCase {
+            args: json!({ "html": "Just a moment..." }),
+            label: "T1 challenge must block",
+        },
+        // Additive context: a bare vendor fingerprint (T2) blocks when a
+        // correlated WAF status (403) is supplied.
+        BlockCase {
+            args: json!({
+                "html": "<html>blocked by akamai</html>",
+                "status": 403,
+                "content_type": "text/html"
+            }),
+            label: "T2 fingerprint + WAF status 403 must block",
+        },
+    ]
 }
 
-/// Additive context: the SAME T2 body at an OK status (200) passes.
+/// Blocking verdicts succeed with the stable "WAF blocked:" prefix.
 #[tokio::test]
-async fn test_verify_waf_integrity_t2_with_ok_status_passes() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "verify_waf_integrity",
-        json!({
-            "html": "<html>blocked by akamai</html>",
-            "status": 200,
-            "content_type": "text/html"
-        }),
-    )
-    .await;
-    let result = resp
-        .get("result")
-        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
-        .clone();
-
-    assert!(
-        !is_tool_error(&result),
-        "verify_waf_integrity should succeed: {}",
-        tool_text(&result)
-    );
-    assert_eq!(
-        tool_text(&result).trim(),
-        "WAF integrity check passed",
-        "T2 fingerprint at status 200 must pass, got: {}",
-        tool_text(&result)
-    );
+async fn waf_block_verdicts_carry_the_stable_prefix() {
+    for case in block_cases() {
+        let result = call_security_tool("verify_waf_integrity", case.args).await;
+        assert_waf_blocked(&result, case.label);
+    }
 }
 
 // ============================================================================
@@ -269,22 +185,7 @@ async fn test_verify_waf_integrity_t2_with_ok_status_passes() {
 /// The provider list is real and non-empty, and includes known providers.
 #[tokio::test]
 async fn test_list_waf_providers_is_non_empty() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "list_waf_providers",
-        json!({}),
-    )
-    .await;
-    let result = resp
-        .get("result")
-        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
-        .clone();
+    let result = call_security_tool("list_waf_providers", json!({})).await;
 
     assert!(
         !is_tool_error(&result),
