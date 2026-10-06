@@ -1198,16 +1198,12 @@ mod handler_tests {
         // instead of real rules (#1301). EnvGuard restores the originals on drop,
         // so the "1"s cannot leak into sibling tests in a shared process (#1126).
         // The SSRF guard itself is asserted by the dedicated regression test below.
-        let _guard = webfang_test_utils::EnvGuard::with(&[
-            (
-                webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
-                "1",
-            ),
-            (
-                webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
-                "1",
-            ),
-        ]);
+        //
+        // NOTE (issue #1885): this robots test keeps its own handler and mock
+        // setup — unlike the ai/scraping robots tests it needs export roots
+        // covering the fixture's output dir (XP-P-08/G-9, #1608), so only the
+        // guard is shared, via the canonical robots-chain constructor.
+        let _guard = webfang_test_utils::EnvGuard::wiremock_robots();
         let (handler, _tmp) = test_handler_with_robots().await;
         let server = MockServer::start().await;
         Mock::given(method("GET"))

@@ -15,11 +15,21 @@
 //! `--min-tokens 50`, actively descending under #1757) counts each additional
 //! verbatim copy as a regression.
 
+//! The robots-harness fixture
+//! ([`test_handler_with_robots_and_no_ssrf`]) extends the same idea to the
+//! #749 enforcement tests: the both-hatch [`EnvGuard`](webfang_test_utils::EnvGuard),
+//! a handler with a real robots fetcher, and the wiremock `/robots.txt`
+//! route, so each robots test does not carry its own copy (issue #1885).
+
 use rmcp::model::CallToolResult;
 use tempfile::TempDir;
 use webfang_core::di::Container;
 use webfang_core::domain::config::ScraperConfig;
 use webfang_core::domain::CrawlerConfig;
+use webfang_core::infrastructure::crawler::robots_utils::RobotsFetcher;
+use webfang_test_utils::EnvGuard;
+use wiremock::matchers::{method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::McpHandler;
 use crate::mcp_server::state::McpState;
@@ -47,6 +57,39 @@ pub(crate) async fn test_handler() -> (McpHandler, TempDir) {
     let tmp = TempDir::new().expect("create temp dir");
     let state = McpState::new(container(&tmp).await);
     (McpHandler::new(state), tmp)
+}
+
+/// Shared async fixture for the #749 robots-enforcement tests: both SSRF
+/// hatches off, a handler with a real robots fetcher, and a `MockServer`
+/// serving the canonical `/robots.txt` (`Disallow: /private`).
+///
+/// This is the setup trio every robots test repeats — the both-hatch guard,
+/// the robots-fetcher handler, and the wiremock robots route (ai, scraping,
+/// and export handler tests, issue #1885). Construction never touches the
+/// network, so the fixture stays offline-friendly like the handlers it
+/// builds on. Tests that need more routes (e.g. a robots-allowed page)
+/// mount them on the returned server themselves.
+///
+/// The guard uses [`EnvGuard::wiremock_robots`], the canonical constructor
+/// for the robots chain (#1329): both hatches set to the exact `"1"` the
+/// guards demand — the same envs and the same values as the ad-hoc form it
+/// replaces — and both restored on drop.
+pub(crate) async fn test_handler_with_robots_and_no_ssrf(
+) -> (McpHandler, TempDir, EnvGuard, MockServer) {
+    let guard = EnvGuard::wiremock_robots();
+    let tmp = TempDir::new().expect("create temp dir");
+    let state = McpState::new(container(&tmp).await).with_robots_fetcher(std::sync::Arc::new(
+        RobotsFetcher::with_default_profile(5).expect("fetcher construction is offline"),
+    ));
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/robots.txt"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string("User-agent: *\nDisallow: /private\n"),
+        )
+        .mount(&server)
+        .await;
+    (McpHandler::new(state), tmp, guard, server)
 }
 
 /// The text of the first content block of a tool result, or an empty string
