@@ -22,6 +22,50 @@ pub(crate) fn parse_threshold(s: &str) -> Result<f32, String> {
     Ok(val)
 }
 
+/// Validate `--max-tokens`: `1..=32_768` (#1813 slice T2).
+///
+/// This is the semantic cleaner's chunk-size guard, and it is the ONLY place
+/// that bound is enforced. Bounds and messages come from the OptionsSpec
+/// (`options_spec::ai::MAX_TOKENS`), the single validation source — this
+/// function only converts the spec's `u64` into the `usize` the field holds,
+/// mirroring `args::crawler::parse_download_concurrency`.
+///
+/// # Why `0` must be rejected (Zero Silent Loss)
+///
+/// `SemanticCleanerImpl::clean` rejects a chunk when
+/// `input.seq_len() > self.config.max_tokens`. With `max_tokens == 0` that
+/// predicate is true for every non-empty chunk, so the run accepted the flag,
+/// built a config, and then failed every chunk of every page — a total denial
+/// of the AI path that the operator could not connect to the flag that caused
+/// it. Same defect class as `--download-concurrency 0` (D1 deadlock) and
+/// `--timeout-secs 0` (every request times out instantly).
+///
+/// # Why the ceiling exists at all
+///
+/// `32_768` is the default embedding model's Max Sequence Length and
+/// `MiniLmTokenizer::DEFAULT_MAX_LENGTH`, which truncates with
+/// `.min(self.max_length)`. Nothing can reach the guard with more, so any
+/// higher value is a request the tool cannot honour; see the rationale on
+/// [`crate::domain::options_spec::ai::MAX_TOKENS`].
+///
+/// # Errors
+///
+/// Returns a Spanish message from the spec policy: the below-min message for
+/// `0`, the above-max message for `> 32_768`, and the canonical parse-failure
+/// message for anything that is not a number. clap renders it as a usage error
+/// (exit 64) before any network I/O.
+#[cfg(feature = "ai")]
+pub(crate) fn parse_max_tokens(s: &str) -> Result<usize, String> {
+    let value = crate::domain::options_spec::ai::MAX_TOKENS
+        .parse_uint(s)
+        .map_err(|e| e.to_string())?;
+    usize::try_from(value).map_err(|_| {
+        crate::domain::options_spec::ai::MAX_TOKENS
+            .parse_error(s)
+            .to_string()
+    })
+}
+
 /// AI-powered semantic cleaning arguments.
 ///
 /// Every field is `#[cfg(feature = "ai")]` — mirrors the pre-migration
