@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.1] - 2026-10-06
+
+
+### 🏗️ Architecture Improvements
+
+- Extract shared JSONL-metadata helper in scraping handler ([#1892](https://github.com/XaviCode1000/webfang/pull/1892))
+- Share handler test setup across handler modules ([#1905](https://github.com/XaviCode1000/webfang/pull/1905))
+- Share JSON-RPC test client in tests/common ([#1906](https://github.com/XaviCode1000/webfang/pull/1906))
+- Remove dead duplicate infrastructure/llm/validation.rs ([#1876](https://github.com/XaviCode1000/webfang/pull/1876))
+- Extract test-arrange helpers ([#1895](https://github.com/XaviCode1000/webfang/pull/1895))
+- Extract record-write helper in FileTraceLayer ([#1897](https://github.com/XaviCode1000/webfang/pull/1897))
+- Share export_batch outcome helper between JSONL and vector exporters ([#1898](https://github.com/XaviCode1000/webfang/pull/1898))
+- Extract session-builder helper in engine ([#1900](https://github.com/XaviCode1000/webfang/pull/1900))
+- Share WafVerdict fixtures via domain test builders ([#1901](https://github.com/XaviCode1000/webfang/pull/1901))
+- Add test-fixture builder for constructor ([#1902](https://github.com/XaviCode1000/webfang/pull/1902))
+- Add args spec-convention assertions and options fixtures ([#1904](https://github.com/XaviCode1000/webfang/pull/1904))
+- Table-driven error-channel tests ([#1907](https://github.com/XaviCode1000/webfang/pull/1907))
+- Add arrange helpers for behavioral CLI tests ([#1908](https://github.com/XaviCode1000/webfang/pull/1908))
+- Add sitemap test-arrange helpers ([#1909](https://github.com/XaviCode1000/webfang/pull/1909))
+- Add arrange helpers in scraper_service tests ([#1910](https://github.com/XaviCode1000/webfang/pull/1910))
+
+### 🔧 Fixed
+
+- Argument validation fails open on four flags ([#1865](https://github.com/XaviCode1000/webfang/pull/1865))
 ## [2.7.0] - 2026-10-06
 
 
