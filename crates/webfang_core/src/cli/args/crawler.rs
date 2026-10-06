@@ -21,35 +21,91 @@ pub(crate) fn parse_download_concurrency(s: &str) -> Result<usize, String> {
     })
 }
 
+/// Keywords `--rate-limit-burst` accepts as an explicit "use the derived
+/// default", i.e. `Ok(None)` rather than an error.
+///
+/// The set is defined by the SIBLING parser, not invented here:
+/// `ConcurrencyConfig::from_str` (`domain/config.rs:388-399`) and its
+/// `From<&str>` twin (`domain/config.rs:374-386`) both trim, lowercase, and
+/// treat exactly one word — `auto` — plus empty as the auto-detect request.
+/// Every other string either parses as a number or is rejected. So the burst's
+/// accepted-keyword set is exactly `["auto"]`.
+///
+/// Matching that set is deliberate in BOTH directions:
+///
+/// - Narrower would be a fail-closed regression. `WEBFANG_RATE_LIMIT_BURST=auto`
+///   and `--rate-limit-burst auto` were accepted spellings on the base, so a
+///   deployment that pinned one started aborting with exit 78 on upgrade — not
+///   a silent wrong answer, but a hard break of a working configuration.
+/// - Wider would silently re-admit the typos #1813 exists to reject
+///   (`banana` must not become "not set").
+///
+/// Empty/whitespace is NOT in this list: it is handled earlier in
+/// [`parse_rate_limit_burst`] and is not a keyword, it is the absence of a
+/// value. The one-way link between the two sets is pinned by the
+/// `burst_auto_keywords_match_the_concurrency_parser` test.
+const RATE_LIMIT_BURST_AUTO_KEYWORDS: [&str; 1] = ["auto"];
+
 /// Validate `--rate-limit-burst`: explicit rate-limiter burst override
 /// (`WEBFANG_RATE_LIMIT_BURST`, budget model decision Q1/D1).
+///
+/// This function is the SINGLE validating authority for the burst. Every
+/// non-empty value is either accepted or rejected — there is no arm that
+/// degrades silently to the hardware-derived default:
 ///
 /// - Numeric values that fit `u32` and are >= 1 are accepted (the derived
 ///   default never produces 0, so neither may the operator).
 /// - `0` is rejected with a Spanish usage error (same "Zero Silent Loss"
 ///   philosophy as `--download-concurrency`).
-/// - A value spelled as an integer but OUT of `u32` range is rejected with a
-///   Spanish usage error (see below).
-/// - Genuinely non-numeric input warns and falls back to the hardware-derived
-///   default (consistent with the `ConcurrencyConfig` "auto" parser behavior).
+/// - A value spelled as an integer but OUT of `u32` range is rejected.
+/// - The keywords in [`RATE_LIMIT_BURST_AUTO_KEYWORDS`] — that is, `auto`,
+///   case-insensitively and whitespace-trimmed — are accepted as
+///   `Ok(None)`: "not set", so the derived default applies. This is the same
+///   spelling the sibling `--concurrency` parser understands.
+/// - Any other non-numeric value is a typo and is rejected.
+/// - An EMPTY or whitespace-only value means "not set" (`Ok(None)`), so
+///   `WEBFANG_RATE_LIMIT_BURST=""` keeps working as a neutraliser.
 ///
-/// # Why out-of-range is an error and not a warning
+/// # Keywords vs typos — why `auto` is accepted and `banana` is not
 ///
-/// The two inputs share a `ParseIntError` but are not the same request. `auto`
-/// is a keyword asking for the derived default; `4294967296` is an explicit
-/// number that cannot be honoured. Collapsing both into warn-and-default made
-/// an operator's typed burst silently become the hardware tier — a different
-/// cadence, reported only in a log line. Rejecting it keeps the boundary
-/// honest, and the `Err(String)` already routes to `CliExit::ConfigError`
-/// (exit 78) at the preflight call site, so no new error type is needed.
+/// `auto` was rejected for a while after #1813, which was a fail-CLOSED
+/// regression: `WEBFANG_RATE_LIMIT_BURST=auto` and `--rate-limit-burst auto`
+/// were accepted spellings on the base, so pinning deployments began aborting
+/// with exit 78 on upgrade of the binary. It is not in the same class as
+/// `banana`: `auto` is a word this CLI already defines, in
+/// `--concurrency`'s parser, with the same meaning it has here ("derive it
+/// from the hardware"). Rejecting it fails closed on a configuration that is
+/// both intentional and understood.
+///
+/// The two failure modes stay separated, and the separation is the whole point
+/// of keeping [`RATE_LIMIT_BURST_AUTO_KEYWORDS`] a named list rather than
+/// matching on "not a number": a typo silently changes the request cadence the
+/// operator asked for, which is the defect #1813 exists to close, while `auto`
+/// asks for exactly the cadence that runs when the flag is absent.
+///
+/// # Why the `Err(String)` shape
+///
+/// `Err(String)` already routes to `CliExit::ConfigError` (exit 78) at the
+/// preflight call site (`stage_budget_overrides`), so no new error type is
+/// needed and the exit code matches the `0` and out-of-range rejections exactly.
 ///
 /// Nothing ever overflowed `governor`: `s.parse::<u32>()` fails before the
 /// value reaches `Quota::allow_burst`, so this is a semantic fix, not a
 /// memory-safety one.
-#[allow(clippy::unnecessary_wraps)] // non-numeric deliberately warns instead of erroring
 pub(crate) fn parse_rate_limit_burst(s: &str) -> Result<Option<u32>, String> {
     let s = s.trim();
     if s.is_empty() {
+        return Ok(None);
+    }
+    // A keyword the sibling `--concurrency` parser understands means "use the
+    // derived default", never a typo. ASCII case-insensitive comparison is
+    // equivalent to the sibling's `trim().to_lowercase()` for this pure-ASCII
+    // keyword: no non-ASCII code point lowercases into `auto`, so the two
+    // spellings agree on exactly the inputs the sibling accepts.
+    if RATE_LIMIT_BURST_AUTO_KEYWORDS
+        .iter()
+        .any(|keyword| s.eq_ignore_ascii_case(keyword))
+    {
         return Ok(None);
     }
     match s.parse::<u32>() {
@@ -63,16 +119,13 @@ pub(crate) fn parse_rate_limit_burst(s: &str) -> Result<Option<u32>, String> {
             "--rate-limit-burst «{s}» está fuera del rango admitido (debe estar entre 1 y {})",
             u32::MAX
         )),
-        Err(_) => {
-            // #1431: this runs before `init_logging_dual` installs the
-            // subscriber, so a `tracing::warn!` here would be dropped.
-            // Record the notice instead; the binary replays it once
-            // logging is live. The note names the offending raw value.
-            crate::cli::preflight_notes::record(format!(
-                "invalid rate-limit burst «{s}», using derived default"
-            ));
-            Ok(None)
-        },
+        // Not a number and not a keyword (#1813): a typo. Same rejection
+        // shape as the out-of-range arm so the operator sees one consistent
+        // Spanish message for every invalid burst.
+        Err(_) => Err(format!(
+            "--rate-limit-burst «{s}» no es un número (debe estar entre 1 y {})",
+            u32::MAX
+        )),
     }
 }
 
@@ -479,12 +532,90 @@ mod tests {
     }
 
     #[test]
-    fn parse_rate_limit_burst_non_numeric_warns_and_defaults() {
-        // Consistent with the ConcurrencyConfig "auto" parser: invalid input
-        // degrades to the derived default instead of aborting the run.
-        assert_eq!(parse_rate_limit_burst("abc"), Ok(None));
-        assert_eq!(parse_rate_limit_burst("auto"), Ok(None));
+    fn parse_rate_limit_burst_non_numeric_fails_closed_with_spanish_error() {
+        // #1813: the last fail-open arm. A typo'd value used to degrade to the
+        // derived default in silence (only a pre-logging note), so the operator
+        // got a different request cadence than the one they asked for.
+        //
+        // `auto` is DELIBERATELY ABSENT from this list: it is not a typo, it is
+        // a keyword the sibling `--concurrency` parser understands, and
+        // `WEBFANG_RATE_LIMIT_BURST=auto` was a WORKING spelling before #1813.
+        // See `parse_rate_limit_burst_accepts_sibling_auto_keyword`.
+        for raw in ["abc", "banana", "1_0", "12x"] {
+            let err = parse_rate_limit_burst(raw)
+                .err()
+                .unwrap_or_else(|| panic!("{raw} must be rejected, not defaulted"));
+            assert!(
+                err.starts_with("--rate-limit-burst") && err.contains("no es un número"),
+                "expected a Spanish not-a-number error for {raw}, got: {err}"
+            );
+        }
+    }
+
+    /// #1813 regression fix: the fail-closed arm must turn away TYPOS, not the
+    /// keywords the sibling `--concurrency` parser understands. `auto` means
+    /// "use the derived default" there, so hard-`Err`-ing on it here made every
+    /// deployment that pinned `WEBFANG_RATE_LIMIT_BURST=auto` abort with exit
+    /// 78 on upgrade — a fail-CLOSED regression, which is worse than the
+    /// fail-open it fixed, because it is not a silent wrong answer.
+    ///
+    /// Matching is case-insensitive and whitespace-tolerant for the same reason
+    /// the sibling matches them: `ConcurrencyConfig::from_str` trims and
+    /// lowercases before comparing (`domain/config.rs:391-393`), so `AUTO` and
+    /// `"  auto  "` are the same request there and must be here too.
+    #[test]
+    fn parse_rate_limit_burst_accepts_sibling_auto_keyword() {
+        for raw in ["auto", "AUTO", "Auto", "  auto  "] {
+            assert_eq!(
+                parse_rate_limit_burst(raw),
+                Ok(None),
+                "`{raw}` is a keyword --concurrency understands; it must mean \
+                 \"not set\" here, never exit 78"
+            );
+        }
+    }
+
+    /// Pins the two keyword sets together so they cannot drift apart silently.
+    ///
+    /// The burst parser's accepted-keyword list is a local constant, not a read
+    /// of `ConcurrencyConfig` — the sibling exposes no predicate, and widening
+    /// its API is outside this surface. This test is what substitutes for that
+    /// link, and it checks BOTH directions per keyword:
+    ///
+    /// 1. the sibling `--concurrency` parser understands it as auto-detect, and
+    /// 2. the burst parser turns it into "not set" rather than an error.
+    ///
+    /// A keyword added to one side and not the other fails here, in CI, instead of
+    /// in a deployment. An emptied list also fails here rather than silently
+    /// restoring the regression, because step 2 has nothing to iterate — which is
+    /// why the guard does not need a separate non-empty assertion.
+    #[test]
+    fn burst_auto_keywords_match_the_concurrency_parser() {
+        for kw in RATE_LIMIT_BURST_AUTO_KEYWORDS {
+            let sibling: Result<ConcurrencyConfig, _> = kw.parse();
+            assert!(
+                sibling.is_ok_and(|c| c.is_auto()),
+                "burst accepts `{kw}` as \"use the derived default\", but the sibling \
+             --concurrency parser does not treat it as auto — the two keyword sets \
+             have drifted apart"
+            );
+            assert_eq!(
+                parse_rate_limit_burst(kw),
+                Ok(None),
+                "burst accepts `{kw}` as a keyword, so it must stage as \"not set\""
+            );
+        }
+    }
+
+    /// The one deliberate carve-out: an EMPTY value still means "not set",
+    /// not "invalid". `parse_rate_limit_burst` is only ever called on a
+    /// `Some(raw)` the operator actually supplied, and `WEBFANG_RATE_LIMIT_BURST=""`
+    /// is a common way to neutralise a variable — hard-failing that would break
+    /// scripts for no safety gain.
+    #[test]
+    fn parse_rate_limit_burst_treats_empty_as_unset() {
         assert_eq!(parse_rate_limit_burst(""), Ok(None));
+        assert_eq!(parse_rate_limit_burst("   "), Ok(None));
     }
 
     /// #P4-4 item 6: an integer too wide for `u32` is an explicit request that
@@ -1027,9 +1158,23 @@ mod spec_parity_tests {
             .expect("rate-limit-burst must carry long help")
             .to_string();
         assert!(long.contains("Overrides the hardware-derived budget-model default"));
+        // The help must advertise the keyword the parser accepts, and the
+        // fail-closed contract that replaced the old warn-and-default arm
+        // (#1813). Before this it still claimed a "warn-and-default semantic"
+        // in both directions, which no longer exists.
+        assert!(
+            long.contains("the keyword `auto`"),
+            "long help must document the accepted `auto` keyword, got: {long}"
+        );
+        assert!(
+            long.contains("FAILS CLOSED"),
+            "long help must state the fail-closed contract, got: {long}"
+        );
         // Empirical byte truth: the LONG form keeps the final period even
         // though the SHORT form strips it.
-        assert!(long.trim_end().ends_with("warn-and-default semantic."));
+        assert!(long
+            .trim_end()
+            .ends_with(r#"only `auto` and an empty value mean "not set"."#));
     }
 
     #[test]

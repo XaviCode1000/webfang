@@ -1,0 +1,5 @@
+---
+source: crates/webfang_core/tests/behavioral/main.rs
+expression: redacted
+---
+Error: --rate-limit-burst «banana» no es un número (debe estar entre 1 y 4294967295)
