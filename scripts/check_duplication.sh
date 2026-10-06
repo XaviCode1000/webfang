@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Ratchet gate for code duplication (issue #516).
-# Migrated to jscpd-rs 0.1.12 (Rust, drop-in jscpd) — see migrate/jscpd-rs.
-# Tool MSRV 1.93 > workspace 1.88: install as binary via
-#   cargo install jscpd-rs --version 0.1.12 --locked
-# (do NOT add to workspace Cargo.toml). Binary is `jscpd` (drop-in).
+# Uses kucherenko/jscpd v5 5.4.0 (pinned) — see issue #1867.
+# Tool MSRV 1.96 > workspace 1.88: install as binary via
+#   cargo install jscpd --version 5.4.0 --locked
+# (do NOT add to workspace Cargo.toml; binary-only forever). Binary is `jscpd`.
+# NOTE: both jscpd-rs and kucherenko/jscpd install a binary named `jscpd`:
+# CI must `cargo uninstall jscpd-rs || true` before installing v5.
 #
 # Runs jscpd over crates/ and fails hard if the number of duplicated lines in
 # Rust sources exceeds the committed baseline (scripts/quality-baselines.json).
@@ -26,16 +28,23 @@ fi
 
 BASELINE="$(python3 -c "import json;print(json.load(open('$BASELINE_FILE'))['duplicated_lines_rust'])")"
 
-# jscpd-rs (Rust): binary `jscpd` must be pre-installed (no npx fallback).
+# kucherenko/jscpd v5: binary `jscpd` must be pre-installed (no npx fallback).
 if ! command -v jscpd >/dev/null 2>&1; then
-  echo "::error::jscpd no encontrado. Instala con: cargo install jscpd-rs --version 0.1.12 --locked"
+  echo "::error::jscpd no encontrado. Instala con: cargo install jscpd --version 5.4.0 --locked"
   exit 1
 fi
 JSCPD="jscpd"
 
 echo "Running jscpd over crates/ (baseline duplicated-lines: $BASELINE)..."
 # jscpd's json reporter writes to <output-dir>/jscpd-report.json (--output is a dir).
-$JSCPD "$ROOT/crates/" --min-tokens 50 --silent --reporters json --output "$WORKDIR" 2>"$WORKDIR/jscpd.err" || true
+# A non-zero jscpd exit fails the gate (no `|| true` swallow).
+JSCPD_EXIT=0
+$JSCPD "$ROOT/crates/" --min-tokens 50 --format rust --mode mild --silent --reporters json --output "$WORKDIR" 2>"$WORKDIR/jscpd.err" || JSCPD_EXIT=$?
+if [ "$JSCPD_EXIT" -ne 0 ]; then
+  echo "::error::jscpd exited with code $JSCPD_EXIT"
+  sed -n '1,20p' "$WORKDIR/jscpd.err" 2>/dev/null || true
+  exit 1
+fi
 
 # Parse the rust format's duplicated-lines count.
 CURRENT="$(python3 - "$WORKDIR/jscpd-report.json" <<'PY'
@@ -44,7 +53,7 @@ try:
     with open(sys.argv[1]) as fh:
         d = json.load(fh)
     rust = d.get("statistics", {}).get("formats", {}).get("rust", {})
-    # jscpd (npm): rust.duplicatedLines | jscpd-rs: rust.total.duplicatedLines
+    # rust.duplicatedLines, with rust.total.duplicatedLines as fallback
     val = rust.get("duplicatedLines")
     if val is None:
         total = rust.get("total")

@@ -483,15 +483,17 @@ jobs:
       - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install stable toolchain for jscpd-rs (MSRV 1.93)
+      - name: Install stable toolchain for jscpd v5 (MSRV 1.96)
         run: rustup toolchain install stable --no-self-update --profile minimal
-      - name: Install jscpd-rs (MSRV 1.93, via stable)
-        run: RUSTUP_TOOLCHAIN=stable cargo install jscpd-rs --version 0.1.12 --locked --quiet
+      - name: Remove jscpd-rs binary (name collision)
+        run: cargo uninstall jscpd-rs || true
+      - name: Install jscpd v5 (MSRV 1.96, via stable)
+        run: RUSTUP_TOOLCHAIN=stable cargo install jscpd --version 5.4.0 --locked --quiet
       - name: Install cargo-machete
         run: cargo install cargo-machete --version 0.9.2 --locked --quiet
       - name: Dead dependency gate (cargo-machete)
         run: cargo machete
-      - name: Duplication ratchet (jscpd-rs)
+      - name: Duplication ratchet (jscpd v5)
         run: bash scripts/check_duplication.sh
 
   # ============================================================================
