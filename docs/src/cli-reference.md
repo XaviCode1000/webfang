@@ -187,7 +187,7 @@ Discovery:
       --rate-limit-burst <RATE_LIMIT_BURST>
           Explicit rate-limiter burst permits (token-bucket capacity).
           
-          Overrides the hardware-derived budget-model default (Q1: burst is decoupled from crawl concurrency). Raw string here ON PURPOSE: validation/conversion happens once in preflight staging via `parse_rate_limit_burst` so CLI, env, and programmatic input all share one accept / reject-0 / warn-and-default semantic.
+          Overrides the hardware-derived budget-model default (Q1: burst is decoupled from crawl concurrency). Accepts a positive integer, or the keyword `auto` for the derived default (the same spelling `--concurrency` understands). Raw string here ON PURPOSE: validation/conversion happens once in preflight staging via `parse_rate_limit_burst` so CLI, env, and programmatic input all share one semantic. That semantic FAILS CLOSED: `0`, an out-of-range value, and any other typo are rejected with exit 78 rather than degrading to the default — only `auto` and an empty value mean "not set".
           
           [env: WEBFANG_RATE_LIMIT_BURST=]
 
@@ -573,7 +573,7 @@ AI Settings:
           [default: 0.3]
 
       --max-tokens <MAX_TOKENS>
-          Maximum tokens per chunk before rejection (a chunk-size guard, not a context-window setting; chunks exceeding this fail)
+          Maximum tokens per chunk before rejection, 1-32768 (a chunk-size guard, not a context-window setting; 32768 is the model's max sequence length and chunks exceeding this fail)
           
           [env: WEBFANG_MAX_TOKENS=]
           [default: 32768]

@@ -1,0 +1,9 @@
+---
+source: crates/webfang_core/tests/max_tokens_bound_test.rs
+expression: redacted
+---
+error: invalid value '32769' for '--max-tokens <MAX_TOKENS>': --max-tokens debe ser <= 32768 (máximo de secuencia del modelo)
+
+For more information, try '--help'.
+
+Error: invalid arguments

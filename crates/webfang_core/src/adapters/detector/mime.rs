@@ -2,10 +2,29 @@
 //!
 //! Provides utilities for detecting file types from URLs and content.
 
-/// Detect MIME type from file extension (static mapping)
-#[cfg(any(feature = "images", feature = "documents"))]
+/// Single canonical extension → MIME table.
+///
+/// #1813 T4: this function used to sit behind
+/// `#[cfg(any(feature = "images", feature = "documents"))]`, paired with a
+/// SECOND `get_mime_type` behind the negation of that same `any(...)`. Both
+/// features were empty markers with no `dep:` entry, all three gates were
+/// disjunctions, and `cfg(all(images, documents))` existed nowhere — so no
+/// compiled configuration could tell the two features apart. The negated copy
+/// answered 14 extensions; this one answers 26. Turning the feature off was
+/// therefore not a configuration choice but a silent regression (12 extensions,
+/// `txt` → `text/plain` among them, stopped resolving).
+///
+/// A Cargo feature earns its place by selecting a capability, justified by what
+/// turning it off buys: binary size (both tables are static string maps, ~0.5 KB
+/// total), compile time (no dependency is skipped), or behavior (turning it off
+/// was strictly worse). None of the three applied, so both markers were
+/// decoration that cost every reader a question with no answer. They are gone;
+/// if a real capability-backed need appears — gating a heavy dependency, say —
+/// add a feature then, with that dependency behind it.
 fn get_mime_from_extension(ext: &str) -> Option<&'static str> {
-    // Use static mapping - mimetype-detector is for file content, not extensions
+    // Static mapping: this is a pure extension lookup. (The old doc comment
+    // credited `mimetype-detector`, a crate this workspace has never depended
+    // on; the map below is the only source of truth.)
     match ext.to_lowercase().as_str() {
         "jpg" | "jpeg" => Some("image/jpeg"),
         "png" => Some("image/png"),
@@ -126,30 +145,12 @@ pub fn get_extension(url: &str) -> Option<String> {
         .and_then(|parsed| parsed.path().rsplit('.').next().map(|e| e.to_lowercase()))
 }
 
-/// Get MIME type from URL (basic detection by extension)
-#[cfg(not(any(feature = "images", feature = "documents")))]
-pub fn get_mime_type(url: &str) -> Option<&'static str> {
-    let ext = get_extension(url)?;
-    match ext.as_str() {
-        "jpg" | "jpeg" => Some("image/jpeg"),
-        "png" => Some("image/png"),
-        "gif" => Some("image/gif"),
-        "webp" => Some("image/webp"),
-        "svg" => Some("image/svg+xml"),
-        "pdf" => Some("application/pdf"),
-        "doc" => Some("application/msword"),
-        "docx" => Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
-        "xls" => Some("application/vnd.ms-excel"),
-        "xlsx" => Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
-        "csv" => Some("text/csv"),
-        "json" => Some("application/json"),
-        "xml" => Some("application/xml"),
-        _ => None,
-    }
-}
-
-#[cfg(any(feature = "images", feature = "documents"))]
-/// Get MIME type from URL using mimetype-detector
+/// Get MIME type from URL (basic detection by extension).
+///
+/// #1813 T4: this was the third and last `cfg` site on the two dead markers,
+/// and the only one whose documentation claimed a `mimetype-detector` lookup
+/// this body never performed. Ungated for the reasons recorded on the private
+/// `get_mime_from_extension` above; this is now the only definition.
 pub fn get_mime_type(url: &str) -> Option<&'static str> {
     // Try by extension first
     let ext = get_extension(url)?;
@@ -203,6 +204,80 @@ mod tests {
             get_mime_type("https://example.com/file.pdf"),
             Some("application/pdf")
         );
+    }
+
+    /// #1813 T4 — every extension the single table must answer.
+    ///
+    /// `test_get_mime_type` above asserts `png` and `pdf`, which are the two
+    /// entries BOTH divergent copies shared. That overlap is precisely why the
+    /// divergence went unnoticed, so the full list is pinned here instead:
+    /// the 14 common entries plus the 12 the `not(any(...))` copy silently lost
+    /// (`txt`, `ico`, `bmp`, `tiff`, `tif`, `ppt`, `pptx`, `odt`, `ods`,
+    /// `odp`, `epub`, `rtf`).
+    #[test]
+    fn get_mime_type_answers_every_supported_extension() {
+        let cases: &[(&str, &str)] = &[
+            // Shared by the old common subset.
+            ("file.jpg", "image/jpeg"),
+            ("file.jpeg", "image/jpeg"),
+            ("file.png", "image/png"),
+            ("file.gif", "image/gif"),
+            ("file.webp", "image/webp"),
+            ("file.svg", "image/svg+xml"),
+            ("file.pdf", "application/pdf"),
+            ("file.doc", "application/msword"),
+            (
+                "file.docx",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            ),
+            ("file.xls", "application/vnd.ms-excel"),
+            (
+                "file.xlsx",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            ),
+            ("file.csv", "text/csv"),
+            ("file.json", "application/json"),
+            ("file.xml", "application/xml"),
+            // Lost by the removed feature-gated copy — the actual regression.
+            ("file.ico", "image/x-icon"),
+            ("file.bmp", "image/bmp"),
+            ("file.tiff", "image/tiff"),
+            ("file.tif", "image/tiff"),
+            ("file.ppt", "application/vnd.ms-powerpoint"),
+            (
+                "file.pptx",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            ),
+            ("file.odt", "application/vnd.oasis.opendocument.text"),
+            ("file.ods", "application/vnd.oasis.opendocument.spreadsheet"),
+            (
+                "file.odp",
+                "application/vnd.oasis.opendocument.presentation",
+            ),
+            ("file.epub", "application/epub+zip"),
+            ("file.rtf", "application/rtf"),
+            ("file.txt", "text/plain"),
+        ];
+        for (name, expected) in cases {
+            assert_eq!(
+                get_mime_type(&format!("https://example.com/{name}")),
+                Some(*expected),
+                "MIME type for {name}"
+            );
+        }
+    }
+
+    /// Triangulation: the table is answered case-insensitively, and anything
+    /// outside it — an unknown extension or a path with no extension at all —
+    /// is `None` rather than a guess.
+    #[test]
+    fn get_mime_type_is_case_insensitive_and_rejects_the_unknown() {
+        assert_eq!(
+            get_mime_type("https://example.com/FILE.TXT"),
+            Some("text/plain")
+        );
+        assert_eq!(get_mime_type("https://example.com/file.exe"), None);
+        assert_eq!(get_mime_type("https://example.com/download"), None);
     }
 
     // ============================================================================

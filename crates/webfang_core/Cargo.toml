@@ -10,9 +10,13 @@ repository.workspace = true
 homepage.workspace = true
 
 [features]
-default = ["images", "documents"]
-images = []
-documents = []
+# #1813 T4: `default` is now an explicit EMPTY set. It used to be
+# `["images", "documents"]`, two empty marker features whose only observable
+# effect was a silently-reduced MIME table — turning them off removed 12
+# extensions and saved neither binary size nor compile time. The key is kept
+# (rather than deleted) so the empty default is a stated decision and so
+# `--no-default-features` stays a meaningful thing to write.
+default = []
 # ADR-0014 loom model tests: build.rs emits cfg(loom) for this crate when
 # enabled; loom itself is an unconditional dev-dependency.
 # Run with: cargo nextest run -p webfang_core --features loom-model --lib record_transition

@@ -140,11 +140,17 @@ PYEOF
 # Output convention: exactly one H1 per file — the "# <crate> API Reference"
 # wrapper — with the tool output (which starts "# <crate> API (<version>)")
 # demoted one level. Feature flags replicate `cargo doc --all-features` per
-# crate; webfang_test_utils gets no --features flag at all.
+# crate, except `loom-model`, deliberately left out: it makes build.rs emit
+# `cfg(loom)`, so including it would render the instrumented tree instead of the
+# real one. The lists are spelled out per crate (the tool takes one --features
+# string) and an UNKNOWN name there is a hard cargo error, not a warning — so a
+# feature deletion in any manifest breaks this script until the list is updated
+# with it. webfang_test_utils declares no features at all and gets no --features
+# flag.
 render_api() {
   local crate="$1" out="$2" features
   case "$crate" in
-  webfang_core) features="default images documents persistence console dev-tracing ai adaptive-selectors mcp chromium" ;;
+  webfang_core) features="default persistence console dev-tracing ai adaptive-selectors mcp chromium" ;;
   webfang_ai) features="ai" ;;
   webfang_mcp) features="mcp ai persistence" ;;
   *) features="" ;;
