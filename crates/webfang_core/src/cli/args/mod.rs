@@ -60,21 +60,39 @@ pub(crate) mod test_support {
 
     /// Every non-builtin clap arg must have an `OptionSpec` entry.
     pub(crate) fn assert_surface_covered(args: &[clap::Arg], group: &[OptionSpec]) {
+        assert_surface_covered_except(args, group, &[]);
+    }
+
+    /// Same as [`assert_surface_covered`], ignoring hand-built slots that
+    /// are recorded in the spec but not routed through `build_arg`
+    /// (crawler's deferred `concurrency` / pattern / header args). Prefer
+    /// this over a local coverage loop: the genuine difference is the
+    /// exclusion list, not the assertion.
+    pub(crate) fn assert_surface_covered_except(
+        args: &[clap::Arg],
+        group: &[OptionSpec],
+        manual_ids: &[&str],
+    ) {
         for arg in args {
-            if matches!(arg.get_id().as_str(), "help" | "version") {
+            let id = arg.get_id().as_str();
+            if matches!(id, "help" | "version") || manual_ids.contains(&id) {
                 continue;
             }
             assert!(
-                group.iter().any(|s| s.id == arg.get_id()),
-                "clap arg `{}` has no OptionsSpec entry — spec is out of sync",
-                arg.get_id()
+                group.iter().any(|s| s.id == id),
+                "clap arg `{id}` has no OptionsSpec entry — spec is out of sync",
             );
         }
     }
 
     /// Long, short, aliases, env, and help heading must match the spec.
+    /// Specs gated off in this build are skipped: they have no clap arg
+    /// to check, and their surface is pinned separately.
     pub(crate) fn assert_long_short_alias_env_heading(args: &[clap::Arg], group: &[OptionSpec]) {
         for s in group {
+            if !s.active() {
+                continue; // gated off in this build: placeholder pinned separately
+            }
             let arg = arg_by_id(args, s.id, "spec group");
             assert_eq!(arg.get_long(), Some(s.long), "long mismatch for `{}`", s.id);
             assert_eq!(arg.get_short(), s.short, "short mismatch for `{}`", s.id);
@@ -92,8 +110,13 @@ pub(crate) mod test_support {
     }
 
     /// Clap defaults must match the spec's canonical defaults.
+    /// Specs gated off in this build are skipped (see
+    /// [`assert_long_short_alias_env_heading`]).
     pub(crate) fn assert_defaults(args: &[clap::Arg], group: &[OptionSpec]) {
         for s in group {
+            if !s.active() {
+                continue; // gated off in this build: placeholder pinned separately
+            }
             let arg = arg_by_id(args, s.id, "spec group");
             let defaults: Vec<String> = arg
                 .get_default_values()
@@ -106,8 +129,13 @@ pub(crate) mod test_support {
     }
 
     /// Help text must match the spec verbatim.
+    /// Specs gated off in this build are skipped (see
+    /// [`assert_long_short_alias_env_heading`]).
     pub(crate) fn assert_help(args: &[clap::Arg], group: &[OptionSpec]) {
         for s in group {
+            if !s.active() {
+                continue; // gated off in this build: placeholder pinned separately
+            }
             let arg = arg_by_id(args, s.id, "spec group");
             let help = arg
                 .get_long_help()
@@ -125,75 +153,100 @@ pub(crate) mod test_support {
 
     /// Structural clap surface must match the spec: action per value kind,
     /// SCREAMING value name, possible values for enums only, delimiter
-    /// round-trip, and no long help.
+    /// round-trip, and no long help. Specs gated off in this build are
+    /// skipped (see [`assert_long_short_alias_env_heading`]).
     pub(crate) fn assert_structural(args: &[clap::Arg], group: &[OptionSpec]) {
-        use crate::domain::options_spec::ValueKind;
         for s in group {
-            let arg = arg_by_id(args, s.id, "spec group");
-            match s.kind {
-                ValueKind::Bool => {
-                    assert!(
-                        matches!(arg.get_action(), clap::ArgAction::SetTrue),
-                        "bool `{}` must use SetTrue",
-                        s.id
-                    );
-                },
-                // A `TextList` (`Option<Vec<String>>` derive) resolves to
-                // `ArgAction::Append`, so repeated occurrences append. The
-                // spec builder mirrors that exactly.
-                ValueKind::TextList => {
-                    assert!(
-                        matches!(arg.get_action(), clap::ArgAction::Append),
-                        "text list `{}` must use Append",
-                        s.id
-                    );
-                },
-                _ => {
-                    assert!(
-                        matches!(arg.get_action(), clap::ArgAction::Set),
-                        "value option `{}` must use Set",
-                        s.id
-                    );
-                },
+            if !s.active() {
+                continue; // gated off in this build: placeholder pinned separately
             }
-            let names: Vec<String> = arg
-                .get_value_names()
-                .unwrap_or_default()
-                .iter()
-                .map(|id| id.to_string())
-                .collect();
-            assert_eq!(
-                names,
-                vec![s.id.to_ascii_uppercase()],
-                "value name mismatch for `{}`",
-                s.id
-            );
-            let possible: Vec<String> = arg
-                .get_possible_values()
-                .into_iter()
-                .map(|v| v.get_name().to_string())
-                .collect();
-            if let ValueKind::Enum { variants } = s.kind {
-                assert_eq!(possible, variants, "possible values for `{}`", s.id);
-            } else if !matches!(s.kind, ValueKind::Bool) {
+            let arg = arg_by_id(args, s.id, "spec group");
+            assert_structural_one(arg, s);
+        }
+    }
+
+    /// Structural check for a single spec behind [`assert_structural`],
+    /// exposed so groups with a genuinely special arity (crawler's
+    /// occurrence-counted `-v`) can keep their own dispatch loop for that
+    /// one arg and still share the body for everything else.
+    pub(crate) fn assert_structural_one(arg: &clap::Arg, s: &OptionSpec) {
+        assert_structural_action(arg, s);
+        assert_structural_shape(arg, s);
+    }
+
+    /// Action dispatch behind [`assert_structural_one`]: bools take
+    /// `SetTrue`, text lists `Append`, everything else `Set`.
+    pub(crate) fn assert_structural_action(arg: &clap::Arg, s: &OptionSpec) {
+        use crate::domain::options_spec::ValueKind;
+        match s.kind {
+            ValueKind::Bool => {
                 assert!(
-                    possible.is_empty(),
-                    "`{}` must have no possible values",
+                    matches!(arg.get_action(), clap::ArgAction::SetTrue),
+                    "bool `{}` must use SetTrue",
                     s.id
                 );
-            }
-            assert_eq!(
-                arg.get_value_delimiter(),
-                s.value_delimiter,
-                "value_delimiter mismatch for `{}`",
-                s.id
-            );
+            },
+            // A `TextList` (`Option<Vec<String>>` derive) resolves to
+            // `ArgAction::Append`, so repeated occurrences append. The
+            // spec builder mirrors that exactly.
+            ValueKind::TextList => {
+                assert!(
+                    matches!(arg.get_action(), clap::ArgAction::Append),
+                    "text list `{}` must use Append",
+                    s.id
+                );
+            },
+            _ => {
+                assert!(
+                    matches!(arg.get_action(), clap::ArgAction::Set),
+                    "value option `{}` must use Set",
+                    s.id
+                );
+            },
+        }
+    }
+
+    /// Value-name / possible-values / delimiter / long-help shape behind
+    /// [`assert_structural_one`].
+    pub(crate) fn assert_structural_shape(arg: &clap::Arg, s: &OptionSpec) {
+        use crate::domain::options_spec::ValueKind;
+        let names: Vec<String> = arg
+            .get_value_names()
+            .unwrap_or_default()
+            .iter()
+            .map(|id| id.to_string())
+            .collect();
+        assert_eq!(
+            names,
+            vec![s.id.to_ascii_uppercase()],
+            "value name mismatch for `{}`",
+            s.id
+        );
+        let possible: Vec<String> = arg
+            .get_possible_values()
+            .into_iter()
+            .map(|v| v.get_name().to_string())
+            .collect();
+        if let ValueKind::Enum { variants } = s.kind {
+            assert_eq!(possible, variants, "possible values for `{}`", s.id);
+        } else if !matches!(s.kind, ValueKind::Bool) {
             assert!(
-                arg.get_long_help().is_none(),
-                "`{}` must not carry long help",
+                possible.is_empty(),
+                "`{}` must have no possible values",
                 s.id
             );
         }
+        assert_eq!(
+            arg.get_value_delimiter(),
+            s.value_delimiter,
+            "value_delimiter mismatch for `{}`",
+            s.id
+        );
+        assert!(
+            arg.get_long_help().is_none(),
+            "`{}` must not carry long help",
+            s.id
+        );
     }
 
     /// Runs `f` with every ambient environment variable that could leak into

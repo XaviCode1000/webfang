@@ -146,97 +146,38 @@ mod spec_parity_tests {
     //! with the OptionsSpec AI group. The `threshold` arg is hand-built
     //! (deferred from the spec), so its surface is pinned independently.
     use super::*;
+    use crate::cli::args::test_support::{
+        arg_by_id, assert_defaults, assert_help, assert_long_short_alias_env_heading,
+        assert_structural, assert_surface_covered, collect_args, parse_args, parse_args_hermetic,
+    };
     use crate::domain::options_spec as spec;
     use clap::Args as _;
 
     /// All clap args generated for `AiArgs`, keyed by arg id.
     fn command_args() -> Vec<clap::Arg> {
-        AiArgs::augment_args(clap::Command::new("webfang-ai"))
-            .get_arguments()
-            .cloned()
-            .collect()
-    }
-
-    fn arg_by_id<'a>(args: &'a [clap::Arg], id: &str) -> &'a clap::Arg {
-        args.iter()
-            .find(|a| a.get_id() == id)
-            .unwrap_or_else(|| panic!("arg `{id}` missing from AiArgs command"))
-    }
-
-    fn parse_args(extra: &[&str]) -> Result<crate::Args, String> {
-        let mut argv = vec!["webfang"];
-        argv.extend_from_slice(extra);
-        clap::Parser::try_parse_from(argv).map_err(|e| e.to_string())
-    }
-
-    fn parse_args_hermetic(extra: &[&str]) -> Result<crate::Args, String> {
-        crate::cli::args::test_support::with_clap_env_cleared(|| parse_args(extra))
+        collect_args(AiArgs::augment_args(clap::Command::new("webfang-ai")))
     }
 
     #[test]
     fn clap_surface_is_fully_covered_by_the_spec() {
-        // The hand-built `threshold` slot is in the spec but NOT routed
-        // through `build_arg`; its surface is pinned below.
-        let manual_ids = ["threshold"];
-        let args = command_args();
-        for arg in &args {
-            if matches!(arg.get_id().as_str(), "help" | "version") {
-                continue;
-            }
-            let id = arg.get_id().as_str();
-            assert!(
-                spec::ai::GROUP.iter().any(|s| s.id == id) || manual_ids.contains(&id),
-                "clap arg `{id}` has no OptionsSpec entry — spec is out of sync"
-            );
-        }
+        // The hand-built `threshold` slot is in the spec (not routed
+        // through `build_arg`); its surface is pinned separately below.
+        assert_surface_covered(&command_args(), spec::ai::GROUP);
     }
 
     #[test]
     fn long_short_aliases_env_and_heading_match_the_spec() {
-        let args = command_args();
-        for s in spec::ai::GROUP {
-            let arg = arg_by_id(&args, s.id);
-            assert_eq!(arg.get_long(), Some(s.long), "long mismatch for `{}`", s.id);
-            assert_eq!(arg.get_short(), s.short, "short mismatch for `{}`", s.id);
-            let aliases = arg.get_aliases().unwrap_or_default();
-            assert_eq!(aliases, s.aliases, "alias mismatch for `{}`", s.id);
-            let env = arg.get_env().map(|e| e.to_string_lossy().into_owned());
-            assert_eq!(env.as_deref(), s.env, "env var mismatch for `{}`", s.id);
-        }
+        assert_long_short_alias_env_heading(&command_args(), spec::ai::GROUP);
     }
 
     #[test]
     fn defaults_match_the_spec() {
-        let args = command_args();
-        for s in spec::ai::GROUP {
-            let arg = arg_by_id(&args, s.id);
-            let defaults: Vec<String> = arg
-                .get_default_values()
-                .iter()
-                .map(|v| v.to_string_lossy().into_owned())
-                .collect();
-            let expected: Vec<String> = s.default.map(|d| vec![d.to_string()]).unwrap_or_default();
-            assert_eq!(defaults, expected, "default mismatch for `{}`", s.id);
-        }
+        assert_defaults(&command_args(), spec::ai::GROUP);
     }
 
     #[test]
     fn help_text_matches_the_spec() {
-        let args = command_args();
-        for s in spec::ai::GROUP {
-            let arg = arg_by_id(&args, s.id);
-            let help = arg
-                .get_long_help()
-                .or_else(|| arg.get_help())
-                .unwrap_or_else(|| panic!("arg `{}` has no help text", s.id))
-                .to_string();
-            assert_eq!(
-                help.trim(),
-                s.help.trim(),
-                "help text mismatch for `{}`",
-                s.id
-            );
-        }
+        assert_help(&command_args(), spec::ai::GROUP);
     }
 
     #[test]
@@ -268,72 +209,13 @@ mod spec_parity_tests {
     }
 
     /// Slice 5a pin: structural clap surface the spec-driven builder must
-    /// reproduce byte-for-byte. `threshold` is the hand-built slot, so
-    /// it is exempted from the spec builder's `ValueKind` arm; everything
-    /// else goes through `build_arg`.
+    /// reproduce byte-for-byte. `threshold` is the hand-built slot, and it
+    /// is built structurally identical (Set / THRESHOLD / no delimiter),
+    /// so the shared sweep covers it too; everything else goes through
+    /// `build_arg`.
     #[test]
     fn structural_actions_value_names_and_possible_values_match_the_spec() {
-        let manual_ids = ["threshold"];
-        let args = command_args();
-        for s in spec::ai::GROUP {
-            if manual_ids.contains(&s.id) {
-                continue;
-            }
-            let arg = arg_by_id(&args, s.id);
-            match s.kind {
-                spec::ValueKind::Bool => {
-                    assert!(
-                        matches!(arg.get_action(), clap::ArgAction::SetTrue),
-                        "bool `{}` must use SetTrue",
-                        s.id
-                    );
-                },
-                _ => {
-                    assert!(
-                        matches!(arg.get_action(), clap::ArgAction::Set),
-                        "value option `{}` must use Set",
-                        s.id
-                    );
-                },
-            }
-            let names: Vec<String> = arg
-                .get_value_names()
-                .unwrap_or_default()
-                .iter()
-                .map(|id| id.to_string())
-                .collect();
-            assert_eq!(
-                names,
-                vec![s.id.to_ascii_uppercase()],
-                "value name mismatch for `{}`",
-                s.id
-            );
-            let possible: Vec<String> = arg
-                .get_possible_values()
-                .into_iter()
-                .map(|v| v.get_name().to_string())
-                .collect();
-            if let spec::ValueKind::Enum { variants } = s.kind {
-                assert_eq!(possible, variants, "possible values for `{}`", s.id);
-            } else if !matches!(s.kind, spec::ValueKind::Bool) {
-                assert!(
-                    possible.is_empty(),
-                    "`{}` must have no possible values",
-                    s.id
-                );
-            }
-            assert_eq!(
-                arg.get_value_delimiter(),
-                s.value_delimiter,
-                "value_delimiter mismatch for `{}`",
-                s.id
-            );
-            assert!(
-                arg.get_long_help().is_none(),
-                "`{}` must not carry long help",
-                s.id
-            );
-        }
+        assert_structural(&command_args(), spec::ai::GROUP);
     }
 
     /// Slice 5a pin: the hand-built `threshold` slot's surface stays
@@ -343,7 +225,7 @@ mod spec_parity_tests {
     #[test]
     fn manual_threshold_surface_is_pinned() {
         let args = command_args();
-        let t = arg_by_id(&args, "threshold");
+        let t = arg_by_id(&args, "threshold", "AiArgs");
         assert_eq!(t.get_long(), Some("threshold"));
         assert_eq!(t.get_short(), None);
         assert_eq!(

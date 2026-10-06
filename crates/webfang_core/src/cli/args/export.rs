@@ -159,6 +159,10 @@ mod spec_parity_tests {
     //! routes validation through the spec and must keep them green.
 
     use super::*;
+    use crate::cli::args::test_support::{
+        assert_defaults, assert_help, assert_long_short_alias_env_heading, assert_structural,
+        assert_surface_covered, collect_args, parse_args, parse_args_hermetic,
+    };
     use crate::domain::options_spec as spec;
     use clap::Args as _;
 
@@ -166,95 +170,29 @@ mod spec_parity_tests {
     fn command_args() -> Vec<clap::Arg> {
         // `#[derive(Args)]` augments a parent command; wrap it to inspect the
         // exact arg set the flatten produces inside `crate::Args`.
-        ExportArgs::augment_args(clap::Command::new("webfang-export"))
-            .get_arguments()
-            .cloned()
-            .collect()
-    }
-
-    fn arg_by_id<'a>(args: &'a [clap::Arg], id: &str) -> &'a clap::Arg {
-        args.iter()
-            .find(|a| a.get_id() == id)
-            .unwrap_or_else(|| panic!("arg `{id}` missing from ExportArgs command"))
-    }
-
-    fn parse_args(extra: &[&str]) -> Result<crate::Args, String> {
-        let mut argv = vec!["webfang"];
-        argv.extend_from_slice(extra);
-        clap::Parser::try_parse_from(argv).map_err(|e| e.to_string())
-    }
-
-    /// Bare parse with clap `env` fallbacks neutralized — see
-    /// [`crate::cli::args::test_support::with_clap_env_cleared`] (issue #926).
-    fn parse_args_hermetic(extra: &[&str]) -> Result<crate::Args, String> {
-        crate::cli::args::test_support::with_clap_env_cleared(|| parse_args(extra))
+        collect_args(ExportArgs::augment_args(clap::Command::new(
+            "webfang-export",
+        )))
     }
 
     #[test]
     fn clap_surface_is_fully_covered_by_the_spec() {
-        let args = command_args();
-        for arg in &args {
-            if matches!(arg.get_id().as_str(), "help" | "version") {
-                continue;
-            }
-            assert!(
-                spec::export::GROUP.iter().any(|s| s.id == arg.get_id()),
-                "clap arg `{}` has no OptionsSpec entry — spec is out of sync",
-                arg.get_id()
-            );
-        }
+        assert_surface_covered(&command_args(), spec::export::GROUP);
     }
 
     #[test]
     fn long_short_aliases_env_and_heading_match_the_spec() {
-        let args = command_args();
-        for s in spec::export::GROUP {
-            let arg = arg_by_id(&args, s.id);
-            assert_eq!(arg.get_long(), Some(s.long), "long mismatch for `{}`", s.id);
-            assert_eq!(arg.get_short(), s.short, "short mismatch for `{}`", s.id);
-            let aliases = arg.get_aliases().unwrap_or_default();
-            assert_eq!(aliases, s.aliases, "alias mismatch for `{}`", s.id);
-            let env = arg.get_env().map(|e| e.to_string_lossy().into_owned());
-            assert_eq!(env.as_deref(), s.env, "env var mismatch for `{}`", s.id);
-            // NOTE: clap's `next_help_heading` is stateful during command
-            // construction and is NOT stored per-Arg, so it cannot be
-            // introspected here. `spec.heading` is generator-facing data —
-            // exercised when a later slice BUILDS commands from specs.
-        }
+        assert_long_short_alias_env_heading(&command_args(), spec::export::GROUP);
     }
 
     #[test]
     fn defaults_match_the_spec() {
-        let args = command_args();
-        for s in spec::export::GROUP {
-            let arg = arg_by_id(&args, s.id);
-            let defaults: Vec<String> = arg
-                .get_default_values()
-                .iter()
-                .map(|v| v.to_string_lossy().into_owned())
-                .collect();
-            let expected: Vec<String> = s.default.map(|d| vec![d.to_string()]).unwrap_or_default();
-            assert_eq!(defaults, expected, "default mismatch for `{}`", s.id);
-        }
+        assert_defaults(&command_args(), spec::export::GROUP);
     }
 
     #[test]
     fn help_text_matches_the_spec() {
-        let args = command_args();
-        for s in spec::export::GROUP {
-            let arg = arg_by_id(&args, s.id);
-            let help = arg
-                .get_long_help()
-                .or_else(|| arg.get_help())
-                .unwrap_or_else(|| panic!("arg `{}` has no help text", s.id))
-                .to_string();
-            assert_eq!(
-                help.trim(),
-                s.help.trim(),
-                "help text mismatch for `{}`",
-                s.id
-            );
-        }
+        assert_help(&command_args(), spec::export::GROUP);
     }
 
     #[test]
@@ -340,61 +278,7 @@ mod spec_parity_tests {
     /// here first.
     #[test]
     fn structural_actions_value_names_and_possible_values_match_the_spec() {
-        let args = command_args();
-        for s in spec::export::GROUP {
-            let arg = arg_by_id(&args, s.id);
-            match s.kind {
-                spec::ValueKind::Bool => {
-                    assert!(
-                        matches!(arg.get_action(), clap::ArgAction::SetTrue),
-                        "bool `{}` must use SetTrue",
-                        s.id
-                    );
-                },
-                _ => {
-                    assert!(
-                        matches!(arg.get_action(), clap::ArgAction::Set),
-                        "value option `{}` must use Set",
-                        s.id
-                    );
-                },
-            }
-            let names: Vec<String> = arg
-                .get_value_names()
-                .unwrap_or_default()
-                .iter()
-                .map(|id| id.to_string())
-                .collect();
-            assert_eq!(
-                names,
-                vec![s.id.to_ascii_uppercase()],
-                "value name mismatch for `{}`",
-                s.id
-            );
-            let possible: Vec<String> = arg
-                .get_possible_values()
-                .into_iter()
-                .map(|v| v.get_name().to_string())
-                .collect();
-            if let spec::ValueKind::Enum { variants } = s.kind {
-                assert_eq!(possible, variants, "possible values for `{}`", s.id);
-            } else if !matches!(s.kind, spec::ValueKind::Bool) {
-                // Bools carry clap's implicit boolish parser (possible
-                // values `true,false`) — pinned in the crawler suite.
-                assert!(
-                    possible.is_empty(),
-                    "`{}` must have no possible values",
-                    s.id
-                );
-            }
-            // Single-form help only: no separate long help exists today,
-            // so `--help` and `-h` render the same text per option.
-            assert!(
-                arg.get_long_help().is_none(),
-                "`{}` must not carry long help",
-                s.id
-            );
-        }
+        assert_structural(&command_args(), spec::export::GROUP);
     }
 
     #[test]

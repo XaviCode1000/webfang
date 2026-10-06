@@ -706,6 +706,90 @@ fn test_url_none_falls_back_to_example_com() {
 // Property-based tests with proptest
 // ========================================================================
 
+/// Baseline `CrawlerArgs` for the property tests below: fixed probe values
+/// for every field the properties do not vary, so each test only names its
+/// own axis and takes the rest via struct-update syntax (`..prop_crawler_args()`).
+fn prop_crawler_args() -> CrawlerArgs {
+    CrawlerArgs {
+        url: Some(ValidUrl::parse("https://example.com/prop").unwrap()),
+        selector: "body".into(),
+        delay_ms: 0,
+        max_pages: 1,
+        concurrency: webfang_core::ConcurrencyConfig::default(),
+        use_sitemap: false,
+        sitemap_url: None,
+        single_page: false,
+        resume: false,
+        state_dir: None,
+        download_images: false,
+        download_documents: false,
+        clean_ai: false,
+        adaptive_selectors: false,
+        extraction_fingerprint: false,
+        verbose: 0,
+        quiet: false,
+        dry_run: false,
+        max_depth: 0,
+        timeout_secs: 1,
+        include_patterns: vec![],
+        exclude_patterns: vec![],
+        max_retries: 0,
+        backoff_base_ms: 0,
+        backoff_max_ms: 0,
+        accept_language: "en".into(),
+        user_agent: None,
+        max_file_size: 0,
+        download_timeout: 0,
+        sitemap_depth: 0,
+        checkpoint_interval: 0,
+        no_checkpoint: false,
+        ignore_robots: false,
+        ignore_waf: false,
+        no_session_health: false,
+        autoscale: false,
+        h2_profile: "Chrome145".into(),
+        js_strategy: webfang_core::domain::JsStrategy::Static,
+        obscura_binary: "obscura".into(),
+        post_load_wait: webfang_core::domain::PostLoadWait::Idle,
+        asset_naming: "hash".into(),
+        download_concurrency: Some(3),
+        rate_limit_burst: None,
+        download_assets: false,
+        trace_file: None,
+        dom_preprune: true,
+        headers: vec![],
+        cookies: vec![],
+    }
+}
+
+/// Baseline `ExportArgs` for the property tests: the fixed probe values
+/// every test shares, with the varied dimensions overridden per test via
+/// struct-update syntax (`..prop_export_args()`).
+fn prop_export_args() -> ExportArgs {
+    ExportArgs {
+        output: std::path::PathBuf::from("out"),
+        format: webfang_core::OutputFormat::Markdown,
+        export_format: webfang_core::ExportFormat::Jsonl,
+        elastic: false,
+        ..Default::default()
+    }
+}
+
+/// Baseline `Args` for the property tests: the caller supplies the three
+/// group structs under test, and the `subcommand` / `positional_url` /
+/// `ai` / `llm` scaffolding is written once here.
+fn prop_args(crawler: CrawlerArgs, export: ExportArgs, obsidian: ObsidianArgs) -> Args {
+    Args {
+        subcommand: None,
+        positional_url: None,
+        crawler,
+        export,
+        obsidian,
+        ai: AiArgs::default(),
+        llm: LlmArgs::default(),
+    }
+}
+
 proptest! {
     #[cfg_attr(miri, ignore)] // proptest too slow under Miri interpreter (~2-11min per test)
     #[test]
@@ -726,78 +810,32 @@ proptest! {
         pipeline in proptest::bool::ANY,
         autoscale in proptest::bool::ANY,
     ) {
-        let args = Args {
-            subcommand: None,
-            positional_url: None,
-            crawler: CrawlerArgs {
-                url: Some(ValidUrl::parse("https://example.com/prop").unwrap()),
-                selector: "body".into(),
-                delay_ms: 0,
-                max_pages: 1,
-                concurrency: webfang_core::ConcurrencyConfig::default(),
+        let args = prop_args(
+            CrawlerArgs {
                 use_sitemap,
-                sitemap_url: None,
                 single_page,
                 resume,
-                state_dir: None,
                 download_images,
                 download_documents,
                 clean_ai,
-                adaptive_selectors: false,
-                extraction_fingerprint: false,
-                verbose: 0,
                 quiet,
                 dry_run,
-                max_depth: 0,
-                timeout_secs: 1,
-                include_patterns: vec![],
-                exclude_patterns: vec![],
-                max_retries: 0,
-                backoff_base_ms: 0,
-                backoff_max_ms: 0,
-                accept_language: "en".into(),
-                user_agent: None,
-                max_file_size: 0,
-                download_timeout: 0,
-                sitemap_depth: 0,
-                checkpoint_interval: 0,
-                no_checkpoint: false,
-                ignore_robots: false,
-                ignore_waf: false,
-                no_session_health: false,
                 autoscale,
-                h2_profile: "Chrome145".into(),
-                js_strategy: webfang_core::domain::JsStrategy::Static,
-                obscura_binary: "obscura".into(),
-                post_load_wait: webfang_core::domain::PostLoadWait::Idle,
-                asset_naming: "hash".into(),
-                download_concurrency: Some(3),
-                rate_limit_burst: None,
-                download_assets: false,
-                trace_file: None,
-                dom_preprune: true,
-                headers: vec![],
-                cookies: vec![],
+                ..prop_crawler_args()
             },
-            export: ExportArgs {
-                output: std::path::PathBuf::from("out"),
-                format: webfang_core::OutputFormat::Markdown,
-                export_format: webfang_core::ExportFormat::Jsonl,
+            ExportArgs {
                 elastic,
                 pipeline,
-                ..Default::default()
+                ..prop_export_args()
             },
-            obsidian: ObsidianArgs {
+            ObsidianArgs {
                 obsidian_wiki_links: wiki_links,
-                obsidian_tags: None,
                 obsidian_relative_assets: relative_assets,
-                vault: None,
                 quick_save,
                 obsidian_rich_metadata: rich_metadata,
+                ..Default::default()
             },
-            ai: AiArgs::default(),
-            llm: LlmArgs::default(),
-        };
+        );
 
         let opts = webfang_core::application::crawl_options::CrawlOptions::from(args);
 
@@ -835,70 +873,24 @@ proptest! {
         download_timeout in 1u64..300,
         sitemap_depth in 0u8..10,
     ) {
-        let args = Args {
-            subcommand: None,
-            positional_url: None,
-            crawler: CrawlerArgs {
-                url: Some(ValidUrl::parse("https://example.com/prop").unwrap()),
-                selector: "body".into(),
+        let args = prop_args(
+            CrawlerArgs {
                 delay_ms,
                 max_pages,
-                concurrency: webfang_core::ConcurrencyConfig::default(),
-                use_sitemap: false,
-                sitemap_url: None,
-                single_page: false,
-                resume: false,
-                state_dir: None,
-                download_images: false,
-                download_documents: false,
-                clean_ai: false,
-                adaptive_selectors: false,
-                extraction_fingerprint: false,
                 verbose,
-                quiet: false,
-                dry_run: false,
                 max_depth,
                 timeout_secs,
-                include_patterns: vec![],
-                exclude_patterns: vec![],
                 max_retries,
                 backoff_base_ms,
                 backoff_max_ms,
-                accept_language: "en".into(),
-                user_agent: None,
                 max_file_size,
                 download_timeout,
                 sitemap_depth,
-                checkpoint_interval: 0,
-                no_checkpoint: false,
-                ignore_robots: false,
-                ignore_waf: false,
-                no_session_health: false,
-                autoscale: false,
-                h2_profile: "Chrome145".into(),
-                js_strategy: webfang_core::domain::JsStrategy::Static,
-                obscura_binary: "obscura".into(),
-                post_load_wait: webfang_core::domain::PostLoadWait::Idle,
-                asset_naming: "hash".into(),
-                download_concurrency: Some(3),
-                rate_limit_burst: None,
-                download_assets: false,
-                trace_file: None,
-                dom_preprune: true,
-                headers: vec![],
-                cookies: vec![],
+                ..prop_crawler_args()
             },
-            export: ExportArgs {
-                output: std::path::PathBuf::from("out"),
-                format: webfang_core::OutputFormat::Markdown,
-                export_format: webfang_core::ExportFormat::Jsonl,
-                elastic: false,
-                ..Default::default()
-            },
-            obsidian: ObsidianArgs::default(),
-            ai: AiArgs::default(),
-            llm: LlmArgs::default(),
-        };
+            prop_export_args(),
+            ObsidianArgs::default(),
+        );
 
         let opts = webfang_core::application::crawl_options::CrawlOptions::from(args);
 
@@ -927,70 +919,18 @@ proptest! {
             }
         }
 
-        let args = Args {
-            subcommand: None,
-            positional_url: None,
-            crawler: CrawlerArgs {
-                url: Some(ValidUrl::parse("https://example.com/prop").unwrap()),
-                selector,
-                delay_ms: 0,
-                max_pages: 1,
-                concurrency: webfang_core::ConcurrencyConfig::default(),
+        let args = prop_args(
+            CrawlerArgs {
+                selector: selector.clone(),
                 use_sitemap: sitemap_url.is_some(),
-                sitemap_url,
-                single_page: false,
-                resume: false,
-                state_dir: None,
-                download_images: false,
-                download_documents: false,
-                clean_ai: false,
-                adaptive_selectors: false,
-                extraction_fingerprint: false,
-                verbose: 0,
-                quiet: false,
-                dry_run: false,
-                max_depth: 0,
-                timeout_secs: 1,
-                include_patterns: vec![],
-                exclude_patterns: vec![],
-                max_retries: 0,
-                backoff_base_ms: 0,
-                backoff_max_ms: 0,
-                accept_language,
-                user_agent,
-                max_file_size: 0,
-                download_timeout: 0,
-                sitemap_depth: 0,
-                checkpoint_interval: 0,
-                no_checkpoint: false,
-                ignore_robots: false,
-                ignore_waf: false,
-                no_session_health: false,
-                autoscale: false,
-                h2_profile: "Chrome145".into(),
-                js_strategy: webfang_core::domain::JsStrategy::Static,
-                obscura_binary: "obscura".into(),
-                post_load_wait: webfang_core::domain::PostLoadWait::Idle,
-                asset_naming: "hash".into(),
-                download_concurrency: Some(3),
-                rate_limit_burst: None,
-                download_assets: false,
-                trace_file: None,
-                dom_preprune: true,
-                headers: vec![],
-                cookies: vec![],
+                sitemap_url: sitemap_url.clone(),
+                accept_language: accept_language.clone(),
+                user_agent: user_agent.clone(),
+                ..prop_crawler_args()
             },
-            export: ExportArgs {
-                output: std::path::PathBuf::from("out"),
-                format: webfang_core::OutputFormat::Markdown,
-                export_format: webfang_core::ExportFormat::Jsonl,
-                elastic: false,
-                ..Default::default()
-            },
-            obsidian: ObsidianArgs::default(),
-            ai: AiArgs::default(),
-            llm: LlmArgs::default(),
-        };
+            prop_export_args(),
+            ObsidianArgs::default(),
+        );
 
         let expected_selector = args.crawler.selector.clone();
         let expected_accept_language = args.crawler.accept_language.clone();
@@ -1013,74 +953,21 @@ proptest! {
         state_dir in proptest::option::of("[a-z0-9/._-]{1,30}"),
         db_path in proptest::option::of("[a-z0-9/._-]{1,30}"),
     ) {
-        let args = Args {
-            subcommand: None,
-            positional_url: None,
-            crawler: CrawlerArgs {
-                url: Some(ValidUrl::parse("https://example.com/prop").unwrap()),
-                selector: "body".into(),
-                delay_ms: 0,
-                max_pages: 1,
-                concurrency: webfang_core::ConcurrencyConfig::default(),
-                use_sitemap: false,
-                sitemap_url: None,
-                single_page: false,
-                resume: false,
+        let args = prop_args(
+            CrawlerArgs {
                 state_dir: state_dir.as_deref().map(std::path::PathBuf::from),
-                download_images: false,
-                download_documents: false,
-                clean_ai: false,
-                adaptive_selectors: false,
-                extraction_fingerprint: false,
-                verbose: 0,
-                quiet: false,
-                dry_run: false,
-                max_depth: 0,
-                timeout_secs: 1,
-                include_patterns: vec![],
-                exclude_patterns: vec![],
-                max_retries: 0,
-                backoff_base_ms: 0,
-                backoff_max_ms: 0,
-                accept_language: "en".into(),
-                user_agent: None,
-                max_file_size: 0,
-                download_timeout: 0,
-                sitemap_depth: 0,
-                checkpoint_interval: 0,
-                no_checkpoint: false,
-                ignore_robots: false,
-                ignore_waf: false,
-                no_session_health: false,
-                autoscale: false,
-                h2_profile: "Chrome145".into(),
-                js_strategy: webfang_core::domain::JsStrategy::Static,
-                obscura_binary: "obscura".into(),
-                post_load_wait: webfang_core::domain::PostLoadWait::Idle,
-                asset_naming: "hash".into(),
-                download_concurrency: Some(3),
-                rate_limit_burst: None,
-                download_assets: false,
-                trace_file: None,
-                dom_preprune: true,
-                headers: vec![],
-                cookies: vec![],
+                ..prop_crawler_args()
             },
-            export: ExportArgs {
+            ExportArgs {
                 output: std::path::PathBuf::from(&output),
-                format: webfang_core::OutputFormat::Markdown,
-                export_format: webfang_core::ExportFormat::Jsonl,
                 db_path: db_path.as_deref().map(std::path::PathBuf::from),
-                elastic: false,
-                ..Default::default()
+                ..prop_export_args()
             },
-            obsidian: ObsidianArgs {
+            ObsidianArgs {
                 vault: vault.as_deref().map(std::path::PathBuf::from),
                 ..Default::default()
             },
-            ai: AiArgs::default(),
-            llm: LlmArgs::default(),
-        };
+        );
 
         let opts = webfang_core::application::crawl_options::CrawlOptions::from(args);
 
@@ -1103,70 +990,14 @@ proptest! {
         let expected_auto = concurrency.is_auto();
         let expected_value = concurrency.get();
 
-        let args = Args {
-            subcommand: None,
-            positional_url: None,
-            crawler: CrawlerArgs {
-                url: Some(ValidUrl::parse("https://example.com/prop").unwrap()),
-                selector: "body".into(),
-                delay_ms: 0,
-                max_pages: 1,
+        let args = prop_args(
+            CrawlerArgs {
                 concurrency,
-                use_sitemap: false,
-                sitemap_url: None,
-                single_page: false,
-                resume: false,
-                state_dir: None,
-                download_images: false,
-                download_documents: false,
-                clean_ai: false,
-                adaptive_selectors: false,
-                extraction_fingerprint: false,
-                verbose: 0,
-                quiet: false,
-                dry_run: false,
-                max_depth: 0,
-                timeout_secs: 1,
-                include_patterns: vec![],
-                exclude_patterns: vec![],
-                max_retries: 0,
-                backoff_base_ms: 0,
-                backoff_max_ms: 0,
-                accept_language: "en".into(),
-                user_agent: None,
-                max_file_size: 0,
-                download_timeout: 0,
-                sitemap_depth: 0,
-                checkpoint_interval: 0,
-                no_checkpoint: false,
-                ignore_robots: false,
-                ignore_waf: false,
-                no_session_health: false,
-                autoscale: false,
-                h2_profile: "Chrome145".into(),
-                js_strategy: webfang_core::domain::JsStrategy::Static,
-                obscura_binary: "obscura".into(),
-                post_load_wait: webfang_core::domain::PostLoadWait::Idle,
-                asset_naming: "hash".into(),
-                download_concurrency: Some(3),
-                rate_limit_burst: None,
-                download_assets: false,
-                trace_file: None,
-                dom_preprune: true,
-                headers: vec![],
-                cookies: vec![],
+                ..prop_crawler_args()
             },
-            export: ExportArgs {
-                output: std::path::PathBuf::from("out"),
-                format: webfang_core::OutputFormat::Markdown,
-                export_format: webfang_core::ExportFormat::Jsonl,
-                elastic: false,
-                ..Default::default()
-            },
-            obsidian: ObsidianArgs::default(),
-            ai: AiArgs::default(),
-            llm: LlmArgs::default(),
-        };
+            prop_export_args(),
+            ObsidianArgs::default(),
+        );
 
         let opts = webfang_core::application::crawl_options::CrawlOptions::from(args);
 
@@ -1185,73 +1016,14 @@ proptest! {
     fn prop_obsidian_tags_roundtrip(
         tags in proptest::collection::vec("[a-z]{1,10}", 0..10),
     ) {
-        let args = Args {
-            subcommand: None,
-            positional_url: None,
-            crawler: CrawlerArgs {
-                url: Some(ValidUrl::parse("https://example.com/prop").unwrap()),
-                selector: "body".into(),
-                delay_ms: 0,
-                max_pages: 1,
-                concurrency: webfang_core::ConcurrencyConfig::default(),
-                use_sitemap: false,
-                sitemap_url: None,
-                single_page: false,
-                resume: false,
-                state_dir: None,
-                download_images: false,
-                download_documents: false,
-                clean_ai: false,
-                adaptive_selectors: false,
-                extraction_fingerprint: false,
-                verbose: 0,
-                quiet: false,
-                dry_run: false,
-                max_depth: 0,
-                timeout_secs: 1,
-                include_patterns: vec![],
-                exclude_patterns: vec![],
-                max_retries: 0,
-                backoff_base_ms: 0,
-                backoff_max_ms: 0,
-                accept_language: "en".into(),
-                user_agent: None,
-                max_file_size: 0,
-                download_timeout: 0,
-                sitemap_depth: 0,
-                checkpoint_interval: 0,
-                no_checkpoint: false,
-                ignore_robots: false,
-                ignore_waf: false,
-                no_session_health: false,
-                autoscale: false,
-                h2_profile: "Chrome145".into(),
-                js_strategy: webfang_core::domain::JsStrategy::Static,
-                obscura_binary: "obscura".into(),
-                post_load_wait: webfang_core::domain::PostLoadWait::Idle,
-                asset_naming: "hash".into(),
-                download_concurrency: Some(3),
-                rate_limit_burst: None,
-                download_assets: false,
-                trace_file: None,
-                dom_preprune: true,
-                headers: vec![],
-                cookies: vec![],
-            },
-            export: ExportArgs {
-                output: std::path::PathBuf::from("out"),
-                format: webfang_core::OutputFormat::Markdown,
-                export_format: webfang_core::ExportFormat::Jsonl,
-                elastic: false,
-                ..Default::default()
-            },
-            obsidian: ObsidianArgs {
+        let args = prop_args(
+            prop_crawler_args(),
+            prop_export_args(),
+            ObsidianArgs {
                 obsidian_tags: Some(tags.clone()),
                 ..Default::default()
             },
-            ai: AiArgs::default(),
-            llm: LlmArgs::default(),
-        };
+        );
 
         let opts = webfang_core::application::crawl_options::CrawlOptions::from(args);
         prop_assert_eq!(opts.export.obsidian_tags, tags);
@@ -1265,73 +1037,16 @@ proptest! {
     ) {
         let ram_budget = ram_gb.map(|g| g * 1024 * 1024 * 1024);
 
-        let args = Args {
-            subcommand: None,
-            positional_url: None,
-            crawler: CrawlerArgs {
-                url: Some(ValidUrl::parse("https://example.com/prop").unwrap()),
-                selector: "body".into(),
-                delay_ms: 0,
-                max_pages: 1,
-                concurrency: webfang_core::ConcurrencyConfig::default(),
-                use_sitemap: false,
-                sitemap_url: None,
-                single_page: false,
-                resume: false,
-                state_dir: None,
-                download_images: false,
-                download_documents: false,
-                clean_ai: false,
-                adaptive_selectors: false,
-                extraction_fingerprint: false,
-                verbose: 0,
-                quiet: false,
-                dry_run: false,
-                max_depth: 0,
-                timeout_secs: 1,
-                include_patterns: vec![],
-                exclude_patterns: vec![],
-                max_retries: 0,
-                backoff_base_ms: 0,
-                backoff_max_ms: 0,
-                accept_language: "en".into(),
-                user_agent: None,
-                max_file_size: 0,
-                download_timeout: 0,
-                sitemap_depth: 0,
-                checkpoint_interval: 0,
-                no_checkpoint: false,
-                ignore_robots: false,
-                ignore_waf: false,
-                no_session_health: false,
-                autoscale: false,
-                h2_profile: "Chrome145".into(),
-                js_strategy: webfang_core::domain::JsStrategy::Static,
-                obscura_binary: "obscura".into(),
-                post_load_wait: webfang_core::domain::PostLoadWait::Idle,
-                asset_naming: "hash".into(),
-                download_concurrency: Some(3),
-                rate_limit_burst: None,
-                download_assets: false,
-                trace_file: None,
-                dom_preprune: true,
-                headers: vec![],
-                cookies: vec![],
-            },
-            export: ExportArgs {
-                output: std::path::PathBuf::from("out"),
-                format: webfang_core::OutputFormat::Markdown,
-                export_format: webfang_core::ExportFormat::Jsonl,
+        let args = prop_args(
+            prop_crawler_args(),
+            ExportArgs {
                 cpu_cores,
                 ram_budget,
-                db_path: None,
                 elastic: true,
-                ..Default::default()
+                ..prop_export_args()
             },
-            obsidian: ObsidianArgs::default(),
-            ai: AiArgs::default(),
-            llm: LlmArgs::default(),
-        };
+            ObsidianArgs::default(),
+        );
 
         let opts = webfang_core::application::crawl_options::CrawlOptions::from(args);
 
