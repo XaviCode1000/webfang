@@ -22,7 +22,6 @@ typos = "1.42.3"                       # spell checker (aqua shorthand, pinned f
 "cargo:cargo-machete" = "latest"       # unused dependency detection
 "cargo:cargo-edit" = "0.13.5"           # cargo add/rm/upgrade (pinned — newer requires rustc ≥1.89)
 "aqua:mitsuhiko/insta" = "1.48.0"       # cargo-insta CLI (prebuilt) — pinned to match insta lib in Cargo.lock
-"cargo:bacon" = "latest"                # watch-mode background checker (uses repo bacon.toml)
 "aqua:rhysd/actionlint" = "1.7.12"      # GitHub Actions workflow linter — catches block-scalar nesting bugs YAML parsers miss (#836)
 "aqua:koalaman/shellcheck" = "0.11.0"   # required by actionlint's shellcheck rule — without it, `run: |` nesting bugs go undetected (#836)
 "aqua:zizmorcore/zizmor" = "1.30.1"     # GitHub Actions security linter (SAST) — catches injection, credentials & permission bugs
@@ -30,12 +29,6 @@ typos = "1.42.3"                       # spell checker (aqua shorthand, pinned f
 "aqua:jgm/pandoc" = "3.10.1"
 
 # === Optional (uncomment when needed) ===
-# rust-analyzer — pinned EXACT at project level (#1280): date-versioned by mise;
-# pinning keeps RA deterministic across sessions and worktrees. The previous
-# setup resolved RA through a fragile chain (rustup proxy for a non-installed
-# component falling back to a floating "latest"), a documented false-positive
-# source when RA and rustc drift apart.
-rust-analyzer = "2026-09-07"
 # "cargo:cargo-outdated" = "latest"    # no aqua, no binstall — compiles
 # "cargo:cargo-expand" = "latest"      # no aqua, no binstall — compiles
 # "cargo:cargo-watch" = "latest"       # no aqua, no binstall — compiles
