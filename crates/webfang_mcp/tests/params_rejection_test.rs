@@ -8,6 +8,14 @@
 //! Exceptions: `validate_url` (returns tool-level `{"valid": false}`) and
 //! `detect_obsidian_vault` (accepts absolute paths) — see bug #590.
 //!
+//! Layout (T7 slice-12, issue #1887): the rejection cases share one
+//! arrange-act skeleton ([`invoke`]) and are grouped into three case tables —
+//! unsupported URL schemes, `-32602` protocol rejections, and acceptance
+//! controls — each iterated by a single loop test. The unknown-field
+//! deserialization case keeps its own test: it asserts the tool-error channel
+//! (`isError: true`), not `-32602`. Case count: 24 before (one test per case),
+//! 24 after (4 + 13 + 6 table rows + 1 specialized test).
+//!
 //! Run with: cargo nextest run --test params_rejection_test --features mcp
 
 #![cfg(feature = "mcp")]
@@ -32,13 +40,25 @@ const MAX_BLOB_LEN_PLUS_1: usize = 1_048_577;
 // helpers come from `tests/common/mod.rs`.
 // ============================================================================
 
+/// Shared arrange-act skeleton: start the SSRF-enabled harness, open a
+/// session, and invoke one tool. Every case table below iterates through this
+/// single helper, so the four-line setup exists exactly once instead of once
+/// per rejection case.
+async fn invoke(tool: &str, args: Value) -> Value {
+    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+    call_tool(&client, &base_url, &session_id, tool, args).await
+}
+
 /// #1116: an invalid URL is now rejected at the `McpUrl` deserialization
 /// boundary. rmcp 1.8.0 surfaces tool-ARGUMENT deserialization failures as a
 /// `CallToolResult::error` (`isError:true`) rather than a JSON-RPC protocol
 /// error (see `into_tool_argument_error` in rmcp's router). This helper
 /// accepts EITHER rejection shape and asserts the reason names the scheme —
 /// the invariant is "rejected before any fetch", not the exact envelope.
-fn assert_url_argument_rejected(resp: &Value, reason_substring: &str) {
+/// `case` names the table row so a failure identifies which input failed.
+fn assert_url_argument_rejected(case: &str, resp: &Value, reason_substring: &str) {
     let rejected_as_protocol_error = error_code(resp) == Some(JSONRPC_INVALID_PARAMS);
     let result = resp.get("result");
     let rejected_as_tool_error = result
@@ -47,7 +67,7 @@ fn assert_url_argument_rejected(resp: &Value, reason_substring: &str) {
         == Some(true);
     assert!(
         rejected_as_protocol_error || rejected_as_tool_error,
-        "invalid URL must be rejected (protocol -32602 or tool isError), got: {resp}"
+        "{case}: invalid URL must be rejected (protocol -32602 or tool isError), got: {resp}"
     );
     let text = result.map(tool_text).unwrap_or_default();
     let protocol_msg = resp
@@ -58,7 +78,7 @@ fn assert_url_argument_rejected(resp: &Value, reason_substring: &str) {
     let haystack = format!("{text}{protocol_msg}").to_lowercase();
     assert!(
         haystack.contains(&reason_substring.to_lowercase()),
-        "rejection must mention '{reason_substring}', got: {resp}"
+        "{case}: rejection must mention '{reason_substring}', got: {resp}"
     );
 }
 
@@ -67,187 +87,234 @@ fn assert_url_argument_rejected(resp: &Value, reason_substring: &str) {
 // reach network/IO.
 // ============================================================================
 
-/// `scrape_url` rejects a `file://` URL (unsupported scheme).
-#[tokio::test]
-async fn scrape_url_rejects_file_scheme() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "scrape_url",
-        json!({ "url": "file:///etc/passwd" }),
-    )
-    .await;
-
-    assert_url_argument_rejected(&resp, "no soportado");
+/// One unsupported-scheme row: the tool, the offending arguments, and the row
+/// name used to identify failures.
+struct SchemeRejectionCase {
+    name: &'static str,
+    tool: &'static str,
+    args: Value,
 }
 
-/// `scrape_url` rejects an `ftp://` URL (unsupported scheme).
-#[tokio::test]
-async fn scrape_url_rejects_ftp_scheme() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "scrape_url",
-        json!({ "url": "ftp://example.com/file" }),
-    )
-    .await;
-
-    assert_url_argument_rejected(&resp, "no soportado");
+/// Unsupported-scheme rows: `scrape_url`, `extract_domain` and `crawl_site`
+/// reject non-http(s) URLs before any fetch, on either rejection channel.
+fn unsupported_scheme_cases() -> Vec<SchemeRejectionCase> {
+    vec![
+        SchemeRejectionCase {
+            name: "scrape_url rejects file://",
+            tool: "scrape_url",
+            args: json!({ "url": "file:///etc/passwd" }),
+        },
+        SchemeRejectionCase {
+            name: "scrape_url rejects ftp://",
+            tool: "scrape_url",
+            args: json!({ "url": "ftp://example.com/file" }),
+        },
+        SchemeRejectionCase {
+            name: "extract_domain rejects file://",
+            tool: "extract_domain",
+            args: json!({ "url": "file:///etc/passwd" }),
+        },
+        SchemeRejectionCase {
+            name: "crawl_site rejects ftp://",
+            tool: "crawl_site",
+            args: json!({ "url": "ftp://example.com" }),
+        },
+    ]
 }
 
-/// `validate_url` returns a tool-level result (not a protocol error) for a
-/// `file://` URL (bug #7 fix: tool reports parsed result instead of rejecting).
+/// Unsupported URL schemes are rejected before any fetch, on either rejection
+/// channel, with the reason naming the scheme.
 #[tokio::test]
-async fn validate_url_file_scheme_returns_tool_result() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "validate_url",
-        json!({ "url": "file:///etc/passwd" }),
-    )
-    .await;
-
-    // After bug #7 fix: validate_url no longer calls params.validate()?.
-    // It returns a JSON tool result for ALL inputs (file:// is a valid URL per
-    // RFC 3986, so it reports valid:true with scheme:file).
-    assert_eq!(
-        error_code(&resp),
-        None,
-        "validate_url must NOT return protocol error, got: {resp}"
-    );
-    let result = resp
-        .get("result")
-        .unwrap_or_else(|| panic!("expected a tool result, got: {resp}"));
-    assert!(
-        !is_tool_error(result),
-        "validate_url file:// must not be a tool error"
-    );
+async fn unsupported_url_schemes_are_rejected_before_any_fetch() {
+    for case in unsupported_scheme_cases() {
+        let resp = invoke(case.tool, case.args).await;
+        assert_url_argument_rejected(case.name, &resp, "no soportado");
+    }
 }
 
-/// `extract_domain` rejects a non-http(s) URL.
-#[tokio::test]
-async fn extract_domain_rejects_file_scheme() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "extract_domain",
-        json!({ "url": "file:///etc/passwd" }),
-    )
-    .await;
-
-    assert_url_argument_rejected(&resp, "no soportado");
+/// One `-32602` protocol-rejection row: the tool, the offending arguments, and
+/// the assertion message naming the violated bound (without the trailing
+/// response dump — the loop appends it).
+struct ProtocolRejectionCase {
+    name: &'static str,
+    tool: &'static str,
+    args: Value,
+    message: &'static str,
 }
 
-/// `crawl_site` rejects an unsupported scheme.
-#[tokio::test]
-async fn crawl_site_rejects_ftp_scheme() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "crawl_site",
-        json!({ "url": "ftp://example.com" }),
-    )
-    .await;
-
-    assert_url_argument_rejected(&resp, "no soportado");
+/// Handler-level `params.validate()?` rejections: each row must map to
+/// JSON-RPC `-32602` before any network access or semaphore acquisition.
+/// Assembled from the per-area tables below (split so each stays under the
+/// `too_many_lines` ratchet).
+fn protocol_rejection_cases() -> Vec<ProtocolRejectionCase> {
+    let mut cases = crawl_protocol_rejection_cases();
+    cases.extend(export_protocol_rejection_cases());
+    cases.extend(tool_protocol_rejection_cases());
+    cases
 }
 
-/// `crawl_site` rejects a `max_depth` beyond the allowed bound (> 10).
-#[tokio::test]
-async fn crawl_site_rejects_max_depth_beyond_limit() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "crawl_site",
-        json!({ "url": "https://example.com", "max_depth": 11 }),
-    )
-    .await;
-
-    assert_eq!(
-        error_code(&resp),
-        Some(JSONRPC_INVALID_PARAMS),
-        "max_depth > 10 must be rejected with -32602, got: {resp}"
-    );
+/// Crawl/download rows of the `-32602` table.
+fn crawl_protocol_rejection_cases() -> Vec<ProtocolRejectionCase> {
+    vec![
+        ProtocolRejectionCase {
+            name: "crawl_site max_depth beyond limit",
+            tool: "crawl_site",
+            args: json!({ "url": "https://example.com", "max_depth": 11 }),
+            message: "max_depth > 10 must be rejected with -32602",
+        },
+        // Absolute `checkpoint_dir` with no export roots (#1588): the
+        // checkpoint is a filesystem write target and runs through the same
+        // fail-closed root gate as `output_dir`. The accepted counterpart
+        // (absolute `checkpoint_dir` under a configured root) lives in
+        // `scraping_coverage_test.rs::mcp_crawl_checkpoint_resume_roundtrip`,
+        // whose harness declares the system temp dir as its root.
+        ProtocolRejectionCase {
+            name: "crawl_site absolute checkpoint_dir without roots",
+            tool: "crawl_site",
+            args: json!({
+                "url": "https://example.com",
+                "max_depth": 1,
+                "max_pages": 1,
+                "checkpoint_dir": "/tmp/webfang-checkpoints-1588"
+            }),
+            message: "absolute checkpoint_dir without export roots must be rejected with -32602",
+        },
+        ProtocolRejectionCase {
+            name: "download_assets output_dir traversal",
+            tool: "download_assets",
+            args: json!({
+                "html": "<img src='https://example.com/a.png'>",
+                "base_url": "https://example.com",
+                "images": true, "documents": false, "output_dir": "../escape"
+            }),
+            message: "download_assets output_dir traversal must be rejected with -32602",
+        },
+    ]
 }
 
-/// `crawl_site` rejects an absolute `checkpoint_dir` when no export roots are
-/// configured (#1588) — the checkpoint is a filesystem write target and runs
-/// through the same fail-closed root gate as `output_dir`.
-///
-/// This harness declares NO `--export-roots`, so the absolute path must be a
-/// protocol-level `-32602` before any semaphore, SSRF check, or network work.
-/// The accepted counterpart (absolute `checkpoint_dir` under a configured
-/// root) lives in `scraping_coverage_test.rs::mcp_crawl_checkpoint_resume_roundtrip`,
-/// whose harness declares the system temp dir as its root.
+/// Export rows of the `-32602` table.
+fn export_protocol_rejection_cases() -> Vec<ProtocolRejectionCase> {
+    vec![
+        ProtocolRejectionCase {
+            name: "export_file output_dir traversal",
+            tool: "export_file",
+            args: json!({
+                "output_dir": "../escape", "filename": "out",
+                "format": "jsonl", "content": "hello"
+            }),
+            message: "output_dir traversal must be rejected with -32602",
+        },
+        // Absolute `output_dir` with no export roots (#756, completing #696):
+        // issue #600 relaxed the syntactic validator so absolute paths reach
+        // the handler, but the root-of-trust gate (#696) was only wired into
+        // `download_assets` — this tool happily wrote to any absolute
+        // directory (RIESGO-MCP-EXPORT-001). The handler now enforces the
+        // fail-closed gate: with no `--export-roots` configured, an absolute
+        // `output_dir` is a protocol-level `-32602`.
+        ProtocolRejectionCase {
+            name: "export_file absolute output_dir without roots",
+            tool: "export_file",
+            args: json!({
+                "output_dir": "/tmp/webfang-export", "filename": "out",
+                "format": "jsonl", "content": "hello"
+            }),
+            message:
+                "absolute output_dir without configured export roots must be rejected with -32602",
+        },
+        // #756 runtime probe on `export_jsonl`: the root-of-trust gate runs
+        // BEFORE `load_results`, so an absolute `output_dir` on a server
+        // without seeds/export roots yields the gate's `-32602`, not the
+        // operational "no hay resultados disponibles" error.
+        ProtocolRejectionCase {
+            name: "export_jsonl absolute output_dir without roots",
+            tool: "export_jsonl",
+            args: json!({ "output_dir": "/tmp/webfang-export", "filename": "out" }),
+            message:
+                "absolute output_dir without configured export roots must be rejected with -32602",
+        },
+        // #756: same runtime proof for `export_vector` (see `export_jsonl`).
+        ProtocolRejectionCase {
+            name: "export_vector absolute output_dir without roots",
+            tool: "export_vector",
+            args: json!({ "output_dir": "/tmp/webfang-export", "filename": "out" }),
+            message:
+                "absolute output_dir without configured export roots must be rejected with -32602",
+        },
+        ProtocolRejectionCase {
+            name: "export_file filename traversal (issue #601)",
+            tool: "export_file",
+            args: json!({
+                "output_dir": "exports", "filename": "../escape",
+                "format": "jsonl", "content": "hello"
+            }),
+            message: "filename traversal must be rejected with -32602",
+        },
+        ProtocolRejectionCase {
+            name: "export_file filename subdirectory (issue #601)",
+            tool: "export_file",
+            args: json!({
+                "output_dir": "exports", "filename": "sub/out",
+                "format": "jsonl", "content": "hello"
+            }),
+            message: "filename subdirectory must be rejected with -32602",
+        },
+        ProtocolRejectionCase {
+            name: "export_file unknown format",
+            tool: "export_file",
+            args: json!({
+                "output_dir": "exports", "filename": "out",
+                "format": "bogus", "content": "hello"
+            }),
+            message: "unknown format must be rejected with -32602",
+        },
+    ]
+}
+
+/// Remaining tool rows of the `-32602` table.
+fn tool_protocol_rejection_cases() -> Vec<ProtocolRejectionCase> {
+    vec![
+        ProtocolRejectionCase {
+            name: "build_obsidian_uri traversal file_path",
+            tool: "build_obsidian_uri",
+            args: json!({ "vault_name": "MyVault", "file_path": "../escape" }),
+            message: "file_path traversal must be rejected with -32602",
+        },
+        ProtocolRejectionCase {
+            name: "clean_html oversize blob",
+            tool: "clean_html",
+            args: json!({ "html": "a".repeat(MAX_BLOB_LEN_PLUS_1) }),
+            message: "oversize html blob must be rejected with -32602",
+        },
+        ProtocolRejectionCase {
+            name: "detect_waf oversize html (no network access)",
+            tool: "detect_waf",
+            args: json!({ "html": "a".repeat(MAX_BLOB_LEN_PLUS_1) }),
+            message: "oversize html blob must be rejected with -32602",
+        },
+    ]
+}
+
+/// Handler-level validation failures map to JSON-RPC `-32602` and never reach
+/// network/IO.
 #[tokio::test]
-async fn crawl_site_rejects_absolute_checkpoint_dir_without_roots() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "crawl_site",
-        json!({
-            "url": "https://example.com",
-            "max_depth": 1,
-            "max_pages": 1,
-            "checkpoint_dir": "/tmp/webfang-checkpoints-1588"
-        }),
-    )
-    .await;
-
-    assert_eq!(
-        error_code(&resp),
-        Some(JSONRPC_INVALID_PARAMS),
-        "absolute checkpoint_dir without export roots must be rejected with -32602, got: {resp}"
-    );
+async fn invalid_params_are_rejected_with_32602() {
+    for case in protocol_rejection_cases() {
+        let resp = invoke(case.tool, case.args).await;
+        assert_eq!(
+            error_code(&resp),
+            Some(JSONRPC_INVALID_PARAMS),
+            "{}: {}, got: {resp}",
+            case.name,
+            case.message,
+        );
+    }
 }
 
 /// `scrape_with_options` rejects an unknown field (deny_unknown_fields) at the
 /// deserialization boundary, mapped to -32602.
 #[tokio::test]
 async fn scrape_with_options_rejects_unknown_field() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
+    let resp = invoke(
         "scrape_with_options",
         json!({ "url": "https://example.com", "typo_field": 1 }),
     )
@@ -265,446 +332,95 @@ async fn scrape_with_options_rejects_unknown_field() {
     );
 }
 
-/// `export_file` rejects a path-traversal `output_dir`.
-#[tokio::test]
-async fn export_file_rejects_output_dir_traversal() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "export_file",
-        json!({
-            "output_dir": "../escape",
-            "filename": "out",
-            "format": "jsonl",
-            "content": "hello"
-        }),
-    )
-    .await;
-
-    assert_eq!(
-        error_code(&resp),
-        Some(JSONRPC_INVALID_PARAMS),
-        "output_dir traversal must be rejected with -32602, got: {resp}"
-    );
-}
-
-/// `export_file` rejects an absolute `output_dir` when no export roots are
-/// configured (#756, completing #696).
-///
-/// Issue #600 relaxed the syntactic validator so absolute paths reach the
-/// handler, but the root-of-trust gate (#696) was only wired into
-/// `download_assets` — this tool happily wrote to any absolute directory
-/// (RIESGO-MCP-EXPORT-001). The handler now enforces the fail-closed gate:
-/// with no `--export-roots` configured, an absolute `output_dir` is a
-/// protocol-level `-32602`.
-#[tokio::test]
-async fn export_file_rejects_absolute_output_dir_without_roots() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "export_file",
-        json!({
-            "output_dir": "/tmp/webfang-export",
-            "filename": "out",
-            "format": "jsonl",
-            "content": "hello"
-        }),
-    )
-    .await;
-
-    assert_eq!(
-        error_code(&resp),
-        Some(JSONRPC_INVALID_PARAMS),
-        "absolute output_dir without configured export roots must be rejected with -32602, got: {resp}"
-    );
-}
-
-/// #756: the runtime probe the issue called for on `export_jsonl` — the
-/// root-of-trust gate runs BEFORE `load_results`, so an absolute `output_dir`
-/// on a server without seeds/export roots yields the gate's `-32602`, not the
-/// operational "no hay resultados disponibles" error.
-#[tokio::test]
-async fn export_jsonl_rejects_absolute_output_dir_without_roots() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "export_jsonl",
-        json!({
-            "output_dir": "/tmp/webfang-export",
-            "filename": "out"
-        }),
-    )
-    .await;
-
-    assert_eq!(
-        error_code(&resp),
-        Some(JSONRPC_INVALID_PARAMS),
-        "absolute output_dir without configured export roots must be rejected with -32602, got: {resp}"
-    );
-}
-
-/// #756: same runtime proof for `export_vector` (see `export_jsonl` above).
-#[tokio::test]
-async fn export_vector_rejects_absolute_output_dir_without_roots() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "export_vector",
-        json!({
-            "output_dir": "/tmp/webfang-export",
-            "filename": "out"
-        }),
-    )
-    .await;
-
-    assert_eq!(
-        error_code(&resp),
-        Some(JSONRPC_INVALID_PARAMS),
-        "absolute output_dir without configured export roots must be rejected with -32602, got: {resp}"
-    );
-}
-
-/// `export_file` rejects a path-traversal `filename` (issue #601).
-#[tokio::test]
-async fn export_file_rejects_filename_traversal() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "export_file",
-        json!({
-            "output_dir": "exports",
-            "filename": "../escape",
-            "format": "jsonl",
-            "content": "hello"
-        }),
-    )
-    .await;
-
-    assert_eq!(
-        error_code(&resp),
-        Some(JSONRPC_INVALID_PARAMS),
-        "filename traversal must be rejected with -32602, got: {resp}"
-    );
-}
-
-/// `export_file` rejects a `filename` containing a subdirectory separator
-/// (issue #601).
-#[tokio::test]
-async fn export_file_rejects_filename_subdirectory() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "export_file",
-        json!({
-            "output_dir": "exports",
-            "filename": "sub/out",
-            "format": "jsonl",
-            "content": "hello"
-        }),
-    )
-    .await;
-
-    assert_eq!(
-        error_code(&resp),
-        Some(JSONRPC_INVALID_PARAMS),
-        "filename subdirectory must be rejected with -32602, got: {resp}"
-    );
-}
-
-/// `export_file` rejects an unrecognized export format.
-#[tokio::test]
-async fn export_file_rejects_unknown_format() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "export_file",
-        json!({
-            "output_dir": "exports",
-            "filename": "out",
-            "format": "bogus",
-            "content": "hello"
-        }),
-    )
-    .await;
-
-    assert_eq!(
-        error_code(&resp),
-        Some(JSONRPC_INVALID_PARAMS),
-        "unknown format must be rejected with -32602, got: {resp}"
-    );
-}
-
-/// `download_assets` rejects a path-traversal `output_dir`.
-#[tokio::test]
-async fn download_assets_rejects_output_dir_traversal() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "download_assets",
-        json!({
-            "html": "<img src='https://example.com/a.png'>",
-            "base_url": "https://example.com",
-            "images": true,
-            "documents": false,
-            "output_dir": "../escape"
-        }),
-    )
-    .await;
-
-    assert_eq!(
-        error_code(&resp),
-        Some(JSONRPC_INVALID_PARAMS),
-        "download_assets output_dir traversal must be rejected with -32602, got: {resp}"
-    );
-}
-
-/// `detect_obsidian_vault` accepts an absolute `vault_path` (bug #8 fix).
-#[tokio::test]
-async fn detect_obsidian_vault_accepts_absolute_path() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "detect_obsidian_vault",
-        json!({ "vault_path": "/tmp/some-vault" }),
-    )
-    .await;
-
-    // After bug #8 fix: absolute paths are accepted (no -32602).
-    // The tool will return a result (vault not found, but not a validation error).
-    assert_eq!(
-        error_code(&resp),
-        None,
-        "absolute vault_path must NOT be rejected with -32602, got: {resp}"
-    );
-}
-
-/// `build_obsidian_uri` rejects a path-traversal `file_path`.
-#[tokio::test]
-async fn build_obsidian_uri_rejects_traversal_file_path() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "build_obsidian_uri",
-        json!({ "vault_name": "MyVault", "file_path": "../escape" }),
-    )
-    .await;
-
-    assert_eq!(
-        error_code(&resp),
-        Some(JSONRPC_INVALID_PARAMS),
-        "file_path traversal must be rejected with -32602, got: {resp}"
-    );
-}
-
-/// `clean_html` rejects an oversize HTML blob.
-#[tokio::test]
-async fn clean_html_rejects_oversize_blob() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "clean_html",
-        json!({ "html": "a".repeat(MAX_BLOB_LEN_PLUS_1) }),
-    )
-    .await;
-
-    assert_eq!(
-        error_code(&resp),
-        Some(JSONRPC_INVALID_PARAMS),
-        "oversize html blob must be rejected with -32602, got: {resp}"
-    );
-}
-
-/// `detect_waf` rejects an oversize HTML blob (no network access).
-#[tokio::test]
-async fn detect_waf_rejects_oversize_html() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "detect_waf",
-        json!({ "html": "a".repeat(MAX_BLOB_LEN_PLUS_1) }),
-    )
-    .await;
-
-    assert_eq!(
-        error_code(&resp),
-        Some(JSONRPC_INVALID_PARAMS),
-        "oversize html blob must be rejected with -32602, got: {resp}"
-    );
-}
-
 // ============================================================================
 // Control tests — valid parameters must NOT be rejected (-32602 absent) and
 // must reach the tool body (proving validation does not over-reject).
 // ============================================================================
 
-/// `validate_url` accepts a valid https URL and succeeds (no -32602).
-#[tokio::test]
-async fn validate_url_accepts_https() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "validate_url",
-        json!({ "url": "https://example.com/path?q=1" }),
-    )
-    .await;
-
-    assert_eq!(
-        error_code(&resp),
-        None,
-        "valid https URL must not be rejected, got: {resp}"
-    );
-    assert!(
-        !is_tool_error(resp.get("result").unwrap_or(&Value::Null)),
-        "valid https URL result must not be an error: {}",
-        tool_text(resp.get("result").unwrap_or(&Value::Null))
-    );
+/// One acceptance row: valid parameters that must NOT be rejected. Rows with
+/// `check_body` additionally assert the tool result itself is not an error.
+struct AcceptCase {
+    name: &'static str,
+    tool: &'static str,
+    args: Value,
+    check_body: bool,
 }
 
-/// `extract_links` accepts valid html + base_url and succeeds (no -32602).
-#[tokio::test]
-async fn extract_links_accepts_valid() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "extract_links",
-        json!({
-            "html": "<html><body><a href=\"/page\">link</a></body></html>",
-            "base_url": "https://example.com"
-        }),
-    )
-    .await;
-
-    assert_eq!(
-        error_code(&resp),
-        None,
-        "valid extract_links params must not be rejected, got: {resp}"
-    );
+/// Acceptance rows: bug-#7/#8 fixtures plus the over-rejection guards.
+fn accept_cases() -> Vec<AcceptCase> {
+    vec![
+        // Bug #7 fix: `validate_url` no longer calls `params.validate()?` — it
+        // returns a JSON tool result for ALL inputs (`file://` is a valid URL
+        // per RFC 3986, so it reports valid:true with scheme:file).
+        AcceptCase {
+            name: "validate_url file:// returns tool result (bug #7)",
+            tool: "validate_url",
+            args: json!({ "url": "file:///etc/passwd" }),
+            check_body: true,
+        },
+        // Bug #8 fix: absolute paths are accepted (no -32602). The tool
+        // returns a result (vault not found, but not a validation error).
+        AcceptCase {
+            name: "detect_obsidian_vault accepts absolute path (bug #8)",
+            tool: "detect_obsidian_vault",
+            args: json!({ "vault_path": "/tmp/some-vault" }),
+            check_body: false,
+        },
+        AcceptCase {
+            name: "validate_url accepts https",
+            tool: "validate_url",
+            args: json!({ "url": "https://example.com/path?q=1" }),
+            check_body: true,
+        },
+        AcceptCase {
+            name: "extract_links accepts valid html",
+            tool: "extract_links",
+            args: json!({
+                "html": "<html><body><a href=\"/page\">link</a></body></html>",
+                "base_url": "https://example.com"
+            }),
+            check_body: false,
+        },
+        // The documented format: a bare `base_domain` must NOT be rejected.
+        AcceptCase {
+            name: "convert_wiki_links accepts bare domain",
+            tool: "convert_wiki_links",
+            args: json!({ "markdown": "[link](/page)", "base_domain": "example.com" }),
+            check_body: true,
+        },
+        // The core's `normalize_seed_host` handles full URLs, so a full-URL
+        // `seed_domain` must NOT be rejected by validation.
+        AcceptCase {
+            name: "is_internal_link accepts full-URL seed",
+            tool: "is_internal_link",
+            args: json!({
+                "url": "https://example.com/page",
+                "seed_domain": "https://example.com"
+            }),
+            check_body: true,
+        },
+    ]
 }
 
-/// `convert_wiki_links` accepts a bare `base_domain` (the documented format)
-/// and must NOT be rejected by validation.
+/// Valid parameters are NOT rejected (-32602 absent) and reach the tool body,
+/// proving validation does not over-reject.
 #[tokio::test]
-async fn convert_wiki_links_accepts_bare_domain() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "convert_wiki_links",
-        json!({ "markdown": "[link](/page)", "base_domain": "example.com" }),
-    )
-    .await;
-
-    assert_eq!(
-        error_code(&resp),
-        None,
-        "bare base_domain must not be rejected, got: {resp}"
-    );
-    assert!(
-        !is_tool_error(resp.get("result").unwrap_or(&Value::Null)),
-        "bare base_domain result must not be an error: {}",
-        tool_text(resp.get("result").unwrap_or(&Value::Null))
-    );
-}
-
-/// `is_internal_link` accepts a full-URL `seed_domain` (the core's
-/// `normalize_seed_host` handles it) and must NOT be rejected by validation.
-#[tokio::test]
-async fn is_internal_link_accepts_full_url_seed() {
-    let (base_url, _handle) = start_test_server_ssrf_enabled().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "is_internal_link",
-        json!({ "url": "https://example.com/page", "seed_domain": "https://example.com" }),
-    )
-    .await;
-
-    assert_eq!(
-        error_code(&resp),
-        None,
-        "full-URL seed_domain must not be rejected, got: {resp}"
-    );
-    assert!(
-        !is_tool_error(resp.get("result").unwrap_or(&Value::Null)),
-        "full-URL seed_domain result must not be an error: {}",
-        tool_text(resp.get("result").unwrap_or(&Value::Null))
-    );
+async fn valid_params_are_not_rejected() {
+    for case in accept_cases() {
+        let resp = invoke(case.tool, case.args).await;
+        assert_eq!(
+            error_code(&resp),
+            None,
+            "{}: valid params must not be rejected, got: {resp}",
+            case.name,
+        );
+        if case.check_body {
+            assert!(
+                !is_tool_error(resp.get("result").unwrap_or(&Value::Null)),
+                "{}: result must not be an error: {}",
+                case.name,
+                tool_text(resp.get("result").unwrap_or(&Value::Null))
+            );
+        }
+    }
 }
