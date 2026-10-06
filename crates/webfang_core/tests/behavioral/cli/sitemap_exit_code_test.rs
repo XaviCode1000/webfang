@@ -73,38 +73,76 @@ async fn gzip_compress(data: &[u8]) -> Vec<u8> {
     out
 }
 
+/// Start a fresh mock server with a temp output dir for one exit-code scenario.
+async fn start_scenario() -> (MockServer, TempDir) {
+    (MockServer::start().await, TempDir::new().unwrap())
+}
+
+/// Mount a sitemap body at `/sitemap.xml` with `200 OK`.
+async fn mount_sitemap_xml(server: &MockServer, body: &str) {
+    Mock::given(method("GET"))
+        .and(path("/sitemap.xml"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body))
+        .mount(server)
+        .await;
+}
+
+/// Mount a two-child sitemap index at `/sitemap.xml` plus both children,
+/// each served with `status` and `body`.
+async fn mount_index_with_children(server: &MockServer, base: &str, status: u16, body: &str) {
+    let children = [format!("{base}/child-a.xml"), format!("{base}/child-b.xml")];
+    Mock::given(method("GET"))
+        .and(path("/sitemap.xml"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(sitemap_index_with(&children)))
+        .mount(server)
+        .await;
+    for child in ["/child-a.xml", "/child-b.xml"] {
+        Mock::given(method("GET"))
+            .and(path(child))
+            .respond_with(ResponseTemplate::new(status).set_body_string(body))
+            .mount(server)
+            .await;
+    }
+}
+
+/// Run the sitemap command against `url`, inserting `extra` args between
+/// `--use-sitemap` and `--output <dir> --quiet`.
+fn run_sitemap_cmd(output: &TempDir, url: &str, extra: &[&str]) -> std::process::Output {
+    let mut command = cmd();
+    command.arg("--url").arg(url).arg("--use-sitemap");
+    command.args(extra);
+    command
+        .arg("--output")
+        .arg(output.path())
+        .arg("--quiet")
+        .output()
+        .expect("run webfang")
+}
+
+/// Snapshot a finished run's stderr with the standard redaction chain.
+fn snapshot_stderr(name: &str, output: &TempDir, result: &std::process::Output) {
+    let stderr = String::from_utf8_lossy(&result.stderr).to_string();
+    assert_snapshot_redacted(name, output.path(), stderr);
+}
+
 // ---------------------------------------------------------------------------
 // 1. Empty urlset → exit 2
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn empty_urlset_exits_2() {
-    let server = MockServer::start().await;
-    let output = TempDir::new().unwrap();
+    let (server, output) = start_scenario().await;
 
-    Mock::given(method("GET"))
-        .and(path("/sitemap.xml"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(EMPTY_URLSET))
-        .mount(&server)
-        .await;
+    mount_sitemap_xml(&server, EMPTY_URLSET).await;
 
-    let result = cmd()
-        .arg("--url")
-        .arg(server.uri())
-        .arg("--use-sitemap")
-        .arg("--output")
-        .arg(output.path())
-        .arg("--quiet")
-        .output()
-        .expect("run webfang");
+    let result = run_sitemap_cmd(&output, &server.uri(), &[]);
 
     assert_eq!(
         result.status.code(),
         Some(2),
         "an empty urlset must exit 2 (no URLs discovered)"
     );
-    let stderr = String::from_utf8_lossy(&result.stderr).to_string();
-    assert_snapshot_redacted("empty_urlset_stderr", output.path(), stderr);
+    snapshot_stderr("empty_urlset_stderr", &output, &result);
 }
 
 // ---------------------------------------------------------------------------
@@ -113,34 +151,20 @@ async fn empty_urlset_exits_2() {
 
 #[tokio::test]
 async fn missing_sitemap_auto_discovery_exits_2() {
-    let server = MockServer::start().await;
-    let output = TempDir::new().unwrap();
+    let (server, output) = start_scenario().await;
 
     // Only seed page + robots.txt; NO sitemap stubs — unmatched requests 404
     // across every discovery tier.
     mount_seed_and_robots(&server).await;
 
-    let result = cmd()
-        .arg("--url")
-        .arg(server.uri())
-        .arg("--use-sitemap")
-        .arg("--output")
-        .arg(output.path())
-        .arg("--quiet")
-        .output()
-        .expect("run webfang");
+    let result = run_sitemap_cmd(&output, &server.uri(), &[]);
 
     assert_eq!(
         result.status.code(),
         Some(2),
         "auto-discovery with no sitemap anywhere must exit 2"
     );
-    let stderr = String::from_utf8_lossy(&result.stderr).to_string();
-    assert_snapshot_redacted(
-        "missing_sitemap_auto_discovery_stderr",
-        output.path(),
-        stderr,
-    );
+    snapshot_stderr("missing_sitemap_auto_discovery_stderr", &output, &result);
 }
 
 // ---------------------------------------------------------------------------
@@ -149,41 +173,19 @@ async fn missing_sitemap_auto_discovery_exits_2() {
 
 #[tokio::test]
 async fn index_all_children_empty_exits_2() {
-    let server = MockServer::start().await;
-    let output = TempDir::new().unwrap();
+    let (server, output) = start_scenario().await;
     let base = server.uri();
 
-    let children = [format!("{base}/child-a.xml"), format!("{base}/child-b.xml")];
-    Mock::given(method("GET"))
-        .and(path("/sitemap.xml"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(sitemap_index_with(&children)))
-        .mount(&server)
-        .await;
-    for child in ["/child-a.xml", "/child-b.xml"] {
-        Mock::given(method("GET"))
-            .and(path(child))
-            .respond_with(ResponseTemplate::new(200).set_body_string(EMPTY_URLSET))
-            .mount(&server)
-            .await;
-    }
+    mount_index_with_children(&server, &base, 200, EMPTY_URLSET).await;
 
-    let result = cmd()
-        .arg("--url")
-        .arg(&base)
-        .arg("--use-sitemap")
-        .arg("--output")
-        .arg(output.path())
-        .arg("--quiet")
-        .output()
-        .expect("run webfang");
+    let result = run_sitemap_cmd(&output, &base, &[]);
 
     assert_eq!(
         result.status.code(),
         Some(2),
         "an index whose children are all empty must exit 2"
     );
-    let stderr = String::from_utf8_lossy(&result.stderr).to_string();
-    assert_snapshot_redacted("index_all_children_empty_stderr", output.path(), stderr);
+    snapshot_stderr("index_all_children_empty_stderr", &output, &result);
 }
 
 // ---------------------------------------------------------------------------
@@ -192,8 +194,7 @@ async fn index_all_children_empty_exits_2() {
 
 #[tokio::test]
 async fn explicit_sitemap_404_exits_69() {
-    let server = MockServer::start().await;
-    let output = TempDir::new().unwrap();
+    let (server, output) = start_scenario().await;
     let base = server.uri();
 
     Mock::given(method("GET"))
@@ -202,27 +203,23 @@ async fn explicit_sitemap_404_exits_69() {
         .mount(&server)
         .await;
 
-    let result = cmd()
-        .arg("--url")
-        .arg(&base)
-        .arg("--use-sitemap")
-        .arg("--sitemap-url")
-        .arg(format!("{base}/sitemap.xml"))
-        .arg("--output")
-        .arg(output.path())
-        .arg("--max-retries")
-        .arg("0")
-        .arg("--quiet")
-        .output()
-        .expect("run webfang");
+    let result = run_sitemap_cmd(
+        &output,
+        &base,
+        &[
+            "--sitemap-url",
+            &format!("{base}/sitemap.xml"),
+            "--max-retries",
+            "0",
+        ],
+    );
 
     assert_eq!(
         result.status.code(),
         Some(69),
         "an explicit sitemap 404 must exit 69 (fetch failure)"
     );
-    let stderr = String::from_utf8_lossy(&result.stderr).to_string();
-    assert_snapshot_redacted("explicit_sitemap_404_stderr", output.path(), stderr);
+    snapshot_stderr("explicit_sitemap_404_stderr", &output, &result);
 }
 
 // ---------------------------------------------------------------------------
@@ -231,33 +228,19 @@ async fn explicit_sitemap_404_exits_69() {
 
 #[tokio::test]
 async fn malformed_xml_exits_69() {
-    let server = MockServer::start().await;
-    let output = TempDir::new().unwrap();
+    let (server, output) = start_scenario().await;
     let base = server.uri();
 
-    Mock::given(method("GET"))
-        .and(path("/sitemap.xml"))
-        .respond_with(ResponseTemplate::new(200).set_body_string("this is not xml <<<"))
-        .mount(&server)
-        .await;
+    mount_sitemap_xml(&server, "this is not xml <<<").await;
 
-    let result = cmd()
-        .arg("--url")
-        .arg(&base)
-        .arg("--use-sitemap")
-        .arg("--output")
-        .arg(output.path())
-        .arg("--quiet")
-        .output()
-        .expect("run webfang");
+    let result = run_sitemap_cmd(&output, &base, &[]);
 
     assert_eq!(
         result.status.code(),
         Some(69),
         "malformed sitemap XML must exit 69 (parse failure)"
     );
-    let stderr = String::from_utf8_lossy(&result.stderr).to_string();
-    assert_snapshot_redacted("malformed_xml_stderr", output.path(), stderr);
+    snapshot_stderr("malformed_xml_stderr", &output, &result);
 }
 
 // ---------------------------------------------------------------------------
@@ -266,8 +249,7 @@ async fn malformed_xml_exits_69() {
 
 #[tokio::test]
 async fn gzip_double_encoded_valid_exits_0() {
-    let server = MockServer::start().await;
-    let output = TempDir::new().unwrap();
+    let (server, output) = start_scenario().await;
     let base = server.uri();
 
     mount_seed_and_robots(&server).await;
@@ -290,17 +272,11 @@ async fn gzip_double_encoded_valid_exits_0() {
         .mount(&server)
         .await;
 
-    let result = cmd()
-        .arg("--url")
-        .arg(&base)
-        .arg("--use-sitemap")
-        .arg("--sitemap-url")
-        .arg(format!("{base}/sitemap.xml.gz"))
-        .arg("--output")
-        .arg(output.path())
-        .arg("--quiet")
-        .output()
-        .expect("run webfang");
+    let result = run_sitemap_cmd(
+        &output,
+        &base,
+        &["--sitemap-url", &format!("{base}/sitemap.xml.gz")],
+    );
 
     assert_eq!(
         result.status.code(),
@@ -316,8 +292,7 @@ async fn gzip_double_encoded_valid_exits_0() {
 
 #[tokio::test]
 async fn image_namespace_sitemap_exits_0() {
-    let server = MockServer::start().await;
-    let output = TempDir::new().unwrap();
+    let (server, output) = start_scenario().await;
     let base = server.uri();
 
     mount_seed_and_robots(&server).await;
@@ -343,15 +318,7 @@ async fn image_namespace_sitemap_exits_0() {
         .mount(&server)
         .await;
 
-    let result = cmd()
-        .arg("--url")
-        .arg(&base)
-        .arg("--use-sitemap")
-        .arg("--output")
-        .arg(output.path())
-        .arg("--quiet")
-        .output()
-        .expect("run webfang");
+    let result = run_sitemap_cmd(&output, &base, &[]);
 
     assert_eq!(
         result.status.code(),
@@ -367,37 +334,19 @@ async fn image_namespace_sitemap_exits_0() {
 
 #[tokio::test]
 async fn max_depth_zero_use_sitemap_exits_69() {
-    let server = MockServer::start().await;
-    let output = TempDir::new().unwrap();
+    let (server, output) = start_scenario().await;
     let base = server.uri();
 
-    Mock::given(method("GET"))
-        .and(path("/sitemap.xml"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_string(urlset_with(&[format!("{base}/article")])),
-        )
-        .mount(&server)
-        .await;
+    mount_sitemap_xml(&server, &urlset_with(&[format!("{base}/article")])).await;
 
-    let result = cmd()
-        .arg("--url")
-        .arg(&base)
-        .arg("--use-sitemap")
-        .arg("--max-depth")
-        .arg("0")
-        .arg("--output")
-        .arg(output.path())
-        .arg("--quiet")
-        .output()
-        .expect("run webfang");
+    let result = run_sitemap_cmd(&output, &base, &["--max-depth", "0"]);
 
     assert_eq!(
         result.status.code(),
         Some(69),
         "--max-depth 0 with --use-sitemap is a config failure (69), not 'no URLs' (2)"
     );
-    let stderr = String::from_utf8_lossy(&result.stderr).to_string();
-    assert_snapshot_redacted("max_depth_zero_stderr", output.path(), stderr);
+    snapshot_stderr("max_depth_zero_stderr", &output, &result);
 }
 
 // ---------------------------------------------------------------------------
@@ -406,8 +355,7 @@ async fn max_depth_zero_use_sitemap_exits_69() {
 
 #[tokio::test]
 async fn head_405_get_200_exits_0() {
-    let server = MockServer::start().await;
-    let output = TempDir::new().unwrap();
+    let (server, output) = start_scenario().await;
     let base = server.uri();
 
     mount_seed_and_robots(&server).await;
@@ -430,15 +378,7 @@ async fn head_405_get_200_exits_0() {
         .mount(&server)
         .await;
 
-    let result = cmd()
-        .arg("--url")
-        .arg(&base)
-        .arg("--use-sitemap")
-        .arg("--output")
-        .arg(output.path())
-        .arg("--quiet")
-        .output()
-        .expect("run webfang");
+    let result = run_sitemap_cmd(&output, &base, &[]);
 
     assert_eq!(
         result.status.code(),
@@ -454,35 +394,12 @@ async fn head_405_get_200_exits_0() {
 
 #[tokio::test]
 async fn index_children_all_fail_exits_69() {
-    let server = MockServer::start().await;
-    let output = TempDir::new().unwrap();
+    let (server, output) = start_scenario().await;
     let base = server.uri();
 
-    let children = [format!("{base}/child-a.xml"), format!("{base}/child-b.xml")];
-    Mock::given(method("GET"))
-        .and(path("/sitemap.xml"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(sitemap_index_with(&children)))
-        .mount(&server)
-        .await;
-    for child in ["/child-a.xml", "/child-b.xml"] {
-        Mock::given(method("GET"))
-            .and(path(child))
-            .respond_with(ResponseTemplate::new(500).set_body_string("Internal Server Error"))
-            .mount(&server)
-            .await;
-    }
+    mount_index_with_children(&server, &base, 500, "Internal Server Error").await;
 
-    let result = cmd()
-        .arg("--url")
-        .arg(&base)
-        .arg("--use-sitemap")
-        .arg("--output")
-        .arg(output.path())
-        .arg("--max-retries")
-        .arg("0")
-        .arg("--quiet")
-        .output()
-        .expect("run webfang");
+    let result = run_sitemap_cmd(&output, &base, &["--max-retries", "0"]);
 
     assert_eq!(
         result.status.code(),
