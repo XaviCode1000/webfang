@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.0] - 2026-10-06
+
+
+### 🎉 Added
+
+- Add --retention-days to prune exports and the vault DB ([#1860](https://github.com/XaviCode1000/webfang/pull/1860))
+
+### 🔧 Fixed
+
+- Dispatch credential resolution and export work off the tokio runtime (slice B of #1814) ([#1857](https://github.com/XaviCode1000/webfang/pull/1857))
+- Gate residual Miri copy_file_range trap and race-proof json-logging init test ([#1864](https://github.com/XaviCode1000/webfang/pull/1864))
+- Bound recursive sitemap aggregate memory and drop double buffering ([#1848](https://github.com/XaviCode1000/webfang/pull/1848))
 ## [2.6.5] - 2026-10-04
 
 
