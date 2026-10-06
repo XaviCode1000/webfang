@@ -73,6 +73,78 @@ async fn mount_ab_pages(t: &BehavioralTest) {
     mock_article_page(&t.server, "/page-b", "Page B").await;
 }
 
+/// Mock a sitemap at `<base>/sitemap.xml` listing one `<loc>` per entry of
+/// `paths`, returning the sitemap URL for the crawl command.
+async fn mount_urlset_sitemap(server: &wiremock::MockServer, base: &str, paths: &[&str]) -> String {
+    let sitemap_url = format!("{base}/sitemap.xml");
+    let locs: String = paths
+        .iter()
+        .map(|page| format!("    <url><loc>{base}{page}</loc></url>\n"))
+        .collect();
+    let sitemap_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+{locs}</urlset>"#
+    );
+    crate::common::mock_sitemap(server, &sitemap_url, &sitemap_xml).await;
+    sitemap_url
+}
+
+/// Run a sitemap crawl of `url` with `extra` args between `--use-sitemap`
+/// and `--output <dir> --quiet`, returning the finished output.
+fn run_sitemap_crawl(
+    t: &BehavioralTest,
+    url: &str,
+    sitemap_url: &str,
+    extra: &[&str],
+) -> std::process::Output {
+    let mut command = cmd();
+    command
+        .arg("--url")
+        .arg(url)
+        .arg("--sitemap-url")
+        .arg(sitemap_url)
+        .arg("--use-sitemap");
+    command.args(extra);
+    command
+        .arg("--output")
+        .arg(t.out.path())
+        .arg("--quiet")
+        .output()
+        .expect("run binary")
+}
+
+/// Count received requests whose path equals `path`.
+fn count_path_requests(requests: &[wiremock::Request], path: &str) -> usize {
+    requests.iter().filter(|r| r.url.path() == path).count()
+}
+
+/// Mount one article seed and run a DOM crawl filtered by a single pattern
+/// flag, returning the written `.md` files. The F-35 seed-filter scenarios
+/// share everything but the flag, the pattern, and the assertion message.
+async fn run_seed_pattern_crawl(
+    t: &BehavioralTest,
+    flag: &str,
+    pattern: &str,
+) -> Vec<std::path::PathBuf> {
+    mock_article_page(&t.server, "/article", "Article").await;
+
+    let seed = format!("{}/article", t.server.uri());
+    cmd()
+        .arg("--url")
+        .arg(&seed)
+        .arg(flag)
+        .arg(pattern)
+        .arg("--ignore-robots")
+        .arg("--output")
+        .arg(t.out.path())
+        .arg("--quiet")
+        .output()
+        .expect("run binary");
+
+    t.find_files("md")
+}
+
 /// --max-depth 0 with --use-sitemap only scrapes the seed URL;
 /// sitemap-discovered URLs are skipped.
 #[tokio::test]
@@ -95,29 +167,9 @@ async fn max_depth_zero_only_scrapes_seed() {
     mock_article_page(&t.server, "/page-b", "Page B").await;
 
     let base = t.server.uri();
-    let sitemap_url = format!("{base}/sitemap.xml");
-    let sitemap_xml = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-    <url><loc>{base}/</loc></url>
-    <url><loc>{base}/page-a</loc></url>
-</urlset>"#
-    );
-    crate::common::mock_sitemap(&t.server, &sitemap_url, &sitemap_xml).await;
+    let sitemap_url = mount_urlset_sitemap(&t.server, &base, &["/", "/page-a"]).await;
 
-    let output = cmd()
-        .arg("--url")
-        .arg(base)
-        .arg("--sitemap-url")
-        .arg(&sitemap_url)
-        .arg("--use-sitemap")
-        .arg("--max-depth")
-        .arg("0")
-        .arg("--output")
-        .arg(t.out.path())
-        .arg("--quiet")
-        .output()
-        .expect("run binary");
+    let output = run_sitemap_crawl(&t, &base, &sitemap_url, &["--max-depth", "0"]);
 
     assert!(
         output.status.success(),
@@ -126,11 +178,8 @@ async fn max_depth_zero_only_scrapes_seed() {
     );
 
     let requests = t.server.received_requests().await.unwrap();
-    let seed_requests = requests.iter().filter(|r| r.url.path() == "/").count();
-    let page_a_requests = requests
-        .iter()
-        .filter(|r| r.url.path() == "/page-a")
-        .count();
+    let seed_requests = count_path_requests(&requests, "/");
+    let page_a_requests = count_path_requests(&requests, "/page-a");
 
     assert_eq!(
         seed_requests, 1,
@@ -197,20 +246,10 @@ async fn mount_subpath_scenario(server: &wiremock::MockServer) -> String {
 async fn subpath_sitemap_max_depth_zero_skips_content() {
     let t = BehavioralTest::new().await;
     let base = mount_subpath_scenario(&t.server).await;
+    let url = format!("{base}/blog/");
+    let sitemap_url = format!("{base}/sitemap.xml");
 
-    let output = cmd()
-        .arg("--url")
-        .arg(format!("{base}/blog/"))
-        .arg("--sitemap-url")
-        .arg(format!("{base}/sitemap.xml"))
-        .arg("--use-sitemap")
-        .arg("--max-depth")
-        .arg("0")
-        .arg("--output")
-        .arg(t.out.path())
-        .arg("--quiet")
-        .output()
-        .expect("run binary");
+    let output = run_sitemap_crawl(&t, &url, &sitemap_url, &["--max-depth", "0"]);
 
     // No scrapeable URL survives the depth gate -> EmptyDiscovery (non-success).
     assert!(
@@ -220,14 +259,8 @@ async fn subpath_sitemap_max_depth_zero_skips_content() {
     );
 
     let requests = t.server.received_requests().await.unwrap();
-    let post1 = requests
-        .iter()
-        .filter(|r| r.url.path() == "/blog/post-1")
-        .count();
-    let post2 = requests
-        .iter()
-        .filter(|r| r.url.path() == "/blog/post-2")
-        .count();
+    let post1 = count_path_requests(&requests, "/blog/post-1");
+    let post2 = count_path_requests(&requests, "/blog/post-2");
     assert_eq!(
         post1, 0,
         "expected 0 requests to /blog/post-1 with max-depth 0, got {post1}"
@@ -245,20 +278,10 @@ async fn subpath_sitemap_max_depth_zero_skips_content() {
 async fn subpath_sitemap_max_depth_one_scrapes_content() {
     let t = BehavioralTest::new().await;
     let base = mount_subpath_scenario(&t.server).await;
+    let url = format!("{base}/blog/");
+    let sitemap_url = format!("{base}/sitemap.xml");
 
-    let output = cmd()
-        .arg("--url")
-        .arg(format!("{base}/blog/"))
-        .arg("--sitemap-url")
-        .arg(format!("{base}/sitemap.xml"))
-        .arg("--use-sitemap")
-        .arg("--max-depth")
-        .arg("1")
-        .arg("--output")
-        .arg(t.out.path())
-        .arg("--quiet")
-        .output()
-        .expect("run binary");
+    let output = run_sitemap_crawl(&t, &url, &sitemap_url, &["--max-depth", "1"]);
 
     assert!(
         output.status.success(),
@@ -267,14 +290,8 @@ async fn subpath_sitemap_max_depth_one_scrapes_content() {
     );
 
     let requests = t.server.received_requests().await.unwrap();
-    let post1 = requests
-        .iter()
-        .filter(|r| r.url.path() == "/blog/post-1")
-        .count();
-    let post2 = requests
-        .iter()
-        .filter(|r| r.url.path() == "/blog/post-2")
-        .count();
+    let post1 = count_path_requests(&requests, "/blog/post-1");
+    let post2 = count_path_requests(&requests, "/blog/post-2");
     assert!(
         post1 >= 1,
         "expected >=1 request to /blog/post-1 with max-depth 1, got {post1}"
@@ -310,33 +327,14 @@ async fn max_pages_limits_crawl_output() {
     mock_article_page(&t.server, "/page-e", "Page E").await;
 
     let base = t.server.uri();
-    let sitemap_url = format!("{base}/sitemap.xml");
-    let sitemap_xml = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-    <url><loc>{base}/</loc></url>
-    <url><loc>{base}/page-a</loc></url>
-    <url><loc>{base}/page-b</loc></url>
-    <url><loc>{base}/page-c</loc></url>
-    <url><loc>{base}/page-d</loc></url>
-    <url><loc>{base}/page-e</loc></url>
-</urlset>"#
-    );
-    crate::common::mock_sitemap(&t.server, &sitemap_url, &sitemap_xml).await;
+    let sitemap_url = mount_urlset_sitemap(
+        &t.server,
+        &base,
+        &["/", "/page-a", "/page-b", "/page-c", "/page-d", "/page-e"],
+    )
+    .await;
 
-    let output = cmd()
-        .arg("--url")
-        .arg(base)
-        .arg("--sitemap-url")
-        .arg(&sitemap_url)
-        .arg("--use-sitemap")
-        .arg("--max-pages")
-        .arg("2")
-        .arg("--output")
-        .arg(t.out.path())
-        .arg("--quiet")
-        .output()
-        .expect("run binary");
+    let output = run_sitemap_crawl(&t, &base, &sitemap_url, &["--max-pages", "2"]);
 
     assert!(
         output.status.success(),
@@ -359,30 +357,9 @@ async fn exclude_pattern_skips_matching_urls() {
     mount_ab_pages(&t).await;
 
     let base = t.server.uri();
-    let sitemap_url = format!("{base}/sitemap.xml");
-    let sitemap_xml = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-    <url><loc>{base}/</loc></url>
-    <url><loc>{base}/page-a</loc></url>
-    <url><loc>{base}/page-b</loc></url>
-</urlset>"#
-    );
-    crate::common::mock_sitemap(&t.server, &sitemap_url, &sitemap_xml).await;
+    let sitemap_url = mount_urlset_sitemap(&t.server, &base, &["/", "/page-a", "/page-b"]).await;
 
-    let output = cmd()
-        .arg("--url")
-        .arg(base)
-        .arg("--sitemap-url")
-        .arg(&sitemap_url)
-        .arg("--use-sitemap")
-        .arg("--exclude-pattern")
-        .arg("/page-b")
-        .arg("--output")
-        .arg(t.out.path())
-        .arg("--quiet")
-        .output()
-        .expect("run binary");
+    let output = run_sitemap_crawl(&t, &base, &sitemap_url, &["--exclude-pattern", "/page-b"]);
 
     assert!(
         output.status.success(),
@@ -391,14 +368,8 @@ async fn exclude_pattern_skips_matching_urls() {
     );
 
     let requests = t.server.received_requests().await.unwrap();
-    let page_a_requests = requests
-        .iter()
-        .filter(|r| r.url.path() == "/page-a")
-        .count();
-    let page_b_requests = requests
-        .iter()
-        .filter(|r| r.url.path() == "/page-b")
-        .count();
+    let page_a_requests = count_path_requests(&requests, "/page-a");
+    let page_b_requests = count_path_requests(&requests, "/page-b");
 
     assert_eq!(
         page_a_requests, 1,
@@ -426,30 +397,9 @@ async fn include_pattern_only_scrapes_matching_urls() {
     mount_ab_pages(&t).await;
 
     let base = t.server.uri();
-    let sitemap_url = format!("{base}/sitemap.xml");
-    let sitemap_xml = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-    <url><loc>{base}/</loc></url>
-    <url><loc>{base}/page-a</loc></url>
-    <url><loc>{base}/page-b</loc></url>
-</urlset>"#
-    );
-    crate::common::mock_sitemap(&t.server, &sitemap_url, &sitemap_xml).await;
+    let sitemap_url = mount_urlset_sitemap(&t.server, &base, &["/", "/page-a", "/page-b"]).await;
 
-    let output = cmd()
-        .arg("--url")
-        .arg(base)
-        .arg("--sitemap-url")
-        .arg(&sitemap_url)
-        .arg("--use-sitemap")
-        .arg("--include-pattern")
-        .arg("/page-a")
-        .arg("--output")
-        .arg(t.out.path())
-        .arg("--quiet")
-        .output()
-        .expect("run binary");
+    let output = run_sitemap_crawl(&t, &base, &sitemap_url, &["--include-pattern", "/page-a"]);
 
     assert!(
         output.status.success(),
@@ -458,14 +408,8 @@ async fn include_pattern_only_scrapes_matching_urls() {
     );
 
     let requests = t.server.received_requests().await.unwrap();
-    let page_a_requests = requests
-        .iter()
-        .filter(|r| r.url.path() == "/page-a")
-        .count();
-    let page_b_requests = requests
-        .iter()
-        .filter(|r| r.url.path() == "/page-b")
-        .count();
+    let page_a_requests = count_path_requests(&requests, "/page-a");
+    let page_b_requests = count_path_requests(&requests, "/page-b");
 
     assert_eq!(
         page_a_requests, 1,
@@ -512,14 +456,7 @@ async fn crawl_js_strategy_respects_timeout_secs() {
 
     let base = t.server.uri();
     let slow_url = format!("{base}/slow");
-    let sitemap_url = format!("{base}/sitemap.xml");
-    let sitemap_xml = format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-    <url><loc>{base}/slow</loc></url>
-</urlset>"#
-    );
-    crate::common::mock_sitemap(&t.server, &sitemap_url, &sitemap_xml).await;
+    let sitemap_url = mount_urlset_sitemap(&t.server, &base, &["/slow"]).await;
 
     let out_path = t.out.path().to_path_buf();
 
@@ -684,22 +621,8 @@ async fn max_depth_two_includes_deeper_links() {
 #[tokio::test]
 async fn seed_matching_no_include_pattern_yields_no_files() {
     let t = BehavioralTest::new().await;
-    mock_article_page(&t.server, "/article", "Article").await;
+    let md_files = run_seed_pattern_crawl(&t, "--include-pattern", "/nothing-here/*").await;
 
-    let seed = format!("{}/article", t.server.uri());
-    let _output = cmd()
-        .arg("--url")
-        .arg(&seed)
-        .arg("--include-pattern")
-        .arg("/nothing-here/*")
-        .arg("--ignore-robots")
-        .arg("--output")
-        .arg(t.out.path())
-        .arg("--quiet")
-        .output()
-        .expect("run binary");
-
-    let md_files = t.find_files("md");
     assert!(
         md_files.is_empty(),
         "expected zero .md files when the seed matches no include-pattern, got {}: {md_files:?}",
@@ -713,22 +636,8 @@ async fn seed_matching_no_include_pattern_yields_no_files() {
 #[tokio::test]
 async fn seed_matching_exclude_pattern_yields_no_files() {
     let t = BehavioralTest::new().await;
-    mock_article_page(&t.server, "/article", "Article").await;
+    let md_files = run_seed_pattern_crawl(&t, "--exclude-pattern", "/article").await;
 
-    let seed = format!("{}/article", t.server.uri());
-    let _output = cmd()
-        .arg("--url")
-        .arg(&seed)
-        .arg("--exclude-pattern")
-        .arg("/article")
-        .arg("--ignore-robots")
-        .arg("--output")
-        .arg(t.out.path())
-        .arg("--quiet")
-        .output()
-        .expect("run binary");
-
-    let md_files = t.find_files("md");
     assert!(
         md_files.is_empty(),
         "expected zero .md files when the seed matches an exclude-pattern, got {}: {md_files:?}",
