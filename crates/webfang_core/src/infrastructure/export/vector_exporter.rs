@@ -537,21 +537,6 @@ fn patch_header_field(
     Ok(())
 }
 
-/// Record how an `export_batch` call ended on its own span (#1610, OBS-H6).
-///
-/// A span that only knows "N documents, M seconds" cannot answer "did the
-/// export land, and how much data left?", so both are declared `Empty` and
-/// recorded here. `payload_bytes` is `None` for exporters that delegate their
-/// writes to a helper reporting no size: an absent key is the honest reading,
-/// a made-up number would be indistinguishable from a real one.
-fn record_export_outcome(outcome: &str, payload_bytes: Option<u64>) {
-    let span = tracing::Span::current();
-    span.record("outcome", outcome);
-    if let Some(bytes) = payload_bytes {
-        span.record("payload_bytes", bytes);
-    }
-}
-
 impl Exporter for VectorExporter {
     fn export(&self, document: DocumentChunkValidated) -> ExportResult<()> {
         let (mut file, mut writer) = self.writer()?;
@@ -596,16 +581,7 @@ impl Exporter for VectorExporter {
         )
     )]
     fn export_batch(&self, documents: &[DocumentChunkValidated]) -> ExportResult<()> {
-        match self.export_batch_documents(documents) {
-            Ok(payload_bytes) => {
-                record_export_outcome("ok", Some(payload_bytes));
-                Ok(())
-            },
-            Err(e) => {
-                record_export_outcome("error", None);
-                Err(e)
-            },
-        }
+        super::run_export_batch(|| self.export_batch_documents(documents))
     }
 
     fn config(&self) -> &ExporterConfig {
