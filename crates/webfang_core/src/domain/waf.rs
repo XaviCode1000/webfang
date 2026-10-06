@@ -248,6 +248,68 @@ pub fn is_t2_blocking_status(status: Option<u16>) -> bool {
 }
 
 #[cfg(test)]
+pub(crate) mod fixtures {
+    //! Shared WAF verdict fixtures (issue #1882).
+    //!
+    //! The Cloudflare-Challenge + Akamai-Fingerprint verdict literal used to be
+    //! repeated across the domain formatting test and several engine tests in
+    //! `infrastructure::http::waf_engine`. These builders are the single source
+    //! for those fixtures; verdict contents, tiers, and match sources are
+    //! identical to the literals they replace.
+    use super::{EvidenceSource, WafEvidence, WafTier, WafVerdict};
+
+    /// Shared Cloudflare Challenge fixture evidence (`cf-turnstile`, body).
+    #[must_use]
+    pub(crate) fn cloudflare_challenge_evidence() -> WafEvidence {
+        WafEvidence {
+            provider: "Cloudflare",
+            tier: WafTier::Challenge,
+            matched_pattern: "cf-turnstile",
+            source: EvidenceSource::Body,
+        }
+    }
+
+    /// Shared Akamai Fingerprint fixture evidence (`akamai`).
+    ///
+    /// The observation source varies per test — the engine fixtures observe it
+    /// in the body, the domain formatting test in a header — so callers pass
+    /// it explicitly instead of getting a second near-identical builder.
+    #[must_use]
+    pub(crate) fn akamai_fingerprint_evidence(source: EvidenceSource) -> WafEvidence {
+        WafEvidence {
+            provider: "Akamai",
+            tier: WafTier::Fingerprint,
+            matched_pattern: "akamai",
+            source,
+        }
+    }
+
+    /// Verdict carrying both shared fixture evidences.
+    #[must_use]
+    pub(crate) fn two_evidence_verdict(
+        is_blocked: bool,
+        akamai_source: EvidenceSource,
+    ) -> WafVerdict {
+        WafVerdict {
+            is_blocked,
+            evidences: vec![
+                cloudflare_challenge_evidence(),
+                akamai_fingerprint_evidence(akamai_source),
+            ],
+        }
+    }
+
+    /// Blocked verdict with only the Cloudflare evidence (waf_blocked error test).
+    #[must_use]
+    pub(crate) fn single_cloudflare_blocked_verdict() -> WafVerdict {
+        WafVerdict {
+            is_blocked: true,
+            evidences: vec![cloudflare_challenge_evidence()],
+        }
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use std::collections::HashMap;
@@ -294,23 +356,7 @@ mod tests {
 
     #[test]
     fn waf_verdict_carries_all_evidences_and_formats_spanish_chain() {
-        let v = WafVerdict {
-            is_blocked: true,
-            evidences: vec![
-                WafEvidence {
-                    provider: "Cloudflare",
-                    tier: WafTier::Challenge,
-                    matched_pattern: "cf-turnstile",
-                    source: EvidenceSource::Body,
-                },
-                WafEvidence {
-                    provider: "Akamai",
-                    tier: WafTier::Fingerprint,
-                    matched_pattern: "akamai",
-                    source: EvidenceSource::Header,
-                },
-            ],
-        };
+        let v = fixtures::two_evidence_verdict(true, EvidenceSource::Header);
         assert_eq!(v.evidences.len(), 2);
         let chain = v.evidence_chain();
         assert!(chain.contains("Cloudflare"));

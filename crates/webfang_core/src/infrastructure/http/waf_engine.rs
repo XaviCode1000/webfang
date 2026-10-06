@@ -1044,6 +1044,7 @@ fn is_suspicious_size(body_len: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::waf::fixtures;
     use crate::error::ScraperError;
 
     // ========================================================================
@@ -1076,23 +1077,7 @@ mod tests {
     #[test]
     fn test_waf_verdict_carries_all_evidences() {
         // REQ-WAF-01: the verdict carries ALL collected evidences, not first-hit.
-        let verdict = WafVerdict {
-            is_blocked: true,
-            evidences: vec![
-                WafEvidence {
-                    provider: "Cloudflare",
-                    tier: WafTier::Challenge,
-                    matched_pattern: "cf-turnstile",
-                    source: EvidenceSource::Body,
-                },
-                WafEvidence {
-                    provider: "Akamai",
-                    tier: WafTier::Fingerprint,
-                    matched_pattern: "akamai",
-                    source: EvidenceSource::Body,
-                },
-            ],
-        };
+        let verdict = fixtures::two_evidence_verdict(true, EvidenceSource::Body);
         assert_eq!(
             verdict.evidences.len(),
             2,
@@ -1931,25 +1916,7 @@ mod tests {
 
     #[test]
     fn test_evidence_chain_spanish_lists_all_evidences() {
-        let evidences = vec![
-            WafEvidence {
-                provider: "Cloudflare",
-                tier: WafTier::Challenge,
-                matched_pattern: "cf-turnstile",
-                source: EvidenceSource::Body,
-            },
-            WafEvidence {
-                provider: "Akamai",
-                tier: WafTier::Fingerprint,
-                matched_pattern: "akamai",
-                source: EvidenceSource::Body,
-            },
-        ];
-        let chain = WafVerdict {
-            is_blocked: false,
-            evidences,
-        }
-        .evidence_chain();
+        let chain = fixtures::two_evidence_verdict(false, EvidenceSource::Body).evidence_chain();
         // Every evidence's provider + pattern + Spanish tier label is listed.
         assert!(chain.contains("Cloudflare"), "chain: {chain}");
         assert!(chain.contains("cf-turnstile"), "chain: {chain}");
@@ -1978,23 +1945,7 @@ mod tests {
     fn test_verdict_evidence_chain_lists_all_evidences() {
         // REQ-WAF-08: callers (client/scraper_service/discovery/MCP) format the
         // Spanish evidence chain straight from the verdict they received.
-        let verdict = WafVerdict {
-            is_blocked: true,
-            evidences: vec![
-                WafEvidence {
-                    provider: "Cloudflare",
-                    tier: WafTier::Challenge,
-                    matched_pattern: "cf-turnstile",
-                    source: EvidenceSource::Body,
-                },
-                WafEvidence {
-                    provider: "Akamai",
-                    tier: WafTier::Fingerprint,
-                    matched_pattern: "akamai",
-                    source: EvidenceSource::Body,
-                },
-            ],
-        };
+        let verdict = fixtures::two_evidence_verdict(true, EvidenceSource::Body);
         let chain = verdict.evidence_chain();
         assert!(chain.contains("Cloudflare"), "chain: {chain}");
         assert!(chain.contains("cf-turnstile"), "chain: {chain}");
@@ -2091,16 +2042,7 @@ mod tests {
         // REQ-WAF-08: ErrorClass stays PermanentFatal (exit 69).
         let err = ScraperError::waf_blocked(
             "https://example.com",
-            WafVerdict {
-                is_blocked: true,
-                evidences: vec![WafEvidence {
-                    provider: "Cloudflare",
-                    tier: WafTier::Challenge,
-                    matched_pattern: "cf-turnstile",
-                    source: EvidenceSource::Body,
-                }],
-            }
-            .evidence_chain(),
+            fixtures::single_cloudflare_blocked_verdict().evidence_chain(),
         );
         assert_eq!(err.classify(), crate::error::ErrorClass::PermanentFatal);
     }
