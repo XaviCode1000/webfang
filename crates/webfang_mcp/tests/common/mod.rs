@@ -365,9 +365,18 @@ pub fn redact_path(text: &str, dir: &std::path::Path) -> String {
 }
 
 /// Initialize an MCP session (initialize + notifications/initialized) and
-/// return the session ID.
+/// return the session ID. The client name only identifies the caller in
+/// server logs; suites that want their own name use
+/// [`init_session_with_name`].
 pub async fn init_session(client: &Client, base_url: &str) -> String {
-    let init_body = initialize_body("export-test");
+    init_session_with_name(client, base_url, "export-test").await
+}
+
+/// [`init_session`] with an explicit client name, so suites keep the exact
+/// `initialize` body they sent before the client moved into `common`
+/// (request bytes unchanged — only the log label travels with the suite).
+pub async fn init_session_with_name(client: &Client, base_url: &str, client_name: &str) -> String {
+    let init_body = initialize_body(client_name);
     let resp = client
         .post(format!("{base_url}/mcp"))
         .header("Content-Type", "application/json")
