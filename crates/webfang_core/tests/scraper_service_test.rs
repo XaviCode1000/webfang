@@ -5,7 +5,9 @@ use webfang_core::application::scraper_service::{
     detect_spa_content, enforce_robots_policy, extract_with_selector, scrape_multiple_with_limit,
     scrape_with_config, scrape_with_readability, MAX_INSTRUMENTED_BODY_SIZE, MIN_CONTENT_CHARS,
 };
-use webfang_core::domain::{CorrelationId, DomInspectorPort, ExtractResult, SelectorErrorKind};
+use webfang_core::domain::{
+    CorrelationId, DomInspectorPort, ExtractResult, ScrapedContent, SelectorErrorKind,
+};
 use webfang_core::{ScraperConfig, ScraperError};
 
 // --- Shared mock HTTP client (tests/common/mock_http.rs, Item 2 Tier-2) ---
@@ -13,6 +15,87 @@ use webfang_core::{ScraperConfig, ScraperError};
 #[path = "common/mock_http.rs"]
 mod mock_http;
 use crate::mock_http::MockHttpClient;
+
+// ---------------------------------------------------------------------
+// Local arrange helpers (T7 slice-15, #1890)
+//
+// The mock tests below repeat the same scaffold: parse a URL, serve one
+// canned response for it, and run the scrape. These helpers centralize
+// that arrange + act prefix; every test keeps its own assertion tail.
+// No `tests/common` helper covers this shape (that module only provides
+// the `MockHttpClient` itself along with unrelated harness/fixtures),
+// so the helpers live here instead of duplicating the dedup.
+// ---------------------------------------------------------------------
+
+/// Article HTML that Readability extracts deterministically. Shared by the
+/// `scrape_with_config` outcome test and the readability title/content
+/// test, whose bodies were byte-identical (jscpd 15L echo).
+const TEST_ARTICLE_HTML: &str = r#"<!DOCTYPE html>
+<html>
+<head><title>Test Page</title></head>
+<body>
+<article>
+<h1>Main Heading</h1>
+<p>This is the content of the article. It has enough text to be extracted by Readability.</p>
+</article>
+</body>
+</html>"#;
+
+/// Article HTML for the batch-path tests, kept byte-identical to the two
+/// `scrape_multiple_*` bodies it replaces (jscpd 13L echo).
+const TEST_BATCH_ARTICLE_HTML: &str = r#"<!DOCTYPE html>
+<html>
+<head><title>Test</title></head>
+<body>
+<article>
+<h1>Article Title</h1>
+<p>This is substantial content that should be extracted by Readability. It has enough text to pass the minimum threshold.</p>
+</article>
+</body>
+</html>"#;
+
+/// Parse `url`, serve one canned `response` for it, and run
+/// `scrape_with_readability`. The readability mock tests share this
+/// arrange + act prefix and differ only in their assertion tails.
+async fn scrape_mocked_readability(
+    url: &str,
+    response: HttpResult<HttpResponse>,
+) -> webfang_core::error::Result<Vec<ScrapedContent>> {
+    let parsed = url::Url::parse(url).expect("valid test URL");
+    let mock = MockHttpClient::new().with_response(parsed.as_str(), response);
+    scrape_with_readability(&mock, &parsed).await
+}
+
+/// `scrape_mocked_readability` for the 200 OK case: serve `body` for `url`
+/// and run the scrape.
+async fn scrape_mocked_ok_readability(
+    url: &str,
+    body: &str,
+) -> webfang_core::error::Result<Vec<ScrapedContent>> {
+    let parsed = url::Url::parse(url).expect("valid test URL");
+    let mock = MockHttpClient::new().with_ok_response(parsed.as_str(), body);
+    scrape_with_readability(&mock, &parsed).await
+}
+
+/// Shared assert tail for the policy-refusal tests: a carried
+/// `PolicyRefused` verdict must surface as `Network` naming the guard's
+/// cause, never as WAF/robots (jscpd 9L echo).
+fn assert_policy_refusal(err: &ScraperError) {
+    match err {
+        ScraperError::Network(_) => {},
+        other => panic!("policy refusal must be Network, got: {other:?}"),
+    }
+    let msg = err.to_string();
+    assert!(
+        msg.contains("SSRF detectado"),
+        "the carried guard cause must surface verbatim, got: {msg}"
+    );
+    assert!(!msg.contains("WAF/CAPTCHA"), "no phantom WAF, got: {msg}");
+    assert!(
+        !msg.contains("robots.txt"),
+        "robots never consulted, got: {msg}"
+    );
+}
 
 // =====================================================================
 // scrape_with_config tests
@@ -36,16 +119,7 @@ async fn test_scrape_with_config_invalid_url() {
 #[cfg_attr(miri, ignore)] // legible/servo_arc Tree-Borrows UB
 #[tokio::test]
 async fn test_scrape_with_config_returns_outcome() {
-    let html = r#"<!DOCTYPE html>
-<html>
-<head><title>Test Page</title></head>
-<body>
-<article>
-<h1>Main Heading</h1>
-<p>This is the content of the article. It has enough text to be extracted by Readability.</p>
-</article>
-</body>
-</html>"#;
+    let html = TEST_ARTICLE_HTML;
 
     let url = url::Url::parse("https://example.com").unwrap();
     let mock = MockHttpClient::new().with_ok_response(url.as_str(), html);
@@ -418,21 +492,7 @@ fn test_detect_spa_content_differentiated_warnings() {
 #[cfg_attr(miri, ignore)] // legible/servo_arc Tree-Borrows UB
 #[tokio::test]
 async fn test_mock_html_returns_title_and_content() {
-    let html = r#"<!DOCTYPE html>
-<html>
-<head><title>Test Page</title></head>
-<body>
-<article>
-<h1>Main Heading</h1>
-<p>This is the content of the article. It has enough text to be extracted by Readability.</p>
-</article>
-</body>
-</html>"#;
-
-    let url = url::Url::parse("https://example.com").unwrap();
-    let mock = MockHttpClient::new().with_ok_response(url.as_str(), html);
-
-    let result = scrape_with_readability(&mock, &url).await;
+    let result = scrape_mocked_ok_readability("https://example.com", TEST_ARTICLE_HTML).await;
     match &result {
         Ok(contents) => {
             assert!(!contents.is_empty());
@@ -551,10 +611,7 @@ async fn test_mock_fetch_failures_propagate_typed_errors() {
 #[cfg_attr(miri, ignore)] // legible/servo_arc Tree-Borrows UB
 #[tokio::test]
 async fn test_mock_empty_body_graceful_handling() {
-    let url = url::Url::parse("https://example.com").unwrap();
-    let mock = MockHttpClient::new().with_ok_response(url.as_str(), "");
-
-    let result = scrape_with_readability(&mock, &url).await;
+    let result = scrape_mocked_ok_readability("https://example.com", "").await;
     let err = result.expect_err("empty body must fail honestly, not return Ok near-empty");
 
     match &err {
@@ -581,9 +638,7 @@ async fn test_js_shell_body_fails_with_typed_error() {
     ))
     .expect("load js_shell.html fixture");
     let url = url::Url::parse("https://spa.example.com/app").unwrap();
-    let mock = MockHttpClient::new().with_ok_response(url.as_str(), &html);
-
-    let result = scrape_with_readability(&mock, &url).await;
+    let result = scrape_mocked_ok_readability(url.as_str(), &html).await;
     let err = result.expect_err("a JS-shell body must fail honestly");
 
     match &err {
@@ -604,17 +659,15 @@ async fn test_js_shell_body_fails_with_typed_error() {
 #[cfg_attr(miri, ignore)] // legible/servo_arc Tree-Borrows UB
 #[tokio::test]
 async fn test_mock_non_200_status_returns_error() {
-    let url = url::Url::parse("https://example.com").unwrap();
-    let mock = MockHttpClient::new().with_response(
-        url.as_str(),
+    let result = scrape_mocked_readability(
+        "https://example.com",
         Ok(HttpResponse {
             status: 301,
             body: String::new(),
             headers: HashMap::new(),
         }),
-    );
-
-    let result = scrape_with_readability(&mock, &url).await;
+    )
+    .await;
     assert!(result.is_err());
 }
 
@@ -642,16 +695,7 @@ async fn test_mock_waf_challenge_error() {
 #[cfg_attr(miri, ignore)] // lol_html/servo_arc Tree-Borrows UB via clean_html
 #[tokio::test]
 async fn test_scrape_multiple_with_limit_returns_results() {
-    let html = r#"<!DOCTYPE html>
-<html>
-<head><title>Test</title></head>
-<body>
-<article>
-<h1>Article Title</h1>
-<p>This is substantial content that should be extracted by Readability. It has enough text to pass the minimum threshold.</p>
-</article>
-</body>
-</html>"#;
+    let html = TEST_BATCH_ARTICLE_HTML;
 
     let url1 = url::Url::parse("https://example.com/page1").unwrap();
     let url2 = url::Url::parse("https://example.com/page2").unwrap();
@@ -1009,16 +1053,7 @@ fn test_extract_with_selector_empty_html() {
 #[cfg_attr(miri, ignore)] // lol_html/servo_arc Tree-Borrows UB via clean_html
 #[tokio::test]
 async fn test_scrape_multiple_partial_failure() {
-    let html = r#"<!DOCTYPE html>
-<html>
-<head><title>Test</title></head>
-<body>
-<article>
-<h1>Article Title</h1>
-<p>This is substantial content that should be extracted by Readability. It has enough text to pass the minimum threshold.</p>
-</article>
-</body>
-</html>"#;
+    let html = TEST_BATCH_ARTICLE_HTML;
 
     let url_ok = url::Url::parse("https://example.com/ok").unwrap();
     let url_fail = url::Url::parse("https://example.com/fail").unwrap();
@@ -1101,9 +1136,9 @@ async fn test_mock_extracts_title() {
 </html>"#;
 
     let url = url::Url::parse("https://example.com").unwrap();
-    let mock = MockHttpClient::new().with_ok_response(url.as_str(), html);
-
-    let result = scrape_with_readability(&mock, &url).await.unwrap();
+    let result = scrape_mocked_ok_readability(url.as_str(), html)
+        .await
+        .unwrap();
     assert!(!result.is_empty());
     // Readability should extract the title
     assert!(
@@ -1127,9 +1162,9 @@ async fn test_mock_extracts_non_empty_content() {
 </html>"#;
 
     let url = url::Url::parse("https://example.com").unwrap();
-    let mock = MockHttpClient::new().with_ok_response(url.as_str(), html);
-
-    let result = scrape_with_readability(&mock, &url).await.unwrap();
+    let result = scrape_mocked_ok_readability(url.as_str(), html)
+        .await
+        .unwrap();
     assert!(!result.is_empty());
     assert!(
         !result[0].content.is_empty(),
@@ -1458,20 +1493,7 @@ async fn policy_denial_on_forbidden_literal_is_network_not_waf() {
         .await
         .expect_err("forbidden literal must be denied");
 
-    match &err {
-        ScraperError::Network(_) => {},
-        other => panic!("policy refusal must be Network, got: {other:?}"),
-    }
-    let msg = err.to_string();
-    assert!(
-        msg.contains("SSRF detectado"),
-        "real cause named, got: {msg}"
-    );
-    assert!(!msg.contains("WAF/CAPTCHA"), "no phantom WAF, got: {msg}");
-    assert!(
-        !msg.contains("robots.txt"),
-        "robots never consulted, got: {msg}"
-    );
+    assert_policy_refusal(&err);
 }
 
 /// A genuine robots-rules denial keeps the #697/#705 contract: `WafBlocked`
@@ -1547,18 +1569,5 @@ async fn robots_policy_refusal_needs_no_revalidation() {
         .await
         .expect_err("a policy-refused verdict must fail the gate");
 
-    match &err {
-        ScraperError::Network(_) => {},
-        other => panic!("policy refusal must be Network, got: {other:?}"),
-    }
-    let msg = err.to_string();
-    assert!(
-        msg.contains("SSRF detectado"),
-        "the carried guard cause must surface verbatim, got: {msg}"
-    );
-    assert!(!msg.contains("WAF/CAPTCHA"), "no phantom WAF, got: {msg}");
-    assert!(
-        !msg.contains("robots.txt"),
-        "robots never consulted, got: {msg}"
-    );
+    assert_policy_refusal(&err);
 }
