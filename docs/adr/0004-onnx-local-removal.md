@@ -4,13 +4,13 @@
 - **Date:** 2026-10-08
 - **Deciders:** Project owner
 - **Supersedes:** ADR 0003 §5 ("Local ONNX goes dormant, not deleted")
-- **Alcance de la supersesión:** el §5, más las afirmaciones del §Context de 0003 que quedaron obsoletas: "Port defined, never injected" es falso desde que el puerto se inyecta (`main.rs:759`, vía `resolve_remote_embedding` en `:687`). El resto (§1–4, 6, 7, trade-offs, alternativas) sigue vigente.
-- **Related issues:** #1915, #1917, #1919
+- **Alcance de la supersesión:** el §5, más las afirmaciones del §Context de 0003 que quedaron obsoletas: "Port defined, never injected" es falso desde que `--extract-with-llm` inyecta un `dyn LlmPort` real en el Container (`webfang_cli/src/main.rs:721-759`, cableado en #1493). No es `resolve_remote_embedding` (`:687`): esa fn devuelve el `RemoteEmbeddingAdapter` del slot de embeddings, no un `LlmPort`. El resto (§1–4, 6, 7, trade-offs, alternativas) sigue vigente.
+- **Related issues:** #1915 (decisión), #1917 (primera revisión, cerrada por #1918), #1919 (re-scope)
 - **Working papers:** auditoría AI-inference fuera del repo (5 pasadas, HEAD `3ac5599`, 47 hallazgos FIN); los números clave van inline abajo para que este ADR se sostenga solo.
 
 ## Context
 
-ADR 0003 dejó ONNX dormido tras `--features ai` como fallback offline. La dormición es la peor de las tres opciones —**borrar, dormir, aislar**—: se paga el árbol en CI (7 invocaciones `--all-features` en 5 jobs —clippy:464, build+test:568,569, doc:870,874, mcp:1159, coverage:1496—; virgen `check -p webfang_ai --features ai` = 1m44s + 1.3 GB en máquina local, sin tests: techo, no cifra), `hf-hub` está fuera de `[features] ai` (`crates/webfang_ai/Cargo.toml:25` vs `:55`) así que **todo** build que incluya `webfang_ai` arrastra `reqwest` 0.12.28 (verificado: `cargo tree -p webfang_ai` sin features) —violación incondicional de la política `wreq`-only—, 390 MB de modelos, y código que se pudre sin dueño. Nota de base: HEAD auditado `3ac5599`, una commit de desfase (#1914) al merge de este ADR.
+ADR 0003 dejó ONNX dormido tras `--features ai` como fallback offline. La dormición es la peor de las tres opciones —**borrar, dormir, aislar**—: se paga el árbol en CI (7 invocaciones `--all-features` en 5 jobs —clippy:464, build+test:568,569, doc:870,874, mcp:1159, coverage:1496—; virgen `check -p webfang_ai --features ai` = 1m44s + 1.3 GB en máquina local, sin tests: techo, no cifra), `hf-hub` está fuera de `[features] ai` (`crates/webfang_ai/Cargo.toml:25` vs `:55`) así que **todo** build que incluya `webfang_ai` arrastra `reqwest` 0.12.28 (verificado: `cargo tree -p webfang_ai` sin features) —violación incondicional de la política `wreq`-only—, 390 MB de modelos, y código que se pudre sin dueño. Nota de base: la auditoría se corrió sobre `3ac5599`; este ADR se mergea sobre el `main` del momento, así que la distancia crece con cada commit — lo que fija el alcance es el SHA de auditoría, no cuántos commits faltan.
 
 **Corrección de premisa (revisión #1919): el remoto ya existe y es independiente de ONNX.** `RemoteEmbeddingAdapter` implementa `EmbeddingPort` (`remote_embedding.rs:454`, con `embed_batch`, `usage: Option` tolerante en `:73` y retry acotado), se resuelve con `--embedding-provider` / `WEBFANG_EMBEDDING_PROVIDER` (`options_spec/llm.rs:66-79`) y `--extract-with-llm` inyecta el puerto en el Container (`main.rs:721-759`) sin gate `ai`. El gap real es mucho más chico que el descrito antes: **embeddings remotos para el cleaner** —`SemanticCleanerImpl` se construye desde `InferenceEngine` y se erasa a `dyn InferenceEngine` (`main.rs:660-676`), sigue ONNX-only—. Este ADR se re-scopea en consecuencia: no es "cómo llegamos a remoto" sino **qué se borra, qué se rompe y cómo se deprecia**.
 
@@ -29,17 +29,24 @@ ADR 0003 dejó ONNX dormido tras `--features ai` como fallback offline. La dormi
 
 1. **M2 funciona de verdad**: añadir la variante `AuthSource::None` (hoy solo Keyring/EncryptedFile/Env, `auth_source.rs:55-70`); el loopback ya está permitido (`is_permitted_loopback`, `ssrf_guard.rs:231`); B2 agrega la allowlist CIDR, no el loopback. Gate: **registro reproducible** archivado en el PR que habilita el paso 6 —comando + `--trace-file` + summary con backend/modelo/dim— ejecutado contra Ollama y vLLM reales. "Probado a mano" sin registro no cuenta; el registro es re-ejecutable por cualquiera. LM Studio: best effort, sin garantía.
 2. **Tier 2 explícito**: migrar sobre endpoint o eliminar documentado. Nunca en silencio.
-3. **Se asume la pérdida del zero-config offline-total**: M3 cubre sin-inferencia; `--clean-ai` exigirá endpoint del usuario. Se declara en el README.
+3. **Se asume la pérdida del zero-config offline-total**: M3 cubre sin-inferencia; `--clean-ai` sobrevive (des-gateado, ver Compatibilidad) pero exigirá endpoint del usuario. Se declara en el README.
 4. **Reescritura**: `SemanticCleanerImpl` (1096 LOC) sobre `EmbeddingPort`; `--max-tokens → --max-chars` con `chars_per_token` por perfil (default 3: mejor que 4, insuficiente para CJK —el respaldo real es el degradado por 400/413, nunca la estimación); 400/413 degrada con troceado/bisección.
 5. **Deprecación publicada**: el release del paso 5 salió al menos una minor antes del borrado.
 
 ## Compatibilidad (ruptura anunciada)
 
-Rupturas enumeradas (todas verificadas bajo gate `ai`): la feature `ai` **desaparece sin shim** —las features de Cargo resuelven en compilación, `cargo build --features ai` fallará en resolución, así que solo hay release notes—; `--ai-model`, `--max-tokens`, `--clean-ai` (cambia de semántica: ONNX → endpoint, no solo de backend), `AI_MODEL_ID`/`WEBFANG_AI_MODEL_ID`, `WEBFANG_AI_ENGINE` se conservan como *shims* que devuelven error útil de migración durante al menos 2 releases minor; `--max-tokens → --max-chars` va aquí (no solo en la condición 4). Un release previo lo anuncia (aviso en ejecución + entrada vía trailer `BREAKING CHANGE:` en el commit —los work PRs no tocan `CHANGELOG.md`, lo escribe release-plz—); el borrado llega en el siguiente. Nunca `ConfigError` genérico ni silencio.
+Superficie, toda verificada bajo gate `ai` hoy (`options_spec/ai.rs:77,102,127`):
+
+- **La feature `ai` desaparece sin shim.** Las features de Cargo resuelven en compilación: `cargo build --features ai` fallará en resolución, así que aquí sólo hay release notes.
+- **Flags que sobreviven, des-gateados.** `--clean-ai` (cambia de semántica: ONNX → endpoint remoto; es el flag del cleaner del paso 2, **no** un shim) y `--offline`. Para que vivan hay que quitarles el gate `ai` y pasarlos al build por defecto: un shim detrás de la feature que se borra no existe, en ningún lenguaje.
+- **Shims** (error útil de migración, ≥2 releases minor, también des-gateados): `--ai-model`, `--max-tokens` —que además se renombra a `--max-chars`, condición 4—, y las env `WEBFANG_MAX_TOKENS`, `AI_MODEL_ID`/`WEBFANG_AI_MODEL_ID`, `WEBFANG_AI_ENGINE`.
+- **Precedencia que los shims reemplazan**, para que el mensaje de migración sea exacto: `WEBFANG_AI_MODEL_ID` > `AI_MODEL_ID` legacy (`webfang_ai/.../compat.rs:34-38`); el flag de CLI gana al env (`webfang_cli/src/main.rs:602`).
+
+`--offline` conserva su semántica (loopback permitido, remoto público → exit 78). Un release previo anuncia todo esto (aviso en ejecución + trailer `BREAKING CHANGE:` en el commit —los work PRs no tocan `CHANGELOG.md`, lo escribe release-plz—); el borrado llega en el siguiente. Nunca `ConfigError` genérico ni silencio.
 
 ## Umbral por defecto huérfano
 
-El 0.3 está calibrado para Granite y vive en tres sitios (`options_spec/ai.rs:37`, `threshold_config.rs:49`, `semantic_cleaner_impl.rs:124`); retirado el único modelo calibrado, cualquier remoto retiene distinto con el mismo número (además del 0.75 de Tier 2, que no es de similitud sino `ErrorHintConfig::semantic_threshold`, `extraction_quality.rs:11-15`, junto a `lexical_escalation_lower_bound: 0.70`). Mitigación obligatoria con **criterio de salida**: mientras el umbral sea el default y el modelo no esté calibrado, aviso una vez por corrida + `threshold_used` en el summary; la mitigación termina en el flip anunciado con tope de 2 releases minor —si no hay golden set para entonces, el owner decide (aviso permanente documentado o mantener 0.3 con riesgo firmado) y lo registra aquí. Sin salida con fecha, el huérfano se vuelve permanente.
+El 0.3 está calibrado para Granite y vive en cuatro sitios (`options_spec/ai.rs:37`, `threshold_config.rs:49`, `semantic_cleaner_impl.rs:124`, `relevance_scorer.rs:333`); retirado el único modelo calibrado, cualquier remoto retiene distinto con el mismo número (además del 0.75 de Tier 2, que no es de similitud sino `ErrorHintConfig::semantic_threshold`, `extraction_quality.rs:11-15`, junto a `lexical_escalation_lower_bound: 0.70`). Mitigación obligatoria con **criterio de salida**: mientras el umbral sea el default y el modelo no esté calibrado, aviso una vez por corrida + `threshold_used` en el summary; la mitigación termina en el flip anunciado con tope de 2 releases minor —si no hay golden set para entonces, el owner decide (aviso permanente documentado o mantener 0.3 con riesgo firmado) y lo registra aquí. Sin salida con fecha, el huérfano se vuelve permanente.
 
 ## Condición de revisión
 
@@ -51,7 +58,7 @@ models.dev no basta (sin dim/batch/prefijos; `limit.output` ≠ dimensión —mi
 
 ## Egress de Tier 2 (ruta nueva, explícita)
 
-El inspector pasa de local a enviar fragmentos del DOM a un tercero: entra en el consentimiento por hash provider+endpoint y en el contador de gasto. Observabilidad del salto (regla de hierro: sin traza no está terminado): spans con `provider_id`, `model`, `dim`, `count` (ya existen en `embed`/`embed_batch`) + `CorrelationId` propagado + summary con tokens/retries/degradados por corrida.
+El inspector pasa de local a enviar fragmentos del DOM a un tercero: entra en el consentimiento por hash provider+endpoint y en el contador de gasto. Observabilidad del salto (regla de hierro: sin traza no está terminado): los spans ya existen —`remote_embedding.rs:456-460` en `embed` (`provider_id`/`model`/`dim`) y `:482-487` en `embed_batch` (los tres más `count`=textos)— y hay que extenderlos con `CorrelationId` propagado + summary por corrida con tokens/retries/degradados.
 
 ## Migración de vaults
 
@@ -59,7 +66,8 @@ Confirmado: no hay `model_id` en schema ni DTOs (0 hits en infraestructura+aplic
 
 ## Superficie afectada (entregable explícito de C1–C3, no "docs regenerados")
 
-- Tests: `crates/webfang_ai/tests/` (9 targets, la mayoría ort-dependent: `ai_integration`, `batched_inference_smoke`, `session_pool_sizing`, `semantic_cleaner_pipeline`, …) se eliminan con la feature; `crates/webfang_core/tests/adaptive_selectors_gate_test.rs` se reescribe; los snapshots insta de `--clean-ai` cambian y se revisan en el mismo PR.
+- Gate de la feature: `cli/preflight.rs:1404` (`check_clean_ai_feature`) y `:1410` (`check_clean_ai_feature_with`) desaparecen con la feature, con sus tests.
+- Tests: `crates/webfang_ai/tests/` (9 targets, la mayoría ort-dependent: `ai_integration`, `batched_inference_smoke`, `session_pool_sizing`, `semantic_cleaner_pipeline`, …) se eliminan con la feature; `crates/webfang_core/tests/adaptive_selectors_gate_test.rs` sólo menciona el gate en un doc comment (`:12`), así que se ajusta esa línea en vez de reescribir el archivo; los snapshots insta de `--clean-ai` cambian y se revisan en el mismo PR.
 - Docs y política: `AGENTS.md` (matriz con `webfang_ai`, sección `AI feature`, `hf-hub`, `ort`), `scripts/check_dependency_direction.sh`, `docs/test-inventory.md`, `COMPATIBILITY-MATRIX.md`, `README.md` (secciones de modelos, feature `ai`, caché y crate).
 - Observabilidad: campos del salto remoto (arriba) + summary por corrida.
 
@@ -101,7 +109,12 @@ Si el borrado falla, el árbol ONNX se recupera desde la etiqueta git del últim
 - `crates/webfang_core/src/domain/extraction_quality.rs:11-15` — 0.75 es hint, no similitud
 - `crates/webfang_core/src/application/vault_search.rs:130-148` — fail-closed por dimensión
 - `docs/adr/0003-remote-inference-adapter.md:35` — env vars declaradas, nunca implementadas
-- Issues: #1915 (decisión), #1917 (primera revisión), #1919 (re-scope)
+- `crates/webfang_core/src/cli/preflight.rs:1404,1410` — el gate de la feature que desaparece
+- `crates/webfang_core/src/domain/options_spec/ai.rs:77,102,127` — los tres flags bajo gate `ai` (y sus env: `WEBFANG_MAX_TOKENS`, `WEBFANG_OFFLINE`)
+- `crates/webfang_ai/src/infrastructure_ai/relevance_scorer.rs:333` — cuarto sitio del 0.3
+- `crates/webfang_core/src/infrastructure/llm/remote_embedding.rs:456-460,482-487` — spans del salto remoto
+- `crates/webfang_cli/src/main.rs:602` — precedencia `--ai-model` sobre env
+- Issues: #1915 (decisión), #1917 (primera revisión, cerrada por #1918), #1919 (re-scope)
 
 ## Glosario de referencias (IDs opacos)
 
