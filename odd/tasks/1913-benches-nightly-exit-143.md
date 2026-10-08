@@ -109,34 +109,58 @@ variable DIE per local; zero is the line-tables-only signature.
 - [x] Work-unit commit `34ec2bfa`.
 - [x] Native review per RDD: **approved**, authority burned
       (`gentle-ai.review-acknowledged/v1`, lineage `review-3b93a94c748db171`).
+- [x] T3 — derive the bench scope from the manifests (post-review follow-up).
 - [ ] Push and PR (maintainer decision).
+
+## T3 — derive the bench scope instead of hardcoding it
+
+Added after the RDD review flagged the hardcoded `-p` list as the one advisory finding
+with a real failure mode behind it (`R4-BENCH-SCOPE-SILENT-COVERAGE-LOSS`,
+`R3-scope-drift`): `cargo bench -p <pkg>` is an allow-list, not a filter, so a `[[bench]]`
+added to another crate later would be silently skipped, `cargo` would exit 0, and the
+nightly would report green with the coverage gone.
+
+The fix is deletion rather than a gate. `scripts/derive-bench-scope.py` parses
+`crates/*/Cargo.toml` with `tomllib` and prints `-p <name>` for every crate that declares
+a bench target; both `cargo bench` steps consume that fragment. The list is now
+incapable of going stale, which also removes the literal duplicated across the two steps
+(`R2-scope-duplication`) and the unexplained `9` / `1` constant
+(`R2-bench-count-constant`).
+
+Fails closed: an empty scope exits 1 with no stdout, so the step's `scope="$(...)"` can
+never silently degrade into an unscoped full-workspace build.
+
+`$BENCH_SCOPE` is expanded through `read -ra scope` plus `"${scope[@]}"`, not left
+unquoted, so correctness does not depend on the script only ever emitting safe tokens.
+`actionlint` (the version CI pins) reports the workflow clean.
+
+Verified in throwaway trees, never by editing a real manifest:
+
+| property | how it was proven | result |
+| --- | --- | --- |
+| scope tracks a newly declared bench target | injected 2 `[[bench]]` targets into a crate that had none, in a `mktemp -d` tree | `newc` appeared as `-p newc`, count 2 — **holds** |
+| empty scope fails closed | tree whose only crate declares no bench target | exit 1, refusal on stderr, empty stdout — **holds** |
+| derived scope compiles | `cargo bench "${scope[@]}" --no-run --locked` against the warm target dir | exit 0, all 10 targets linked |
 
 ## Review outcome
 
 Four lenses (risk, resilience, readability, reliability) returned **approved** with 0
-blocking findings and 12 advisory ones. None opened a correction, so the candidate landed
-as committed. Advisory findings, all non-blocking and all deferred as separate later work:
+blocking findings and 12 advisory ones. None opened a correction. Disposition after T3:
 
-| id | lens | severity | substance |
+| id | lens | severity | disposition |
 | --- | --- | --- | --- |
-| `R4-BENCH-SCOPE-SILENT-COVERAGE-LOSS` | resilience | WARNING | A `[[bench]]` added to a third crate later is silently skipped and the nightly still reports green; the package list is an allow-list, not a filter, and `cargo` exits 0. |
-| `R3-scope-drift` | reliability | WARNING | Same root as above from the test lens: no guard ties the hardcoded list to the crates that declare bench targets. |
-| `R2-scope-coupling-untagged` | readability | WARNING | No change context tells a maintainer to extend the package list when adding a bench target. |
-| `R4-UNMEASURED-AGAINST-KILL-WINDOW` | resilience | WARNING | The reduced workload was never measured against the window that actually produces exit 143. |
-| `R4-NO-DISCRIMINATING-SIGNAL-AFTER-FIX` | resilience | WARNING | If the next night is red again the log carries the same bare 143, with no new signal to tell "fixed but still too big" from "not fixed". |
-| `R2-bench-count-constant` | readability | WARNING | The `9` / `1` counts in the comment are an unexplained constant restated in two files with no canonical source. |
-| `R2-scope-duplication` | readability | WARNING | The package literal is duplicated across both `cargo bench` lines with no single source of truth. |
-| `R2-profile-comment-duplication` | readability | WARNING | The eight-line `Cargo.toml` comment duplicates the incident narrative and restates inherited release values. |
-| `R2-self-referential-note` | readability | SUGGESTION | The replacement comment narrates the deletion of its own predecessor, opaque to a reader who never saw it. |
-| `R3-exclusion-evidence` | reliability | WARNING | The exclusion check greps only `cli`/`mcp` library names while the criterion also names `webfang_benchmark`, and an absence-only count cannot distinguish "not compiled" from "not present under that name". |
-| `R3-profile-invariant` | reliability | SUGGESTION | The profile invariants are asserted in prose only; nothing would fail if a later edit restored full debuginfo. |
-| `R1-doc-local-env-details` | risk | SUGGESTION | The task document commits local workstation layout details (home-directory worktree path, cache location). |
-
-The two that deserve real follow-up are `R4-BENCH-SCOPE-SILENT-COVERAGE-LOSS` /
-`R3-scope-drift` — a guard that fails when a crate outside the selected set declares a
-bench target would convert silent coverage loss into a loud signal — and
-`R4-NO-DISCRIMINATING-SIGNAL-AFTER-FIX`, which is the honest admission that this change
-cannot prove its own effect before the nightly runs.
+| `R4-BENCH-SCOPE-SILENT-COVERAGE-LOSS` | resilience | WARNING | **addressed by T3** — the scope is derived, so it cannot go stale |
+| `R3-scope-drift` | reliability | WARNING | **addressed by T3** |
+| `R2-scope-coupling-untagged` | readability | WARNING | **addressed by T3** — a new bench crate is picked up automatically |
+| `R2-scope-duplication` | readability | WARNING | **addressed by T3** — one derivation, consumed twice |
+| `R2-bench-count-constant` | readability | WARNING | **addressed by T3** — counts are computed and logged, never stored |
+| `R4-UNMEASURED-AGAINST-KILL-WINDOW` | resilience | WARNING | open — unfixable before the nightly runs; 7 green nights are the only proof |
+| `R4-NO-DISCRIMINATING-SIGNAL-AFTER-FIX` | resilience | WARNING | open — per-crate counts are now logged, but no peak-memory or wall-time signal was added |
+| `R2-profile-comment-duplication` | readability | WARNING | open, accepted — the `Cargo.toml` rationale duplicates this document on purpose |
+| `R2-self-referential-note` | readability | SUGGESTION | open, accepted |
+| `R3-exclusion-evidence` | reliability | WARNING | open — the exclusion evidence greps `cli`/`mcp` only, not `webfang_benchmark` |
+| `R3-profile-invariant` | reliability | SUGGESTION | open — the profile invariant is asserted in prose only |
+| `R1-doc-local-env-details` | risk | SUGGESTION | open — this document carries local workstation layout details |
 
 ## Next step
 

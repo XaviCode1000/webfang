@@ -88,19 +88,45 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Derive the bench scope from the manifests; never hardcode it (#1913).
+      #
+      # `cargo bench -p X` is an ALLOW-LIST, not a filter: a `[[bench]]` target
+      # declared by a crate outside a hardcoded list is neither built nor run,
+      # `cargo` still exits 0, and the nightly reports green with the coverage
+      # silently gone. Deriving the list from the manifests makes it incapable of
+      # going stale, and it also removes the duplicated literal both cargo steps
+      # used to carry.
+      #
+      # Unscoped, `cargo bench` additionally builds webfang_cli, webfang_mcp and
+      # webfang_benchmark and then uses nothing from them: pure extra cold-compile
+      # surface on a runner that already gets SIGTERM-killed during the compile
+      # window. That cost is what scoping removes.
+      #
+      # Fails closed: an empty scope means no crate declares a bench target, which
+      # is never the expected state, and falling back to a full-workspace build
+      # would silently undo the fix.
+      - name: Derive bench package scope
+        run: |
+          set -euo pipefail
+          scope="$(python3 scripts/derive-bench-scope.py)"
+          echo "Bench scope: $scope"
+          echo "BENCH_SCOPE=$scope" >> "$GITHUB_ENV"
+
       # Compile gate first: a broken bench fails here with a clear signal
       # instead of mid-measurement.
       #
-      # Scoped to the two crates that actually declare [[bench]] targets (#1913):
-      # 9 in webfang_core, 1 in webfang_ai. Unscoped, `cargo bench` also builds
-      # webfang_cli, webfang_mcp and webfang_benchmark and then uses nothing from
-      # them, which is pure extra cold-compile surface on a runner that already
-      # gets SIGTERM-killed during the compile window.
+      # `$BENCH_SCOPE` is a multi-token fragment, so it is expanded through an
+      # array rather than unquoted: correctness here should not depend on the
+      # derive script only ever emitting safe tokens.
       - name: Compile gate (cargo bench --no-run)
-        run: cargo bench -p webfang_core -p webfang_ai --no-run --locked
+        run: |
+          read -ra scope <<< "$BENCH_SCOPE"
+          cargo bench "${scope[@]}" --no-run --locked
 
       - name: Run full criterion suite
-        run: cargo bench -p webfang_core -p webfang_ai --locked
+        run: |
+          read -ra scope <<< "$BENCH_SCOPE"
+          cargo bench "${scope[@]}" --locked
 
       - name: Summarize results
         if: always()
