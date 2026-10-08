@@ -1,11 +1,11 @@
 # ADR 0004: Retirada de ONNX local; embeddings remotos como única vía AI
 
 - **Status:** Accepted
-- **Date:** 2026-10-08
+- **Date:** 2026-10-08 (revisado 2026-10-09: mecanismo de arbitraje del paso 6 y resolución de Q6 — precisión de mecanismo, la decisión (a) con refugio (c) no cambia)
 - **Deciders:** Project owner
 - **Supersedes:** ADR 0003 §5 ("Local ONNX goes dormant, not deleted")
 - **Alcance de la supersesión:** el §5, más las afirmaciones del §Context de 0003 que quedaron obsoletas: "Port defined, never injected" es falso desde que `--extract-with-llm` inyecta un `dyn LlmPort` real en el Container (`webfang_cli/src/main.rs:721-759`, cableado en #1493). No es `resolve_remote_embedding` (`:687`): esa fn devuelve el `RemoteEmbeddingAdapter` del slot de embeddings, no un `LlmPort`. El resto (§1–4, 6, 7, trade-offs, alternativas) sigue vigente.
-- **Related issues:** #1915 (decisión), #1917 (primera revisión, cerrada por #1918), #1919 (re-scope)
+- **Related issues:** #1915 (decisión), #1917 (primera revisión, cerrada por #1918), #1919 (re-scope), #1930 (revisión del mecanismo de arbitraje + Q6)
 - **Working papers:** auditoría AI-inference fuera del repo (5 pasadas, HEAD `3ac5599`, 47 hallazgos FIN); los números clave van inline abajo para que este ADR se sostenga solo.
 
 ## Context
@@ -18,16 +18,16 @@ ADR 0003 dejó ONNX dormido tras `--features ai` como fallback offline. La dormi
 
 **Borrar ONNX del workspace**, con refugio externo solo con dueño y criterio de abandono (ver abajo). Secuencia obligatoria (el borrado es el último paso):
 
-1. MVP PRs 1–8 + **config de endpoint real** (las env vars de ADR 0003 §1 no existen en código —0 hits fuera del propio ADR—; la config real es `ProvidersConfig` + `AuthSource`: hacer existir el camino documentado antes de simplificarlo) + **B2** (allowlist CIDR para LAN, tras responder Q6) + **C1–C3** (`--max-chars`, este ADR, docs regenerados con la lista explícita de Superficie afectada).
+1. MVP PRs 1–8 + **config de endpoint real** (las env vars de ADR 0003 §1 no existen en código —0 hits fuera del propio ADR—; la config real es `ProvidersConfig` + `AuthSource`: hacer existir el camino documentado antes de simplificarlo) + **B2** (allowlist CIDR para LAN — **Q6 resuelto, opción (b)**: `NetworkPolicy{mode, allow_cidrs, allow_hosts}` por provider, con link-local/unspecified/multicast/broadcast/reserved **siempre** bloqueadas aunque estén en la allowlist (FIN-017: sin esto un allowlist ingenuo abre `169.254.169.254`), y `100.64.0.0/10` bloqueado por defecto con opt-in explícito; la primera entrega es B1, `AuthSource::None`, que es independiente de Q6) + **C1–C3** (`--max-chars`, este ADR, docs regenerados con la lista explícita de Superficie afectada).
 2. **Tramo D**: reescribir `SemanticCleanerImpl` sobre el `EmbeddingPort` existente (el seam existe; lo pendiente es el cleaner, aún genérico sobre `InferenceEngine` en `:215`) + traslado + batch/bisección + caché + relativo opt-in. Los `chars_per_token`/`matryoshka` de los perfiles los consumen los pasos 2–3, así que la versión de schema de perfiles queda fijada aquí.
 3. Tier 2 con destino explícito (verificado: reimplementable sobre endpoint, solo consume texto→vectores; umbral 0.75 a recalibrar por modelo).
 4. Tramo propio **configuración fácil**: perfiles auto + `connect`/`doctor`/`show` + ajuste manual (o ADR hermano si crece).
 5. **Release de deprecación** (ver Compatibilidad): anuncia, no retira capacidad —los shims siguen funcionando—; con la etiqueta git de recuperación creada antes de publicarlo. Este paso no mejora `main`, la prepara: se declara así explícitamente.
-6. Desenlace, con criterios distintos por rama: **6a borrado total** (si M2 es camino principal y no hay usuarios del crate) o **6b crate externo** (si hay usuarios: con dueño nombrado, CI mínima y criterio de abandono —sin actividad ni releases en 6 meses se archiva—).
+6. Desenlace según la *Condición de revisión* (abajo), con criterios distintos por rama: **6a borrado total** (si se cumplen el criterio técnico y la señal de objeción no registra dependencia activa) o **6b crate externo** (si hay reclamos o demanda real: con dueño nombrado, CI mínima y criterio de abandono —sin actividad ni releases en 6 meses se archiva—).
 
 ## Condiciones del owner (bloqueantes del paso 6)
 
-1. **M2 funciona de verdad**: añadir la variante `AuthSource::None` (hoy solo Keyring/EncryptedFile/Env, `auth_source.rs:55-70`); el loopback ya está permitido (`is_permitted_loopback`, `ssrf_guard.rs:231`); B2 agrega la allowlist CIDR, no el loopback. Gate: **registro reproducible** archivado en el PR que habilita el paso 6 —comando + `--trace-file` + summary con backend/modelo/dim— ejecutado contra Ollama y vLLM reales. "Probado a mano" sin registro no cuenta; el registro es re-ejecutable por cualquiera. LM Studio: best effort, sin garantía.
+1. **M2 funciona de verdad**: añadir la variante `AuthSource::None` (hoy solo Keyring/EncryptedFile/Env, `auth_source.rs:55-70`); el loopback ya está permitido (`is_permitted_loopback`, `ssrf_guard.rs:231`); B2 agrega la allowlist CIDR, no el loopback. Gate: el **criterio técnico** de la *Condición de revisión* —los *Criterios de aceptación de M2* (abajo) más la suite wiremock del PR-8 y el test de 401 con y sin credencial— y un **registro reproducible** archivado en el PR que habilita el paso 6 (comando + `--trace-file` + summary con backend/modelo/dim) ejecutado contra Ollama y vLLM reales. "Probado a mano" sin registro no cuenta; el registro es re-ejecutable por cualquiera. El `usage` que reportan Ollama y vLLM sigue sin verificar y es **opcional, nunca bloqueante**. LM Studio: best effort, sin garantía.
 2. **Tier 2 explícito**: migrar sobre endpoint o eliminar documentado. Nunca en silencio.
 3. **Se asume la pérdida del zero-config offline-total**: M3 cubre sin-inferencia; `--clean-ai` sobrevive (des-gateado, ver Compatibilidad) pero exigirá endpoint del usuario. Se declara en el README.
 4. **Reescritura**: `SemanticCleanerImpl` (1096 LOC) sobre `EmbeddingPort`; `--max-tokens → --max-chars` con `chars_per_token` por perfil (default 3: mejor que 4, insuficiente para CJK —el respaldo real es el degradado por 400/413, nunca la estimación); 400/413 degrada con troceado/bisección.
@@ -50,7 +50,26 @@ El 0.3 está calibrado para Granite y vive en cuatro sitios (`options_spec/ai.rs
 
 ## Condición de revisión
 
-Si las entrevistas (pregunta 3: ¿modelo en su VPC?) muestran que los clientes NO correrían el modelo en su VPC, se reevalúa el refugio antes del paso 6: M2-endpoint dejaría de ser camino principal y se decidiría si el crate ONNX externo pasa a tener dueño (excepción explícita al "sin mantenimiento"). Si al llegar al paso 5 no hay al menos 3 entrevistas hechas, el owner decide con la información disponible y lo registra aquí.
+La decisión entre borrado total (6a) y refugio (6b) se arbitra por **dos señales verificables**, sin depender de procesos de discovery externos ni de telemetría.
+
+**1. Criterio técnico (gate del paso 6).** Se evalúa al llegar al paso 5:
+
+- Los *Criterios de aceptación de M2* (abajo) pasan en verde contra **Ollama y vLLM reales**, no solo wiremock, en al menos un entorno documentado.
+- La suite wiremock del PR-8 (401 —con y sin credencial—, 429 con `Retry-After` en segundos y en fecha, 5xx, timeout, respuesta malformada, orden de batch, truncado de stream, DNS) está verde.
+
+Si ambos se cumplen, el paso 6 puede proceder, sujeto a la señal 2. Si alguno falla, se posterga un release minor y el gap se registra en este ADR.
+
+**2. Señal de objeción (entre el paso 5 y el 6).** Es pasiva: no recolecta datos ni abre egress alguno.
+
+- El release de deprecación publica el aviso (en ejecución y en el CHANGELOG, ver Compatibilidad) apuntando a un issue o discusión fija (p. ej. "Migración desde ONNX local").
+- Tras **2 releases minor**: si ningún usuario reclama dependencia de ONNX, el paso 6 procede como borrado total; si hay reclamos, el crate pasa a refugio (c) "sin soporte" y los casos se registran aquí.
+- **Limitación aceptada:** la ausencia de reclamos **no prueba** ausencia de uso —hay usuarios que no leen avisos—. Por eso el borrado es reversible desde la etiqueta git del paso 5 (ver *Reversibilidad*), y esa asimetría es un riesgo que este ADR declara, no oculta.
+
+**Entrevistas:** son **insumo no bloqueante**. Si existen al llegar al paso 5, informan la decisión; si no, el owner decide con las dos señales anteriores y lo registra aquí. Esta sección **supera** la línea del documento `10_DECISION_OWNER_Q1.md` que las declaraba arbitantes entre (a) y (c): ese archivo está gitignored y es registro histórico de una decisión en su momento, así que no se edita — la corrección queda en el documento normativo, que es donde la va a buscar quien lea después.
+
+**Medición futura:** si alguna vez se quiere medir uso real, requiere su propio ADR —unidad de medida por usuario o por corrida única, destino declarado y consentimiento, conforme a M4—. Este ADR no instrumenta nada.
+
+**Excepción de mantenimiento:** si las señales muestran que M2-endpoint no es camino viable **y** hay demanda real de ONNX, el owner puede asignar dueño al crate externo y lo registra aquí. Es excepción explícita al "sin mantenimiento".
 
 ## Perfiles de modelo
 
@@ -73,8 +92,8 @@ Confirmado: no hay `model_id` en schema ni DTOs (0 hits en infraestructura+aplic
 
 ## Consecuencias
 
-- Positivas: se cierra el árbol ONNX en CI; `wreq`-only en el build default —con qualifier: `--all-features` conserva `reqwest` vía `chromiumoxide` (`Cargo.toml:158`, feature `chromium` en `core/Cargo.toml:33`), así que el "real" vale para default, no para all-features—; M2 como camino principal si las entrevistas lo confirman.
-- Negativas: se pierde offline-total con inferencia; coste por uso y **coste de re-embedding de vaults** pasan al usuario (BYO-key); latencia de red en el hot path.
+- Positivas: se cierra el árbol ONNX en CI; `wreq`-only en el build default —con qualifier: `--all-features` conserva `reqwest` vía `chromiumoxide` (`Cargo.toml:158`, feature `chromium` en `core/Cargo.toml:33`), así que el "real" vale para default, no para all-features—; M2 como camino principal cuando el criterio técnico se cumple y la señal de objeción no registra dependencia activa.
+- Negativas: se pierde offline-total con inferencia; coste por uso y **coste de re-embedding de vaults** pasan al usuario (BYO-key); latencia de red en el hot path; **la señal de objeción puede subestimar el uso real** —riesgo aceptado, mitigado por la reversibilidad desde la etiqueta git del paso 5—.
 - Neutras: M3 existe y es sólido; el borrado, si nadie usa el crate externo, es trivial.
 
 ## Criterios de aceptación de M2 (condición 1, verificables)
@@ -83,6 +102,7 @@ Confirmado: no hay `model_id` en schema ni DTOs (0 hits en infraestructura+aplic
 - vLLM en LAN con `allow_cidrs` (B2): funciona; `100.64.0.0/10` rechazado por defecto.
 - `--offline` + remoto: exit 78 —ya implementado (`EXIT_CONFIG`, `cli/error.rs:36`; `llm_wire.rs:141-147`): es guarda de regresión, no criterio nuevo.
 - Registro reproducible contra Ollama y vLLM reales archivado antes del paso 6.
+- Suite wiremock del PR-8 en verde **más test de 401 con y sin credencial**: con `AuthSource::None` un 401 de un provider sin credencial debe distinguirse de un 401 por credencial inválida. Ese test no existe todavía —es entregable de B1, no criterio preexistente—.
 
 ## Reversibilidad
 
