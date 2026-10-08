@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.2] - 2026-10-08
+
+
+### 🏗️ Architecture Improvements
+
+- Split the `ai` feature gate down to submodule level ([#1922](https://github.com/XaviCode1000/webfang/pull/1922))
 ## [2.7.1] - 2026-10-06
 
 
