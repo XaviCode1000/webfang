@@ -208,9 +208,11 @@ inherits = "release"
 # The accepted cost: local VARIABLES are no longer emitted, so triaging a bench
 # panic from its own artifacts gives you the stack and file:line but not the
 # values. When that is what you need, ask for it per invocation rather than
-# paying for it every night:
+# paying for it every night — and keep the package scope the nightly itself
+# uses, because the override invalidates the bench profile cache and an unscoped
+# `cargo bench` would rebuild every bench target in the workspace:
 #
-#   CARGO_PROFILE_BENCH_DEBUG=true cargo bench -- <filter>
+#   CARGO_PROFILE_BENCH_DEBUG=true cargo bench -p <crate> --bench <target>
 #
 # (Same shape as the one-off dev debuginfo escape hatch noted above. The env
 # override moves only the artifacts, never the code cargo benchmarks.)
