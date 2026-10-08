@@ -623,32 +623,36 @@ mod tests {
         assert_eq!(ai_args(Headings::Applied).len(), expected_ai_arg_count());
     }
 
+    /// The AI layout must hold for BOTH heading shapes, and only the expected
+    /// count differs between builds: the ungated pair alone without `ai`, the
+    /// full set with it. One helper, because two `cfg` arms each restating the
+    /// loop is what put a clone in this file — and asserting the exact ids
+    /// (not merely "not empty") is what makes the ungated pair provable.
+    fn assert_ai_layout(expected: usize, label: &str) {
+        for (headings, shape) in [
+            (Headings::Omitted, "Omitted"),
+            (Headings::Applied, "Applied"),
+        ] {
+            let args = ai_args(headings);
+            let ids: Vec<&str> = args.iter().map(|a| a.get_id().as_str()).collect();
+            assert_eq!(
+                ids.len(),
+                expected,
+                "AI layout {label} must be {expected} args ({shape}); got {ids:?}"
+            );
+        }
+    }
+
     #[test]
     #[cfg(not(feature = "ai"))]
     fn ai_args_is_only_the_ungated_pair_without_feature() {
-        assert!(
-            !ai_args(Headings::Omitted).is_empty(),
-            "ai_args must still carry the ungated pair without the feature (Omitted)"
-        );
-        assert!(
-            !ai_args(Headings::Applied).is_empty(),
-            "ai_args must still carry the ungated pair without the feature (Applied)"
-        );
+        assert_ai_layout(2, "without ai");
     }
 
     #[test]
     #[cfg(feature = "ai")]
     fn ai_args_has_five_entries_with_feature() {
-        assert_eq!(
-            ai_args(Headings::Omitted).len(),
-            5,
-            "ai_args must have 5 entries with feature (Omitted)"
-        );
-        assert_eq!(
-            ai_args(Headings::Applied).len(),
-            5,
-            "ai_args must have 5 entries with feature (Applied)"
-        );
+        assert_ai_layout(5, "with ai");
         assert_eq!(
             expected_ai_arg_count(),
             5,

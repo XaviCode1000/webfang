@@ -427,6 +427,13 @@ fn max_chars_reaches_ai_config_without_the_ai_feature() {
 /// choice exactly like the flag, so it wins over `WEBFANG_MAX_TOKENS` and
 /// leaves no deprecation to report. With only the legacy var set, the budget
 /// is converted and the provenance is recorded.
+/// Parse a bare argv into `AiConfig` — the shared prologue of every env-door
+/// assertion below, so each test states only what it is actually proving.
+fn ai_config_from_empty_argv() -> webfang_core::application::crawl_options::AiConfig {
+    let args = Args::try_parse_from(["webfang"]).expect("minimal parse must succeed");
+    webfang_core::application::crawl_options::CrawlOptions::from(args).ai_config
+}
+
 #[test]
 fn max_chars_env_beats_the_deprecated_env_var() {
     clean_env();
@@ -435,8 +442,7 @@ fn max_chars_env_beats_the_deprecated_env_var() {
         ("WEBFANG_MAX_TOKENS", "4096"),
     ]);
 
-    let args = Args::try_parse_from(["webfang"]).expect("minimal parse must succeed");
-    let ai = webfang_core::application::crawl_options::CrawlOptions::from(args).ai_config;
+    let ai = ai_config_from_empty_argv();
 
     assert_eq!(ai.max_chars, 2048, "WEBFANG_MAX_CHARS wins");
     assert!(
@@ -452,8 +458,7 @@ fn deprecated_max_tokens_env_is_converted() {
     clean_env();
     let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_MAX_TOKENS", "4096")]);
 
-    let args = Args::try_parse_from(["webfang"]).expect("minimal parse must succeed");
-    let ai = webfang_core::application::crawl_options::CrawlOptions::from(args).ai_config;
+    let ai = ai_config_from_empty_argv();
 
     assert_eq!(
         ai.max_chars,

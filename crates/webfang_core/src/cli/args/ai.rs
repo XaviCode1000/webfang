@@ -162,38 +162,60 @@ fn max_chars_was_chosen(m: &clap::ArgMatches) -> bool {
     )
 }
 
-#[cfg(feature = "ai")]
-impl clap::FromArgMatches for AiArgs {
-    fn from_arg_matches(m: &clap::ArgMatches) -> Result<Self, clap::Error> {
-        use crate::cli::spec_command::extract;
-        Ok(Self {
-            max_chars: extract::value::<usize>(m, "max_chars")?,
-            max_chars_explicit: max_chars_was_chosen(m),
-            max_tokens: extract::opt::<usize>(m, "max_tokens"),
-            threshold: extract::value::<f32>(m, "threshold")?,
-            offline: m.get_flag("offline"),
-            ai_model: extract::opt::<String>(m, "ai_model"),
-        })
-    }
+/// The reads that exist in EVERY build, as `(max_chars, max_chars_explicit,
+/// max_tokens)`.
+///
+/// ADR-0004 makes `--max-chars` and the `--max-tokens` shim ungated, so both
+/// `FromArgMatches` arms below read the same three values. Extracting them here
+/// keeps the two arms from drifting: a fourth ungated field must be added in
+/// one place, and a reviewer reading either arm sees only what that build adds.
+fn ungated_from_matches(m: &clap::ArgMatches) -> Result<(usize, bool, Option<usize>), clap::Error> {
+    use crate::cli::spec_command::extract;
+    Ok((
+        extract::value::<usize>(m, "max_chars")?,
+        max_chars_was_chosen(m),
+        extract::opt::<usize>(m, "max_tokens"),
+    ))
+}
 
-    fn update_from_arg_matches(&mut self, m: &clap::ArgMatches) -> Result<(), clap::Error> {
-        *self = Self::from_arg_matches(m)?;
-        Ok(())
+impl AiArgs {
+    /// The single reader for both builds.
+    ///
+    /// ADR-0004 makes `--max-chars` and the `--max-tokens` shim ungated, so
+    /// those three values exist in every configuration; the rest of the struct
+    /// is `#[cfg(feature = "ai")]`. Concentrating the whole read HERE means one
+    /// ungated `FromArgMatches` impl serves both builds — two `cfg`-gated impls
+    /// duplicated the trait methods verbatim, and a fourth ungated field would
+    /// have needed editing in two places with nothing to catch the miss.
+    fn from_matches(m: &clap::ArgMatches) -> Result<Self, clap::Error> {
+        let (max_chars, max_chars_explicit, max_tokens) = ungated_from_matches(m)?;
+        #[cfg(feature = "ai")]
+        {
+            use crate::cli::spec_command::extract;
+            Ok(Self {
+                max_chars,
+                max_chars_explicit,
+                max_tokens,
+                threshold: extract::value::<f32>(m, "threshold")?,
+                offline: m.get_flag("offline"),
+                ai_model: extract::opt::<String>(m, "ai_model"),
+            })
+        }
+        // Without the feature the rest of the struct is gone; `FromArgMatches`
+        // still reads the ungated triple because those flags render in this
+        // configuration too.
+        #[cfg(not(feature = "ai"))]
+        Ok(Self {
+            max_chars,
+            max_chars_explicit,
+            max_tokens,
+        })
     }
 }
 
-/// `cfg(not(feature = "ai"))` counterpart: only the ungated `max_chars` is
-/// read, the rest of the struct is gone. `FromArgMatches` still reads
-/// `max_chars` because the flag renders in this configuration too.
-#[cfg(not(feature = "ai"))]
 impl clap::FromArgMatches for AiArgs {
     fn from_arg_matches(m: &clap::ArgMatches) -> Result<Self, clap::Error> {
-        use crate::cli::spec_command::extract;
-        Ok(Self {
-            max_chars: extract::value::<usize>(m, "max_chars")?,
-            max_chars_explicit: max_chars_was_chosen(m),
-            max_tokens: extract::opt::<usize>(m, "max_tokens"),
-        })
+        Self::from_matches(m)
     }
 
     fn update_from_arg_matches(&mut self, m: &clap::ArgMatches) -> Result<(), clap::Error> {
