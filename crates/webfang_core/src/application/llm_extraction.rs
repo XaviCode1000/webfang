@@ -486,7 +486,7 @@ mod service_tests {
             Box::pin(async move { Ok(chunks) })
         }
 
-        fn max_tokens(&self) -> usize {
+        fn max_chars(&self) -> usize {
             512
         }
 

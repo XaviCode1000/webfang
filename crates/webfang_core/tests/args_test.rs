@@ -337,7 +337,7 @@ fn test_ai_config_parity_with_flags() {
         "https://example.com",
         "--threshold",
         "0.5",
-        "--max-tokens",
+        "--max-chars",
         "1024",
         "--offline",
         "--ai-model",
@@ -351,7 +351,8 @@ fn test_ai_config_parity_with_flags() {
         opts.ai_config,
         AiConfig {
             threshold: 0.5,
-            max_tokens: 1024,
+            max_chars: 1024,
+            deprecated_max_tokens: None,
             offline: true,
             model: "granite-311m".to_string(),
         }
@@ -366,6 +367,7 @@ fn test_ai_config_parity_no_flags() {
 
     let _guard = webfang_test_utils::EnvGuard::clean(&[
         "WEBFANG_THRESHOLD",
+        "WEBFANG_MAX_CHARS",
         "WEBFANG_MAX_TOKENS",
         "WEBFANG_OFFLINE",
         "AI_MODEL_ID",
@@ -379,7 +381,8 @@ fn test_ai_config_parity_no_flags() {
         opts.ai_config,
         AiConfig {
             threshold: 0.3,
-            max_tokens: 32768,
+            max_chars: 98_304,
+            deprecated_max_tokens: None,
             offline: false,
             model: String::new(),
         }
@@ -397,6 +400,76 @@ fn test_ai_config_defaults_without_ai_feature() {
 
     // Without AI feature, ai_config should always be Default
     assert_eq!(opts.ai_config, AiConfig::default());
+}
+
+/// `--max-chars` renders in EVERY cargo configuration (ADR-0004), so its value
+/// is carried in every configuration: a flag that parses and is then dropped
+/// would be exactly the silent loss the deprecation of `--max-tokens` was meant
+/// to avoid.
+#[cfg(not(feature = "ai"))]
+#[test]
+fn max_chars_reaches_ai_config_without_the_ai_feature() {
+    clean_env();
+    let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_MAX_CHARS", "WEBFANG_MAX_TOKENS"]);
+
+    let args = Args::try_parse_from(["webfang", "--max-chars", "2048"])
+        .expect("the ungated flag must parse without the ai feature");
+    let opts = webfang_core::application::crawl_options::CrawlOptions::from(args);
+
+    assert_eq!(
+        opts.ai_config.max_chars, 2048,
+        "--max-chars must reach AiConfig.max_chars even without the ai feature"
+    );
+}
+
+/// Precedence across the ENV doors (hermetic, so this is the only place the
+/// env side can be proved): `WEBFANG_MAX_CHARS` is an operator's explicit
+/// choice exactly like the flag, so it wins over `WEBFANG_MAX_TOKENS` and
+/// leaves no deprecation to report. With only the legacy var set, the budget
+/// is converted and the provenance is recorded.
+/// Parse a bare argv into `AiConfig` — the shared prologue of every env-door
+/// assertion below, so each test states only what it is actually proving.
+fn ai_config_from_empty_argv() -> webfang_core::application::crawl_options::AiConfig {
+    let args = Args::try_parse_from(["webfang"]).expect("minimal parse must succeed");
+    webfang_core::application::crawl_options::CrawlOptions::from(args).ai_config
+}
+
+#[test]
+fn max_chars_env_beats_the_deprecated_env_var() {
+    clean_env();
+    let _guard = webfang_test_utils::EnvGuard::with(&[
+        ("WEBFANG_MAX_CHARS", "2048"),
+        ("WEBFANG_MAX_TOKENS", "4096"),
+    ]);
+
+    let ai = ai_config_from_empty_argv();
+
+    assert_eq!(ai.max_chars, 2048, "WEBFANG_MAX_CHARS wins");
+    assert!(
+        ai.deprecated_max_tokens.is_none(),
+        "an explicit WEBFANG_MAX_CHARS must leave no deprecation to report"
+    );
+}
+
+/// Only the legacy env var set: the token budget is converted, and the
+/// provenance is carried so the binary can warn exactly once.
+#[test]
+fn deprecated_max_tokens_env_is_converted() {
+    clean_env();
+    let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_MAX_TOKENS", "4096")]);
+
+    let ai = ai_config_from_empty_argv();
+
+    assert_eq!(
+        ai.max_chars,
+        webfang_core::domain::options_spec::ai::max_tokens_to_max_chars(4096),
+        "the env-sourced token budget must convert exactly like the flag's"
+    );
+    assert_eq!(
+        ai.deprecated_max_tokens,
+        Some(4096),
+        "the provenance must survive so the CLI can warn once"
+    );
 }
 
 // ========================================================================

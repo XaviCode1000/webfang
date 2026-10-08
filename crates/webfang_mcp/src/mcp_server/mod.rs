@@ -175,20 +175,22 @@ pub fn spawn_ai_wiring(container: Arc<webfang_core::application::container::Cont
     tokio::spawn(
         async move {
             let model_config = webfang_ai::ModelConfig::default().with_model_variant(variant);
-            match webfang_ai::SemanticCleanerImpl::new_with_engine_config(
-                model_config,
+            // ADR-0004: ONE composition root for the local embedding stack.
+            // The cleaner takes only the port; the SAME engine + tokenizer
+            // back the vault-search embedding adapter and Tier 2 — one model
+            // load, Single and Pool modes alike.
+            match webfang_ai::infrastructure_ai::embedding_adapter::build_onnx_embedding_port(
+                &model_config,
                 engine_config,
             )
             .await
             {
-                Ok(cleaner) => {
-                    // Erased shared inference (#1569): the SAME engine +
-                    // tokenizer back the cleaner, the vault-search embedding
-                    // adapter and Tier 2 — one model load, Single and Pool
-                    // modes alike.
-                    let (engine, tokenizer) = cleaner.shared_inference();
+                Ok((port, engine, tokenizer)) => {
                     let cleaner: Arc<dyn webfang_core::domain::semantic_cleaner::SemanticCleaner> =
-                        Arc::new(cleaner);
+                        Arc::new(webfang_ai::SemanticCleanerImpl::from_parts(
+                            port,
+                            model_config,
+                        ));
                     container.inject_vault_ports(
                         webfang_core::application::container::VaultAiPorts {
                             cleaner: Some(cleaner),

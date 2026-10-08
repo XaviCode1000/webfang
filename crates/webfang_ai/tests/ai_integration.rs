@@ -41,7 +41,7 @@ fn test_model_config_defaults() {
     assert_eq!(config.repo, DEFAULT_MODEL_REPO);
     assert_eq!(config.model_file, DEFAULT_MODEL_FILE);
     assert!(!config.offline_mode);
-    assert_eq!(config.max_tokens, 32768);
+    assert_eq!(config.max_chars, 98_304);
 }
 
 /// Test that ModelConfig offline mode is configured correctly
@@ -80,17 +80,17 @@ fn test_semantic_error_variants() {
     // Test ChunkTooLarge error — match on variant, verify fields
     let err = SemanticError::ChunkTooLarge {
         chunk_id: "chunk-1".to_string(),
-        tokens: 600,
+        chars: 600,
         max: 512,
     };
     match err {
         SemanticError::ChunkTooLarge {
             chunk_id,
-            tokens,
+            chars,
             max,
         } => {
             assert_eq!(chunk_id, "chunk-1");
-            assert_eq!(tokens, 600);
+            assert_eq!(chars, 600);
             assert_eq!(max, 512);
         },
         other => panic!("expected ChunkTooLarge, got {other:?}"),
@@ -192,15 +192,27 @@ fn test_model_config_full_builder() {
         .with_repo("sentence-transformers/all-MiniLM-L6-v2")
         .with_file("model.onnx")
         .with_offline_mode(false)
-        .with_max_tokens(512)
+        .with_max_chars(512)
         .with_relevance_threshold(0.4)
         .unwrap();
 
     assert_eq!(config.repo, "sentence-transformers/all-MiniLM-L6-v2");
     assert_eq!(config.model_file, "model.onnx");
     assert!(!config.offline_mode);
-    assert_eq!(config.max_tokens, 512);
+    assert_eq!(config.max_chars, 512);
     assert_eq!(config.relevance_threshold, 0.4);
+}
+
+/// The chars-per-token ratio replaces the retired token budget and rejects
+/// non-positive values at build time.
+#[test]
+fn test_model_config_chars_per_token_builder() {
+    let config = ModelConfig::new().with_chars_per_token(4.0).unwrap();
+    assert_eq!(config.chars_per_token, 4.0);
+    assert!(matches!(
+        ModelConfig::new().with_chars_per_token(0.0),
+        Err(SemanticError::InvalidCharsPerToken { .. })
+    ));
 }
 
 /// Test that ThresholdConfig type exists
@@ -464,7 +476,7 @@ fn test_relevance_filtering() {
 async fn test_error_chunk_too_large() {
     let config = ModelConfig::default()
         .with_offline_mode(true)
-        .with_max_tokens(512);
+        .with_max_chars(512);
 
     let cleaner = SemanticCleanerImpl::new(config)
         .await

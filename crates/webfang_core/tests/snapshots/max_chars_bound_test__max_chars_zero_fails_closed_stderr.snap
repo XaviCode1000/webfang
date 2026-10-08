@@ -1,0 +1,9 @@
+---
+source: crates/webfang_core/tests/max_chars_bound_test.rs
+expression: redacted
+---
+error: invalid value '0' for '--max-chars <MAX_CHARS>': --max-chars debe ser >= 1 (0 rechazaría todos los chunks)
+
+For more information, try '--help'.
+
+Error: invalid arguments

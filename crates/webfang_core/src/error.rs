@@ -255,23 +255,26 @@ pub enum SemanticError {
     #[error("Error ejecutando inferencia ONNX: {0}")]
     Inference(String),
 
-    /// Content chunk exceeds model's token limit
+    /// Content chunk exceeds the configured character budget
     ///
-    /// This occurs when a single chunk of content has more tokens than
-    /// the model can handle (32768 tokens for Granite-97M).
+    /// This occurs when a single chunk of content is longer than the
+    /// configured `--max-chars` budget. The unit is CHARACTERS, not tokens
+    /// (ADR-0004): the cleaner no longer tokenizes, and the same budget has to
+    /// mean the same thing for a local ONNX model and a remote embedding
+    /// endpoint.
     ///
     /// # Fields
     ///
     /// * `chunk_id` - Identifier of the problematic chunk
-    /// * `tokens` - Actual token count
-    /// * `max` - Maximum allowed tokens
-    #[error("Chunk {chunk_id} excede límite de tokens: {tokens} > {max} (modelo: IBM Granite)")]
+    /// * `chars` - Actual character count
+    /// * `max` - Maximum allowed characters
+    #[error("Chunk {chunk_id} excede límite de caracteres: {chars} > {max}")]
     ChunkTooLarge {
         /// Identifier of the chunk (UUID or index)
         chunk_id: String,
-        /// Actual token count
-        tokens: usize,
-        /// Maximum allowed tokens for this model
+        /// Actual character count
+        chars: usize,
+        /// Maximum allowed characters per chunk
         max: usize,
     },
 
@@ -326,6 +329,18 @@ pub enum SemanticError {
     #[error("Umbral de relevancia inválido: {value} (rango válido: 0.0 a 1.0)")]
     InvalidThreshold {
         /// The invalid threshold value provided
+        value: f32,
+    },
+
+    /// Characters-per-token ratio out of valid range (must be > 0)
+    ///
+    /// The ratio translates a retired `--max-tokens` budget into the
+    /// character budget that replaced it. A non-positive ratio would yield a
+    /// zero or negative character budget — a guard that rejects every chunk
+    /// while looking configured.
+    #[error("Ratio de caracteres por token inválido: {value} (debe ser > 0)")]
+    InvalidCharsPerToken {
+        /// The invalid ratio provided
         value: f32,
     },
 }
@@ -700,9 +715,10 @@ impl SemanticError {
     #[must_use]
     pub const fn classify(&self) -> ErrorClass {
         match self {
-            Self::ModelLoad(_) | Self::Inference(_) | Self::InvalidThreshold { .. } => {
-                ErrorClass::InternalFatal
-            },
+            Self::ModelLoad(_)
+            | Self::Inference(_)
+            | Self::InvalidThreshold { .. }
+            | Self::InvalidCharsPerToken { .. } => ErrorClass::InternalFatal,
             Self::ChunkTooLarge { .. }
             | Self::Tokenize(_)
             | Self::Download { .. }
@@ -1034,7 +1050,7 @@ mod tests {
     fn test_semantic_error_chunk_too_large() {
         let err = SemanticError::ChunkTooLarge {
             chunk_id: "chunk-123".to_string(),
-            tokens: 600,
+            chars: 600,
             max: 512,
         };
         assert!(
@@ -1042,7 +1058,7 @@ mod tests {
                 err,
                 SemanticError::ChunkTooLarge {
                     chunk_id,
-                    tokens: 600,
+                    chars: 600,
                     max: 512,
                 }
                 if chunk_id == "chunk-123"

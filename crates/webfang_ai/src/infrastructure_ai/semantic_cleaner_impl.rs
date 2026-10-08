@@ -10,9 +10,7 @@
 //!     ↓
 //! [Chunker] Split into semantic chunks (arena allocator)
 //!     ↓
-//! [Tokenizer] Convert each chunk to token IDs
-//!     ↓
-//! [InferencePool] Generate embeddings (dedicated worker threads)
+//! [EmbeddingPort] Embed each chunk through the domain port
 //!     ↓
 //! [RelevanceScorer] Filter by threshold (SIMD cosine similarity)
 //!     ↓
@@ -24,7 +22,7 @@
 //! - `async-join-parallel`: Use `try_join_all` for concurrent embeddings
 //! - `mem-reuse-collections`: Pre-allocate `Vec::with_capacity`, reuse buffers
 //! - `own-borrow-over-clone`: Borrow `&chunks`, `&embeddings` - don't clone
-//! - `async-spawn-blocking`: InferencePool uses dedicated worker threads
+//! - `async-spawn-blocking`: the embedding port's engine uses dedicated worker threads
 //! - `err-context-chain`: Add `.context()` to errors
 //! - `anti-unwrap-abuse`: Use `?` operator, NO `.unwrap()` in prod
 //! - `anti-lock-across-await`: Don't hold MutexGuard across `.await`
@@ -65,11 +63,10 @@ use tokio::io::AsyncReadExt;
 use tracing::{debug, info, warn, Instrument};
 
 use crate::infrastructure_ai::cache_config::AiModel;
+use crate::infrastructure_ai::embedding_adapter::EmbeddingAdapter;
 use crate::infrastructure_ai::embedding_ops::cosine_similarity;
-use crate::infrastructure_ai::{
-    build_engine, ContentPruner, EngineConfig, HtmlChunker, InferenceEngine, InferencePool,
-    LegibleContentPruner, MiniLmTokenizer, RelevanceScorer,
-};
+use crate::infrastructure_ai::{ContentPruner, HtmlChunker, LegibleContentPruner, RelevanceScorer};
+use webfang_core::domain::embedding_port::EmbeddingPort;
 use webfang_core::domain::semantic_cleaner::{private, SemanticCleaner};
 use webfang_core::domain::DocumentChunk;
 use webfang_core::error::SemanticError;
@@ -87,7 +84,7 @@ use webfang_core::error::SemanticError;
 /// let config = ModelConfig::new()
 ///     .with_repo("ibm-granite/granite-embedding-97m-multilingual-r2")
 ///     .with_offline_mode(true)
-///     .with_max_tokens(512);
+///     .with_max_chars(1536);
 /// ```
 #[derive(Debug, Clone)]
 pub struct ModelConfig {
@@ -97,12 +94,28 @@ pub struct ModelConfig {
     pub model_file: String,
     /// Offline mode (fail if not cached)
     pub offline_mode: bool,
-    /// Maximum tokens per chunk before rejection. This is a chunk-rejection
-    /// guard, not a context-window or generation limit: chunks whose tokenized
-    /// length exceeds this value fail with [`SemanticError::ChunkTooLarge`].
-    /// The tokenizer itself truncates sequences at the model's configured
-    /// maximum (`DEFAULT_MAX_LENGTH`, 32,768 tokens).
-    pub max_tokens: usize,
+    /// Maximum CHARACTERS per chunk before rejection. This is a
+    /// chunk-rejection guard, not a context-window or generation limit:
+    /// chunks longer than this fail with [`SemanticError::ChunkTooLarge`].
+    ///
+    /// Characters, not tokens (ADR-0004): the cleaner no longer tokenizes, so
+    /// it cannot count tokens without a tokenizer, and the value has to work
+    /// for a remote embedding endpoint too — where the real ceiling is the
+    /// provider's own context window, reported as HTTP 400/413 and handled by
+    /// the pipeline's error degradation. The default keeps the effective
+    /// ceiling the retired token budget had against the local Granite models
+    /// (32 768 tokens × [`chars_per_token`](Self::chars_per_token) = 3.0).
+    pub max_chars: usize,
+    /// Characters per token used to translate the still-accepted
+    /// `--max-tokens` budget into the character budget that replaced it.
+    ///
+    /// Purely descriptive at the cleaner: the guard counts characters
+    /// directly. It defaults to the SSOT constant
+    /// [`DEFAULT_CHARS_PER_TOKEN`](webfang_core::domain::options_spec::ai::DEFAULT_CHARS_PER_TOKEN),
+    /// which `webfang_core` applies when translating a legacy flag value — the
+    /// two must agree, or `--max-tokens 4096` and `--max-chars 4096` would mean
+    /// different budgets.
+    pub chars_per_token: f32,
     /// Relevance threshold for filtering (0.0-1.0)
     pub relevance_threshold: f32,
     /// AI model variant to use (Granite-97M or Granite-311M)
@@ -120,7 +133,8 @@ impl Default for ModelConfig {
             repo: model_variant.repo_id().to_string(),
             model_file: model_variant.model_file().to_string(),
             offline_mode: false,
-            max_tokens: 32768, // Chunk-rejection guard; matches the Granite context window (32K tokens)
+            max_chars: webfang_core::domain::options_spec::ai::DEFAULT_MAX_CHARS,
+            chars_per_token: webfang_core::domain::options_spec::ai::DEFAULT_CHARS_PER_TOKEN,
             relevance_threshold: 0.3, // Moderate relevance threshold
             model_variant,
         }
@@ -155,11 +169,32 @@ impl ModelConfig {
         self
     }
 
-    /// Set maximum tokens per chunk
+    /// Set the maximum number of CHARACTERS per chunk (the chunk-rejection
+    /// guard). Replaces `with_max_tokens` (ADR-0004): the cleaner counts
+    /// characters, so it rejects characters.
     #[must_use]
-    pub fn with_max_tokens(mut self, tokens: usize) -> Self {
-        self.max_tokens = tokens;
+    pub fn with_max_chars(mut self, chars: usize) -> Self {
+        self.max_chars = chars;
         self
+    }
+
+    /// Set the characters-per-token conversion ratio recorded alongside
+    /// [`max_chars`](Self::max_chars).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SemanticError::InvalidCharsPerToken`] for a non-positive
+    /// ratio: it would translate a token budget into a zero or negative
+    /// character budget, i.e. a guard that rejects every chunk while looking
+    /// configured (the zero-silent-loss class).
+    pub fn with_chars_per_token(mut self, chars_per_token: f32) -> Result<Self, SemanticError> {
+        if chars_per_token <= 0.0 {
+            return Err(SemanticError::InvalidCharsPerToken {
+                value: chars_per_token,
+            });
+        }
+        self.chars_per_token = chars_per_token;
+        Ok(self)
     }
 
     /// Set relevance threshold for filtering
@@ -189,16 +224,16 @@ impl ModelConfig {
 
 /// Semantic Cleaner implementation using full RAG pipeline
 ///
-/// Generic over the inference engine ([`InferenceEngine`]): production uses
-/// the default [`InferencePool`], while the P0-001 paso-0 verification
-/// (issue #1456) instantiates `SemanticCleanerImpl<MockInferenceEngine>` via
-/// [`from_parts`](Self::from_parts) without downloading any model.
+/// Holds one erased [`EmbeddingPort`] and nothing engine-shaped (ADR-0004):
+/// the cleaner no longer owns a tokenizer or an inference engine, so the
+/// embedding backend it runs against is decided entirely by whoever builds the
+/// port — the local ONNX [`EmbeddingAdapter`],
+/// a remote HTTP endpoint, or a deterministic fake in a test.
 ///
 /// This is the concrete implementation of the [`SemanticCleaner`] trait.
-/// It integrates all Phase 2 and Phase 3 modules:
+/// It integrates:
 /// - [`HtmlChunker`]: Semantic chunking with arena allocator
-/// - [`MiniLmTokenizer`]: HuggingFace tokenization
-/// - [`InferencePool`]: ONNX model execution with dedicated worker threads
+/// - [`EmbeddingPort`]: embedding generation, local or remote
 /// - [`RelevanceScorer`]: SIMD-accelerated cosine similarity filtering
 ///
 /// # Thread Safety
@@ -208,18 +243,17 @@ impl ModelConfig {
 ///
 /// # Performance
 ///
-/// - **First call**: Model download (~90MB) + load (~100-500ms)
+/// - **First call**: Model download (~90MB) + load (~100-500ms), paid by the
+///   port's construction, not by this type
 /// - **Subsequent calls**: ~50-200ms per page (depending on content size)
 /// - **Memory**: Arena allocator reduces allocation overhead
 /// - **Concurrency**: Embeddings generated concurrently with `try_join_all`
-pub struct SemanticCleanerImpl<E: InferenceEngine + ?Sized = InferencePool> {
-    // Phase 2: Core inference
-    /// Inference engine (real [`InferencePool`] or paso-0 mock), `Arc`-shared
-    /// so concurrent `clean()` calls fan out over the same engine.
-    inference_pool: Arc<E>,
-    /// HuggingFace tokenizer (`Arc`-shared with the embedding adapter via
-    /// [`shared_inference`](Self::shared_inference))
-    tokenizer: Arc<MiniLmTokenizer>,
+pub struct SemanticCleanerImpl {
+    // Embedding seam
+    /// Domain embedding port (ONNX adapter today; remote or fake for tests and
+    /// future backends), `Arc`-shared so concurrent `clean()` calls fan out
+    /// over the same port.
+    embedding: Arc<dyn EmbeddingPort>,
 
     // Phase 3: Chunking + scoring
     /// Semantic HTML chunker with arena allocator
@@ -236,7 +270,7 @@ pub struct SemanticCleanerImpl<E: InferenceEngine + ?Sized = InferencePool> {
     config: ModelConfig,
 }
 
-impl SemanticCleanerImpl<InferencePool> {
+impl SemanticCleanerImpl {
     /// Create a new semantic cleaner with full pipeline
     ///
     /// This method loads all pipeline components:
@@ -292,95 +326,37 @@ impl SemanticCleanerImpl<InferencePool> {
         );
 
         // Resolve and validate model + tokenizer assets (hf_hub cache-first,
-        // streamed SHA256 integrity check). Shared with
-        // `EmbeddingAdapter::from_config` so both pipelines resolve and
-        // validate models identically.
-        let (model_path, tokenizer_path) = resolve_model_assets(&config).await?;
-
-        // Initialize all pipeline components. The tokenizer is `Arc`-wrapped so
-        // `shared_inference` can hand the SAME instance to the embedding adapter.
-        let tokenizer = Arc::new(MiniLmTokenizer::from_file(&tokenizer_path).await?);
-        let inference_pool = Arc::new(InferencePool::new(model_path, config.model_variant)?);
-        let chunker = HtmlChunker::new();
-        let scorer = RelevanceScorer::new(config.relevance_threshold);
+        // streamed SHA256 integrity check) and build the ONNX embedding port.
+        // The port owns the engine and the tokenizer now, so this constructor
+        // hands the cleaner an erased `Arc<dyn EmbeddingPort>` and nothing
+        // else.
+        let embedding = Arc::new(EmbeddingAdapter::from_config(&config).await?);
 
         info!("Semantic cleaner initialized successfully");
         debug!(
-            embedding_dim = inference_pool.embedding_dim(),
-            max_tokens = config.max_tokens,
+            embedding_dim = embedding.embedding_dim(),
+            max_chars = config.max_chars,
+            chars_per_token = config.chars_per_token,
             relevance_threshold = config.relevance_threshold,
             "Pipeline components loaded"
         );
 
-        Ok(Self {
-            inference_pool,
-            tokenizer,
-            chunker,
-            scorer,
-            pruner: LegibleContentPruner::standard(),
-            config,
-        })
+        Ok(Self::from_parts(embedding, config))
     }
 }
 
-impl SemanticCleanerImpl<dyn InferenceEngine + Send + Sync> {
-    /// Create a cleaner with an explicitly selected engine ([`EngineConfig`]).
+impl SemanticCleanerImpl {
+    /// Build a cleaner around an already-constructed embedding port.
     ///
-    /// Same pipeline as [`new`](Self::new), but the inference engine is built
-    /// via [`build_engine`]: `Single` behaves exactly like `new` (one shared
-    /// session, drainer graceful-degradation included), `Pool { size }` opens N
-    /// sessions with the split thread budget. Rollback is passing
-    /// [`EngineConfig::Single`]. The MEASURE task (later) calibrates N and owns
-    /// any flag UX; this constructor takes the already-decided config, so no
-    /// CLI args are added here.
-    ///
-    /// # Errors
-    ///
-    /// Same conditions as `new`, plus engine-build failures (a pool session
-    /// that cannot be built fails fast instead of degrading).
-    pub async fn new_with_engine_config(
-        config: ModelConfig,
-        engine_config: EngineConfig,
-    ) -> Result<Self, SemanticError> {
-        info!(
-            repo = %config.repo,
-            file = %config.model_file,
-            engine = ?engine_config,
-            "Initializing semantic cleaner with selected engine"
-        );
-
-        let (model_path, tokenizer_path) = resolve_model_assets(&config).await?;
-        let tokenizer = Arc::new(MiniLmTokenizer::from_file(&tokenizer_path).await?);
-        let engine = build_engine(&engine_config, model_path, config.model_variant)?;
-        let chunker = HtmlChunker::new();
-        let scorer = RelevanceScorer::new(config.relevance_threshold);
-
-        info!("Semantic cleaner initialized successfully");
-        Ok(Self {
-            inference_pool: engine,
-            tokenizer,
-            chunker,
-            scorer,
-            pruner: LegibleContentPruner::standard(),
-            config,
-        })
-    }
-}
-
-impl<E: InferenceEngine + ?Sized> SemanticCleanerImpl<E> {
-    /// Build a cleaner around an already-constructed engine + tokenizer.    ///
-    /// Paso-0 seam (issue #1456): runs the full `clean()` path against any
-    /// [`InferenceEngine`] (e.g. the fixed-latency mock) without resolving or
-    /// downloading a model. Production keeps using `new`.
+    /// The seam (ADR-0004): the full `clean()` path runs against ANY
+    /// [`EmbeddingPort`] — the ONNX adapter, a remote endpoint, or a
+    /// deterministic fake — without resolving or downloading a model. The
+    /// caller keeps whatever else it built (engine, tokenizer) for its own
+    /// ports, so the ONNX model is still loaded exactly once per process.
     #[must_use]
-    pub fn from_parts(
-        engine: Arc<E>,
-        tokenizer: Arc<MiniLmTokenizer>,
-        config: ModelConfig,
-    ) -> Self {
+    pub fn from_parts(embedding: Arc<dyn EmbeddingPort>, config: ModelConfig) -> Self {
         Self {
-            inference_pool: engine,
-            tokenizer,
+            embedding,
             chunker: HtmlChunker::new(),
             scorer: RelevanceScorer::new(config.relevance_threshold),
             pruner: LegibleContentPruner::standard(),
@@ -392,24 +368,6 @@ impl<E: InferenceEngine + ?Sized> SemanticCleanerImpl<E> {
     #[must_use]
     pub fn relevance_threshold(&self) -> f32 {
         self.config.relevance_threshold
-    }
-
-    /// Share the inference pool and tokenizer with another pipeline.
-    ///
-    /// Returns cheap `Arc` clones of the inference engine and the
-    /// [`MiniLmTokenizer`] this cleaner was built with, so a second consumer
-    /// (e.g. the
-    /// [`EmbeddingAdapter`](crate::infrastructure_ai::embedding_adapter::EmbeddingAdapter))
-    /// can reuse the SAME model + tokenizer instead of resolving and loading a
-    /// second copy. This is what lets the `--ai` path load the ONNX model
-    /// exactly once across the semantic cleaner and the vault-search embedding
-    /// adapter — one `resolve_model_assets` call, one `InferencePool`.
-    #[must_use]
-    pub fn shared_inference(&self) -> (Arc<E>, Arc<MiniLmTokenizer>) {
-        (
-            Arc::clone(&self.inference_pool),
-            Arc::clone(&self.tokenizer),
-        )
     }
 
     /// Set the relevance threshold
@@ -433,9 +391,9 @@ impl<E: InferenceEngine + ?Sized> SemanticCleanerImpl<E> {
 
 // Implement the Sealed trait for SemanticCleanerImpl
 // This is required by the sealed trait pattern
-impl<E: InferenceEngine + ?Sized> private::Sealed for SemanticCleanerImpl<E> {}
+impl private::Sealed for SemanticCleanerImpl {}
 
-impl<E: InferenceEngine + ?Sized> SemanticCleaner for SemanticCleanerImpl<E> {
+impl SemanticCleaner for SemanticCleanerImpl {
     fn clean<'a>(
         &'a self,
         url: &'a str,
@@ -445,7 +403,7 @@ impl<E: InferenceEngine + ?Sized> SemanticCleaner for SemanticCleanerImpl<E> {
             debug!(
                 url = %url,
                 html_length = html.len(),
-                "Starting full RAG pipeline: prune → chunk → tokenize → embed → score"
+                "Starting full RAG pipeline: prune → chunk → guard → embed → score"
             );
 
             // Step 0: Content pruning — extract readable content via legible
@@ -471,39 +429,41 @@ impl<E: InferenceEngine + ?Sized> SemanticCleaner for SemanticCleanerImpl<E> {
 
             debug!(chunks_count = chunks.len(), "Step 1: Chunking complete");
 
-            // Step 2: Tokenize all chunks (mem-reuse-collections: reuse buffer)
-            // Pre-allocate with capacity following `mem-with-capacity`
-            let mut token_buffers = Vec::with_capacity(chunks.len());
-            for chunk in &chunks {
-                let input = self.tokenizer.tokenize(&chunk.content).map_err(|e| {
-                    SemanticError::Tokenize(format!("Tokenization failed for chunk: {e}"))
-                })?;
-
-                // Validate token count
-                if input.seq_len() > self.config.max_tokens {
+            // Step 2: Chunk-size guard. Characters, not tokens (ADR-0004):
+            // the cleaner holds no tokenizer, so a token count is not
+            // something it can honestly compute — and the same budget has to
+            // mean something against a remote endpoint. Rejecting here also
+            // keeps the guard ahead of the network call in step 3.
+            for (index, chunk) in chunks.iter().enumerate() {
+                let chars = chunk.content.chars().count();
+                if chars > self.config.max_chars {
                     return Err(SemanticError::ChunkTooLarge {
-                        chunk_id: format!("chunk-{}", token_buffers.len()),
-                        tokens: input.seq_len(),
-                        max: self.config.max_tokens,
+                        chunk_id: format!("chunk-{index}"),
+                        chars,
+                        max: self.config.max_chars,
                     });
                 }
-
-                token_buffers.push(input);
             }
 
             debug!(
-                tokens_generated = token_buffers.len(),
-                "Step 2: Tokenization complete"
+                chunks_guarded = chunks.len(),
+                max_chars = self.config.max_chars,
+                "Step 2: Chunk size guard complete"
             );
 
             // Step 3: Generate embeddings CONCURRENTLY (async-join-parallel)
             // Following `async-join-parallel`: use try_join_all for concurrent independent operations
-            // InferencePool dispatches to dedicated worker threads with persistent sessions
+            // The port's engine dispatches to dedicated worker threads with persistent sessions
             // Following `anti-lock-across-await`: No locks held across await points
-            let embeddings = try_join_all(token_buffers.iter().map(|input| {
-                let pool = &self.inference_pool;
-                async move { pool.infer(input).await }
-            }))
+            //
+            // One `embed` per chunk, NOT `embed_batch`: the trait default for
+            // batch is a sequential loop, so batching here would serialize the
+            // backend instead of fanning out over it.
+            let embeddings = try_join_all(
+                chunks
+                    .iter()
+                    .map(|chunk| self.embedding.embed(&chunk.content)),
+            )
             .await
             .map_err(|e| {
                 SemanticError::Inference(format!("Concurrent embedding generation failed: {e}"))
@@ -533,16 +493,21 @@ impl<E: InferenceEngine + ?Sized> SemanticCleaner for SemanticCleanerImpl<E> {
         })
     }
 
-    fn max_tokens(&self) -> usize {
-        self.config.max_tokens
+    fn max_chars(&self) -> usize {
+        self.config.max_chars
     }
 
+    /// Always `true`: the cleaner has no lazily-loadable state of its own.
+    ///
+    /// Its embedding port was built successfully before the cleaner was
+    /// constructed, so a `SemanticCleanerImpl` exists only if the backend it
+    /// embeds through is ready. There is nothing left to probe.
     fn is_ready(&self) -> bool {
-        self.inference_pool.is_ready()
+        true
     }
 }
 
-impl<E: InferenceEngine + ?Sized> SemanticCleanerImpl<E> {
+impl SemanticCleanerImpl {
     /// Filter chunks by relevance score and **preserve embeddings**
     ///
     /// Pairs each chunk with its embedding, scores against the **centroid**
@@ -896,7 +861,8 @@ mod tests {
         assert_eq!(config.repo, AiModel::default().repo_id());
         assert_eq!(config.model_file, AiModel::default().model_file());
         assert!(!config.offline_mode);
-        assert_eq!(config.max_tokens, 32768);
+        assert_eq!(config.max_chars, 98_304);
+        assert_eq!(config.chars_per_token, 3.0);
         assert_eq!(config.relevance_threshold, 0.3);
     }
 
@@ -906,14 +872,14 @@ mod tests {
             .with_repo("test/repo")
             .with_file("test.onnx")
             .with_offline_mode(true)
-            .with_max_tokens(256)
+            .with_max_chars(256)
             .with_relevance_threshold(0.5)
             .unwrap();
 
         assert_eq!(config.repo, "test/repo");
         assert_eq!(config.model_file, "test.onnx");
         assert!(config.offline_mode);
-        assert_eq!(config.max_tokens, 256);
+        assert_eq!(config.max_chars, 256);
         assert_eq!(config.relevance_threshold, 0.5);
     }
 
@@ -996,14 +962,14 @@ mod tests {
             .with_repo("test/repo")
             .with_file("test.onnx")
             .with_offline_mode(true)
-            .with_max_tokens(256)
+            .with_max_chars(256)
             .with_relevance_threshold(0.4)
             .unwrap();
 
         assert_eq!(config.repo, "test/repo");
         assert_eq!(config.model_file, "test.onnx");
         assert!(config.offline_mode);
-        assert_eq!(config.max_tokens, 256);
+        assert_eq!(config.max_chars, 256);
         assert_eq!(config.relevance_threshold, 0.4);
     }
 

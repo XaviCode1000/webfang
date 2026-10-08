@@ -22,39 +22,77 @@ pub(crate) fn parse_threshold(s: &str) -> Result<f32, String> {
     Ok(val)
 }
 
-/// Validate `--max-tokens`: `1..=32_768` (#1813 slice T2).
+/// Validate `--max-chars`: `>= 1` (ADR-0004, replaces `--max-tokens`).
 ///
 /// This is the semantic cleaner's chunk-size guard, and it is the ONLY place
 /// that bound is enforced. Bounds and messages come from the OptionsSpec
-/// (`options_spec::ai::MAX_TOKENS`), the single validation source — this
+/// (`options_spec::ai::MAX_CHARS`), the single validation source — this
 /// function only converts the spec's `u64` into the `usize` the field holds,
 /// mirroring `args::crawler::parse_download_concurrency`.
 ///
+/// NOT feature-gated: the flag is ungated by decision, so a binary built
+/// without `ai` still parses (and validates) it.
+///
 /// # Why `0` must be rejected (Zero Silent Loss)
 ///
-/// `SemanticCleanerImpl::clean` rejects a chunk when
-/// `input.seq_len() > self.config.max_tokens`. With `max_tokens == 0` that
-/// predicate is true for every non-empty chunk, so the run accepted the flag,
-/// built a config, and then failed every chunk of every page — a total denial
-/// of the AI path that the operator could not connect to the flag that caused
-/// it. Same defect class as `--download-concurrency 0` (D1 deadlock) and
-/// `--timeout-secs 0` (every request times out instantly).
+/// `SemanticCleanerImpl::clean` rejects a chunk whose character count exceeds
+/// the budget. With `max_chars == 0` that predicate is true for every
+/// non-empty chunk, so the run accepted the flag, built a config, and then
+/// failed every chunk of every page — a total denial of the AI path that the
+/// operator could not connect to the flag that caused it. Same defect class as
+/// `--download-concurrency 0` (D1 deadlock) and `--timeout-secs 0` (every
+/// request times out instantly).
 ///
-/// # Why the ceiling exists at all
+/// # Why there is no ceiling
 ///
-/// `32_768` is the default embedding model's Max Sequence Length and
-/// `MiniLmTokenizer::DEFAULT_MAX_LENGTH`, which truncates with
-/// `.min(self.max_length)`. Nothing can reach the guard with more, so any
-/// higher value is a request the tool cannot honour; see the rationale on
-/// [`crate::domain::options_spec::ai::MAX_TOKENS`].
+/// The retired 32 768-token ceiling was ONE backend's Max Sequence Length
+/// encoded as policy. Against a remote embedding endpoint the real limit is
+/// the provider's context window, which it enforces per request (HTTP 400/413)
+/// and the pipeline degrades on; see
+/// [`crate::domain::options_spec::ai::MAX_CHARS`].
 ///
 /// # Errors
 ///
-/// Returns a Spanish message from the spec policy: the below-min message for
-/// `0`, the above-max message for `> 32_768`, and the canonical parse-failure
-/// message for anything that is not a number. clap renders it as a usage error
+/// Returns the Spanish below-min message from the spec policy for `0`, and the
+/// canonical parse-failure message for anything that is not a number. clap
+/// renders it as a usage error (exit 64) before any network I/O.
+pub(crate) fn parse_max_chars(s: &str) -> Result<usize, String> {
+    let value = crate::domain::options_spec::ai::MAX_CHARS
+        .parse_uint(s)
+        .map_err(|e| e.to_string())?;
+    usize::try_from(value).map_err(|_| {
+        crate::domain::options_spec::ai::MAX_CHARS
+            .parse_error(s)
+            .to_string()
+    })
+}
+
+/// Validate `--max-tokens`: `>= 1` — the DEPRECATED shim (ADR-0004 phase 1).
+///
+/// The flag and its env var keep WORKING in the announcement release; the hard
+/// rejection ships with the removal. Bounds and messages come from the
+/// OptionsSpec (`options_spec::ai::MAX_TOKENS`), the single validation source,
+/// routed through the same `numeric_binding` → `value_parser` path as every
+/// other numeric flag. Not feature-gated: a deprecation that only answers when
+/// the feature it replaces is on is not a deprecation.
+///
+/// The returned value is a TOKEN budget. Translating it to the character
+/// budget the cleaner actually enforces is
+/// [`options_spec::ai::max_tokens_to_max_chars`], and the precedence between
+/// the two flags lives in [`build_ai_config`](crate::cli::args).
+///
+/// # Why `0` is still rejected (unchanged)
+///
+/// A budget of `0` rejects every non-empty chunk: the run would accept the
+/// flag, build a config, and then fail every chunk of every page — a total
+/// denial of the AI path the operator could not connect to the flag that
+/// caused it. Same zero-silent-loss rule as `--max-chars`.
+///
+/// # Errors
+///
+/// Returns the Spanish below-min message for `0` and the canonical
+/// parse-failure message for a non-number. clap renders both as usage errors
 /// (exit 64) before any network I/O.
-#[cfg(feature = "ai")]
 pub(crate) fn parse_max_tokens(s: &str) -> Result<usize, String> {
     let value = crate::domain::options_spec::ai::MAX_TOKENS
         .parse_uint(s)
@@ -68,20 +106,36 @@ pub(crate) fn parse_max_tokens(s: &str) -> Result<usize, String> {
 
 /// AI-powered semantic cleaning arguments.
 ///
-/// Every field is `#[cfg(feature = "ai")]` — mirrors the pre-migration
-/// derive's behavior of producing zero args and a zero-field struct when
-/// the cargo feature is off. `From<Args> for CrawlOptions` only reads
-/// these fields under `cfg(feature = "ai")`; the `FromArgMatches` impl
-/// below reflects that.
+/// `max_chars` and the deprecated `max_tokens` are UNGATED (ADR-0004): both are
+/// emitted by `ai_args` in every cargo configuration, so the fields and their
+/// reads are too. Every other field is `#[cfg(feature = "ai")]` — mirroring the
+/// pre-migration derive's behavior of producing zero args and a zero-field
+/// struct when the cargo feature is off. `From<Args> for CrawlOptions`
+/// reflects that.
 #[derive(Debug, Default)]
 pub struct AiArgs {
+    /// Maximum characters per chunk before rejection (a chunk-size guard, not a context-window setting; the effective ceiling is the embedding backend's own limit, which a remote endpoint enforces server-side as HTTP 400/413)
+    pub max_chars: usize,
+
+    /// Whether `max_chars` came from an operator (argv or `WEBFANG_MAX_CHARS`)
+    /// rather than from the spec's default.
+    ///
+    /// Carried because precedence cannot be decided from the VALUE alone: a
+    /// user who typed `--max-chars 98304` must beat `--max-tokens 4096` with
+    /// no warning, and a user who passed neither must fall back to the default
+    /// with no warning. `clap::ArgMatches::value_source` is the only place
+    /// that distinction exists.
+    pub max_chars_explicit: bool,
+
+    /// Deprecated token budget, `None` when the flag and its env var were not
+    /// used. Still accepted (ADR-0004 phase 1): it is converted to
+    /// [`max_chars`](Self::max_chars) by `cli::args::resolve_max_chars`, which
+    /// documents the precedence against `max_chars_explicit`.
+    pub max_tokens: Option<usize>,
+
     /// Relevance threshold for AI semantic filtering (0.0-1.0)
     #[cfg(feature = "ai")]
     pub threshold: f32,
-
-    /// Maximum tokens per chunk before rejection (a chunk-size guard, not a context-window setting; chunks exceeding this fail)
-    #[cfg(feature = "ai")]
-    pub max_tokens: usize,
 
     /// Run AI model in offline mode
     #[cfg(feature = "ai")]
@@ -95,30 +149,73 @@ pub struct AiArgs {
     pub ai_model: Option<String>,
 }
 
-#[cfg(feature = "ai")]
-impl clap::FromArgMatches for AiArgs {
-    fn from_arg_matches(m: &clap::ArgMatches) -> Result<Self, clap::Error> {
-        use crate::cli::spec_command::extract;
-        Ok(Self {
-            threshold: extract::value::<f32>(m, "threshold")?,
-            max_tokens: extract::value::<usize>(m, "max_tokens")?,
-            offline: m.get_flag("offline"),
-            ai_model: extract::opt::<String>(m, "ai_model"),
-        })
-    }
+/// Did an operator set `--max-chars` (or `WEBFANG_MAX_CHARS`) rather than
+/// leaving the spec default in place?
+///
+/// Both `CommandLine` and `EnvVariable` count: an operator who exported
+/// `WEBFANG_MAX_CHARS` made the same deliberate choice as one who typed the
+/// flag. Only `DefaultValue` (or absent) means "nobody chose".
+fn max_chars_was_chosen(m: &clap::ArgMatches) -> bool {
+    matches!(
+        m.value_source("max_chars"),
+        Some(clap::parser::ValueSource::CommandLine) | Some(clap::parser::ValueSource::EnvVariable)
+    )
+}
 
-    fn update_from_arg_matches(&mut self, m: &clap::ArgMatches) -> Result<(), clap::Error> {
-        *self = Self::from_arg_matches(m)?;
-        Ok(())
+/// The reads that exist in EVERY build, as `(max_chars, max_chars_explicit,
+/// max_tokens)`.
+///
+/// ADR-0004 makes `--max-chars` and the `--max-tokens` shim ungated, so both
+/// `FromArgMatches` arms below read the same three values. Extracting them here
+/// keeps the two arms from drifting: a fourth ungated field must be added in
+/// one place, and a reviewer reading either arm sees only what that build adds.
+fn ungated_from_matches(m: &clap::ArgMatches) -> Result<(usize, bool, Option<usize>), clap::Error> {
+    use crate::cli::spec_command::extract;
+    Ok((
+        extract::value::<usize>(m, "max_chars")?,
+        max_chars_was_chosen(m),
+        extract::opt::<usize>(m, "max_tokens"),
+    ))
+}
+
+impl AiArgs {
+    /// The single reader for both builds.
+    ///
+    /// ADR-0004 makes `--max-chars` and the `--max-tokens` shim ungated, so
+    /// those three values exist in every configuration; the rest of the struct
+    /// is `#[cfg(feature = "ai")]`. Concentrating the whole read HERE means one
+    /// ungated `FromArgMatches` impl serves both builds — two `cfg`-gated impls
+    /// duplicated the trait methods verbatim, and a fourth ungated field would
+    /// have needed editing in two places with nothing to catch the miss.
+    fn from_matches(m: &clap::ArgMatches) -> Result<Self, clap::Error> {
+        let (max_chars, max_chars_explicit, max_tokens) = ungated_from_matches(m)?;
+        #[cfg(feature = "ai")]
+        {
+            use crate::cli::spec_command::extract;
+            Ok(Self {
+                max_chars,
+                max_chars_explicit,
+                max_tokens,
+                threshold: extract::value::<f32>(m, "threshold")?,
+                offline: m.get_flag("offline"),
+                ai_model: extract::opt::<String>(m, "ai_model"),
+            })
+        }
+        // Without the feature the rest of the struct is gone; `FromArgMatches`
+        // still reads the ungated triple because those flags render in this
+        // configuration too.
+        #[cfg(not(feature = "ai"))]
+        Ok(Self {
+            max_chars,
+            max_chars_explicit,
+            max_tokens,
+        })
     }
 }
 
-/// `cfg(not(feature = "ai"))` counterpart: zero-field struct, zero args,
-/// `FromArgMatches` returns `Self::default()`.
-#[cfg(not(feature = "ai"))]
 impl clap::FromArgMatches for AiArgs {
-    fn from_arg_matches(_m: &clap::ArgMatches) -> Result<Self, clap::Error> {
-        Ok(Self {})
+    fn from_arg_matches(m: &clap::ArgMatches) -> Result<Self, clap::Error> {
+        Self::from_matches(m)
     }
 
     fn update_from_arg_matches(&mut self, m: &clap::ArgMatches) -> Result<(), clap::Error> {
@@ -182,11 +279,12 @@ mod spec_parity_tests {
 
     #[test]
     fn representative_values_parse_identically_through_clap() {
-        // Defaults (hermetic: ambient WEBFANG_THRESHOLD / WEBFANG_MAX_TOKENS
-        // / WEBFANG_OFFLINE / AI_MODEL_ID must not leak — issue #926).
+        // Defaults (hermetic: ambient WEBFANG_THRESHOLD / WEBFANG_MAX_CHARS
+        // / WEBFANG_MAX_TOKENS / WEBFANG_OFFLINE / AI_MODEL_ID must not leak
+        // — issue #926).
         let defaults = parse_args_hermetic(&[]).expect("bare invocation must parse");
         assert_eq!(defaults.ai.threshold, 0.3);
-        assert_eq!(defaults.ai.max_tokens, 32768);
+        assert_eq!(defaults.ai.max_chars, 98_304);
         assert!(!defaults.ai.offline);
         assert!(defaults.ai.ai_model.is_none());
 
@@ -195,7 +293,7 @@ mod spec_parity_tests {
         let parsed = parse_args_hermetic(&[
             "--threshold",
             "0.5",
-            "--max-tokens",
+            "--max-chars",
             "1024",
             "--offline",
             "--ai-model",
@@ -203,9 +301,75 @@ mod spec_parity_tests {
         ])
         .expect("representative ai flags must parse");
         assert_eq!(parsed.ai.threshold, 0.5);
-        assert_eq!(parsed.ai.max_tokens, 1024);
+        assert_eq!(parsed.ai.max_chars, 1024);
         assert!(parsed.ai.offline);
         assert_eq!(parsed.ai.ai_model.as_deref(), Some("granite-311m"));
+    }
+
+    /// `--max-tokens` is a deprecation shim in ADR-0004's PHASE 1
+    /// (announcement): the flag still works, and its value is recorded so
+    /// `build_ai_config` can convert it and so the CLI can warn exactly once.
+    /// The hard rejection belongs to phase 2 (removal), not here.
+    #[test]
+    fn max_tokens_shim_still_accepts_values_and_records_them() {
+        // ADR-0004 phase 1 (announcement): the flag WORKS. Rejecting it here
+        // would pin the removal into the announcement release.
+        for value in ["1", "1024", "32768", "999999"] {
+            let parsed = parse_args(&["--max-tokens", value])
+                .unwrap_or_else(|e| panic!("`--max-tokens {value}` must still parse: {e}"));
+            assert_eq!(
+                parsed.ai.max_tokens,
+                Some(value.parse::<usize>().expect("numeric")),
+                "the deprecated value must survive parsing untouched"
+            );
+            assert!(
+                parsed.ai.max_tokens.is_some(),
+                "provenance must be recorded so the CLI can warn exactly once"
+            );
+            assert!(
+                !parsed.ai.max_chars_explicit,
+                "using only the deprecated flag does not make --max-chars explicit"
+            );
+        }
+
+        // Zero silent loss, unchanged by the rename: 0 would reject every chunk.
+        let err = parse_args(&["--max-tokens", "0"]).expect_err("zero must be rejected");
+        assert!(err.contains("0 rechazaría todos los chunks"), "got: {err}");
+
+        // A typo is not a request.
+        let err = parse_args(&["--max-tokens", "banana"]).expect_err("non-numeric rejected");
+        assert!(err.contains("no es un número entero válido"), "got: {err}");
+
+        // Absent means "nobody used it", which is what keeps the deprecation
+        // silent for every run that never touched the flag.
+        let parsed = parse_args(&[]).expect("bare invocation must parse");
+        assert_eq!(parsed.ai.max_tokens, None);
+        assert!(
+            !parsed.ai.max_chars_explicit,
+            "no flag means --max-chars was not chosen, only defaulted"
+        );
+
+        // Precedence input: an explicit --max-chars is marked as chosen, so
+        // `build_ai_config` can let it win silently over a stale shim value.
+        let parsed = parse_args(&["--max-chars", "2048", "--max-tokens", "4096"])
+            .expect("both flags must parse");
+        assert!(parsed.ai.max_chars_explicit);
+        assert_eq!(parsed.ai.max_chars, 2048);
+        assert_eq!(parsed.ai.max_tokens, Some(4096));
+
+        // The env door is bound to the SAME parser as the flag — a stale
+        // `.env` reaches the same budget, not a softer one.
+        let arg = collect_args(AiArgs::augment_args(clap::Command::new("webfang-ai")))
+            .into_iter()
+            .find(|a| a.get_id() == "max_tokens")
+            .expect("the shim must still render as an arg");
+        assert_eq!(
+            arg.get_env()
+                .map(|e| e.to_string_lossy().into_owned())
+                .as_deref(),
+            Some("WEBFANG_MAX_TOKENS"),
+            "the shim keeps its env var so a stale .env still reaches the guard"
+        );
     }
 
     /// Slice 5a pin: structural clap surface the spec-driven builder must

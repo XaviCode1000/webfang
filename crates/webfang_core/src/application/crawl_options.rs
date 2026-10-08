@@ -25,8 +25,19 @@ use crate::domain::JsStrategy;
 pub struct AiConfig {
     /// Relevance threshold for AI semantic filtering (0.0-1.0).
     pub threshold: f32,
-    /// Maximum tokens per chunk for AI processing.
-    pub max_tokens: usize,
+    /// Maximum characters per chunk for AI processing (the chunk-rejection
+    /// guard, not a context-window setting).
+    pub max_chars: usize,
+    /// `Some(tokens)` when `max_chars` was derived from the still-accepted
+    /// deprecated `--max-tokens` (converted with
+    /// [`DEFAULT_CHARS_PER_TOKEN`](crate::domain::options_spec::ai::DEFAULT_CHARS_PER_TOKEN));
+    /// `None` when `--max-chars` was used, or when the default applied.
+    ///
+    /// Pure provenance. It exists so the binary can emit the ONE deprecation
+    /// warning after the tracing subscriber exists — argument resolution runs
+    /// before `init_logging_dual`, where a `warn!` would be dropped (#796) —
+    /// without re-parsing anything.
+    pub deprecated_max_tokens: Option<usize>,
     /// Run AI model in offline mode.
     pub offline: bool,
     /// AI model identifier (empty = default).
@@ -37,7 +48,8 @@ impl Default for AiConfig {
     fn default() -> Self {
         Self {
             threshold: 0.3,
-            max_tokens: 32768,
+            max_chars: crate::domain::options_spec::ai::DEFAULT_MAX_CHARS,
+            deprecated_max_tokens: None,
             offline: false,
             model: String::new(),
         }
@@ -554,7 +566,8 @@ mod tests {
     fn test_ai_config_defaults() {
         let config = AiConfig::default();
         assert_eq!(config.threshold, 0.3);
-        assert_eq!(config.max_tokens, 32768);
+        assert_eq!(config.max_chars, 98_304);
+        assert!(config.deprecated_max_tokens.is_none());
         assert!(!config.offline);
         assert_eq!(config.model, "");
     }
@@ -563,12 +576,13 @@ mod tests {
     fn test_ai_config_custom_values() {
         let config = AiConfig {
             threshold: 0.7,
-            max_tokens: 2048,
+            max_chars: 2048,
+            deprecated_max_tokens: None,
             offline: true,
             model: "granite-311m".to_string(),
         };
         assert_eq!(config.threshold, 0.7);
-        assert_eq!(config.max_tokens, 2048);
+        assert_eq!(config.max_chars, 2048);
         assert!(config.offline);
         assert_eq!(config.model, "granite-311m");
     }
@@ -578,7 +592,7 @@ mod tests {
         let opts = CrawlOptions::default();
         let ai = opts.ai_config;
         assert_eq!(ai.threshold, 0.3);
-        assert_eq!(ai.max_tokens, 32768);
+        assert_eq!(ai.max_chars, 98_304);
         assert!(!ai.offline);
         assert_eq!(ai.model, "");
     }
@@ -587,7 +601,8 @@ mod tests {
     fn test_ai_config_is_clone() {
         let config = AiConfig {
             threshold: 0.5,
-            max_tokens: 1024,
+            max_chars: 1024,
+            deprecated_max_tokens: None,
             offline: true,
             model: "test".to_string(),
         };

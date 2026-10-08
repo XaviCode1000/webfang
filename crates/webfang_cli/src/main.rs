@@ -185,6 +185,34 @@ async fn __main() -> CliExit {
         tracing::warn!(preflight_note = %note, "{note}");
     }
 
+    // The `--max-tokens` deprecation warning lives HERE, not where the value is
+    // resolved, for the same #796 reason the notes above are replayed: argv
+    // resolution runs before `init_logging_dual`, so a `warn!` emitted there
+    // would be dropped and the deprecation would be silent (ADR-0004). It is
+    // emitted exactly once, at the one point that has both the provenance
+    // (`AiConfig::deprecated_max_tokens`) and a live subscriber.
+    //
+    // Shape follows the existing env-var deprecation
+    // (`webfang_ai::infrastructure_ai::compat::read_ai_model_id_with`): English
+    // structured field names, user-facing message text in Spanish, with the
+    // migration target and the removal schedule stated.
+    if let Some(max_tokens) = opts.ai_config.deprecated_max_tokens {
+        tracing::warn!(
+            flag = "--max-tokens",
+            env = "WEBFANG_MAX_TOKENS",
+            replacement = "--max-chars",
+            max_tokens,
+            chars_per_token = webfang_core::domain::options_spec::ai::DEFAULT_CHARS_PER_TOKEN,
+            max_chars = opts.ai_config.max_chars,
+            "--max-tokens está obsoleto y se eliminará en la próxima versión principal. \
+             Migrado a --max-chars ({} tokens × {} caracteres/token = {} caracteres). \
+             Usa --max-chars directamente.",
+            max_tokens,
+            webfang_core::domain::options_spec::ai::DEFAULT_CHARS_PER_TOKEN,
+            opts.ai_config.max_chars,
+        );
+    }
+
     // 6c. JS strategy dependency preflight (#685): --js-strategy full needs
     // Chrome installed — fail fast with exit 78 before any crawl starts.
     if let Err(exit) = preflight::check_js_dependencies(&opts) {
@@ -536,14 +564,15 @@ fn build_adaptive_engine(
     }
 }
 
-/// Build the Tier 2 semantic inspector from the cleaner's shared ONNX assets
+/// Build the Tier 2 semantic inspector from the shared ONNX assets
 /// (#702).
 ///
 /// Returns `None` when no shared engine is available (`--ai` off or dry-run),
 /// degrading the adaptive engine to Tier 1 (lexical) repair. The threshold comes
 /// from the single shared [`AdaptiveSelectorOptions`] — no duplicate constant.
 /// The engine is erased (#1569), so Tier 2 works in `Single` AND `Pool` modes —
-/// both share the cleaner's engine through `shared_inference`.
+/// both get the engine `build_onnx_embedding_port` handed back alongside the
+/// cleaner's embedding port (ADR-0004), so one model load serves both.
 #[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
 fn semantic_inspector(
     shared: &Option<(
@@ -643,26 +672,27 @@ async fn build_ai_cleaner(
         .with_model_variant(model_variant)
         .with_relevance_threshold(opts.ai_config.threshold)
         .map(|c| {
-            c.with_max_tokens(opts.ai_config.max_tokens)
+            c.with_max_chars(opts.ai_config.max_chars)
                 .with_offline_mode(opts.ai_config.offline)
         });
 
     match model_config {
         Ok(config) => {
-            // ONE erased-engine constructor for both modes (#1569):
-            // `new_with_engine_config` routes `Single` through `build_engine`
-            // (byte-for-byte today's pool construction, drainer contract
-            // included) and `Pool { N }` through the N-session engine, and the
-            // cleaner erases to `SemanticCleanerImpl<dyn InferenceEngine +
-            // Send + Sync>` either way — so the vault-search embedding adapter
-            // and the Tier 2 inspector share the SAME engine + tokenizer in
-            // both modes: one `resolve_model_assets` call, one model in
-            // memory, no degradation warning.
-            match SemanticCleanerImpl::new_with_engine_config(config, engine_config).await {
-                Ok(cleaner) => {
-                    // Erased shared inference (#1569): hand the SAME engine +
-                    // tokenizer to the vault ports and Tier 2 wiring.
-                    let (engine, tokenizer) = cleaner.shared_inference();
+            // ONE composition root for the local embedding stack (#1569,
+            // ADR-0004): `build_onnx_embedding_port` resolves the model ONCE
+            // and returns the port plus the SAME engine + tokenizer the vault
+            // ports and the Tier 2 inspector need — `Single` routes through
+            // `build_engine` (byte-for-byte today's pool construction, drainer
+            // contract included) and `Pool { N }` through the N-session
+            // engine. The cleaner itself only takes the port.
+            match webfang_ai::infrastructure_ai::embedding_adapter::build_onnx_embedding_port(
+                &config,
+                engine_config,
+            )
+            .await
+            {
+                Ok((port, engine, tokenizer)) => {
+                    let cleaner = SemanticCleanerImpl::from_parts(port, config);
                     let shared = Some((Arc::clone(&engine), Arc::clone(&tokenizer)));
                     let cleaner: Option<Arc<dyn SemanticCleaner>> = Some(Arc::new(cleaner));
                     let mut ports = build_vault_ports(engine, tokenizer).await;
