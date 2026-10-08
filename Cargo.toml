@@ -204,6 +204,16 @@ inherits = "release"
 # the same reason. Criterion numbers are unaffected: `debug` and `strip` do not
 # alter codegen, so `benches/BASELINES.md` stays valid. `strip` stays false so a
 # bench panic still symbolizes to file:line.
+#
+# The accepted cost: local VARIABLES are no longer emitted, so triaging a bench
+# panic from its own artifacts gives you the stack and file:line but not the
+# values. When that is what you need, ask for it per invocation rather than
+# paying for it every night:
+#
+#   CARGO_PROFILE_BENCH_DEBUG=true cargo bench -- <filter>
+#
+# (Same shape as the one-off dev debuginfo escape hatch noted above. The env
+# override moves only the artifacts, never the code cargo benchmarks.)
 debug = "line-tables-only"
 strip = false
 

@@ -320,6 +320,19 @@ jobs:
       # close implementation. Offline, no real issues touched.
       - name: CI health close semantics harness
         run: bash scripts/test_ci_health_close.sh
+      # Semantics harness for the nightly bench scope (#1913): proves on
+      # dependency-free mktemp fixtures that the derived scope INCLUDES a crate
+      # whose bench targets are autodiscovered (`benches/*.rs`, no `[[bench]]`
+      # table) and EXCLUDES one that sets `autobenches = false`, that the
+      # emitted token is the package name rather than the bench target's own
+      # `name` key, that an empty scope fails closed with EMPTY stdout so the
+      # caller cannot degrade into an unscoped full-workspace build, and that an
+      # unresolvable workspace reports an explained message instead of a Python
+      # traceback. `cargo bench -p <pkg>` is an allow-list, not a filter, so
+      # anything left out is silently never measured while the nightly still
+      # reports green — invisible by construction, hence pinned here.
+      - name: Bench scope derivation semantics harness
+        run: bash scripts/test_derive_bench_scope.sh
       # Semantics harness for the change-scope classifier (#1707; regression
       # coverage for #1643). The classifier once captured `git diff --name-only
       # -z` through `$(...)`, which drops NUL bytes and collapsed a multi-file
