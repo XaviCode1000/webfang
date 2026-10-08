@@ -29,7 +29,15 @@
 //!
 //! # Features
 //!
-//! This module is feature-gated behind the `ai` feature flag:
+//! This module is split by ONNX dependency, not by convenience:
+//!
+//! - **Text half** (no ONNX): `chunk_id`, `sentence`, `chunker`, `markdown_chunker`,
+//!   `embedding_ops`, `relevance_scorer`, `threshold_config`, `content_pruner`. These
+//!   compile without the `ai` feature, so the `EmbeddingPort` seam can be exercised
+//!   with no local model.
+//! - **ONNX half** (feature-gated behind `ai`): `inference_engine`, `tokenizer`,
+//!   `semantic_cleaner_impl`, `embedding_adapter`, `granite_dom_inspector`, the model
+//!   cache/env plumbing and the test fixture.
 //!
 //! ```toml
 //! [dependencies]
@@ -57,6 +65,7 @@
 //! # Examples
 //!
 //! ```no_run
+//! # #[cfg(feature = "ai")]
 //! # async fn example() -> anyhow::Result<()> {
 //! use webfang_ai::{SemanticCleaner, SemanticCleanerImpl, ModelConfig};
 //!
@@ -71,20 +80,28 @@
 //! # }
 //! ```
 
-// Core AI infrastructure (Modules 1-2)
+// ONNX half (Modules 1-2) — gated on `ai`.
+#[cfg(feature = "ai")]
 pub mod cache_config;
 
 /// Backward-compat layer for environment variable naming (WEBFANG_AI_MODEL_ID / AI_MODEL_ID).
+#[cfg(feature = "ai")]
 pub mod compat;
 
+#[cfg(feature = "ai")]
 pub mod semantic_cleaner_impl;
 
 /// Adapter bridging `InferencePool` to the domain `EmbeddingPort` (#433).
+#[cfg(feature = "ai")]
 pub mod embedding_adapter;
 
+#[cfg(feature = "ai")]
 pub mod inference_engine;
 
+#[cfg(feature = "ai")]
 pub mod tokenizer;
+
+// Text half — no ONNX dependency, available without the `ai` feature.
 
 /// Unique identifier for content chunks with newtype safety.
 pub mod chunk_id;
@@ -103,34 +120,46 @@ pub mod threshold_config;
 
 pub mod content_pruner;
 
+// Tier 2 DOM inspector — ONNX half: it imports `tokenizer` and
+// `inference_engine` (`granite_dom_inspector.rs:21-22`), so it cannot compile
+// without them even though its relevance scoring is plain cosine similarity.
+#[cfg(feature = "ai")]
 pub mod granite_dom_inspector;
 
 /// Shared AI test fixture (#1575) — the in-memory WordPiece tokenizer used by
 /// this crate's unit tests AND, via `#[path = "ai_test_fixture.rs"]`, by
 /// `tests/erased_engine_ports_test.rs`.
 ///
-/// `#[cfg(test)]` is load-bearing, not decoration: an integration test links a
-/// library compiled WITHOUT `cfg(test)`, so this declaration gives the library's
-/// own unit tests the fixture while the integration test supplies its own
-/// `#[path]` include. Neither path reaches a production build. See the module's
-/// own docs for why no dev-dependency crate hosts it instead.
-#[cfg(test)]
+/// `#[cfg(all(test, feature = "ai"))]` is load-bearing, not decoration: an
+/// integration test links a library compiled WITHOUT `cfg(test)`, so this
+/// declaration gives the library's own unit tests the fixture while the
+/// integration test supplies its own `#[path]` include. Neither path reaches a
+/// production build. The `feature = "ai"` arm keeps the fixture out of a
+/// `cargo test` build without ONNX, where nothing would use it. See the
+/// module's own docs for why no dev-dependency crate hosts it instead.
+#[cfg(all(test, feature = "ai"))]
 mod ai_test_fixture;
 
 // Re-exports for convenience (Modules 1-2)
+#[cfg(feature = "ai")]
 pub use cache_config::{AiModel, DEFAULT_MODEL_FILE, DEFAULT_MODEL_REPO, DEFAULT_MODEL_SHA256};
 
+#[cfg(feature = "ai")]
 pub use semantic_cleaner_impl::{ModelConfig, SemanticCleanerImpl};
 
+#[cfg(feature = "ai")]
 pub use embedding_adapter::EmbeddingAdapter;
 
+#[cfg(feature = "ai")]
 pub use inference_engine::{
     build_engine, EngineConfig, InferenceEngine, InferencePool, MockInferenceEngine,
     PooledInferenceEngine, SingleSessionEngine,
 };
 
+#[cfg(feature = "ai")]
 pub use tokenizer::{MiniLmTokenizer, TokenBatch, DEFAULT_MAX_LENGTH};
 
+#[cfg(feature = "ai")]
 pub use inference_engine::ModelInput;
 
 // Re-exports for Semantic Chunking (Modules 3-4)
@@ -148,4 +177,5 @@ pub use threshold_config::ThresholdConfig;
 
 pub use content_pruner::{ContentPruner, LegibleContentPruner, PruneAggressiveness};
 
+#[cfg(feature = "ai")]
 pub use granite_dom_inspector::GraniteDomInspector;
