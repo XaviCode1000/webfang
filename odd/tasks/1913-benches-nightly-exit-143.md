@@ -106,10 +106,41 @@ variable DIE per local; zero is the line-tables-only signature.
 - [x] T1 — `[profile.bench]` debuginfo reduction.
 - [x] T2 — bench compile scope in `benches.yml`.
 - [x] Verification build green.
-- [ ] Work-unit commit.
-- [ ] Native review per RDD, then push and PR (maintainer decision).
+- [x] Work-unit commit `34ec2bfa`.
+- [x] Native review per RDD: **approved**, authority burned
+      (`gentle-ai.review-acknowledged/v1`, lineage `review-3b93a94c748db171`).
+- [ ] Push and PR (maintainer decision).
+
+## Review outcome
+
+Four lenses (risk, resilience, readability, reliability) returned **approved** with 0
+blocking findings and 12 advisory ones. None opened a correction, so the candidate landed
+as committed. Advisory findings, all non-blocking and all deferred as separate later work:
+
+| id | lens | severity | substance |
+| --- | --- | --- | --- |
+| `R4-BENCH-SCOPE-SILENT-COVERAGE-LOSS` | resilience | WARNING | A `[[bench]]` added to a third crate later is silently skipped and the nightly still reports green; the package list is an allow-list, not a filter, and `cargo` exits 0. |
+| `R3-scope-drift` | reliability | WARNING | Same root as above from the test lens: no guard ties the hardcoded list to the crates that declare bench targets. |
+| `R2-scope-coupling-untagged` | readability | WARNING | No change context tells a maintainer to extend the package list when adding a bench target. |
+| `R4-UNMEASURED-AGAINST-KILL-WINDOW` | resilience | WARNING | The reduced workload was never measured against the window that actually produces exit 143. |
+| `R4-NO-DISCRIMINATING-SIGNAL-AFTER-FIX` | resilience | WARNING | If the next night is red again the log carries the same bare 143, with no new signal to tell "fixed but still too big" from "not fixed". |
+| `R2-bench-count-constant` | readability | WARNING | The `9` / `1` counts in the comment are an unexplained constant restated in two files with no canonical source. |
+| `R2-scope-duplication` | readability | WARNING | The package literal is duplicated across both `cargo bench` lines with no single source of truth. |
+| `R2-profile-comment-duplication` | readability | WARNING | The eight-line `Cargo.toml` comment duplicates the incident narrative and restates inherited release values. |
+| `R2-self-referential-note` | readability | SUGGESTION | The replacement comment narrates the deletion of its own predecessor, opaque to a reader who never saw it. |
+| `R3-exclusion-evidence` | reliability | WARNING | The exclusion check greps only `cli`/`mcp` library names while the criterion also names `webfang_benchmark`, and an absence-only count cannot distinguish "not compiled" from "not present under that name". |
+| `R3-profile-invariant` | reliability | SUGGESTION | The profile invariants are asserted in prose only; nothing would fail if a later edit restored full debuginfo. |
+| `R1-doc-local-env-details` | risk | SUGGESTION | The task document commits local workstation layout details (home-directory worktree path, cache location). |
+
+The two that deserve real follow-up are `R4-BENCH-SCOPE-SILENT-COVERAGE-LOSS` /
+`R3-scope-drift` — a guard that fails when a crate outside the selected set declares a
+bench target would convert silent coverage loss into a loud signal — and
+`R4-NO-DISCRIMINATING-SIGNAL-AFTER-FIX`, which is the honest admission that this change
+cannot prove its own effect before the nightly runs.
 
 ## Next step
 
-Work-unit commit, then the pre-push gate. Push and PR stay the maintainer's call.
+Push and open the PR are the maintainer's call. Pre-push runs `scripts/ci_fast_gate.sh`;
+the delivery gates stay unmanaged and never authorize delivery.
+
 
