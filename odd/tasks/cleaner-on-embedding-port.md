@@ -96,4 +96,5 @@ obsoletos. Segunda vuelta: sin `--unreferenced=delete`, borrado por path explíc
 
 ## Commits
 
-_(pendiente)_
+`5f93f6a7` — `refactor(ai): embed the semantic cleaner through EmbeddingPort`
+(sobre `main` @ `e57b68f5`, 28 archivos, +~860/−~840).
