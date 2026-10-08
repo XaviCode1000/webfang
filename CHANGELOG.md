@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.7.3] - 2026-10-08
+
+
+### 🏗️ Architecture Improvements
+
+- Embed the semantic cleaner through EmbeddingPort ([#1927](https://github.com/XaviCode1000/webfang/pull/1927))
 ## [2.7.2] - 2026-10-08
 
 
