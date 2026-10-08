@@ -110,7 +110,8 @@ variable DIE per local; zero is the line-tables-only signature.
 - [x] Work-unit commit `34ec2bfa`.
 - [x] Native review per RDD: **approved**, authority burned
       (`gentle-ai.review-acknowledged/v1`, lineage `review-3b93a94c748db171`).
-- [x] T3 — derive the bench scope from the manifests (post-review follow-up).
+- [x] T3 — derive the bench scope (post-review follow-up).
+- [x] T4 — close both gaps T3's review found: cargo-derived scope + per-consumer empty assert.
 - [ ] Push and PR (maintainer decision).
 
 ## T3 — derive the bench scope instead of hardcoding it
@@ -196,6 +197,62 @@ workflow comment assert, so they are recorded here rather than left as "informat
   nightly and local. An accepted observability cost, now recorded as such.
 - **`R3-no-test-coverage-for-derive-script`** — the script's decision logic has no test file;
   it is proved only by the throwaway-tree experiments above.
+
+## T4 — close the two gaps the review found in T3
+
+Both gaps were advisory, not blocking, and both undercut claims this change makes
+about itself, so they got fixed rather than filed.
+
+### Gap 1 — autodiscovered benches were outside the derived scope
+
+T3 read explicit `[[bench]]` tables out of the manifests. Cargo *also* turns a
+crate's conventional `benches/*.rs` and `benches/*/main.rs` into bench targets, and
+suppresses that only when the manifest sets `autobenches = false`. A crate relying on
+autodiscovery has no `bench` key, so T3 skipped it silently — the same
+silent-coverage-loss class T3 existed to eliminate, in a narrower form.
+
+The fix removes the reimplementation entirely: `scripts/derive-bench-scope.py` now asks
+**cargo** which targets are benches, via `cargo metadata --no-deps` and the `kind`
+field on each package target. Cargo's own answer cannot drift from cargo's own rules,
+so explicit tables, autodiscovery and the `autobenches` opt-out are all covered
+without this script encoding any of them.
+
+Proven on a throwaway workspace carrying one crate of each shape:
+
+| crate shape | expected in scope | observed |
+| --- | --- | --- |
+| explicit `[[bench]]` table | yes | yes, 1 target |
+| `benches/*.rs`, no table (autodiscovery) | yes | **yes, 1 target** — T3 missed this |
+| `autobenches = false` with a `benches/` dir | no | correctly excluded |
+
+Output on this repository is unchanged: `-p webfang_ai -p webfang_core`, 1 and 9.
+
+### Gap 2 — the fail-closed refusal only guarded the producer
+
+T3 refused to emit an empty scope, but the two `cargo bench` steps re-ran `read -ra`
+without asserting the array was non-empty. `"${scope[@]}"` on an empty array expands to
+**nothing**, so an absent or edited `BENCH_SCOPE` in the environment would have
+silently degraded to the unscoped full-workspace build — the exact regression T3
+prevented, reintroduced one layer down.
+
+Each consuming step now asserts for itself and fails with `::error::`. Verified by
+executing the real step bodies extracted from the workflow YAML:
+
+| `BENCH_SCOPE` | exit | behaviour |
+| --- | --- | --- |
+| `""` | 1 | `::error::` refusal, `cargo` never invoked |
+| unset | 1 | same |
+| `"   "` (whitespace only) | 1 | same |
+| real derived scope | 0 | all 10 bench targets linked |
+
+This guard is deliberately duplicated across the two steps. It could only be
+written once by merging them into a single `run:`, which would cost the CI run its
+per-stage granularity; a fail-closed check is the one place where repeating the
+assertion is worth more than removing the repetition.
+
+Also improved as a side effect: `cargo metadata` failure now reports the cause and
+exits 1 instead of surfacing a `CalledProcessError` traceback — observed while a
+malformed fixture tripped exactly that path.
 
 ## Next step
 
