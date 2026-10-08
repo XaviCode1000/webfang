@@ -532,6 +532,11 @@ lane_fmt_and_guards() {
     bash scripts/check_nextest_invocation_lint.sh
   run_guard "nextest invocation lint semantics harness (#1784)" scripts/test_nextest_invocation_lint.sh \
     bash scripts/test_nextest_invocation_lint.sh
+  # The nightly Benches scope decides what gets measured, and `cargo bench -p`
+  # is an allow-list: a crate left off it is silently never measured while the
+  # nightly still reports green. Offline, mktemp fixtures only.
+  run_guard "bench scope derivation semantics harness (#1913)" scripts/test_derive_bench_scope.sh \
+    bash scripts/test_derive_bench_scope.sh
   # Phase 3: same guard as the docs lane — blocking here because every
   # surrounding repo-guard step is blocking (fail-closed on findings,
   # warn-skip only when the script itself is absent).
