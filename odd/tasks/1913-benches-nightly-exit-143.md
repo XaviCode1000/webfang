@@ -37,7 +37,8 @@ and `webfang_benchmark` are compiled and then never used by any bench.
 
 - T1 — `[profile.bench]`: `debug = true` → `debug = "line-tables-only"`, matching
   `[profile.dev]`.
-- T2 — `benches.yml`: scope both `cargo bench` invocations to `-p webfang_core -p webfang_ai`.
+- T2 — `benches.yml`: scope both `cargo bench` invocations to the crates that declare benches.
+  Originally `-p webfang_core -p webfang_ai`; **superseded by T3**, which derives the scope.
 
 ### Deliberately out of scope
 
@@ -57,12 +58,12 @@ and `webfang_benchmark` are compiled and then never used by any bench.
 
 - `Cargo.toml`
 - `.github/workflows/benches.yml`
-
-New files: none outside `odd/tasks/` (this document, required by ODD).
+- `scripts/derive-bench-scope.py` (added by T3)
+- `odd/tasks/1913-benches-nightly-exit-143.md` (this document, required by ODD)
 
 ## Acceptance criteria
 
-- `cargo bench -p webfang_core -p webfang_ai --no-run --locked` succeeds in the worktree.
+- `cargo bench "${scope[@]}" --no-run --locked` succeeds in the worktree with the DERIVED scope.
 - The compile gate no longer builds `webfang_cli`, `webfang_mcp`, `webfang_benchmark`.
 - Criterion numbers are unaffected: `debug`/`strip` do not alter codegen.
 - 7 consecutive green nights closes #1913 and lets the observer close #1911.
@@ -161,6 +162,40 @@ blocking findings and 12 advisory ones. None opened a correction. Disposition af
 | `R3-exclusion-evidence` | reliability | WARNING | open — the exclusion evidence greps `cli`/`mcp` only, not `webfang_benchmark` |
 | `R3-profile-invariant` | reliability | SUGGESTION | open — the profile invariant is asserted in prose only |
 | `R1-doc-local-env-details` | risk | SUGGESTION | open — this document carries local workstation layout details |
+
+## Second review round — correction and outcome
+
+The second candidate (adding `scripts/derive-bench-scope.py`) went to `correction_required`:
+the reliability lens raised `R3-python-version-floor` as CRITICAL and the refuter
+corroborated it. `actions/setup-python` was rejected as the fix — no precedent in this repo,
+and every action here is SHA-pinned, so it would have needed a step, a new dependency, a
+network fetch and an unverifiable pin. The correction removed the floor instead: commit
+`5395130d` replaces `tomllib` with a bounded line scan, 66 lines against a 154-line budget.
+
+The targeted validator returned **approved** and authority was burned
+(`gentle-ai.review-acknowledged/v1`, lineage `review-bdd8b899075e72ab`).
+
+### Advisory findings this round that undercut my own claims
+
+These are not blockers, but two of them contradict what the feature document and the
+workflow comment assert, so they are recorded here rather than left as "informational":
+
+- **`R4-1` / `R2-BENCH-SCOPE-DETECTION-GAP`** — the derivation only recognises an explicit
+  `[[bench]]` table. Cargo ALSO auto-discovers benches from a crate's conventional `benches/`
+  directory, and such a crate has no `bench` key, so it is skipped silently. Today every
+  bench in this repo is explicitly declared, so the scope is currently correct — but this is
+  the SAME silent-coverage-loss class T3 was written to eliminate, in a narrower form. The
+  docstring's "incapable of going stale" overstates the guarantee.
+- **`R3-empty-scope-array-expansion`** — the fail-closed refusal lives only in the derive
+  step. The two cargo steps re-run `read -ra` with no assertion that the array is non-empty,
+  so an empty `BENCH_SCOPE` in the environment degrades to an unscoped full-workspace bench.
+  The end-to-end guarantee I claimed is enforced at the producer only.
+- **`R2-STALE-AUTHORIZED-EDIT-SURFACE`** — the document's own surface section and T2/acceptance
+  criterion still named the superseded hardcoded fragment. Fixed in this commit.
+- **`R4-5`** — `line-tables-only` removes local variables from bench panic post-mortems,
+  nightly and local. An accepted observability cost, now recorded as such.
+- **`R3-no-test-coverage-for-derive-script`** — the script's decision logic has no test file;
+  it is proved only by the throwaway-tree experiments above.
 
 ## Next step
 
