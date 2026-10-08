@@ -1382,7 +1382,7 @@ mod tests {
             Box::pin(async { Ok(Vec::new()) })
         }
 
-        fn max_tokens(&self) -> usize {
+        fn max_chars(&self) -> usize {
             512
         }
 

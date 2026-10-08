@@ -1,9 +1,0 @@
----
-source: crates/webfang_core/tests/max_tokens_bound_test.rs
-expression: redacted
----
-error: invalid value 'banana' for '--max-tokens <MAX_TOKENS>': `banana` no es un número entero válido
-
-For more information, try '--help'.
-
-Error: invalid arguments

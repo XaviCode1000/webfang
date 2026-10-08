@@ -56,7 +56,8 @@ use webfang_ai::infrastructure_ai::{
     AiModel, ContentPruner, EngineConfig, HtmlChunker, LegibleContentPruner, MiniLmTokenizer,
     ModelConfig, PooledInferenceEngine, SemanticCleanerImpl,
 };
-use webfang_ai::SemanticCleaner;
+use webfang_ai::{EmbeddingAdapter, SemanticCleaner};
+use webfang_core::domain::embedding_port::EmbeddingPort;
 use webfang_core::domain::DocumentChunk;
 
 #[path = "p0_001_common.rs"]
@@ -306,8 +307,8 @@ struct BatchPage<'a> {
     config: &'a ModelConfig,
     variant: AiModel,
 }
-/// Una página por la vía batch: prune → chunk → tokenize (idéntico a `clean`:
-/// mismos tipos, mismo chequeo `max_tokens`) y UNA llamada
+/// Una página por la vía batch: prune → chunk → guard (idéntico a `clean`:
+/// mismos tipos, mismo chequeo `max_chars`) y UNA llamada
 /// `run_batched_inference` con todos sus chunks. Consume y devuelve la
 /// `Session`: las páginas corren en SECUENCIA porque `&mut Session` no admite
 /// fan-out — el paralelismo batch vive en la matriz (`intra_threads = 16`),
@@ -336,15 +337,18 @@ async fn batch_clean_page(
     }
     let mut inputs = Vec::with_capacity(chunks.len());
     for chunk in &chunks {
+        // Mismo guard que `clean()` (ADR-0004: el presupuesto es en
+        // caracteres), para que la vía batch mida el mismo pipeline.
+        let chars = chunk.content.chars().count();
+        assert!(
+            chars <= config.max_chars,
+            "chunk batch excede max_chars ({} > {})",
+            chars,
+            config.max_chars
+        );
         let input = tokenizer
             .tokenize(&chunk.content)
             .expect("el tokenizer batch debe funcionar");
-        assert!(
-            input.seq_len() <= config.max_tokens,
-            "chunk batch excede max_tokens ({} > {})",
-            input.seq_len(),
-            config.max_tokens
-        );
         inputs.push(input);
     }
     // ORT es síncrono y CPU-intensivo: fuera del reactor, como los workers de
@@ -482,11 +486,11 @@ async fn p0_001_measure_child() {
                     .await
                     .expect("tokenizer en caché debe cargar"),
             );
-            Arc::new(SemanticCleanerImpl::from_parts(
-                engine,
-                tokenizer,
-                model_config,
-            ))
+            // El cleaner solo recibe el PORT (ADR-0004); el engine y el
+            // tokenizer los envuelve el adaptador ONNX, igual que la raíz de
+            // composición real.
+            let port: Arc<dyn EmbeddingPort> = Arc::new(EmbeddingAdapter::new(engine, tokenizer));
+            Arc::new(SemanticCleanerImpl::from_parts(port, model_config))
         },
     };
     assert!(
@@ -795,7 +799,8 @@ async fn p0_001_engine_parity() {
                 .await
                 .expect("tokenizer debe cargar"),
         );
-        let pooled = SemanticCleanerImpl::from_parts(engine, tokenizer, model_config());
+        let port: Arc<dyn EmbeddingPort> = Arc::new(EmbeddingAdapter::new(engine, tokenizer));
+        let pooled = SemanticCleanerImpl::from_parts(port, model_config());
         let pool_chunks = pooled
             .clean(url, &html)
             .await

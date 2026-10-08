@@ -36,9 +36,10 @@ pub mod private {
 /// Semantic Cleaner — AI-powered content cleaning interface
 ///
 /// This trait defines the contract for cleaning HTML content using AI models.
-/// Implementations use ONNX models (sentence-transformers) to:
+/// Implementations embed chunks through an
+/// [`EmbeddingPort`](crate::domain::embedding_port::EmbeddingPort) to:
 /// - Split content into semantic chunks
-/// - Validate chunk sizes (token limits)
+/// - Validate chunk sizes (character budget)
 /// - Prepare content for embedding generation
 ///
 /// # Examples
@@ -59,7 +60,7 @@ pub mod private {
 /// - [`SemanticError::ModelLoad`]: Failed to load ONNX model from cache
 /// - [`SemanticError::Tokenize`]: Tokenization failed (invalid input)
 /// - [`SemanticError::Inference`]: ONNX inference failed
-/// - [`SemanticError::ChunkTooLarge`]: Content exceeds model's token limit
+/// - [`SemanticError::ChunkTooLarge`]: Content exceeds the configured character budget
 /// - [`SemanticError::Download`]: Model download failed (if auto-download enabled)
 ///
 /// # Implementation Notes
@@ -73,7 +74,7 @@ pub trait SemanticCleaner: private::Sealed + Send + Sync {
     /// This is the main entry point for semantic cleaning. It:
     /// 1. Strips HTML tags and extracts text
     /// 2. Splits text into semantic chunks (paragraphs, sections)
-    /// 3. Validates chunk sizes against model token limits
+    /// 3. Validates chunk sizes against the configured character budget
     /// 4. Scores relevance against the centroid of all chunk embeddings
     /// 5. Returns chunks ready for embedding generation
     ///
@@ -89,8 +90,8 @@ pub trait SemanticCleaner: private::Sealed + Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`SemanticError::ChunkTooLarge`] if any chunk exceeds the model's
-    /// token limit (32768 tokens for IBM Granite-97M).
+    /// Returns [`SemanticError::ChunkTooLarge`] if any chunk exceeds the
+    /// configured character budget (98 304 characters by default).
     ///
     /// Returns [`SemanticError::Tokenize`] if the input contains invalid UTF-8
     /// or special characters that break tokenization.
@@ -128,37 +129,44 @@ pub trait SemanticCleaner: private::Sealed + Send + Sync {
         html: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<DocumentChunk>, SemanticError>> + Send + 'a>>;
 
-    /// Get the model's maximum token limit
+    /// Get the chunk-size guard: the maximum number of CHARACTERS accepted
+    /// per chunk.
     ///
-    /// This is useful for validating content before processing.
+    /// This is useful for validating content before processing. The unit is
+    /// characters, not tokens (ADR-0004): the implementation embeds through an
+    /// [`EmbeddingPort`](crate::domain::embedding_port::EmbeddingPort) and does
+    /// not tokenize, so a token count would be a number it cannot compute — and
+    /// the budget has to mean the same thing for a local model and a remote
+    /// embedding endpoint.
     ///
     /// # Returns
     ///
-    /// Maximum number of tokens the model accepts per chunk.
-    /// For `all-MiniLM-L6-v2`, this is 512 tokens.
+    /// Maximum number of characters accepted per chunk. This is a
+    /// chunk-rejection guard, NOT a context-window or generation limit: the
+    /// effective ceiling is the embedding backend's own limit, which a remote
+    /// endpoint reports as HTTP 400/413.
     ///
     /// # Examples
     ///
     /// ```no_run
     /// # use webfang_core::domain::semantic_cleaner::SemanticCleaner;
     /// fn example(cleaner: &dyn SemanticCleaner) {
-    ///     let max_tokens = cleaner.max_tokens();
-    ///     println!("Model accepts up to {} tokens per chunk", max_tokens);
+    ///     let max_chars = cleaner.max_chars();
+    ///     println!("Chunks up to {} characters are accepted", max_chars);
     /// }
     /// ```
-    fn max_tokens(&self) -> usize;
+    fn max_chars(&self) -> usize;
 
-    /// Check if the model is ready for inference
-    ///
-    /// This method verifies that:
-    /// - Model file exists in cache
-    /// - Model file passes SHA256 validation
-    /// - Model can be loaded into memory
+    /// Check if the cleaner can embed
     ///
     /// # Returns
     ///
-    /// * `true` - Model is ready
-    /// * `false` - Model needs download or reload
+    /// * `true` - The cleaner is ready to embed
+    /// * `false` - The cleaner needs its embedding backend to be rebuilt
+    ///
+    /// Implementations that build their embedding port eagerly (the shipped
+    /// one does) answer `true` unconditionally: a cleaner exists only if its
+    /// port was built successfully.
     ///
     /// # Examples
     ///
@@ -166,9 +174,9 @@ pub trait SemanticCleaner: private::Sealed + Send + Sync {
     /// # use webfang_core::domain::semantic_cleaner::SemanticCleaner;
     /// fn example(cleaner: &dyn SemanticCleaner) {
     ///     if cleaner.is_ready() {
-    ///         println!("Model ready for inference");
+    ///         println!("Ready to embed");
     ///     } else {
-    ///         println!("Model needs download or reload");
+    ///         println!("Embedding backend needs rebuilding");
     ///     }
     /// }
     /// ```

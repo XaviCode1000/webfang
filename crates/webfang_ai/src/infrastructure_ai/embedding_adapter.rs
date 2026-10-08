@@ -66,6 +66,7 @@ use tracing::{debug, Instrument};
 use crate::infrastructure_ai::inference_engine::{InferenceEngine, InferencePool};
 use crate::infrastructure_ai::semantic_cleaner_impl::{resolve_model_assets, ModelConfig};
 use crate::infrastructure_ai::tokenizer::MiniLmTokenizer;
+use crate::infrastructure_ai::{build_engine, EngineConfig};
 use webfang_core::domain::embedding_port::EmbeddingPort;
 use webfang_core::error::SemanticError;
 
@@ -74,6 +75,57 @@ use webfang_core::error::SemanticError;
 /// Mirrors the private alias in [`webfang_core::domain::embedding_port`]; the
 /// alias there is module-private, so the adapter declares its own.
 type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+
+/// The local embedding stack, built once: the erased domain port the cleaner
+/// consumes, plus the erased engine and tokenizer the vault-search port and
+/// the Tier 2 inspector still need.
+pub type OnnxEmbeddingStack = (
+    Arc<dyn EmbeddingPort>,
+    Arc<dyn InferenceEngine + Send + Sync>,
+    Arc<MiniLmTokenizer>,
+);
+
+/// Build the local ONNX embedding port AND the engine + tokenizer behind it.
+///
+/// This is the one composition root for the local embedding stack (ADR-0004):
+/// it resolves and validates the model assets once, builds the selected
+/// engine, loads the tokenizer, and wraps all three in an
+/// [`EmbeddingAdapter`] erased to the domain [`EmbeddingPort`].
+///
+/// The three-tuple exists so every caller keeps what it needs without asking
+/// the cleaner for it: the semantic cleaner takes only the port
+/// ([`SemanticCleanerImpl::from_parts`](crate::infrastructure_ai::SemanticCleanerImpl::from_parts)),
+/// while the vault-search embedding port and the Tier 2 DOM inspector still
+/// want the erased engine and the tokenizer directly. Handing those out here
+/// is what keeps the `--ai` path at ONE model load per process.
+///
+/// `EngineConfig::Single` behaves like the historical single-session pool
+/// (graceful degradation included); `Pool { size }` opens `size` sessions.
+///
+/// # Errors
+///
+/// Returns [`SemanticError`] when model resolution or download fails, the
+/// SHA256 integrity check fails, the tokenizer cannot be loaded, or the engine
+/// cannot be built (a pool session that cannot be built fails fast instead of
+/// degrading).
+#[tracing::instrument(skip(config), fields(repo = %config.repo, offline_mode = config.offline_mode, engine = ?engine_config))]
+pub async fn build_onnx_embedding_port(
+    config: &ModelConfig,
+    engine_config: EngineConfig,
+) -> Result<OnnxEmbeddingStack, SemanticError> {
+    let (model_path, tokenizer_path) = resolve_model_assets(config).await?;
+    let tokenizer = Arc::new(MiniLmTokenizer::from_file(&tokenizer_path).await?);
+    let engine = build_engine(&engine_config, model_path, config.model_variant)?;
+    debug!(
+        dim = engine.embedding_dim(),
+        "ONNX embedding port built (engine, tokenizer and port share one model)"
+    );
+    let port: Arc<dyn EmbeddingPort> = Arc::new(EmbeddingAdapter::new(
+        Arc::clone(&engine),
+        Arc::clone(&tokenizer),
+    ));
+    Ok((port, engine, tokenizer))
+}
 
 /// Adapter exposing an erased [`InferenceEngine`] through the domain [`EmbeddingPort`].
 ///
@@ -107,8 +159,8 @@ impl EmbeddingAdapter {
     ///
     /// The engine is accepted erased; a concrete `Arc<InferencePool>` (the
     /// Single path) coerces implicitly. Use this when the caller already holds
-    /// the components (e.g. sharing the engine built for another pipeline via
-    /// `SemanticCleanerImpl::shared_inference`); otherwise prefer
+    /// the components; otherwise prefer
+    /// [`build_onnx_embedding_port`] (which also resolves the model) or
     /// [`from_config`](Self::from_config).
     #[must_use]
     pub fn new(
@@ -125,11 +177,10 @@ impl EmbeddingAdapter {
     /// the model SHA256 by streaming the file on disk, then loads the
     /// tokenizer and builds the inference pool.
     ///
-    /// Callers: test-only as of #1569 (verified via `codedb_callers` — the sole
-    /// caller is this module's offline-failure test). Production always shares
-    /// the cleaner's engine through [`EmbeddingAdapter::new`] instead, so this
-    /// path stays fixed on the single-session [`InferencePool`] (today's
-    /// behavior preserved, coerced into the erased field).
+    /// Callers: the semantic cleaner's own
+    /// [`SemanticCleanerImpl::new`](crate::infrastructure_ai::SemanticCleanerImpl::new)
+    /// constructor (the Single path), plus the offline-failure test below. The
+    /// `Pool`-capable composition root is [`build_onnx_embedding_port`].
     ///
     /// # Errors
     ///

@@ -461,7 +461,7 @@ pub(crate) async fn export_phase(
         state_store,
         resume: opts.crawl.resume,
         ai_threshold: opts.ai_config.threshold,
-        ai_max_tokens: opts.ai_config.max_tokens,
+        ai_max_chars: opts.ai_config.max_chars,
         ai_offline: opts.ai_config.offline,
         ai_model: opts.ai_config.model.clone(),
     };
@@ -763,7 +763,8 @@ mod tests {
         let opts = CrawlOptions {
             ai_config: crate::application::crawl_options::AiConfig {
                 threshold: 0.7,
-                max_tokens: 2048,
+                max_chars: 2048,
+                deprecated_max_tokens: None,
                 offline: true,
                 model: "granite-311m".to_string(),
             },
@@ -772,15 +773,15 @@ mod tests {
 
         // Simulate the ExportConfig construction from orchestrator lines 225-239
         // This mirrors the actual code pattern — if the literals are still hardcoded,
-        // this test would see 0.3/32768/false instead of the opts values.
+        // this test would see 0.3/98304/false instead of the opts values.
         let ai_threshold = opts.ai_config.threshold;
-        let ai_max_tokens = opts.ai_config.max_tokens;
+        let ai_max_chars = opts.ai_config.max_chars;
         let ai_offline = opts.ai_config.offline;
 
         assert_eq!(ai_threshold, 0.7, "threshold must come from opts.ai_config");
         assert_eq!(
-            ai_max_tokens, 2048,
-            "max_tokens must come from opts.ai_config"
+            ai_max_chars, 2048,
+            "max_chars must come from opts.ai_config"
         );
         assert!(ai_offline, "offline must come from opts.ai_config");
     }
@@ -791,7 +792,7 @@ mod tests {
 
         // Default AiConfig values must reproduce the prior hardcoded behavior
         assert_eq!(opts.ai_config.threshold, 0.3);
-        assert_eq!(opts.ai_config.max_tokens, 32768);
+        assert_eq!(opts.ai_config.max_chars, 98_304);
         assert!(!opts.ai_config.offline);
         assert_eq!(opts.ai_config.model, "");
     }
@@ -819,9 +820,9 @@ mod tests {
                         "Line {line_num}: hardcoded literal 0.3 found — should use opts.ai_config.threshold"
                     );
                 }
-                if line.contains("ai_max_tokens:") && line.contains("32768") {
+                if line.contains("ai_max_chars:") && line.contains("98304") {
                     panic!(
-                        "Line {line_num}: hardcoded literal 32768 found — should use opts.ai_config.max_tokens"
+                        "Line {line_num}: hardcoded literal 98304 found — should use opts.ai_config.max_chars"
                     );
                 }
                 if line.contains("ai_offline:") && line.contains("false") {

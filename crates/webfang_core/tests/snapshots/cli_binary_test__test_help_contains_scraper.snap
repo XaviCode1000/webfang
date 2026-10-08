@@ -456,11 +456,16 @@ AI Settings:
           [env: WEBFANG_THRESHOLD=]
           [default: 0.3]
 
+      --max-chars <MAX_CHARS>
+          Maximum characters per chunk before rejection, >= 1 (a chunk-size guard, not a context-window setting; the effective ceiling is the embedding backend's own limit, which a remote endpoint enforces server-side as HTTP 400/413)
+          
+          [env: WEBFANG_MAX_CHARS=]
+          [default: 98304]
+
       --max-tokens <MAX_TOKENS>
-          Maximum tokens per chunk before rejection, 1-32768 (a chunk-size guard, not a context-window setting; 32768 is the model's max sequence length and chunks exceeding this fail)
+          Deprecated: use --max-chars instead. Still accepted for now — the value is converted to characters (tokens x 3.0) and ignored when --max-chars is given
           
           [env: WEBFANG_MAX_TOKENS=]
-          [default: 32768]
 
       --offline
           Run AI model in offline mode

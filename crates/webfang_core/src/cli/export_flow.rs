@@ -54,7 +54,7 @@ pub struct ExportConfig<'a> {
     pub(crate) resume: bool,
     /// AI settings (only used when clean_ai is true and feature is enabled)
     pub(crate) ai_threshold: f32,
-    pub(crate) ai_max_tokens: usize,
+    pub(crate) ai_max_chars: usize,
     pub(crate) ai_offline: bool,
     pub(crate) ai_model: String,
 }
@@ -280,13 +280,13 @@ async fn clean_all_pages(
                     },
                     ErrorClass::DomainRecoverable => {
                         // ChunkTooLarge and similar: the chunk simply exceeds
-                        // the user's --max-tokens limit. Fall back to raw for
+                        // the user's --max-chars budget. Fall back to raw for
                         // this page and count it as a fallback (so an all-
                         // fallback job still surfaces an error, #543).
                         warn!(
                             url = %url,
                             error = %e,
-                            "chunk exceeds token limit; using raw content fallback"
+                            "chunk exceeds character limit; using raw content fallback"
                         );
                         cleaned_chunks.push(DocumentChunk::from_scraped_content(&result));
                         fallback += 1;
@@ -388,7 +388,7 @@ mod tests {
             })
         }
 
-        fn max_tokens(&self) -> usize {
+        fn max_chars(&self) -> usize {
             512
         }
 
@@ -490,7 +490,7 @@ mod standard_export_dispatch {
             state_store: None,
             resume: false,
             ai_threshold: 0.5,
-            ai_max_tokens: 512,
+            ai_max_chars: 512,
             ai_offline: false,
             ai_model: String::new(),
         }

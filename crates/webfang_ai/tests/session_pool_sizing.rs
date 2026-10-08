@@ -23,10 +23,17 @@ use std::time::Duration;
 
 use futures::future::join_all;
 use webfang_ai::infrastructure_ai::{
-    build_engine, AiModel, EngineConfig, InferenceEngine, InferencePool, MockInferenceEngine,
-    ModelConfig, ModelInput, PooledInferenceEngine, SemanticCleanerImpl,
+    build_engine, AiModel, EngineConfig, InferenceEngine, InferencePool, MiniLmTokenizer,
+    MockInferenceEngine, ModelConfig, ModelInput, PooledInferenceEngine, SemanticCleanerImpl,
 };
+use webfang_ai::EmbeddingAdapter;
+use webfang_core::domain::embedding_port::EmbeddingPort;
 use webfang_core::error::SemanticError;
+
+// The ONE home of the in-memory tokenizer (see
+// `tests/erased_engine_ports_test.rs` for why the fixture is included by path).
+#[path = "../src/infrastructure_ai/ai_test_fixture.rs"]
+mod ai_test_fixture;
 
 /// Model path that can never build a session: `build_engine(Single)` must still
 /// construct the pool and spawn the drainer (today's graceful-degradation
@@ -127,12 +134,12 @@ async fn single_path_keeps_today_behavior() {
     );
 }
 
-/// (c) The default cleaner type is still `SemanticCleanerImpl<InferencePool>`:
-/// existing `new` call sites resolve unchanged (compile-time proof).
+/// (c) The cleaner is engine-agnostic (ADR-0004): ONE non-generic type takes
+/// any `Arc<dyn EmbeddingPort>`, so a `Single`-built engine and a `Pool`-built
+/// engine reach the cleaner through the same erased seam (compile-time proof).
 #[test]
-fn default_cleaner_type_is_still_single_pool() {
-    fn _accepts_single(_: &SemanticCleanerImpl) {}
-    fn _accepts_pool(_: &SemanticCleanerImpl<Arc<dyn InferenceEngine + Send + Sync>>) {}
+fn cleaner_type_accepts_any_embedding_port() {
+    fn _accepts(_: &SemanticCleanerImpl) {}
 }
 
 // --- (a) N concurrent acquires proceed in parallel ---------------------------
@@ -258,8 +265,8 @@ async fn pool_releases_permit_on_panic_and_stays_usable() {
 
 // --- Wiring: pooled engine behind the cleaner seam -----------------------------
 
-/// The pooled engine drives the full `clean()` path through `from_parts`
-/// (existing seam, no signature changes), and the pool itself is `Send + Sync`.
+/// The pooled engine drives the full `clean()` path through the embedding
+/// port (`from_parts`, the erased seam), and the pool itself is `Send + Sync`.
 #[test]
 fn pooled_engine_is_send_sync_and_fits_cleaner_seam() {
     fn assert_send_sync<T: Send + Sync>() {}
@@ -271,9 +278,9 @@ fn pooled_engine_is_send_sync_and_fits_cleaner_seam() {
     assert_eq!(pool.embedding_dim(), 384);
 }
 
-/// A `Single`-built engine and a pooled mock engine both erase to
-/// `Arc<dyn InferenceEngine + Send + Sync>` and feed `SemanticCleanerImpl::from_parts` —
-/// the rollback is the enum variant, never the wiring.
+/// The `Single`-built engine and a pooled mock engine both erase to
+/// `Arc<dyn InferenceEngine + Send + Sync>`, so both reach the cleaner through
+/// `EmbeddingAdapter` — the rollback is the enum variant, never the wiring.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn cleaner_accepts_erased_single_and_pool_engines() {
     let single = build_engine(
@@ -285,9 +292,16 @@ async fn cleaner_accepts_erased_single_and_pool_engines() {
     let pooled: Arc<dyn InferenceEngine + Send + Sync> =
         Arc::new(pool_of(2, Duration::from_millis(1)));
 
-    // from_parts is generic over the seam; both engines fit without touching
-    // `new` (whose `InferencePool` signature the CLI/MCP call sites rely on).
-    let _ = (single, pooled, ModelConfig::default());
+    // Both engines satisfy the erased port the cleaner consumes; the cleaner
+    // itself takes no engine type parameter at all.
+    let tokenizer = Arc::new(MiniLmTokenizer::new(
+        ai_test_fixture::in_memory_wordpiece_tokenizer(),
+        512,
+    ));
+    let port: Arc<dyn EmbeddingPort> =
+        Arc::new(EmbeddingAdapter::new(single, Arc::clone(&tokenizer)));
+    let _cleaner = SemanticCleanerImpl::from_parts(port, ModelConfig::default());
+    let _pooled_adapter = EmbeddingAdapter::new(pooled, tokenizer);
     assert!(InferencePool::new(
         std::path::PathBuf::from(FAKE_MODEL_PATH),
         AiModel::Granite97M

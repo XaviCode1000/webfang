@@ -42,8 +42,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures::future::join_all;
-use webfang_ai::infrastructure_ai::{MockInferenceEngine, ModelConfig, SemanticCleanerImpl};
-use webfang_ai::SemanticCleaner;
+use webfang_ai::infrastructure_ai::{
+    InferenceEngine, MockInferenceEngine, ModelConfig, SemanticCleanerImpl,
+};
+use webfang_ai::{EmbeddingAdapter, SemanticCleaner};
+use webfang_core::domain::embedding_port::EmbeddingPort;
 
 #[path = "p0_001_common.rs"]
 #[allow(dead_code)]
@@ -60,10 +63,16 @@ const PAGE_COUNTS: [usize; 4] = [1, 2, 4, 8];
 const REPS: usize = 3;
 
 /// Cleaner wired to the mock engine: full `clean()` path, zero model bytes.
-fn mock_cleaner() -> SemanticCleanerImpl<MockInferenceEngine> {
-    let engine = Arc::new(MockInferenceEngine::new(FIXED_LATENCY));
+///
+/// The mock sits BEHIND the domain port (ADR-0004): the cleaner takes an
+/// `Arc<dyn EmbeddingPort>`, and the ONNX adapter is what binds the engine to
+/// it — so this benchmark still measures the real per-chunk embed fan-out.
+fn mock_cleaner() -> SemanticCleanerImpl {
+    let engine: Arc<dyn InferenceEngine + Send + Sync> =
+        Arc::new(MockInferenceEngine::new(FIXED_LATENCY));
     let tokenizer = Arc::new(p0_001_common::in_memory_tokenizer());
-    SemanticCleanerImpl::from_parts(engine, tokenizer, ModelConfig::default())
+    let port: Arc<dyn EmbeddingPort> = Arc::new(EmbeddingAdapter::new(engine, tokenizer));
+    SemanticCleanerImpl::from_parts(port, ModelConfig::default())
 }
 
 /// Median of a non-empty wall-time sample.
@@ -75,10 +84,7 @@ fn median_duration(mut samples: Vec<Duration>) -> Duration {
 /// Curve B sweep: N identical pages through `join_all(clean)` — the same
 /// fan-out shape as `export_flow::clean_all_pages` — with [`REPS`] repetitions
 /// per cell, reporting the median. Mock `infer` + real pipeline CPU work.
-async fn sweep_curve_b(
-    cleaner: &SemanticCleanerImpl<MockInferenceEngine>,
-    chunks_per_page: usize,
-) -> Vec<Duration> {
+async fn sweep_curve_b(cleaner: &SemanticCleanerImpl, chunks_per_page: usize) -> Vec<Duration> {
     let mut medians = Vec::with_capacity(PAGE_COUNTS.len());
     for &pages in &PAGE_COUNTS {
         let html = p0_001_common::synthetic_page();

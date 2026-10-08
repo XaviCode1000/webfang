@@ -1,0 +1,12 @@
+---
+source: crates/webfang_core/tests/max_chars_bound_test.rs
+expression: redacted
+---
+  <TIMESTAMP>  WARN webfang: --max-tokens está obsoleto y se eliminará en la próxima versión principal. Migrado a --max-chars (4096 tokens × 3 caracteres/token = 12288 caracteres). Usa --max-chars directamente., flag: "--max-tokens", env: "WEBFANG_MAX_TOKENS", replacement: "--max-chars", max_tokens: 4096, chars_per_token: 3.0, max_chars: 12288
+    at <FILE>.rs:<LINE>
+
+Status: http://127.0.0.1:<PORT>/ [Started]
+Status: http://127.0.0.1:<PORT>/ [Fetching]
+Status: http://127.0.0.1:<PORT>/ [Extracting]
+Status: http://127.0.0.1:<PORT>/ [Completed, 99 chars]
+Finished: 1 total, 1 succeeded, 0 failed

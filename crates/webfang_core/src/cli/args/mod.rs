@@ -596,19 +596,71 @@ fn url_from_args(args: &Args) -> ValidUrl {
     }
 }
 
+/// Resolve the chunk-size guard from `--max-chars` and the deprecated
+/// `--max-tokens` (ADR-0004).
+///
+/// # Precedence — read this before "simplifying" it
+///
+/// | `--max-chars` chosen | `--max-tokens` given | result | warning |
+/// |---|---|---|---|
+/// | yes | ignored | `max_chars` verbatim | none |
+/// | no | yes | `tokens × [`DEFAULT_CHARS_PER_TOKEN`](crate::domain::options_spec::ai::DEFAULT_CHARS_PER_TOKEN)` | once |
+/// | no | no | the `MAX_CHARS` default (98 304) | none |
+///
+/// Three rules, each load-bearing:
+///
+/// 1. **An explicit `--max-chars` always wins, SILENTLY.** The operator
+///    stated the unit they mean. A deprecation warning here would be noise
+///    about a value they did not use — and the shim value they left in a
+///    script must not override the flag they just typed.
+/// 2. **Only `--max-tokens` warns, and exactly once.** The conversion is
+///    lossy in meaning (a budget in one unit becomes a budget in another), so
+///    the operator must see it; `deprecated_max_tokens` carries the fact
+///    forward to the one place that can speak it (after the tracing
+///    subscriber exists, #796).
+/// 3. **Neither means the spec default, not a conversion.** There is nothing
+///    to deprecate.
+///
+/// The conversion factor lives in
+/// [`options_spec::ai::max_tokens_to_max_chars`](crate::domain::options_spec::ai::max_tokens_to_max_chars),
+/// which `webfang_ai`'s `ModelConfig::default()` also reads: one constant, or
+/// `--max-tokens 4096` and `--max-chars 4096` would mean different budgets.
+///
+/// Returns `(max_chars, deprecated_max_tokens)`.
+fn resolve_max_chars(args: &Args) -> (usize, Option<usize>) {
+    match (args.ai.max_chars_explicit, args.ai.max_tokens) {
+        (true, _) => (args.ai.max_chars, None),
+        (false, Some(tokens)) => (
+            crate::domain::options_spec::ai::max_tokens_to_max_chars(tokens),
+            Some(tokens),
+        ),
+        (false, None) => (args.ai.max_chars, None),
+    }
+}
+
 #[cfg(feature = "ai")]
 fn build_ai_config(args: &Args) -> crate::application::crawl_options::AiConfig {
+    let (max_chars, deprecated_max_tokens) = resolve_max_chars(args);
     crate::application::crawl_options::AiConfig {
         threshold: args.ai.threshold,
-        max_tokens: args.ai.max_tokens,
+        max_chars,
+        deprecated_max_tokens,
         offline: args.ai.offline,
         model: args.ai.ai_model.clone().unwrap_or_default(),
     }
 }
 
+/// The ungated flags resolve in EVERY build (ADR-0004): `--max-chars` and the
+/// deprecated `--max-tokens` both render without the `ai` feature, so both are
+/// carried here — see [`resolve_max_chars`] for the precedence.
 #[cfg(not(feature = "ai"))]
-fn build_ai_config(_args: &Args) -> crate::application::crawl_options::AiConfig {
-    crate::application::crawl_options::AiConfig::default()
+fn build_ai_config(args: &Args) -> crate::application::crawl_options::AiConfig {
+    let (max_chars, deprecated_max_tokens) = resolve_max_chars(args);
+    crate::application::crawl_options::AiConfig {
+        max_chars,
+        deprecated_max_tokens,
+        ..crate::application::crawl_options::AiConfig::default()
+    }
 }
 
 #[cfg(test)]

@@ -1,16 +1,14 @@
-//! Erased-engine port seam (issue #1569).
+//! Port-erased cleaner seam (issue #1569, ADR-0004 Tramo D slice B).
 //!
-//! Mock-backed: NO model download, NO ORT session. Proves that a
-//! `Pool`-mode cleaner (`SemanticCleanerImpl<dyn InferenceEngine + Send +
-//! Sync>`) shares its ONE engine + tokenizer with both erased consumers:
-//!
-//! 1. the vault-search embedding port ([`EmbeddingAdapter`]), and
-//! 2. the Tier 2 semantic inspector ([`GraniteDomInspector`]),
-//!
-//! so the default `WEBFANG_AI_ENGINE` rollout serves both ports from a single
-//! model in memory — no degradation warning, no second model load. The same
-//! wiring compiles for the `Single` rollback hatch via unsized coercion of the
-//! concrete `Arc<InferencePool>` into the erased field.
+//! Mock-backed: NO model download, NO ORT session. Proves the seam the cleaner
+//! actually has now: ONE `SemanticCleanerImpl` type that takes an erased
+//! `Arc<dyn EmbeddingPort>` and NOTHING engine-shaped. The same ONE engine +
+//! tokenizer still backs three consumers — the cleaner, the vault-search
+//! embedding port ([`EmbeddingAdapter`]) and the Tier 2 semantic inspector
+//! ([`GraniteDomInspector`]) — so the default `WEBFANG_AI_ENGINE` rollout
+//! serves all of them from a single model in memory. The `Single` rollback
+//! hatch compiles unchanged via unsized coercion of the concrete
+//! `Arc<InferencePool>` into the erased engine.
 //!
 //! Requires the `ai` feature (same gate as the other AI integration tests).
 
@@ -24,6 +22,7 @@ use webfang_ai::infrastructure_ai::{
 };
 use webfang_ai::{EmbeddingAdapter, GraniteDomInspector, MiniLmTokenizer};
 use webfang_core::domain::embedding_port::EmbeddingPort;
+use webfang_core::domain::semantic_cleaner::SemanticCleaner;
 use webfang_core::domain::semantic_inspector::{SemanticContext, SemanticInspectorPort};
 
 // The ONE home of the in-memory tokenizer, shared with the `embedding_adapter`
@@ -48,21 +47,38 @@ fn in_memory_mini_lm() -> Arc<MiniLmTokenizer> {
     Arc::new(MiniLmTokenizer::new(in_memory_wordpiece_tokenizer(), 512))
 }
 
-/// The Pool-mode cleaner erases to `SemanticCleanerImpl<dyn InferenceEngine +
-/// Send + Sync>` and `shared_inference` hands out the erased pair — the exact
-/// type the CLI Pool arm and the MCP daemon now consume (#1569).
+/// The same three-tuple `build_onnx_embedding_port` hands its callers: the
+/// erased domain port for the cleaner, plus the erased engine and tokenizer
+/// the other two consumers still need. Built by hand here because the
+/// production helper downloads a model.
+fn mock_port_and_engine() -> (
+    Arc<dyn EmbeddingPort>,
+    Arc<dyn InferenceEngine + Send + Sync>,
+    Arc<MiniLmTokenizer>,
+) {
+    let engine = erased_mock_engine();
+    let tokenizer = in_memory_mini_lm();
+    let port: Arc<dyn EmbeddingPort> = Arc::new(EmbeddingAdapter::new(
+        Arc::clone(&engine),
+        Arc::clone(&tokenizer),
+    ));
+    (port, engine, tokenizer)
+}
+
+/// The cleaner is NON-GENERIC: it takes an erased port, erases to
+/// `Arc<dyn SemanticCleaner>`, and leaves the engine it was built over fully
+/// usable for the other consumers (ADR-0004).
 #[test]
-fn pool_cleaner_erases_and_shares_erased_engine() {
-    fn assert_erased_cleaner(_: &SemanticCleanerImpl<dyn InferenceEngine + Send + Sync>) {}
+fn cleaner_erases_to_the_domain_trait_and_leaves_the_engine_free() {
+    fn assert_non_generic_cleaner(_: &SemanticCleanerImpl) {}
 
-    let cleaner = SemanticCleanerImpl::from_parts(
-        erased_mock_engine(),
-        in_memory_mini_lm(),
-        ModelConfig::default(),
-    );
-    assert_erased_cleaner(&cleaner);
+    let (port, engine, _tokenizer) = mock_port_and_engine();
+    let cleaner = SemanticCleanerImpl::from_parts(port, ModelConfig::default());
+    assert_non_generic_cleaner(&cleaner);
 
-    let (engine, _tokenizer) = cleaner.shared_inference();
+    let erased: Arc<dyn SemanticCleaner> = Arc::new(cleaner);
+    assert!(erased.is_ready());
+
     assert!(engine.is_ready());
     assert_eq!(engine.embedding_dim(), 384);
 }
@@ -72,12 +88,10 @@ fn pool_cleaner_erases_and_shares_erased_engine() {
 /// with no concrete `InferencePool` type anywhere in the wiring.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pool_cleaner_serves_vault_embedding_and_tier2_from_one_engine() {
-    let cleaner = SemanticCleanerImpl::from_parts(
-        erased_mock_engine(),
-        in_memory_mini_lm(),
-        ModelConfig::default(),
-    );
-    let (engine, tokenizer) = cleaner.shared_inference();
+    let (port, engine, tokenizer) = mock_port_and_engine();
+    let cleaner = SemanticCleanerImpl::from_parts(port, ModelConfig::default());
+    let cleaner: Arc<dyn SemanticCleaner> = Arc::new(cleaner);
+    assert!(cleaner.is_ready());
 
     // Port 1 — vault-search embedding over the erased engine.
     let adapter = EmbeddingAdapter::new(Arc::clone(&engine), Arc::clone(&tokenizer));
