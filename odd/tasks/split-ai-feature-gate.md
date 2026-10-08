@@ -104,4 +104,5 @@ El paso 10 es el que lo compila positivamente.
 Scope del diff: `crates/webfang_ai/src/infrastructure_ai/mod.rs` (+43/−14) y
 `crates/webfang_ai/src/lib.rs` (+19/−13). Sin `Cargo.toml`, sin crates consumidores.
 
-Commits: _(pendiente)_
+Commits: `fabf2517` — `refactor(ai): split the `ai` feature gate down to submodule level`
+(sobre `main` @ `e57b68f5`).
