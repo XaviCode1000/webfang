@@ -60,9 +60,15 @@ jobs:
       # NOTE: deliberately NO Swatinem/rust-cache here (review finding,
       # PR #959). Repo Actions-cache usage is at the ~10 GB eviction
       # threshold; a fresh multi-GB bench-profile cache every night would
-      # evict CI/PR caches and cause cross-workflow rebuild thrash. Cold
-      # compile (~10-15 min incl. BoringSSL) fits comfortably in the
-      # timeout-minutes budget below.
+      # evict CI/PR caches and cause cross-workflow rebuild thrash.
+      #
+      # The old note here claimed the cold compile "fits comfortably in the
+      # timeout-minutes budget". It did not: the compile was being killed at
+      # ~5 min, far inside a 60-min budget, so the budget was never the
+      # binding constraint (#1913). The compile shrank instead — see the
+      # profile change in Cargo.toml and the package scoping on both cargo
+      # bench steps below. If a cache is ever reintroduced it has to respect
+      # the #1165/#1171 pool policy, not just fit on disk.
 
       # Diagnostics BEFORE the compile gate (issue #1524): the fleet
       # preempts runners with SIGTERM during the cold compile (exit 143),
@@ -82,13 +88,61 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
+      # Derive the bench scope from cargo itself; never hardcode it (#1913).
+      #
+      # `cargo bench -p X` is an ALLOW-LIST, not a filter: a crate with bench
+      # targets that is not on the list is neither built nor run, `cargo` still
+      # exits 0, and the nightly reports green with the coverage silently gone.
+      # Asking `cargo metadata` which targets are benches keeps the list correct
+      # for explicit `[[bench]]` tables, for autodiscovered `benches/*.rs`, and
+      # for the `autobenches = false` opt-out alike, because cargo's own answer
+      # cannot drift from cargo's own rules.
+      #
+      # Unscoped, `cargo bench` additionally builds webfang_cli, webfang_mcp and
+      # webfang_benchmark and then uses nothing from them: pure extra cold-compile
+      # surface on a runner that already gets SIGTERM-killed during the compile
+      # window. That cost is what scoping removes.
+      #
+      # Fails closed: an empty scope or any error exits 1 with no stdout, so the
+      # `scope="$(...)"` below can never degrade into an unscoped full-workspace
+      # build.
+      - name: Derive bench package scope
+        run: |
+          set -euo pipefail
+          scope="$(python3 scripts/derive-bench-scope.py)"
+          echo "Bench scope: $scope"
+          echo "BENCH_SCOPE=$scope" >> "$GITHUB_ENV"
+
       # Compile gate first: a broken bench fails here with a clear signal
       # instead of mid-measurement.
+      #
+      # `$BENCH_SCOPE` is a multi-token fragment, so it is expanded through an
+      # array rather than unquoted: correctness here should not depend on the
+      # derive script only ever emitting safe tokens.
+      #
+      # The empty check is repeated here, not just in the derive step, because the
+      # derive step's refusal is not the only way the variable can be empty — an
+      # absent or edited `GITHUB_ENV` would otherwise reach `cargo bench` as an
+      # empty array, and `"${scope[@]}"` on an empty array expands to NOTHING,
+      # silently turning this back into the unscoped full-workspace build. Each
+      # consumer asserts for itself.
       - name: Compile gate (cargo bench --no-run)
-        run: cargo bench --no-run --locked
+        run: |
+          read -ra scope <<< "$BENCH_SCOPE"
+          if [ "${#scope[@]}" -eq 0 ]; then
+            echo "::error::BENCH_SCOPE resolved to no packages; refusing to run an unscoped cargo bench"
+            exit 1
+          fi
+          cargo bench "${scope[@]}" --no-run --locked
 
       - name: Run full criterion suite
-        run: cargo bench --locked
+        run: |
+          read -ra scope <<< "$BENCH_SCOPE"
+          if [ "${#scope[@]}" -eq 0 ]; then
+            echo "::error::BENCH_SCOPE resolved to no packages; refusing to run an unscoped cargo bench"
+            exit 1
+          fi
+          cargo bench "${scope[@]}" --locked
 
       - name: Summarize results
         if: always()
