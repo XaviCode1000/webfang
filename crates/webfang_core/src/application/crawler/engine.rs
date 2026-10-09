@@ -537,7 +537,7 @@ impl Engine {
     /// every 5 seconds and adjusts the shared concurrency level accordingly.
     /// The engine's spawn loop reads this level to compute effective concurrency.
     ///
-    /// The loop never ends on its own, so its [`JoinHandle`] is kept on the
+    /// The loop never ends on its own, so its [`tokio::task::JoinHandle`] is kept on the
     /// engine and aborted in [`Self::shutdown`] — same lifecycle as
     /// `signal_handle` (#1941).
     pub fn with_autoscale(mut self) -> Self {
