@@ -38,6 +38,9 @@ pub mod js_strategy;
 pub mod link_extractor;
 pub mod llm;
 pub mod local_secret_store;
+/// Per-provider network allowlist policy (B2, ADR-0004). Config types and
+/// validation; the dial-time verdict lives in `ssrf_guard`.
+pub mod network_policy;
 /// Typed 8-state page lifecycle (persisted enum + compile-time
 /// typestate wrapper). See module docs for the legacy-encoding mapping.
 pub mod page_state;

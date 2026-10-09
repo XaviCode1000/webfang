@@ -55,6 +55,8 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::sync::{Arc, OnceLock};
 
+use crate::domain::network_policy::NetworkPolicy;
+
 use wreq::redirect::Policy;
 
 /// Test-only escape hatch for the literal-IP redirect guard.
@@ -248,6 +250,76 @@ pub fn is_forbidden_ip_with(ip: &IpAddr, allow_loopback: bool) -> bool {
         return false;
     }
     is_forbidden_ip(ip)
+}
+
+/// Dial-time always-denied set (FIN-017): link-local, unspecified,
+/// multicast, broadcast, reserved, and Teredo — the ranges no allowlist
+/// entry can ever reach. IPv4-mapped IPv6 forms normalize to IPv4 first;
+/// the deprecated IPv4-compatible form is deliberately NOT normalized
+/// here (it never matches an allowlist, so it stays denied either way).
+/// NAT64/6to4 prefixes are absent on purpose: their verdict derives from
+/// the embedded IPv4 via [`is_forbidden_ip_with_policy`].
+#[must_use]
+pub fn is_always_denied_ip(ip: &IpAddr) -> bool {
+    let normalized = match ip {
+        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(*ip, IpAddr::V4),
+        v4 @ IpAddr::V4(_) => *v4,
+    };
+    match normalized {
+        IpAddr::V4(v4) => {
+            v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_multicast()
+                || is_reserved_v4(&v4)
+        },
+        IpAddr::V6(v6) => {
+            v6.is_unspecified()
+                || is_ipv6_link_local(&v6)
+                || v6.is_multicast()
+                || is_ipv6_teredo(&v6)
+        },
+    }
+}
+
+/// Policy-parameterized verdict (B2, ADR-0004, issue #1947):
+/// [`is_forbidden_ip`] plus a per-provider [`NetworkPolicy`] allowlist.
+///
+/// Evaluation order is security-first:
+///
+/// 1. The always-denied set (FIN-017) denies FIRST — even a hand-built
+///    policy cannot reach `169.254.169.254`; config validation rejecting
+///    those entries is the first layer, this is the second.
+/// 2. Loopback stays exclusively under the B1 `allow_loopback` flag
+///    (#1462) — an allowlist entry cannot open it (validation rejects
+///    those too, this re-checks).
+/// 3. Public addresses allow, exactly like [`is_forbidden_ip`].
+/// 4. NAT64/6to4-embedded IPv4 re-validates the embedded address against
+///    the same policy, so an allowlist is applied to the address the
+///    socket actually dials, never to the translation prefix as a blanket.
+/// 5. An address inside an allowlisted CIDR allows — RFC1918, ULA and
+///    CGNAT are reachable only through this explicit opt-in.
+#[must_use]
+pub fn is_forbidden_ip_with_policy(
+    ip: &IpAddr,
+    allow_loopback: bool,
+    policy: &NetworkPolicy,
+) -> bool {
+    if is_always_denied_ip(ip) {
+        return true;
+    }
+    if allow_loopback && is_permitted_loopback(ip) {
+        return false;
+    }
+    if !is_forbidden_ip(ip) {
+        return false;
+    }
+    if let IpAddr::V6(v6) = ip {
+        if let Some(v4) = ipv6_nat64_embedded_v4(v6).or_else(|| ipv6_6to4_embedded_v4(v6)) {
+            return is_forbidden_ip_with_policy(&IpAddr::V4(v4), allow_loopback, policy);
+        }
+    }
+    !policy.allows_ip(ip)
 }
 
 /// Returns `true` if `v4` is within the CGNAT range 100.64.0.0/10
@@ -701,6 +773,157 @@ mod tests {
 
     fn addr(s: &str) -> IpAddr {
         s.parse().expect("test literals always parse")
+    }
+
+    /// Hand-built policy for defense-in-depth tests: the guard must hold
+    /// even when a `NetworkPolicy` bypassed serde validation, so these
+    /// fixtures are constructed directly, never parsed.
+    fn hand_built_policy(cidrs: &[&str]) -> NetworkPolicy {
+        let allow_cidrs = cidrs
+            .iter()
+            .map(|c| {
+                crate::domain::network_policy::CidrBlock::parse(c)
+                    .expect("test policy entries are valid CIDRs")
+            })
+            .collect();
+        NetworkPolicy {
+            mode: crate::domain::network_policy::NetworkPolicyMode::Allowlist,
+            allow_cidrs,
+            allow_hosts: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn metadata_169_254_stays_denied_even_when_allowlisted() {
+        let policy = hand_built_policy(&["169.254.0.0/16"]);
+        assert!(is_forbidden_ip_with_policy(
+            &addr("169.254.169.254"),
+            false,
+            &policy
+        ));
+        // The IPv4-mapped form must not bypass the always-denied set.
+        assert!(is_forbidden_ip_with_policy(
+            &addr("::ffff:169.254.169.254"),
+            false,
+            &policy
+        ));
+    }
+
+    #[test]
+    fn teredo_stays_denied_even_when_hand_built_entry_covers_it() {
+        let policy = hand_built_policy(&["2001:0::/32"]);
+        assert!(is_forbidden_ip_with_policy(
+            &addr("2001:0:5ef:3c2d::1"),
+            false,
+            &policy
+        ));
+    }
+
+    #[test]
+    fn cgnat_default_denied_explicit_allowlist_permits() {
+        let empty = NetworkPolicy::default();
+        assert!(is_forbidden_ip_with_policy(
+            &addr("100.64.0.5"),
+            false,
+            &empty
+        ));
+        let policy = hand_built_policy(&["100.64.0.0/10"]);
+        assert!(!is_forbidden_ip_with_policy(
+            &addr("100.64.0.5"),
+            false,
+            &policy
+        ));
+    }
+
+    #[test]
+    fn rfc1918_default_denied_allowlist_permits() {
+        let empty = NetworkPolicy::default();
+        assert!(is_forbidden_ip_with_policy(
+            &addr("10.0.0.5"),
+            false,
+            &empty
+        ));
+        let policy = hand_built_policy(&["10.0.0.0/8"]);
+        assert!(!is_forbidden_ip_with_policy(
+            &addr("10.0.0.5"),
+            false,
+            &policy
+        ));
+        // The IPv4-mapped form of the same address follows the same policy.
+        assert!(!is_forbidden_ip_with_policy(
+            &addr("::ffff:10.0.0.5"),
+            false,
+            &policy
+        ));
+    }
+
+    #[test]
+    fn ula_default_denied_allowlist_permits() {
+        let empty = NetworkPolicy::default();
+        assert!(is_forbidden_ip_with_policy(&addr("fd00::1"), false, &empty));
+        let policy = hand_built_policy(&["fc00::/7"]);
+        assert!(!is_forbidden_ip_with_policy(
+            &addr("fd00::1"),
+            false,
+            &policy
+        ));
+    }
+
+    #[test]
+    fn nat64_embedded_allowlisted_v4_permits() {
+        // 64:ff9b::a00:5 embeds 10.0.0.5 — the policy applies to the
+        // address the socket actually dials.
+        let policy = hand_built_policy(&["10.0.0.0/8"]);
+        assert!(!is_forbidden_ip_with_policy(
+            &addr("64:ff9b::a00:5"),
+            false,
+            &policy
+        ));
+    }
+
+    #[test]
+    fn nat64_embedded_metadata_stays_denied() {
+        // 64:ff9b::a9fe:a9fe embeds 169.254.169.254 — even a hand-built
+        // blanket NAT64 entry cannot reach it.
+        let policy = hand_built_policy(&["64:ff9b::/96", "10.0.0.0/8"]);
+        assert!(is_forbidden_ip_with_policy(
+            &addr("64:ff9b::a9fe:a9fe"),
+            false,
+            &policy
+        ));
+    }
+
+    #[test]
+    fn loopback_stays_exclusively_under_the_flag() {
+        // A policy cannot open loopback — only `allow_loopback` can.
+        let policy = hand_built_policy(&["10.0.0.0/8"]);
+        assert!(is_forbidden_ip_with_policy(
+            &addr("127.0.0.1"),
+            false,
+            &policy
+        ));
+        assert!(is_forbidden_ip_with_policy(&addr("::1"), false, &policy));
+        assert!(!is_forbidden_ip_with_policy(
+            &addr("127.0.0.1"),
+            true,
+            &policy
+        ));
+        assert!(!is_forbidden_ip_with_policy(&addr("::1"), true, &policy));
+    }
+
+    #[test]
+    fn public_addresses_unchanged_under_empty_policy() {
+        let empty = NetworkPolicy::default();
+        assert!(!is_forbidden_ip_with_policy(
+            &addr("8.8.8.8"),
+            false,
+            &empty
+        ));
+        assert!(!is_forbidden_ip_with_policy(
+            &addr("2001:4860:4860::8888"),
+            false,
+            &empty
+        ));
     }
 
     #[test]
