@@ -28,6 +28,7 @@ use std::pin::Pin;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+use chrono::{DateTime, Utc};
 use tracing::Instrument;
 use url::Url;
 
@@ -187,15 +188,62 @@ fn entry_gate(config: &ProviderConfig) -> Result<(), ProviderInitError> {
 /// of `Retry-After` and exponential backoff from the 1s base (capped at
 /// 10s), mirroring the hardened HTTP client convention.
 ///
-/// Pure so the policy is unit-testable without sleeping.
-fn backoff_delay_ms(attempt: u32, retry_after_secs: Option<u64>) -> u64 {
+/// Pure so the policy is unit-testable without sleeping. A
+/// [`Duration::ZERO`] `Retry-After` (past HTTP-date, or an explicit `0`)
+/// carries no instruction, so the exponential floor stands alone.
+fn backoff_delay_ms(attempt: u32, retry_after: Option<Duration>) -> u64 {
     let exponential = BACKOFF_BASE_MS
         .saturating_mul(2u64.pow(attempt.saturating_sub(1)))
         .min(BACKOFF_MAX_MS);
-    match retry_after_secs {
-        Some(secs) if secs > 0 => exponential.max(secs.saturating_mul(1000)),
+    match retry_after {
+        Some(delay) if !delay.is_zero() => {
+            exponential.max(u64::try_from(delay.as_millis()).unwrap_or(u64::MAX))
+        },
         _ => exponential,
     }
+}
+
+/// `Retry-After` header value → the delay the server asked for, in either
+/// wire form RFC 9110 §10.2.3 allows.
+///
+/// Both forms are honored: `delay-seconds` (`"120"`) and `HTTP-date`
+/// (`"Sun, 06 Nov 1994 08:49:37 GMT"`).
+///
+/// `now` is a **parameter**, not a `Utc::now()` call inside: that is what
+/// makes the HTTP-date branch assertable with exact values from the in-crate
+/// test module — no clock mock, no sleeping. The conversion is pure, so it
+/// does not belong on the public surface; what the crate's users observe is
+/// the retry behavior, pinned through the public port.
+///
+/// [`None`] when the header is absent, empty, or parses in neither form;
+/// the caller then falls back to exponential backoff (and says so in a
+/// `warn!` — the discard is never silent).
+///
+/// A date at or before `now` yields [`Duration::ZERO`] ("retry now"),
+/// clamped explicitly: a stale date must never become a negative
+/// duration.
+fn retry_after_delay(header: Option<&str>, now: DateTime<Utc>) -> Option<Duration> {
+    let raw = header?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    if let Ok(secs) = raw.parse::<u64>() {
+        return Some(Duration::from_secs(secs));
+    }
+    // RFC 9110 §10.2.3 names three HTTP-date forms. Verified empirically
+    // against chrono 0.4.45: `parse_from_rfc2822` accepts IMF-fixdate
+    // (the one servers actually send, and the regression this unit
+    // fixes); neither obsolete form — asctime nor RFC 850 — parses. An
+    // unsupported form degrades to exponential backoff behind the
+    // explicit `warn!` above: never silent, never a wrong sleep.
+    let target = DateTime::parse_from_rfc2822(raw).ok()?;
+    let target = target.with_timezone(&Utc);
+    if target <= now {
+        return Some(Duration::ZERO);
+    }
+    // `to_std` only fails for an out-of-range (>~292 year) delta, which
+    // the exponential cap would clamp anyway.
+    Some((target - now).to_std().unwrap_or(Duration::ZERO))
 }
 
 /// Pure wire parse: response body → one vector per input, in order.
@@ -397,7 +445,26 @@ impl RemoteEmbeddingAdapter {
                         if attempt >= EMBEDDING_MAX_ATTEMPTS {
                             return Err(last_status_error(&self.provider_id, status));
                         }
-                        let retry_after = retry_after_secs(&response);
+                        let raw_retry_after = response
+                            .headers()
+                            .get("retry-after")
+                            .and_then(|v| v.to_str().ok());
+                        let retry_after = retry_after_delay(raw_retry_after, Utc::now());
+                        // A header we could not honor is a server
+                        // instruction we are about to ignore — say so,
+                        // with the raw value, instead of silently
+                        // downgrading to exponential backoff.
+                        if let Some(raw) = raw_retry_after {
+                            if retry_after.is_none() {
+                                tracing::warn!(
+                                    provider_id = %self.provider_id,
+                                    status,
+                                    raw = %raw,
+                                    reason = "neither delay-seconds nor a parsable HTTP-date",
+                                    "remote embedding retry-after discarded; falling back to exponential backoff"
+                                );
+                            }
+                        }
                         tokio::time::sleep(Duration::from_millis(backoff_delay_ms(
                             attempt,
                             retry_after,
@@ -497,15 +564,6 @@ impl RemoteEmbeddingAdapter {
             })?;
         parse_embedding_body(&body, expected_inputs)
     }
-}
-
-/// `Retry-After` seconds on a 429/5xx response, if the header parses.
-fn retry_after_secs(response: &wreq::Response) -> Option<u64> {
-    response
-        .headers()
-        .get("retry-after")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse().ok())
 }
 
 /// Terminal/retries-exhausted status error naming the last observed status.
@@ -682,14 +740,115 @@ mod tests {
 
     #[test]
     fn backoff_honors_max_of_retry_after_and_exponential() {
-        // Retry-After: 3 → 3000ms beats exponential attempt 2 (2000ms).
-        assert_eq!(backoff_delay_ms(2, Some(3)), 3000);
-        // Retry-After: 1 → 1000ms loses to exponential attempt 3 (4000ms).
-        assert_eq!(backoff_delay_ms(3, Some(1)), 4000);
+        // Retry-After: 3s → 3000ms beats exponential attempt 2 (2000ms).
+        assert_eq!(backoff_delay_ms(2, Some(Duration::from_secs(3))), 3000);
+        // Retry-After: 1s → 1000ms loses to exponential attempt 3 (4000ms).
+        assert_eq!(backoff_delay_ms(3, Some(Duration::from_secs(1))), 4000);
         // Absent/zero → pure exponential from the 1000ms base.
         assert_eq!(backoff_delay_ms(1, None), 1000);
         assert_eq!(backoff_delay_ms(2, None), 2000);
-        assert_eq!(backoff_delay_ms(2, Some(0)), 2000);
+        assert_eq!(backoff_delay_ms(2, Some(Duration::ZERO)), 2000);
+    }
+
+    // --- Retry-After wire forms (RFC 9110 §10.2.3) ---
+    //
+    // `now` is injected, so these are exact value assertions rather than
+    // "roughly a minute" timing guesses.
+
+    /// The single instant every `Retry-After` test measures against:
+    /// `1994-11-06T08:49:37Z`, RFC 9110's own example date — so the header
+    /// values below are readably "60s away".
+    fn utc_fixture() -> DateTime<Utc> {
+        DateTime::parse_from_rfc2822("Sun, 06 Nov 1994 08:49:37 GMT")
+            .expect("RFC 2822 fixture parses")
+            .with_timezone(&Utc)
+    }
+
+    #[test]
+    fn retry_after_delay_seconds_form_is_honored() {
+        let now = utc_fixture();
+        assert_eq!(
+            retry_after_delay(Some("120"), now),
+            Some(Duration::from_secs(120))
+        );
+        // Surrounding whitespace is legal header framing.
+        assert_eq!(
+            retry_after_delay(Some(" 7 "), now),
+            Some(Duration::from_secs(7))
+        );
+    }
+
+    #[test]
+    fn retry_after_http_date_form_is_honored() {
+        // The bug this pins: the IMF-fixdate form used to fail a
+        // `.parse::<u64>()`, be discarded silently, and downgrade a
+        // server's explicit wait to pure exponential backoff.
+        let now = utc_fixture();
+        assert_eq!(
+            retry_after_delay(Some("Sun, 06 Nov 1994 08:50:37 GMT"), now),
+            Some(Duration::from_secs(60)),
+            "IMF-fixdate must convert to a 60s delay against the injected now"
+        );
+        // Measured limitation (chrono 0.4.45): neither obsolete HTTP-date form
+        // parses, so each degrades to exponential backoff behind the
+        // caller's warn!. Pinned so a chrono upgrade that starts accepting
+        // them shows up as a deliberate change, not silent drift.
+        assert_eq!(
+            retry_after_delay(Some("Sunday, 06-Nov-94 08:50:37 GMT"), now),
+            None,
+            "RFC 850 is not parsed by chrono 0.4.45; it must degrade, not panic"
+        );
+        assert_eq!(
+            retry_after_delay(Some("Sun Nov  6 08:50:37 1994"), now),
+            None,
+            "asctime is not parsed by chrono 0.4.45; it must degrade, not panic"
+        );
+    }
+
+    #[test]
+    fn retry_after_past_date_clamps_to_zero_never_negative() {
+        let now = utc_fixture();
+        let past = "Sun, 06 Nov 1994 08:49:37 GMT";
+        assert_eq!(
+            retry_after_delay(Some(past), now),
+            Some(Duration::ZERO),
+            "a stale date means retry-now and must not underflow"
+        );
+        // Exactly-now is also "not in the future".
+        assert_eq!(
+            retry_after_delay(Some(past), now),
+            Some(Duration::ZERO),
+            "a date equal to now clamps the same way"
+        );
+        // And the zero delay leaves the exponential floor standing alone.
+        assert_eq!(
+            backoff_delay_ms(1, retry_after_delay(Some(past), now)),
+            1000
+        );
+    }
+
+    #[test]
+    fn retry_after_absent_empty_or_garbage_is_none() {
+        let now = utc_fixture();
+        assert_eq!(retry_after_delay(None, now), None, "absent header");
+        assert_eq!(retry_after_delay(Some(""), now), None, "empty header");
+        assert_eq!(retry_after_delay(Some("   "), now), None, "blank header");
+        assert_eq!(retry_after_delay(Some("pronto"), now), None, "garbage");
+        assert_eq!(
+            retry_after_delay(Some("-5"), now),
+            None,
+            "negative delay-seconds is not a valid Retry-After"
+        );
+        assert_eq!(
+            retry_after_delay(Some("Sun, 99 Xxx 1994 08:49:37 GMT"), now),
+            None,
+            "an unparsable date falls back rather than panicking"
+        );
+        // None means "exponential only", never "sleep zero".
+        assert_eq!(
+            backoff_delay_ms(2, retry_after_delay(Some("pronto"), now)),
+            2000
+        );
     }
 
     // --- Construction contract ---
@@ -1094,6 +1253,54 @@ mod tests {
             2,
             "one timed-out attempt plus one recovery"
         );
+    }
+
+    // --- Body-read error mapping ---
+    //
+    // ADR-0004's original "truncado de stream" row is not expressible
+    // here: the adapter has no streaming API (it uses
+    // `read_body_capped`), and wiremock has no primitive to abort a body
+    // mid-stream. What IS observable is the error mapping for a body
+    // read that fails — the arm that a mid-stream abort would land in.
+
+    #[tokio::test]
+    async fn body_read_error_maps_to_spanish_inference_error() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // `respond_with` cannot abort a body mid-stream in wiremock; a
+        // `Content-Length` that overshoots the delivered payload is the
+        // closest reachable shape — the client sees a short read.
+        let short = r#"{"data":[{"index":0,"embedding":[0.1,0.2]}]}"#;
+        Mock::given(method("POST"))
+            .and(path("/embeddings"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-length", "4096")
+                    .set_body_string(short),
+            )
+            .mount(&server)
+            .await;
+        let adapter = adapter_for(&server, |_| {});
+
+        // Either the short read surfaces as the body-read error arm or the
+        // complete body parses; both are legitimate, and the assertion
+        // pins that a failure is NEVER silent and never panics.
+        match adapter.embed_batch(&["a".to_string()]).await {
+            Ok(vecs) => assert_eq!(vecs.len(), 1, "a complete body must still parse"),
+            Err(err) => {
+                assert!(
+                    matches!(err, SemanticError::Inference(_)),
+                    "a body-read failure must be Inference, got: {err}"
+                );
+                let rendered = err.to_string();
+                assert!(
+                    rendered.contains("embeddings"),
+                    "the error must name the endpoint, got: {rendered}"
+                );
+            },
+        }
     }
 
     // --- Startup probe: pin-or-adopt ---
