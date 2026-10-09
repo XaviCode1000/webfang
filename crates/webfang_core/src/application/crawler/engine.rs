@@ -138,6 +138,14 @@ pub struct Engine {
     /// Optional handle for the signal handler task — aborted on shutdown
     /// to prevent the tokio runtime from hanging waiting for it.
     signal_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Optional handle for the RAM autoscale probe task (#1941) — aborted on
+    /// shutdown for the same reason as `signal_handle`.
+    ///
+    /// The autoscale loop never terminates on its own (it ticks every 5s for
+    /// the whole run), so discarding this handle left a live task that nothing
+    /// owned and nothing stopped: it kept polling `ram_probe` after the crawl
+    /// had finished.
+    autoscale_handle: Option<tokio::task::JoinHandle<()>>,
     /// Immutable budget snapshot built once at entry; every derived tier
     /// (burst, crawl, domain) reads from it.
     budget: BudgetModel,
@@ -249,6 +257,8 @@ impl Engine {
             // private machinery builder — no engine ever runs session-less.
             session: None,
             signal_handle: None,
+            // Filled by `with_autoscale`; `shutdown` ends it.
+            autoscale_handle: None,
             // Default to the sysinfo-backed probe so the autoscale loop is
             // wired without any extra setup. Tests inject a fake via
             // `Engine::with_ram_probe` (no real sysinfo reads in unit tests).
@@ -526,35 +536,41 @@ impl Engine {
     /// Spawns a background task that polls the injected [`RamProbePort`]
     /// every 5 seconds and adjusts the shared concurrency level accordingly.
     /// The engine's spawn loop reads this level to compute effective concurrency.
+    ///
+    /// The loop never ends on its own, so its [`JoinHandle`] is kept on the
+    /// engine and aborted in [`Self::shutdown`] — same lifecycle as
+    /// `signal_handle` (#1941).
     pub fn with_autoscale(mut self) -> Self {
         let level = Arc::new(SharedConcurrencyLevel::new());
         let level_clone = Arc::clone(&level);
         let probe = Arc::clone(&self.ram_probe);
 
-        tokio::spawn(
-            async move {
-                let mut interval = tokio::time::interval(Duration::from_secs(5));
-                interval.tick().await; // skip first immediate tick
-                loop {
-                    interval.tick().await;
-                    let usage = probe.ram_usage_percent().as_percent();
-                    let new_level = if usage >= f32::from(crate::domain::budget::derivation::RamThresholds::DEFAULT_CRITICAL_PERCENT) {
+        self.autoscale_handle = Some(
+            tokio::spawn(
+                async move {
+                    let mut interval = tokio::time::interval(Duration::from_secs(5));
+                    interval.tick().await; // skip first immediate tick
+                    loop {
+                        interval.tick().await;
+                        let usage = probe.ram_usage_percent().as_percent();
+                        let new_level = if usage >= f32::from(crate::domain::budget::derivation::RamThresholds::DEFAULT_CRITICAL_PERCENT) {
                         ConcurrencyLevel::Critical
                     } else if usage >= f32::from(crate::domain::budget::derivation::RamThresholds::DEFAULT_WARNING_PERCENT) {
                         ConcurrencyLevel::Reduced
                     } else {
                         ConcurrencyLevel::Normal
                     };
-                    if level_clone.get() != new_level {
-                        info!(
-                            "Autoscale: RAM {usage:.2}% → concurrency level {:?}",
-                            new_level
-                        );
-                        level_clone.set(new_level);
+                        if level_clone.get() != new_level {
+                            info!(
+                                "Autoscale: RAM {usage:.2}% → concurrency level {:?}",
+                                new_level
+                            );
+                            level_clone.set(new_level);
+                        }
                     }
                 }
-            }
-            .in_current_span(),
+                .in_current_span(),
+            ),
         );
 
         self.scheduler.set_autoscale(level);
@@ -1232,6 +1248,12 @@ impl Engine {
 
         // Abort signal handler to prevent the runtime from hanging
         if let Some(handle) = self.signal_handle.take() {
+            handle.abort();
+        }
+
+        // Same for the RAM autoscale probe (#1941): an unowned 5s poll loop
+        // would outlive the crawl and keep the runtime busy.
+        if let Some(handle) = self.autoscale_handle.take() {
             handle.abort();
         }
 
@@ -2830,7 +2852,67 @@ mod tests {
             crate::application::crawler::concurrency_level::ConcurrencyLevel::Critical,
             "autoscale loop must reach Critical at 95% (>= 90% threshold)",
         );
+
+        // End the 5s poll loop this test started (#1941) instead of leaking it
+        // into the rest of the suite.
+        engine.shutdown().await;
     }
+
+    /// #1941: the RAM autoscale loop is an unbounded poll task (it loops on a
+    /// 5s tick forever). `with_autoscale` used to `tokio::spawn` it and drop
+    /// the `JoinHandle`, so nothing owned it — not the engine, not shutdown —
+    /// and the task outlived the crawl that created it, keeping the runtime
+    /// alive and polling a probe no one reads. The engine must hold the handle
+    /// and end it in `shutdown`, exactly like `signal_handle`.
+    #[tokio::test]
+    async fn autoscale_probe_handle_is_owned_and_aborted_by_shutdown() {
+        let seed = Url::parse("http://127.0.0.1:9/").expect("valid seed URL");
+        let config = CrawlerConfig::builder(seed).build();
+        let engine = session_engine(config)
+            .with_ram_probe(Arc::new(CountingProbe(Arc::new(
+                std::sync::atomic::AtomicUsize::new(0),
+            ))))
+            .with_autoscale();
+
+        let abort = engine
+            .autoscale_handle
+            .as_ref()
+            .map(tokio::task::JoinHandle::abort_handle)
+            .expect("with_autoscale must record the spawned probe handle");
+        assert!(
+            !abort.is_finished(),
+            "the probe task must be live before shutdown, else this proves nothing"
+        );
+
+        engine.shutdown().await;
+
+        // `abort()` marks the task; the runtime observes it on the next poll
+        // pass, so yield a bounded number of times before reading the verdict.
+        for _ in 0..32 {
+            if abort.is_finished() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            abort.is_finished(),
+            "shutdown must abort the autoscale probe task instead of leaking it"
+        );
+    }
+
+    /// Counter used by the test above; the value is never read — only the
+    /// fact that the task exists and stops is under test.
+    #[derive(Debug)]
+    struct CountingProbe(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl RamProbePort for CountingProbe {
+        fn ram_usage_percent(&self) -> crate::domain::ram_probe_port::RamUsagePercent {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            crate::domain::ram_probe_port::RamUsagePercent::new_clamped(10.0)
+        }
+    }
+
+    impl crate::domain::ram_probe_port::Sealed for CountingProbe {}
 
     /// Remaining-budget edges (issue #1599, strict-TDD RED): the dispatch
     /// cap must block spawns exactly when the budget is exhausted while
