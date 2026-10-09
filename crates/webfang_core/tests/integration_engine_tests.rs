@@ -193,3 +193,115 @@ async fn test_engine_resume_from_checkpoint() {
         checkpoint_file.display()
     );
 }
+
+/// Test 3 (#1843): a resumed run continues the persisted `pages_crawled`.
+///
+/// Pre-creates a checkpoint that already carries `pages_crawled: 1` (a prior
+/// run crawled the seed), with two pages still queued. The resumed run gets a
+/// budget of 1, so it crawls exactly one queued page and ends truncated — the
+/// close verdict is `Write`, not `Delete`, and the persisted counter must be
+/// `N + M = 2`, never the new process's own `M = 1` (the pre-fix regression:
+/// `restore_checkpoint_state` restored visited/queued/banned but reset the
+/// counter to 0).
+#[tokio::test]
+async fn issue_1843_resume_continues_persisted_pages_crawled() {
+    // Entry-guard allowance (F-06 + F-32, #1217): the engine fetches a
+    // wiremock loopback literal through the production router.
+    let _guard = webfang_test_utils::EnvGuard::with(&[(
+        webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+        "1",
+    )]);
+    let server = MockServer::start().await;
+
+    // Both queued pages are plain 200s; the seed is never fetched (visited).
+    for p in ["/p1.html", "/p2.html"] {
+        Mock::given(method("GET"))
+            .and(path(p))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string("<html><body>page</body></html>"),
+            )
+            .mount(&server)
+            .await;
+    }
+
+    let tmp = TempDir::new().unwrap();
+    let checkpoint_dir = tmp.path().join("checkpoints");
+    std::fs::create_dir_all(&checkpoint_dir).unwrap();
+
+    // A prior run crawled the seed (N = 1) and left two pages queued —
+    // exactly what a mid-crawl truncation leaves behind.
+    let seed_url = format!("{}/index.html", server.uri());
+    let mut visited = std::collections::HashSet::new();
+    visited.insert(seed_url.clone());
+    let state = CrawlCheckpoint {
+        visited,
+        queued: vec![
+            format!("{}/p1.html", server.uri()),
+            format!("{}/p2.html", server.uri()),
+        ],
+        pages_crawled: 1,
+        banned_domains: Vec::new(),
+        version: CURRENT_CHECKPOINT_VERSION,
+    };
+
+    let store = BincodeCheckpoint::new();
+    // F-01 (a): the engine scopes checkpoints per seed, so the pre-created
+    // state must live at the scoped path to be picked up for resume.
+    let checkpoint_file = CheckpointPath::new(&checkpoint_dir).file_for_seed(&seed_url);
+    store.save(&state, &checkpoint_file).unwrap();
+
+    // Budget of 1 against 2 queued pages: the resume truncates deterministically
+    // (one page crawled, one still queued), so the close verdict is `Write` and
+    // the file survives for inspection.
+    let seed = Url::parse(&seed_url).expect("valid mock URL");
+    let config = CrawlerConfig::builder(seed)
+        .max_depth(0)
+        .max_pages(1)
+        .delay_ms(1)
+        .concurrency(std::num::NonZeroUsize::new(1).expect("1 is non-zero"))
+        .timeout_secs(5)
+        .ignore_robots(true)
+        .build();
+    let options = EngineOptions {
+        checkpoint_path: Some(checkpoint_dir),
+        session_pool_enabled: false,
+        ignore_robots: true,
+        js_strategy: JsStrategy::Static,
+        autoscale_enabled: false,
+        downloader_factory: Some(Arc::new(DefaultDownloaderFactory)),
+        ..Default::default()
+    };
+
+    let result = crawl_site_with_options(config, options, &CorrelationId::new()).await;
+    assert!(
+        result.is_ok(),
+        "resume crawl should succeed: {:?}",
+        result.err()
+    );
+    let crawl_result = result.unwrap();
+    assert_eq!(
+        crawl_result.total_pages, 1,
+        "the resumed run must crawl exactly its own budget (M = 1)"
+    );
+
+    assert!(
+        checkpoint_file.exists(),
+        "a truncated resume must keep its checkpoint (Write verdict) at {}",
+        checkpoint_file.display()
+    );
+    let persisted = store
+        .load(&checkpoint_file)
+        .expect("checkpoint must reload");
+    assert_eq!(
+        persisted.pages_crawled, 2,
+        "counter must continue the persisted total (N + M = 2), not the resumed process's own count"
+    );
+    assert!(
+        persisted
+            .visited
+            .iter()
+            .any(|u| u.ends_with("/p1.html") || u.ends_with("/p2.html")),
+        "the crawled queued page must be recorded as visited: {:?}",
+        persisted.visited
+    );
+}
