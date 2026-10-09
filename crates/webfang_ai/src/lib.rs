@@ -7,9 +7,10 @@
 //!
 //! The ONNX inference stack is gated behind the `ai` feature. Without it the
 //! crate still provides the text half of the pipeline (chunker, sentence
-//! splitter, relevance scorer, content pruner, threshold config) plus the core
-//! domain re-exports — that half carries no ONNX dependency and exists so the
-//! `EmbeddingPort` seam is usable with no local model.
+//! splitter, relevance scorer, content pruner, threshold config), the core
+//! domain re-exports, AND the semantic cleaner itself — that half carries no
+//! ONNX dependency and exists so the `EmbeddingPort` seam is usable with no
+//! local model, against a remote endpoint or a fake alike.
 
 #![deny(missing_docs)]
 
@@ -27,8 +28,9 @@ pub use infrastructure_ai::{
 };
 
 // Re-export key AI types for convenience
+pub use infrastructure_ai::{AiModel, ModelConfig, SemanticCleanerImpl};
+
 #[cfg(feature = "ai")]
 pub use infrastructure_ai::{
-    AiModel, EmbeddingAdapter, GraniteDomInspector, InferencePool, MiniLmTokenizer, ModelConfig,
-    SemanticCleanerImpl, TokenBatch,
+    EmbeddingAdapter, GraniteDomInspector, InferencePool, MiniLmTokenizer, TokenBatch,
 };

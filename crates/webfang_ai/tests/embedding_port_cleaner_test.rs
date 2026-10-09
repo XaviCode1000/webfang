@@ -11,10 +11,13 @@
 //! the real `HtmlChunker` (the same one `clean()` uses) instead of being
 //! hard-coded, so the assertions survive chunker tuning.
 //!
-//! Requires the `ai` feature — this crate's module tree is still `ai`-gated
-//! and ungating the cleaner is slice C.
-
-#![cfg(feature = "ai")]
+//! This file is the EVIDENCE that the seam is real (ADR-0004, slice C): it
+//! carries no `#[cfg(feature = "ai")]` gate, because it needs none. The
+//! cleaner holds an erased `EmbeddingPort` and no engine, so a
+//! `cargo test -p webfang_ai` with no features runs the whole file. Before
+//! slice C it was gated, and a build without `ai` ran ZERO of these tests —
+//! which is precisely the gap: the port seam could only be proven by a build
+//! that already carried ONNX.
 
 use std::collections::HashMap;
 use std::future::Future;
