@@ -13,6 +13,15 @@ use url::Url;
 
 use crate::domain::auth_source::AuthSource;
 
+/// Versioned model profiles live in the sibling [`crate::domain::model_profile`]
+/// module; they are re-exported here because both are read from the same user
+/// config file — `[[providers]]` and `[[model_profiles]]` sit next to each
+/// other, and the resolver for one has to see the overrides of the other.
+pub use crate::domain::model_profile::{
+    ModelProfileOverride, ModelProfileRegistry, ModelProfilesConfig, ProfileError,
+    ProfileProvenance,
+};
+
 /// Kind of provider backend behind a [`ProviderConfig`].
 ///
 /// The binary layer `match`es on this to select the concrete adapter; adding
@@ -165,6 +174,9 @@ where
 
 /// Top-level provider configuration — the `[[providers]]` array of the config
 /// file.
+///
+/// Its sibling in the same file is `[[model_profiles]]`
+/// ([`ModelProfilesConfig`]); the two are resolved by separate registries.
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ProvidersConfig {

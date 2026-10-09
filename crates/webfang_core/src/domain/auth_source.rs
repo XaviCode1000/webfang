@@ -7,6 +7,9 @@
 //! - Sin fallback implícito entre fuentes: la fuente configurada es la única
 //!   que se intenta; si falla, falla explícitamente con su error.
 //! - `Env` es legacy (CI/desarrollo), nunca el default.
+//! - `None` (B1) es una fuente declarada, no una ausencia: el endpoint es
+//!   anónimo **por diseño**, y esa es la diferencia con "credencial que no se
+//!   pudo resolver". Ver [`AuthSource::resolve`].
 
 use std::path::PathBuf;
 
@@ -71,17 +74,77 @@ pub enum AuthSource {
         /// Nombre de la variable de entorno que contiene la API key.
         var: String,
     },
+    /// Sin credencial: el endpoint es anónimo por diseño (B1).
+    ///
+    /// Existe para que un endpoint local sin key (Ollama, LM Studio, un
+    /// servidor de embeddings propio) sea **expresable**. Antes de esta
+    /// variante, `resolve()` no tenía retorno "sin credencial": todo provider
+    /// necesitaba una fuente de key, y la condición 1 del ADR era
+    /// inalcanzable por construcción.
+    ///
+    /// No es un alias de "sin `auth`": el campo sigue siendo obligatorio en el
+    /// fichero de configuración. `{"source": "none"}` es una afirmación
+    /// explícita, y su ausencia sigue siendo un error de parseo.
+    ///
+    /// ## Invariantes (son el producto, no detalles de implementación)
+    ///
+    /// 1. `resolve()` devuelve [`None`] **sin** intentar ninguna otra fuente
+    ///    y **sin** tocar el entorno: una key válida presente en el entorno
+    ///    no debe poder filtrarse a un endpoint que el usuario declaró
+    ///    anónimo.
+    /// 2. Nunca sintetiza cabecera `Authorization`: la ausencia de
+    ///    credencial se expresa como ausencia de cabecera, nunca como una
+    ///    vacía (`Bearer `) que un servidor pueda interpretar como key
+    ///    inválida en lugar de como petición anónima.
+    /// 3. Una credencial **configurada pero no resoluble** sigue siendo error
+    ///    duro ([`AuthError`]); no hay ninguna ruta desde un fallo de
+    ///    resolución hacia esta variante.
+    None,
 }
 
 impl AuthSource {
     /// Resuelve la credencial desde su fuente. Sin fallback: la fuente
     /// configurada es la única que se intenta (doc §3).
-    pub fn resolve(&self) -> Result<ApiKey, AuthError> {
+    ///
+    /// `Ok(None)` significa **"este endpoint es anónimo"**, y sólo la variante
+    /// [`AuthSource::None`] lo produce. `Err` significa siempre "había una
+    /// credencial y no se pudo obtener" — nunca se confonden los dos casos,
+    /// que son precisamente los que un 401 necesita distinguir después.
+    ///
+    /// # Errors
+    ///
+    /// Cualquier [`AuthError`] si la fuente configurada no puede entregar una
+    /// credencial utilizable.
+    pub fn resolve(&self) -> Result<Option<ApiKey>, AuthError> {
         match self {
-            Self::Keyring { service, account } => resolve_keyring(service, account),
-            Self::EncryptedFile { path } => resolve_encrypted_file(path),
-            Self::Env { var } => resolve_env(var),
+            Self::None => Ok(None),
+            Self::Keyring { service, account } => resolve_keyring(service, account).map(Some),
+            Self::EncryptedFile { path } => resolve_encrypted_file(path).map(Some),
+            Self::Env { var } => resolve_env(var).map(Some),
         }
+    }
+
+    /// Etiqueta corta y estable de la fuente configurada, para logs
+    /// estructurados y diagnóstico.
+    ///
+    /// Es la **fuente declarada**, no el resultado: sirve precisamente para
+    /// que un log diga `auth_source="none"` (no se mandó nada) frente a
+    /// `auth_source="env"` (se mandó algo y el servidor lo rechazó). Nunca
+    /// contiene ni deriva del secreto.
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Keyring { .. } => "keyring",
+            Self::EncryptedFile { .. } => "encrypted_file",
+            Self::Env { .. } => "env",
+        }
+    }
+
+    /// Si esta fuente declara explícitamente un endpoint anónimo.
+    #[must_use]
+    pub fn is_anonymous(&self) -> bool {
+        matches!(self, Self::None)
     }
 }
 
@@ -263,7 +326,10 @@ mod tests {
         let source = AuthSource::Env {
             var: var.to_string(),
         };
-        let key = source.resolve().expect("debe resolver");
+        let key = source
+            .resolve()
+            .expect("debe resolver")
+            .expect("Env debe devolver credencial, no None");
         assert_eq!(key.expose_secret(), "sk-test-123");
         env_remove(var);
     }
@@ -337,6 +403,58 @@ mod tests {
         let inline: Result<AuthSource, _> =
             serde_json::from_str(r#"{"source": "inline", "value": "sk-x"}"#);
         assert!(inline.is_err());
+        // `none` sí es una variante real (B1), y se expresa con la misma
+        // forma tagged que las demás.
+        let anon: AuthSource = serde_json::from_str(r#"{"source": "none"}"#).unwrap();
+        assert!(matches!(anon, AuthSource::None));
+    }
+
+    /// Invariante 1 (nivel dominio): `None` resuelve a `None` sin mirar
+    /// **ninguna** otra fuente, aunque el entorno tenga una key válida.
+    #[test]
+    fn none_resolves_to_no_credential_without_touching_the_environment() {
+        let var = "WEBFANG_TEST_AUTHSOURCE_NONE_TRAP";
+        env_set(var, "sk-must-not-be-used");
+        let resolved = AuthSource::None
+            .resolve()
+            .expect("None nunca es un error: es una ausencia declarada");
+        assert!(
+            resolved.is_none(),
+            "None debe devolver Ok(None), no una credencial ni un error"
+        );
+        assert!(AuthSource::None.is_anonymous());
+        assert_eq!(AuthSource::None.label(), "none");
+        env_remove(var);
+    }
+
+    /// Las cuatro fuentes exponen una etiqueta estable y distinta: el log de
+    /// un 401 se apoya en ella para no leer "credencial inválida" cuando lo
+    /// que había era una petición anónima.
+    #[test]
+    fn every_source_has_a_distinct_stable_label() {
+        assert_eq!(AuthSource::None.label(), "none");
+        assert_eq!(
+            AuthSource::Env {
+                var: "X".to_string()
+            }
+            .label(),
+            "env"
+        );
+        assert_eq!(
+            AuthSource::Keyring {
+                service: "s".to_string(),
+                account: "a".to_string()
+            }
+            .label(),
+            "keyring"
+        );
+        assert_eq!(
+            AuthSource::EncryptedFile {
+                path: "/tmp/k.age".into()
+            }
+            .label(),
+            "encrypted_file"
+        );
     }
 
     #[test]
@@ -381,7 +499,10 @@ mod tests {
         }
         env.remove(AGE_IDENTITY_ENV);
         let source = AuthSource::EncryptedFile { path };
-        let key = source.resolve().expect("roundtrip debe resolver");
+        let key = source
+            .resolve()
+            .expect("roundtrip debe resolver")
+            .expect("EncryptedFile debe devolver credencial, no None");
         assert_eq!(key.expose_secret(), plaintext);
     }
 

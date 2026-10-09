@@ -32,12 +32,20 @@
 //! This module is split by ONNX dependency, not by convenience:
 //!
 //! - **Text half** (no ONNX): `chunk_id`, `sentence`, `chunker`, `markdown_chunker`,
-//!   `embedding_ops`, `relevance_scorer`, `threshold_config`, `content_pruner`. These
-//!   compile without the `ai` feature, so the `EmbeddingPort` seam can be exercised
-//!   with no local model.
+//!   `embedding_ops`, `relevance_scorer`, `threshold_config`, `content_pruner`, plus
+//!   `cache_config` (pure model metadata: repo ids, file names, hashes, the `AiModel`
+//!   enum — no `ort`/`tokenizers` edge). These compile without the `ai` feature, so
+//!   the `EmbeddingPort` seam can be exercised with no local model.
+//! - **The cleaner itself** (ADR-0004, slice C): `semantic_cleaner_impl` is now
+//!   UNGATED too. It holds an erased
+//!   [`EmbeddingPort`](webfang_core::domain::embedding_port::EmbeddingPort) and
+//!   nothing engine-shaped, so
+//!   a semantic cleaner over a REMOTE endpoint needs no ONNX build. Only its `new()`
+//!   constructor — the local-ONNX convenience path that resolves a model off the hub
+//!   — stays behind the feature.
 //! - **ONNX half** (feature-gated behind `ai`): `inference_engine`, `tokenizer`,
-//!   `semantic_cleaner_impl`, `embedding_adapter`, `granite_dom_inspector`, the model
-//!   cache/env plumbing and the test fixture.
+//!   `embedding_adapter` (which now owns model resolution), `granite_dom_inspector`,
+//!   the env compat layer and the test fixture.
 //!
 //! ```toml
 //! [dependencies]
@@ -81,14 +89,39 @@
 //! ```
 
 // ONNX half (Modules 1-2) — gated on `ai`.
-#[cfg(feature = "ai")]
+
+/// Model selection metadata (Granite-97M / Granite-311M repositories and
+/// hashes).
+///
+/// UNGATED despite living in the ONNX half: it is a pure data module — repo
+/// ids, file names, expected SHA256s, and the `AiModel` enum — with no `ort`
+/// or `tokenizers` import at all. `ModelConfig` is ungated and holds an
+/// `AiModel`, so the enum has to exist in every build. Ungating the
+/// declaration adds nothing to the dependency graph; the gate it used to
+/// carry was inherited from its module's old neighborhood, not earned by an
+/// edge.
 pub mod cache_config;
 
 /// Backward-compat layer for environment variable naming (WEBFANG_AI_MODEL_ID / AI_MODEL_ID).
-#[cfg(feature = "ai")]
+///
+/// UNGATED, same reasoning as [`cache_config`]: it is pure std env-var
+/// plumbing with no imports at all, and [`AiModel::from_env`]
+/// (cache_config::AiModel::from_env) calls into it — so it has to exist
+/// wherever `AiModel` does. Gating it forced the whole `cache_config` module
+/// behind `ai`, which in turn forced the ungated cleaner's `ModelConfig`
+/// behind it. Ungating the declaration adds no edge to the graph.
 pub mod compat;
 
-#[cfg(feature = "ai")]
+/// The semantic cleaner: prune → chunk → guard → embed through
+/// [`EmbeddingPort`](webfang_core::domain::embedding_port::EmbeddingPort) →
+/// Z-score relevance filter.
+///
+/// UNGATED (ADR-0004, slice C): it owns an erased embedding PORT and no
+/// tokenizer, no engine, no model resolution. Everything ONNX-shaped it used
+/// to do — `SemanticCleanerImpl::new`
+/// and the hf_hub resolver behind it — moved to the `ai`-gated half, so this
+/// module compiles with no `ai` feature and against ANY backend, remote
+/// included.
 pub mod semantic_cleaner_impl;
 
 /// Adapter bridging `InferencePool` to the domain `EmbeddingPort` (#433).
@@ -141,10 +174,9 @@ pub mod granite_dom_inspector;
 mod ai_test_fixture;
 
 // Re-exports for convenience (Modules 1-2)
-#[cfg(feature = "ai")]
+
 pub use cache_config::{AiModel, DEFAULT_MODEL_FILE, DEFAULT_MODEL_REPO, DEFAULT_MODEL_SHA256};
 
-#[cfg(feature = "ai")]
 pub use semantic_cleaner_impl::{ModelConfig, SemanticCleanerImpl};
 
 #[cfg(feature = "ai")]
