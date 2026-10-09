@@ -39,6 +39,10 @@ use webfang_test_utils::EnvGuard;
 const ONE_VECTOR_8D: &str = r#"{"data": [{"index": 0,
     "embedding": [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]}]}"#;
 
+/// Ruta del endpoint de embeddings. Nombrada para que el mock y las aserciones
+/// no puedan desincronizarse por una cadena repetida en dos sitios.
+const EMBEDDINGS_PATH: &str = "/embeddings";
+
 /// Un `ProviderConfig` de embeddings apuntando al wiremock, con la fuente de
 /// auth que cada fila necesita.
 fn config_for(server: &wiremock::MockServer, auth: AuthSource) -> ProviderConfig {
@@ -61,11 +65,10 @@ async fn mount_embeddings(
     status: u16,
     body: &str,
 ) -> wiremock::MockGuard {
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, ResponseTemplate};
-    Mock::given(method("POST"))
-        .and(path("/embeddings"))
-        .respond_with(ResponseTemplate::new(status).set_body_string(body))
+    let response = wiremock::ResponseTemplate::new(status).set_body_string(body);
+    wiremock::Mock::given(wiremock::matchers::method("POST"))
+        .and(wiremock::matchers::path(EMBEDDINGS_PATH))
+        .respond_with(response)
         .mount_as_scoped(server)
         .await
 }
