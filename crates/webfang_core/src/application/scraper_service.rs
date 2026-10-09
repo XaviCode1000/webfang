@@ -913,6 +913,7 @@ fn collect_batch_outcome(
 mod tests {
     use super::*;
     use crate::domain::http_port::HttpResponse;
+    use crate::infrastructure::observability::test_log_capture::LogBuffer;
     use std::collections::HashMap;
     use std::pin::Pin;
     use tracing_subscriber::layer::SubscriberExt;
@@ -1101,42 +1102,12 @@ mod tests {
         );
     }
 
-    /// Capture-subscriber harness (same pattern as
-    /// `observability::error_logging` tests): a fmt subscriber writing into a
-    /// shared buffer, ANSI off, so emitted events can be asserted verbatim.
-    #[derive(Clone)]
-    struct SharedWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedWriter {
-        type Writer = Guard;
-        fn make_writer(&'a self) -> Self::Writer {
-            Guard(self.0.clone())
-        }
-    }
-
-    struct Guard(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl std::io::Write for Guard {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
     /// #1604: a failed batch URL emits the shared operational error contract
     /// through `log_scrape_error` — `error`, `url`, `stage`, and the batch
     /// run-root `trace_id` — not a bare interpolated warn.
     #[test]
     fn batch_failure_emits_log_scrape_error_contract() {
-        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(SharedWriter(buf.clone()))
-            .with_ansi(false)
-            .finish();
-        let _guard = tracing::subscriber::set_default(subscriber);
+        let (buf, _guard) = LogBuffer::capture();
 
         let root = CorrelationId::new();
         let url: url::Url = "https://example.com/batch-fail".parse().unwrap();
@@ -1149,7 +1120,7 @@ mod tests {
 
         assert_eq!(outcome.failed.len(), 1, "failure must be recorded");
         assert_eq!(outcome.failed[0].url, url.to_string());
-        let out = String::from_utf8_lossy(&buf.lock().unwrap()).to_string();
+        let out = buf.text();
         assert!(out.contains("ERROR"), "must be ERROR level: {out}");
         assert!(
             out.contains("batch URL scrape failed"),

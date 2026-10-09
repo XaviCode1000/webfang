@@ -1173,6 +1173,7 @@ mod test_support {
 #[cfg(all(test, not(miri)))]
 mod waf_inspection_tests {
     use super::*;
+    use crate::infrastructure::observability::test_log_capture::LogBuffer;
     use wiremock::{MockServer, ResponseTemplate};
     // One-layer entry disarmer for loopback mocks (#1382/#1369), canonical in
     // `webfang_test_utils::EnvGuard::entry_guard_off` since #1396: wiremock binds
@@ -1187,46 +1188,13 @@ mod waf_inspection_tests {
     /// in degraded mode per REQ-WAF-05/09.
     const CHALLENGE_HTML: &str = r#"<html><body>Just a moment...</body><div id="cf-turnstile" data-sitekey="abc"></div></html>"#;
 
-    /// Shared writer capturing tracing fmt output for assertions.
-    #[derive(Clone)]
-    struct SharedWriter(Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedWriter {
-        type Writer = SharedWriterGuard;
-
-        fn make_writer(&'a self) -> Self::Writer {
-            SharedWriterGuard(self.0.clone())
-        }
-    }
-
-    struct SharedWriterGuard(Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl std::io::Write for SharedWriterGuard {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0
-                .lock()
-                .expect("trace buffer lock")
-                .extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
     /// A WAF challenge page served where sitemap XML should be must surface the
     /// typed `SitemapError::WafChallenge` with host context and evidence chain,
     /// plus a structured trace event — not a generic XML parse failure (#879).
     #[test]
     fn parse_from_url_waf_challenge_body_returns_typed_error_and_trace_event() {
         let _entry_off = EnvGuard::entry_guard_off();
-        let buf = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(SharedWriter(buf.clone()))
-            .with_ansi(false)
-            .finish();
-
-        tracing::subscriber::with_default(subscriber, || {
+        let buf = LogBuffer::run(|| {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -1256,8 +1224,7 @@ mod waf_inspection_tests {
             });
         });
 
-        let captured = buf.lock().expect("trace buffer lock").clone();
-        let out = String::from_utf8_lossy(&captured);
+        let out = buf.text();
         assert!(
             out.contains("challenge"),
             "WAF trace event expected on the parser path, got: {out}"
