@@ -485,6 +485,7 @@ mod tests {
     use url::Url;
 
     use super::*;
+    use crate::infrastructure::observability::test_log_capture::LogBuffer;
 
     /// #1610 (OBS-P2-4): the `crawl_page` outcome must survive the trip into
     /// the JSONL — including `error_class`, recorded through
@@ -741,40 +742,6 @@ mod tests {
             let message = self.message.clone();
             Box::pin(async move { Err(OutputError::Backend(message)) })
         }
-    }
-
-    /// In-memory writer capturing tracing events, mirroring the pattern
-    /// used in `infrastructure/observability/error_logging.rs` tests.
-    #[derive(Clone)]
-    struct LogBuffer(Arc<Mutex<Vec<u8>>>);
-
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for LogBuffer {
-        type Writer = LogGuard;
-        fn make_writer(&'a self) -> Self::Writer {
-            LogGuard(self.0.clone())
-        }
-    }
-
-    struct LogGuard(Arc<Mutex<Vec<u8>>>);
-
-    impl std::io::Write for LogGuard {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0
-                .lock()
-                .expect("log buffer lock")
-                .extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    fn capture_subscriber(buf: LogBuffer) -> impl tracing::Subscriber {
-        tracing_subscriber::fmt()
-            .with_writer(buf)
-            .with_ansi(false)
-            .finish()
     }
 
     // ── Test helpers ──
@@ -1175,8 +1142,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_pipeline_failed_logs_class_as_structured_field() {
-        let buf = LogBuffer(Arc::new(Mutex::new(Vec::new())));
-        let _guard = tracing::subscriber::set_default(capture_subscriber(buf.clone()));
+        let (buf, _guard) = LogBuffer::capture();
         let (collector, sent) = mock_collector();
         let ctx = TestCtxBuilder::new(collector)
             .pipeline(Arc::new(MockPipeline {
@@ -1190,7 +1156,7 @@ mod tests {
         assert!(result.is_ok());
         assert!(sent.lock().expect("lock not poisoned").is_empty());
 
-        let out = String::from_utf8_lossy(&buf.0.lock().expect("lock not poisoned")).to_string();
+        let out = buf.text();
         assert!(
             out.contains("class=TransientBackoff"),
             "ErrorClass must travel as a structured field, got: {out}"
@@ -1204,8 +1170,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_output_stage_failure_logged_with_class_and_does_not_crash() {
-        let buf = LogBuffer(Arc::new(Mutex::new(Vec::new())));
-        let _guard = tracing::subscriber::set_default(capture_subscriber(buf.clone()));
+        let (buf, _guard) = LogBuffer::capture();
         let (collector, _) = mock_collector();
         let stage: Arc<Box<dyn OutputStage>> = Arc::new(Box::new(FailingOutputStage {
             message: "disk full".to_string(),
@@ -1224,7 +1189,7 @@ mod tests {
             "output-stage failure must not abort the task"
         );
 
-        let out = String::from_utf8_lossy(&buf.0.lock().expect("lock not poisoned")).to_string();
+        let out = buf.text();
         assert!(
             out.contains("class=TransientRetriable"),
             "output-stage failure must carry its ErrorClass as a structured field, got: {out}"

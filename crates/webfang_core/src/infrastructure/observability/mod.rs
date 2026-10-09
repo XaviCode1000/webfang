@@ -22,6 +22,8 @@ pub mod error_logging;
 pub mod file_trace_layer;
 pub mod logging;
 pub mod memory_probe;
+#[cfg(test)]
+pub mod test_log_capture;
 
 /// Initialize tokio-console for runtime debugging
 ///

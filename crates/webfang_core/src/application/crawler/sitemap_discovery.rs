@@ -821,6 +821,7 @@ async fn probe_subpath_sitemaps(base: &Url, client: &wreq::Client) -> Option<Str
 mod tests {
     use super::*;
     use crate::domain::error::WafDetectionKind;
+    use crate::infrastructure::observability::test_log_capture::LogBuffer;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -937,34 +938,6 @@ mod tests {
     /// in degraded mode per REQ-WAF-05/09.
     const CHALLENGE_HTML: &str = r#"<html><body>Just a moment...</body><div id="cf-turnstile" data-sitekey="abc"></div></html>"#;
 
-    /// Shared writer capturing tracing fmt output for assertions (same
-    /// pattern as `pipeline::executor` span-capture tests).
-    #[derive(Clone)]
-    struct SharedWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedWriter {
-        type Writer = SharedWriterGuard;
-
-        fn make_writer(&'a self) -> Self::Writer {
-            SharedWriterGuard(self.0.clone())
-        }
-    }
-
-    struct SharedWriterGuard(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl std::io::Write for SharedWriterGuard {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0
-                .lock()
-                .expect("trace buffer lock")
-                .extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
     /// A WAF challenge served where robots.txt should be must abort discovery
     /// with the typed `CrawlError::WafChallenge` (carrying host context and
     /// evidence chain) and emit a structured trace event — not silently fall
@@ -976,13 +949,7 @@ mod tests {
     #[test]
     fn robots_txt_waf_challenge_yields_typed_error_and_trace_event() {
         ensure_waf_inspector();
-        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(SharedWriter(buf.clone()))
-            .with_ansi(false)
-            .finish();
-
-        tracing::subscriber::with_default(subscriber, || {
+        let buf = LogBuffer::run(|| {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -1015,8 +982,7 @@ mod tests {
             });
         });
 
-        let captured = buf.lock().expect("trace buffer lock").clone();
-        let out = String::from_utf8_lossy(&captured);
+        let out = buf.text();
         assert!(
             out.contains("challenge"),
             "WAF trace event expected on the discovery path, got: {out}"
