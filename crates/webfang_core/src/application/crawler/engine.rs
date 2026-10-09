@@ -876,12 +876,14 @@ impl Engine {
         ))
     }
 
-    /// Load checkpoint state if resuming (visited, queued, banned domains).
+    /// Load checkpoint state if resuming (visited, queued, banned domains and
+    /// the durable page counter — #1843).
     fn restore_checkpoint_state(&mut self) {
         if let Some(cp) = &self.checkpoint_state {
             Self::restore_visited(&mut self.scheduler, &cp.visited);
             Self::restore_queued(&mut self.scheduler, &cp.queued);
             Self::restore_banned(&self.banned_domains, &cp.banned_domains);
+            Self::restore_pages_crawled(&self.pages_crawled, cp.pages_crawled);
         }
     }
 
@@ -914,6 +916,22 @@ impl Engine {
                 "Restored {} banned domains from checkpoint",
                 cp_banned.len()
             );
+        }
+    }
+
+    /// Restore the persisted page counter from a checkpoint (#1843).
+    ///
+    /// `build_checkpoint_state` snapshots this atomic, so a resumed run that
+    /// never restored it rewrote every later checkpoint with only its own
+    /// count — regressing the durable total from N to M. The store runs even
+    /// for a fresh-start checkpoint (`pages_crawled == 0`): it is a no-op
+    /// against the zeroed constructor atomic, and it happens before any
+    /// worker spawns, so `Relaxed` suffices. The log stays quiet for the 0
+    /// case, matching the sibling restore helpers.
+    fn restore_pages_crawled(counter: &AtomicU64, persisted: u64) {
+        counter.store(persisted, std::sync::atomic::Ordering::Relaxed);
+        if persisted > 0 {
+            info!(pages = persisted, "Restored pages_crawled from checkpoint");
         }
     }
 
