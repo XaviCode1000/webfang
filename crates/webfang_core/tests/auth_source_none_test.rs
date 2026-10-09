@@ -278,7 +278,7 @@ async fn unauthorized_without_credential_is_not_reported_as_an_invalid_credentia
         "sigue siendo Inference (mismo tipo que hoy), cambió el mensaje: {msg}"
     );
     assert!(
-        msg.contains('1') && msg.contains("401"),
+        msg.contains("401"),
         "el mensaje debe nombrar el estado observado: {msg}"
     );
     assert!(
@@ -312,7 +312,7 @@ async fn unauthorized_with_credential_is_reported_as_a_rejected_credential() {
         .expect_err("401 debe fallar");
     let msg = err.to_string();
 
-    assert!(msg.contains('4') && msg.contains("401"), "{msg}");
+    assert!(msg.contains("401"), "{msg}");
     assert!(
         msg.contains("credencial") || msg.contains("env"),
         "el mensaje debe señalar que había credencial y su fuente: {msg}"
@@ -463,6 +463,14 @@ fn completion_provider_with_auth_none_yields_the_anonymous_variant_not_auth_fail
     assert!(
         msg.contains("auth: none"),
         "el mensaje nombra la causa: {msg}"
+    );
+    // El texto completo es de cara al usuario, y AGENTS.md exige español.
+    // Asertar sólo `auth: none` dejaría pasar un mensaje que perdiera la
+    // mitad que explica POR QUÉ el camino anónimo no está soportado — que
+    // es la parte accionable para quien configure el provider.
+    assert!(
+        msg.contains("todavía no soportado por el camino de chat/completions"),
+        "el mensaje debe explicar que el chat/completions anónimo no está soportado todavía: {msg}"
     );
 }
 
