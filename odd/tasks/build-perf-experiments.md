@@ -29,18 +29,30 @@ Out: `panic = "abort"` (#1219 correctness), `wreq` vs reqwest, release `lto`/`co
 - [ ] T10 — global build lock (flock) for build/test commands.
 
 ## Measured results
-| # | Change | Cold wall | Peak RSS | Verdict |
+Cold `cargo build --workspace`, virgin target dir each time, same revision. Load is recorded because this machine is shared with other agent worktrees and contention dominates.
+
+| # | Change | Cold wall | Load | Verdict |
 |---|---|---|---|---|
-| - | Baseline (worktree dir) | 194.3 s | 2.36 GiB | - |
-| T2 | ccache max_size 50G (treeB) | 193.2 s | 2.38 GiB | no effect on cold wall |
-| T3 | CFLAGS=-O0 (treeC) | 190.0 s | - | -4.4 s only |
-| - | ccache behaviour, same dir | 36.7 s | - | 604/605 direct hits |
+| - | Baseline, `[profile.dev.package."*"] opt-level = 3` | 194.3 s | ~1 | - |
+| - | Same baseline, repeated | 251.1 s | 16.6 | +29% from contention alone |
+| T2 | ccache `max_size` 10G -> 50G | 193.2 s | ~4 | no effect on cold wall |
+| T3 | `CFLAGS=-O0` / `CXXFLAGS=-O0` | 190.0 s | ~8 | -2%, not the critical path |
+| T4 | toolchain 1.88.0 -> 1.99.0 | 218.0 s | 20.5 | inconclusive, rerun needed at low load |
+| T5 | `[profile.dev.package."*"] opt-level = 0`, paired with baseline | **99.2 s** | 16.3 | **ACCEPTED** (251.1 -> 99.2, -60%) |
+
+Unit CPU total: 2152 s at opt-level 3 -> 712 s at opt-level 0 (-67%). Peak RSS ~2.4 GiB in both.
+Commit `04dc5ce7` lands T5.
 
 ### Findings so far
-1. The two C build scripts (libgit2-sys 113.1 s, btls-sys 70.8 s) are NOT the critical path: they run concurrently with 1958 s of rustc work. With CFALGS=-O0 libgit2-sys dropped to 68.8 s but total wall moved only 4.4 s.
-2. ccache works per target dir: 604/605 direct hits when rebuilding the same dir, but zero useful hits in a virgin dir, because the compile command embeds the target-dir path in `-I .../debug/build/libgit2-sys-<hash>/out/include`. Every new worktree therefore recompiles all C from scratch.
-3. ccache contributes 675 cacheable C calls per full build (96 hits on a virgin dir).
-4. Cold build parallelism: 2152 s CPU / 194 s wall = 11x on 16 cores.
+1. T5 is the dominant lever by a wide margin. Everything else measured is within contention noise or smaller.
+2. Contention is a first-order cost: the identical build went 194.3 s -> 251.1 s (+29%) purely because another agent was building on the same machine. That is the case for T10 (build lock).
+3. The C build scripts are NOT the critical path, so fixing C build time does not help. At opt-level 3 they are libgit2-sys 113.1 s + btls-sys 70.8 s; at `-O0` libgit2-sys drops to 68.8 s, yet total wall moves only 4.4 s. They run concurrently with 1958 s of rustc work on 16 cores.
+4. ccache is effective per target dir (604 of 605 direct hits) and useless across dirs. Root cause proven from `CCACHE_LOGFILE`: the compile command embeds the absolute target dir in an include flag, e.g. `cc -O3 ... -I <target-dir>/debug/build/libgit2-sys-<hash>/out/include ...`, so the cache key changes with the tree. Every new worktree recompiles all 675 C files.
+5. After T5 the new critical path is `chromiumoxide_cdp` (47.4 s) plus the two C build scripts (btls-sys 41.1 s, libgit2-sys 28.6 s) and 4 binary links (~40 s of unit time). The link share is what T6 (mold) has to attack, and it only becomes dominant for `--all-targets`, which links 89 test binaries of ~270 MB each.
+6. A profile change invalidates every unit hash, so a worktree that lands T5 pays one full rebuild.
+
+## Verification
+`cargo check --workspace` green with the new profile (69.9 s at load 6.2). The full pre-push gate (`scripts/ci_fast_gate.sh`) has not been run yet.
 
 ## Acceptance
 Per issue #1952.
