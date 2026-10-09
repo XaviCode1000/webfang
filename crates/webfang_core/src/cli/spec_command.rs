@@ -165,6 +165,12 @@ fn build_arg(spec: &'static OptionSpec, headings: Headings) -> clap::Arg {
     // `preflight::check_adaptive_selectors_feature` /
     // `preflight::check_clean_ai_feature` (exit 78, before any network I/O),
     // and it can only see the request because this arg still parses it.
+    //
+    // ADR-0004 slice C removed `clean_ai` from the gated set, so
+    // `adaptive_selectors` is now the only entry that reaches here. The
+    // `clean_ai` arm below is gone with its gate, and its panic branch is
+    // what keeps a future re-gating honest: an entry gated without a
+    // placeholder fails loudly instead of shipping an invisible flag.
     if !spec.active() {
         arg = arg.help(hidden_placeholder_help(spec)).hide(true);
     }
@@ -176,7 +182,6 @@ fn build_arg(spec: &'static OptionSpec, headings: Headings) -> clap::Arg {
 /// option whose gate is off (legacy cfg-duplication surface).
 fn hidden_placeholder_help(spec: &OptionSpec) -> &'static str {
     match spec.id {
-        "clean_ai" => "Feature flag placeholder when AI is not enabled",
         "adaptive_selectors" => "Feature flag placeholder when adaptive-selectors is not enabled",
         other => panic!("feature-gated spec option `{other}` has no placeholder help binding"),
     }
@@ -274,41 +279,41 @@ pub(crate) fn export_args(headings: Headings) -> Vec<clap::Arg> {
 // AI group
 // ---------------------------------------------------------------------------
 
-/// One slot of the AI layout: either a spec entry or a hand-built deferred
-/// arg, positioned exactly where the field is declared. Mirrors the
-/// [`CrawlerSlot`] pattern (slice 2). The manual `threshold` slot carries
-/// the `f32` parser + range check + verbatim Spanish error message that
-/// the spec SSOT does not yet model — see the defer note in
-/// [`options_spec::ai::THRESHOLD`].
-#[cfg(feature = "ai")]
+/// One slot of the AI layout: either a spec entry or the hand-built
+/// deferred `threshold` arg, positioned exactly where the field is declared.
+/// Mirrors the [`CrawlerSlot`] pattern (slice 2). The manual `threshold` slot
+/// carries the `f32` parser + range check + verbatim Spanish error message
+/// that the spec SSOT does not yet model (see [`options_spec::ai::THRESHOLD`]).
 enum AiSlot {
     Spec(&'static OptionSpec),
     Manual(fn() -> clap::Arg),
 }
 
-/// The UNGATED slots of the AI group: `max_chars` and the `max_tokens`
-/// deprecation shim.
+/// The spec-built slots of the AI group, in `AiArgs` field-declaration order.
 ///
-/// Rendered in EVERY cargo configuration (ADR-0004): the shim's whole job is
-/// that a binary without the `ai` feature answers an operator who still passes
-/// `--max-tokens` with a migration message instead of "unexpected argument",
-/// and a migration that does not render in `--help` is silent by construction.
-/// Both arms of [`ai_args`] splice THIS list in, so the two configurations can
-/// never drift apart.
-const AI_UNGATED_LAYOUT: &[&OptionSpec] =
-    &[&options_spec::ai::MAX_CHARS, &options_spec::ai::MAX_TOKENS];
+/// `threshold` is NOT here: it is hand-built (`AiSlot::Manual`) and pushed
+/// first by [`ai_args`], mirroring its field position.
+///
+/// There is deliberately no "gated" counterpart any more (ADR-0004, slice C).
+/// Both `cfg` arms used to render a subset behind `#[cfg(feature = "ai")]`
+/// and let the rest render ungated, so a build without the feature advertised
+/// a DIFFERENT CLI than one with it and answered `--threshold` / `--offline` /
+/// `--ai-model` with clap's "unexpected argument" (exit 64) instead of naming
+/// the missing capability. One list, one build path, no drift.
+const AI_SPEC_LAYOUT: &[AiSlot] = &[
+    AiSlot::Spec(&options_spec::ai::MAX_CHARS),
+    AiSlot::Spec(&options_spec::ai::MAX_TOKENS),
+    AiSlot::Spec(&options_spec::ai::OFFLINE),
+    AiSlot::Spec(&options_spec::ai::AI_MODEL),
+];
 
-/// Render the ungated slots — a pure spec build, identical in both
-/// configurations.
-fn build_ai_ungated(headings: Headings) -> Vec<clap::Arg> {
-    AI_UNGATED_LAYOUT
-        .iter()
-        .map(|spec| build_arg(spec, headings))
-        .collect()
+/// Total AI args: the hand-built `threshold`, then every spec slot. Shared by
+/// the arg-count tests so the count has one derivation.
+const fn expected_ai_arg_count() -> usize {
+    1 + AI_SPEC_LAYOUT.len()
 }
 
-/// Render one [`AiSlot`], so both cargo configurations share the path.
-#[cfg(feature = "ai")]
+/// Render one [`AiSlot`], so the layout table stays the single source of order.
 fn build_ai_slot(slot: &AiSlot, headings: Headings) -> clap::Arg {
     match slot {
         AiSlot::Spec(spec) => build_arg(spec, headings),
@@ -316,53 +321,38 @@ fn build_ai_slot(slot: &AiSlot, headings: Headings) -> clap::Arg {
     }
 }
 
-/// The `ai`-gated slots, in `AiArgs` field-declaration order. `max_chars` and
-/// the `max_tokens` shim are NOT here: they live in [`AI_UNGATED_LAYOUT`] and
-/// render in both configurations.
-#[cfg(feature = "ai")]
-const AI_GATED_LAYOUT: &[AiSlot] = &[
-    AiSlot::Spec(&options_spec::ai::OFFLINE),
-    AiSlot::Spec(&options_spec::ai::AI_MODEL),
-];
-
-/// Total AI args in an `ai` build: the hand-built `threshold`, the two ungated
-/// specs, then the gated ones. Shared by the arg-count tests so the count has
-/// one derivation.
-#[cfg(feature = "ai")]
-const fn expected_ai_arg_count() -> usize {
-    1 + AI_UNGATED_LAYOUT.len() + AI_GATED_LAYOUT.len()
-}
-
-/// All AI-group args in declaration order, with the `ai` feature on:
-/// hand-built `threshold` first (it is a field of `AiArgs`), then the ungated
-/// pair, then the gated specs.
-#[cfg(feature = "ai")]
+/// All AI-group args in declaration order, in EVERY cargo configuration:
+/// hand-built `threshold` first (it is a field of `AiArgs`), then the spec
+/// slots in [`AI_SPEC_LAYOUT`] order.
+///
+/// Ungated by decision (ADR-0004, slice C). Every flag here describes
+/// behavior a build without the `ai` cargo feature can still honor — the
+/// cleaner runs over whatever
+/// [`EmbeddingPort`](webfang_core::domain::embedding_port::EmbeddingPort) the
+/// run built, remote included — so hiding any of them from one build trades a
+/// named, actionable exit 78 from
+/// [`check_clean_ai_feature`](crate::cli::preflight::check_clean_ai_feature)
+/// for clap's exit 64 "unexpected argument", which names neither what the
+/// flag means nor the capability behind it.
 pub(crate) fn ai_args(headings: Headings) -> Vec<clap::Arg> {
     let mut args = Vec::with_capacity(expected_ai_arg_count());
     args.push(build_ai_slot(&AiSlot::Manual(manual_threshold), headings));
-    args.extend(build_ai_ungated(headings));
     args.extend(
-        AI_GATED_LAYOUT
+        AI_SPEC_LAYOUT
             .iter()
             .map(|slot| build_ai_slot(slot, headings)),
     );
     args
 }
 
-/// `cfg(not(feature = "ai"))` counterpart: ONLY the ungated slots. The gated
-/// entries stay absent (the pre-migration derive produced no AI flags without
-/// the cargo feature); `max_chars` and the `max_tokens` shim are emitted in
-/// both configurations by decision, see [`AI_UNGATED_LAYOUT`].
-#[cfg(not(feature = "ai"))]
-pub(crate) fn ai_args(headings: Headings) -> Vec<clap::Arg> {
-    build_ai_ungated(headings)
-}
-
 /// Hand-built `--threshold` (deferred from the spec — see
 /// [`options_spec::ai::THRESHOLD`]). Parser + range + error messages come
 /// from [`super::args::ai::parse_threshold`]. The spec records the
 /// identity (id, long, env, default, help, heading) verbatim.
-#[cfg(feature = "ai")]
+///
+/// Ungated with the rest of the group: the parser is pure `f32` range logic
+/// with no ONNX dependency, so a non-`ai` build genuinely parses and
+/// genuinely validates this flag.
 fn manual_threshold() -> clap::Arg {
     use super::args::ai::parse_threshold;
     clap::Arg::new("threshold")
@@ -623,40 +613,76 @@ mod tests {
         assert_eq!(ai_args(Headings::Applied).len(), expected_ai_arg_count());
     }
 
-    /// The AI layout must hold for BOTH heading shapes, and only the expected
-    /// count differs between builds: the ungated pair alone without `ai`, the
-    /// full set with it. One helper, because two `cfg` arms each restating the
-    /// loop is what put a clone in this file — and asserting the exact ids
-    /// (not merely "not empty") is what makes the ungated pair provable.
-    fn assert_ai_layout(expected: usize, label: &str) {
+    /// The ids [`ai_args`] renders, in order, for one heading shape.
+    ///
+    /// Returns owned `String`s: `Arg::get_id` borrows from the `clap::Arg`
+    /// being built, so the ids cannot outlive the temporary `Vec` this
+    /// collects from.
+    fn ai_arg_ids(headings: Headings) -> Vec<String> {
+        ai_args(headings)
+            .iter()
+            .map(|a| a.get_id().as_str().to_string())
+            .collect()
+    }
+
+    /// The AI group's EXACT id list, shared by every assertion below so the
+    /// two cargo configurations cannot drift apart by restating it.
+    const EXPECTED_AI_IDS: [&str; 5] = [
+        "threshold",
+        "max_chars",
+        "max_tokens",
+        "offline",
+        "ai_model",
+    ];
+
+    /// The AI surface is IDENTICAL in every cargo configuration and for both
+    /// heading shapes (ADR-0004 slice C).
+    ///
+    /// This used to be split: without `ai` the group collapsed to the ungated
+    /// pair (`max_chars`, `max_tokens`), and each `cfg` arm asserted its own
+    /// count. That asymmetry was the bug the slice closed — a build without
+    /// `ai` advertised a different CLI than one with it. One helper, one list,
+    /// no `cfg`: if a future entry is added, gated or not, both builds show it
+    /// together and fail here if they do not.
+    fn assert_ai_layout_in_every_shape(label: &str) {
         for (headings, shape) in [
             (Headings::Omitted, "Omitted"),
             (Headings::Applied, "Applied"),
         ] {
-            let args = ai_args(headings);
-            let ids: Vec<&str> = args.iter().map(|a| a.get_id().as_str()).collect();
+            let owned = ai_arg_ids(headings);
+            let ids: Vec<&str> = owned.iter().map(String::as_str).collect();
             assert_eq!(
-                ids.len(),
-                expected,
-                "AI layout {label} must be {expected} args ({shape}); got {ids:?}"
+                ids, EXPECTED_AI_IDS,
+                "AI layout {label} must be exactly {EXPECTED_AI_IDS:?} ({shape}); got {ids:?}"
             );
         }
     }
 
+    /// Without the `ai` cargo feature the group STILL renders in full — this
+    /// is the regression guard for slice C. The cleaner needs no ONNX build, so
+    /// a build without the feature must offer the same flags rather than
+    /// answering an operator with clap's "unexpected argument" (exit 64).
     #[test]
     #[cfg(not(feature = "ai"))]
-    fn ai_args_is_only_the_ungated_pair_without_feature() {
-        assert_ai_layout(2, "without ai");
+    fn ai_args_renders_the_full_set_without_feature() {
+        assert_ai_layout_in_every_shape("without ai");
+        assert_eq!(
+            expected_ai_arg_count(),
+            EXPECTED_AI_IDS.len(),
+            "the count must be derived from one source for both configurations"
+        );
     }
 
+    /// With the `ai` cargo feature the surface is the same five entries.
     #[test]
     #[cfg(feature = "ai")]
     fn ai_args_has_five_entries_with_feature() {
-        assert_ai_layout(5, "with ai");
+        assert_ai_layout_in_every_shape("with ai");
         assert_eq!(
             expected_ai_arg_count(),
-            5,
-            "one hand-built threshold + the ungated pair + two gated specs"
+            EXPECTED_AI_IDS.len(),
+            "one hand-built `threshold` + four spec-built slots, ungated in \
+             every configuration (ADR-0004 slice C)"
         );
     }
 
@@ -667,29 +693,24 @@ mod tests {
     /// argument".
     #[test]
     fn ungated_ai_args_render_without_the_feature() {
-        #[cfg(not(feature = "ai"))]
-        {
-            for headings in [Headings::Omitted, Headings::Applied] {
-                let args = ai_args(headings);
-                let ids: Vec<&str> = args.iter().map(|a| a.get_id().as_str()).collect();
-                assert_eq!(
-                    ids,
-                    vec!["max_chars", "max_tokens"],
-                    "without the `ai` feature the AI group must be exactly the \
-                     ungated pair ({headings:?})"
-                );
-            }
-        }
-        #[cfg(feature = "ai")]
-        {
-            for headings in [Headings::Omitted, Headings::Applied] {
-                let args = ai_args(headings);
-                let ids: Vec<&str> = args.iter().map(|a| a.get_id().as_str()).collect();
-                assert!(
-                    ids.contains(&"max_chars") && ids.contains(&"max_tokens"),
-                    "the ungated pair must render with the feature too ({headings:?}); got {ids:?}"
-                );
-            }
+        for headings in [Headings::Omitted, Headings::Applied] {
+            let owned = ai_arg_ids(headings);
+            let ids: Vec<&str> = owned.iter().map(String::as_str).collect();
+            // The migration surface: `max_chars` and the `max_tokens` shim must
+            // render in EVERY configuration. If they ever stop, the shim
+            // becomes invisible and a stale `--max-tokens` comes back as
+            // "unexpected argument" instead of a migration message.
+            assert!(
+                ids.contains(&"max_chars") && ids.contains(&"max_tokens"),
+                "the ungated pair must render in every configuration ({headings:?}); got {ids:?}"
+            );
+            // And since slice C, so must the rest of the group — the cleaner is
+            // offered without the `ai` feature too.
+            assert_eq!(
+                ids, EXPECTED_AI_IDS,
+                "the AI group must render in full without regard to the `ai` \
+                 feature ({headings:?}); got {ids:?}"
+            );
         }
     }
 
@@ -773,15 +794,16 @@ mod tests {
             }
         }
         specs.extend(options_spec::obsidian::GROUP.iter());
-        #[cfg(feature = "ai")]
-        for slot in AI_GATED_LAYOUT.iter() {
+        // Every AI spec slot, ungated (ADR-0004 slice C) — asserted in EVERY
+        // build, so no configuration can lose an AI flag's heading. `threshold`
+        // is the one hand-built arg and carries its heading literally in
+        // `manual_threshold`, so it is pinned by `manual_args_carry_headings`
+        // rather than through a spec reference.
+        for slot in AI_SPEC_LAYOUT.iter() {
             if let AiSlot::Spec(s) = slot {
                 specs.push(*s);
             }
         }
-        // Ungated in both configurations (ADR-0004) — asserted here too, so a
-        // build without `ai` cannot lose the pair's headings.
-        specs.extend(AI_UNGATED_LAYOUT.iter().copied());
 
         let args: Vec<clap::Arg> = export_args(Headings::Applied)
             .into_iter()

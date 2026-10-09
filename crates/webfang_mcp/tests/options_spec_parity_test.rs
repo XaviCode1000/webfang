@@ -468,44 +468,34 @@ fn slice5a_cli_only_groups_cover_their_specs() {
         "duplicate spec id across slice 5a groups"
     );
 
-    // AI gating: every spec entry in the AI group must be gated by `ai`
-    // EXCEPT the two ungated members, mirroring the derive's
-    // `#[cfg(feature = "ai")]` duplication. The ungated pair is asserted BY
-    // NAME, not by count, because the ungated set is a deliberate decision
-    // (ADR-0004): `max_chars` and the `max_tokens` deprecation shim must render
-    // in every configuration, or a migration message an operator never sees is
-    // not a migration — ADR-0004 forbids that silence. The next person adding
-    // an ungated spec to this group without that decision fails HERE.
-    const EXPECTED_UNGATED_AI_IDS: [&str; 2] = ["max_chars", "max_tokens"];
-    for entry in AI_GROUP {
-        let expected_gate = if EXPECTED_UNGATED_AI_IDS.contains(&entry.id) {
-            None
-        } else {
-            Some("ai")
-        };
-        assert_eq!(
-            entry.feature_gate, expected_gate,
-            "AI spec `{}` has the wrong feature gate: only \
-             {EXPECTED_UNGATED_AI_IDS:?} may be ungated (ADR-0004)",
-            entry.id
-        );
-        assert_eq!(
-            entry.active(),
-            cfg!(feature = "ai") || entry.feature_gate.is_none(),
-            "AI spec `{}` active() must match the build feature",
-            entry.id
-        );
-    }
+    // AI gating (ADR-0004, slice C): NO entry in the AI group is feature-gated.
+    //
+    // It used to be a pair: everything except `max_chars` and the `max_tokens`
+    // shim carried `feature_gate: Some("ai")`. That is gone, and the ungated
+    // set is now asserted to be the WHOLE group — asserted BY NAME against the
+    // group itself, not by count, so re-gating one entry fails HERE with that
+    // entry named rather than surfacing later as a flag that vanished from one
+    // build's `--help` and answered with clap's "unexpected argument".
     let mut ungated: Vec<&str> = AI_GROUP
         .iter()
         .filter(|e| e.feature_gate.is_none())
         .map(|e| e.id)
         .collect();
     ungated.sort_unstable();
+    let mut expected_ungated: Vec<&str> = AI_GROUP.iter().map(|e| e.id).collect();
+    expected_ungated.sort_unstable();
     assert_eq!(
-        ungated, EXPECTED_UNGATED_AI_IDS,
-        "the ungated AI group must be exactly the ADR-0004 pair"
+        ungated, expected_ungated,
+        "every AI spec must be ungated (ADR-0004 slice C): the semantic cleaner \
+         needs no ONNX build, so no AI flag may disappear from one configuration"
     );
+    for entry in AI_GROUP {
+        assert!(
+            entry.active(),
+            "AI spec `{}` must be active in EVERY build",
+            entry.id
+        );
+    }
 }
 
 /// Runtime-effective advertised defaults (#940 F1/F2): `crawl_site`

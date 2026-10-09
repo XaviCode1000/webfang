@@ -1,15 +1,18 @@
 //! AI flag group (ADR-002 slice 5a): mirrors `cli::args::AiArgs`
-//! field-by-field. Most entries are feature-gated by `ai`; the runtime
-//! builder (`cli::spec_command::ai_args`) emits the gated spec args only when
-//! the cargo feature is on — matching the pre-migration derive's
-//! `#[cfg(feature = "ai")]` behavior of producing zero args when the
-//! feature is off (NOT the slice-3 hidden-placeholder pattern used by
-//! `clean_ai` / `adaptive_selectors`, which has a different legacy).
+//! field-by-field. **No entry in this group is feature-gated** (ADR-0004,
+//! slice C): the semantic cleaner no longer needs ONNX to exist, so every
+//! AI flag describes behavior a build without the `ai` feature can still
+//! honor — a remote embedding endpoint, or nothing at all when the flag is
+//! simply off.
 //!
-//! The UNGATED exceptions are `max_chars` and the `max_tokens` deprecation
-//! shim (ADR-0004): both are emitted in every configuration so the migration
-//! is visible in `--help` and answers with a migration message instead of
-//! "unexpected argument".
+//! A flag that renders only under the feature it configures is a flag that
+//! answers "unexpected argument" (exit 64) on the other build, naming
+//! neither the capability nor how to get it. So `--clean-ai`,
+//! `--threshold`, `--offline` and `--ai-model` render in EVERY cargo
+//! configuration, and the build that cannot honor a requested capability says
+//! so by name — see `cli::preflight::check_clean_ai_feature` (exit 78),
+//! which is feature-independent by construction and still rejects
+//! `--clean-ai` on a non-AI build before any network I/O.
 //!
 //! `threshold` is HONESTLY DEFERRED to a hand-built `clap::Arg` in
 //! `spec_command::ai_args` because its parser rejects out-of-range `f32`
@@ -18,7 +21,7 @@
 //! modeling it would need both a new kind AND `{value}` substitution
 //! inside `below_min_message`, breaking the existing `Uint` policy
 //! contract. The spec entry below records the identity (id/long/env/
-//! default/help/heading/feature_gate) and the defer reason; the bound
+//! default/help/heading) and the defer reason; the bound
 //! and parser live in `cli::args::ai::parse_threshold`, the binding in
 //! `cli::spec_command::ai_args`'s `AiSlot::Manual` arm.
 use super::{DefaultValue, NumericPolicy, OptionSpec, ValueKind};
@@ -32,6 +35,9 @@ use super::{DefaultValue, NumericPolicy, OptionSpec, ValueKind};
 /// `ai_args` builder uses its dedicated `AiSlot::Manual` slot so the
 /// custom parser, `allow_negative_numbers = true`, and the verbatim
 /// Spanish range message all stay intact.
+///
+/// UNGATED: the relevance filter it configures is the cleaner's own logic
+/// and computes over vectors from whatever `EmbeddingPort` the run built.
 pub const THRESHOLD: OptionSpec = OptionSpec {
     id: "threshold",
     value_name: "THRESHOLD",
@@ -46,7 +52,7 @@ pub const THRESHOLD: OptionSpec = OptionSpec {
     visible_aliases: &[],
     nullable: false,
     description_override: None,
-    feature_gate: Some("ai"),
+    feature_gate: None,
     value_delimiter: None,
 };
 
@@ -177,6 +183,12 @@ pub const MAX_TOKENS: OptionSpec = OptionSpec {
 };
 
 /// `--offline` (env `WEBFANG_OFFLINE`, bool SetTrue).
+///
+/// UNGATED by decision (ADR-0004, slice C), though its effect is local-ONNX
+/// only: "offline" constrains the hf_hub resolver, which is a property of
+/// THIS build's embedding backend. Rendering it in every configuration costs
+/// nothing and keeps the flag discoverable next to `--ai-model`, which it
+/// composes with.
 pub const OFFLINE: OptionSpec = OptionSpec {
     id: "offline",
     value_name: "OFFLINE",
@@ -191,7 +203,7 @@ pub const OFFLINE: OptionSpec = OptionSpec {
     heading: Some("AI Settings"),
     kind: ValueKind::Bool,
     visible_aliases: &[],
-    feature_gate: Some("ai"),
+    feature_gate: None,
     value_delimiter: None,
 };
 
@@ -202,6 +214,12 @@ pub const OFFLINE: OptionSpec = OptionSpec {
 /// make unrelated CLI invocations fail at parse time. `AI_MODEL_ID` is
 /// accepted as a hidden CLI alias for backward compatibility, deprecated
 /// for removal in v3.0 (#1587).
+///
+/// UNGATED, and the raw-string policy is what makes that safe rather than
+/// merely convenient: an unparseable value is recorded here and REJECTED by
+/// the AI init path — which exists only on a local-ONNX build — instead of
+/// failing at parse time. On a build without `ai` the flag parses, carries
+/// its value, and the preflight gate names the missing capability by name.
 pub const AI_MODEL: OptionSpec = OptionSpec {
     id: "ai_model",
     value_name: "AI_MODEL",
@@ -216,7 +234,7 @@ pub const AI_MODEL: OptionSpec = OptionSpec {
     heading: Some("AI Settings"),
     kind: ValueKind::Text,
     visible_aliases: &[],
-    feature_gate: Some("ai"),
+    feature_gate: None,
     value_delimiter: None,
 };
 
@@ -226,9 +244,8 @@ pub const AI_MODEL: OptionSpec = OptionSpec {
 /// substitutes it with a hand-built arg carrying the `parse_threshold`
 /// validator.
 ///
-/// [`MAX_CHARS`] and [`MAX_TOKENS`] are UNGATED on purpose — see
-/// [`MAX_TOKENS`] — so `cli::spec_command::ai_args` emits them in every
-/// cargo configuration. Adding a third ungated entry to this group is a
-/// deliberate decision, not a default: `webfang_mcp`'s parity test pins the
-/// ungated set by name.
+/// **No member of this group is feature-gated** (ADR-0004, slice C) — see
+/// the module docs. `webfang_mcp`'s parity test pins that by asserting the
+/// ungated set equals the WHOLE group, so a future re-gating of any entry
+/// fails there rather than shipping a flag that vanishes on one build.
 pub const GROUP: &[OptionSpec] = &[THRESHOLD, MAX_CHARS, MAX_TOKENS, OFFLINE, AI_MODEL];

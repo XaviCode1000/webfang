@@ -43,10 +43,23 @@
 //!   [`InferencePool`], so a Pool-mode cleaner shares its N-session engine with
 //!   vault search through one model load — the `Single` path compiles unchanged
 //!   via unsized coercion.
-//! - **Shared resolution**: [`EmbeddingAdapter::from_config`] reuses
-//!   `resolve_model_assets`,
-//!   the same hf_hub cache/download + SHA256 validation path extracted from
-//!   `SemanticCleanerImpl::new`, so both pipelines resolve models identically.
+//! - **Shared resolution**: `EmbeddingAdapter::from_config` and
+//!   `build_onnx_embedding_port` both call `resolve_model_assets`, the same
+//!   hf_hub cache/download + SHA256 validation path, so every local-ONNX
+//!   composition root resolves models identically. (Written as a code span,
+//!   not a link: it is `pub(crate)`, so rustdoc does not document it by
+//!   default and a link to it would be a permanently unresolved reference.)
+//!
+//! # Why model resolution lives here (ADR-0004, slice C)
+//!
+//! `resolve_model_assets` and `stream_validate_model_hash` used to live in
+//! `semantic_cleaner_impl`. That module is now UNGATED — the cleaner itself
+//! has no ONNX dependency — so it can no longer own the resolver: keeping
+//! the hf_hub download path there would have re-gated the whole cleaner
+//! behind `hf_hub` for no reason. This module is the natural home because it
+//! is where the local-ONNX path lives, it already imports `hf_hub`, and it is
+//! the only caller: `build_onnx_embedding_port` plus
+//! [`EmbeddingAdapter::from_config`].
 //!
 //! # Rust-Skills Applied
 //!
@@ -58,13 +71,20 @@
 //! - `mem-with-capacity`: batch result pre-allocation
 
 use std::future::Future;
+use std::io::IsTerminal;
+use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::sync::Arc;
 
-use tracing::{debug, Instrument};
+use futures::future::try_join;
+use hf_hub::api::tokio::ApiBuilder;
+use hf_hub::{Cache as HfCache, Repo, RepoType};
+use sha2::{Digest, Sha256};
+use tokio::io::AsyncReadExt;
+use tracing::{debug, info, Instrument};
 
 use crate::infrastructure_ai::inference_engine::{InferenceEngine, InferencePool};
-use crate::infrastructure_ai::semantic_cleaner_impl::{resolve_model_assets, ModelConfig};
+use crate::infrastructure_ai::semantic_cleaner_impl::ModelConfig;
 use crate::infrastructure_ai::tokenizer::MiniLmTokenizer;
 use crate::infrastructure_ai::{build_engine, EngineConfig};
 use webfang_core::domain::embedding_port::EmbeddingPort;
@@ -244,6 +264,188 @@ impl EmbeddingPort for EmbeddingAdapter {
     }
 }
 
+/// Resolve and validate model assets from the hf_hub cache.
+///
+/// Resolves the model and tokenizer paths through the hf_hub cache — offline
+/// mode resolves strictly from the local cache (no network) and fails fast with
+/// [`SemanticError::OfflineMode`] when either asset is missing; online mode is
+/// cache-first (hf_hub returns the cached path when present and transparently
+/// downloads missing assets otherwise). Then loads the model bytes once and
+/// validates their SHA256 in memory.
+///
+/// Moved here from `semantic_cleaner_impl` when the cleaner was ungated
+/// (ADR-0004, slice C): that module no longer imports hf_hub, and this is the
+/// local-ONNX path's own resolver. Both callers —
+/// `build_onnx_embedding_port` and `EmbeddingAdapter::from_config` — are
+/// `ai`-gated, which is exactly the scope of the hf_hub dependency it needs.
+///
+/// # Returns
+///
+/// `(model_path, tokenizer_path)` — SHA256-validated model bytes and the path
+/// to `tokenizer.json`.
+///
+/// # Errors
+///
+/// Returns [`SemanticError::OfflineMode`] when offline and an asset is uncached,
+/// [`SemanticError::Download`] on hf_hub client/API failure,
+/// [`SemanticError::ModelLoad`] when the model file cannot be opened for
+/// validation, or [`SemanticError::CacheValidation`] on SHA256 mismatch.
+#[tracing::instrument(skip(config), fields(repo = %config.repo, model_file = %config.model_file, offline_mode = config.offline_mode))]
+pub(crate) async fn resolve_model_assets(
+    config: &ModelConfig,
+) -> Result<(PathBuf, PathBuf), SemanticError> {
+    // #1316: name the model-resolve operation up front so a slow (cold)
+    // download is attributable in the trace file instead of looking like a
+    // hang, and time the whole resolution for the summary event below.
+    let started = std::time::Instant::now();
+    info!(
+        repo = %config.repo,
+        offline_mode = config.offline_mode,
+        "resolving AI model assets"
+    );
+
+    // Resolve model + tokenizer paths through the hf_hub cache.
+    let (model_path, tokenizer_path, cached) = if config.offline_mode {
+        let cache = HfCache::from_env();
+        let cache_repo = cache.repo(Repo::new(config.repo.clone(), RepoType::Model));
+
+        let model_path =
+            cache_repo
+                .get(&config.model_file)
+                .ok_or_else(|| SemanticError::OfflineMode {
+                    repo: config.repo.clone(),
+                })?;
+        let tokenizer_path =
+            cache_repo
+                .get("tokenizer.json")
+                .ok_or_else(|| SemanticError::OfflineMode {
+                    repo: config.repo.clone(),
+                })?;
+
+        debug!("Resolved model and tokenizer from offline cache");
+        (model_path, tokenizer_path, true)
+    } else {
+        // #1316: cache-only probe (pure fs lookup, no network) BEFORE touching
+        // the API, so the cold-download hint can fire before the pull starts.
+        let cache = HfCache::from_env();
+        let probe = cache.repo(Repo::new(config.repo.clone(), RepoType::Model));
+        let cached =
+            probe.get(&config.model_file).is_some() && probe.get("tokenizer.json").is_some();
+
+        // #1316: when stderr is piped, hf_hub's indicatif progress bar renders
+        // nothing and a multi-minute cold pull looks like a hang. A plain
+        // eprintln! reaches the user on the non-TTY path (a TTY already gets
+        // the built-in progress bar). User-facing, so Spanish.
+        if !cached && !std::io::stderr().is_terminal() {
+            eprintln!(
+                "Descargando modelo AI (~{} MB, primera vez); puede tardar varios minutos.",
+                config.model_variant.approx_download_mb()
+            );
+        }
+
+        let api = ApiBuilder::from_env()
+            .with_progress(true)
+            .build()
+            .map_err(|e| SemanticError::Download {
+                repo: config.repo.clone(),
+                cause: format!("Failed to build HuggingFace API client: {e}"),
+            })?;
+
+        let repo = api.model(config.repo.clone());
+
+        // Resolve both assets concurrently (cache-first, downloads if missing).
+        // `with_progress(true)` surfaces hf_hub's built-in progress bar so the
+        // first download (~390MB) is not perceived as a hang; the span makes
+        // the download phase observable in the trace file.
+        let (model_path, tokenizer_path) =
+            try_join(repo.get(&config.model_file), repo.get("tokenizer.json"))
+                .instrument(tracing::info_span!(
+                    "download_model_assets",
+                    repo = %config.repo
+                ))
+                .await
+                .map_err(|e| SemanticError::Download {
+                    repo: config.repo.clone(),
+                    cause: format!("HuggingFace API error: {e}"),
+                })?;
+
+        debug!("Resolved model and tokenizer via hf_hub (cache-first)");
+        (model_path, tokenizer_path, cached)
+    };
+
+    // Stream-validate the SHA256 of the model file on disk. The file itself
+    // (not a byte copy) feeds the inference pool via `commit_from_file`, so
+    // no application-side duplicate of the blob ever exists (#1315).
+    stream_validate_model_hash(&model_path, config.model_variant.sha256(), &config.repo).await?;
+
+    // #1316: structured summary for the long-running resolve — emitted for
+    // both branches, visible in `--trace-file` JSONL regardless of TTY.
+    let bytes = tokio::fs::metadata(&model_path)
+        .await
+        .map_err(SemanticError::ModelLoad)?
+        .len();
+    info!(
+        repo = %config.repo,
+        bytes,
+        elapsed_ms = started.elapsed().as_millis() as u64,
+        cached,
+        "AI model assets resolved"
+    );
+
+    Ok((model_path, tokenizer_path))
+}
+
+/// Stream-validate the SHA256 of the model file on disk (constant memory:
+/// 1 MiB chunks — the integrity check itself never pulls the ~1.2 GB 311m
+/// blob into the process).
+///
+/// Streaming computes the actual digest without ever buffering the whole
+/// file, so the "buffer in RAM if the hash fails" alternative is not needed:
+/// a mismatch simply yields the computed digest in the
+/// [`SemanticError::CacheValidation`] payload.
+///
+/// # Errors
+///
+/// Returns [`SemanticError::ModelLoad`] when the file cannot be opened or
+/// read, and [`SemanticError::CacheValidation`] when the computed hash does
+/// not match `expected`.
+#[tracing::instrument(skip(model_path), fields(repo = %repo, expected = %expected))]
+async fn stream_validate_model_hash(
+    model_path: &Path,
+    expected: &str,
+    repo: &str,
+) -> Result<(), SemanticError> {
+    debug!("Validating model integrity (streaming)...");
+    let mut file = tokio::fs::File::open(model_path)
+        .await
+        .map_err(SemanticError::ModelLoad)?;
+
+    const CHUNK_BYTES: usize = 1024 * 1024; // 1 MiB
+    let mut buffer = vec![0u8; CHUNK_BYTES];
+    let mut hasher = Sha256::new();
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .await
+            .map_err(SemanticError::ModelLoad)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+
+    let actual = format!("{:x}", hasher.finalize());
+    if actual != expected {
+        return Err(SemanticError::CacheValidation {
+            repo: repo.to_string(),
+            expected: expected.to_string(),
+            actual,
+        });
+    }
+    debug!(sha = %actual, "SHA256 validation passed (streamed)");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -311,5 +513,89 @@ mod tests {
             result.is_err(),
             "offline resolution of an uncached model must fail"
         );
+    }
+
+    // -----------------------------------------------------------------------
+    // `stream_validate_model_hash` coverage.
+    //
+    // These three travelled here verbatim from
+    // `semantic_cleaner_impl::tests` when the resolver moved (ADR-0004,
+    // slice C). They were NOT reformulated or dropped: the function they
+    // cover is still the one the ONNX path calls, and its own unit home is
+    // now the file that owns it. `SemanticCleanerImpl::new` — whose tests
+    // still exercise the same offline-failure path end to end — is
+    // `ai`-gated alongside the resolver, so those two stay put under
+    // `#[cfg(feature = "ai")]`.
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_stream_validate_model_hash_mismatch_returns_cache_validation() {
+        // Exercises the REAL streaming validation path: known file content
+        // plus a WRONG expected hash must yield CacheValidation carrying both
+        // hashes + repo, with the actual digest computed from disk in chunks.
+        let dir = tempfile::tempdir().expect("create temp dir for hash test");
+        let model_path = dir.path().join("model.onnx");
+        tokio::fs::write(&model_path, b"webfang deterministic test payload")
+            .await
+            .expect("write temp model file");
+        let wrong_expected = "0000000000000000000000000000000000000000000000000000000000000000";
+
+        let result = stream_validate_model_hash(&model_path, wrong_expected, "test/repo").await;
+
+        match result {
+            Err(SemanticError::CacheValidation {
+                repo,
+                expected,
+                actual,
+            }) => {
+                assert_eq!(repo, "test/repo");
+                assert_eq!(expected, wrong_expected);
+                // The actual hash is the real SHA256 of the payload (64 hex
+                // chars), never the bogus expected value.
+                assert_ne!(actual, wrong_expected);
+                assert_eq!(actual.len(), 64, "SHA256 digest must be 64 hex chars");
+            },
+            other => panic!("expected CacheValidation, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_stream_validate_model_hash_match_passes_across_chunk_boundary() {
+        // Success path: feeding back the real SHA256 must validate cleanly.
+        // The payload spans several 1 MiB chunks (plus a non-multiple tail)
+        // to prove the chunk loop reassembles the full digest and the final
+        // partial chunk is not dropped.
+        let dir = tempfile::tempdir().expect("create temp dir for hash test");
+        let model_path = dir.path().join("model.onnx");
+        // 2 MiB + 37 bytes: forces two full chunks and one partial one.
+        let payload: Vec<u8> = (0..2 * 1024 * 1024 + 37).map(|i| (i % 251) as u8).collect();
+        tokio::fs::write(&model_path, &payload)
+            .await
+            .expect("write temp model file");
+        let real_hash = format!("{:x}", Sha256::digest(&payload));
+
+        assert!(
+            stream_validate_model_hash(&model_path, &real_hash, "test/repo")
+                .await
+                .is_ok(),
+            "streamed digest across chunk boundaries must match the single-shot digest"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_stream_validate_model_hash_missing_file_returns_model_load() {
+        // Opening a nonexistent path must surface as ModelLoad (io::Error),
+        // NOT as a hash mismatch or a panic.
+        let dir = tempfile::tempdir().expect("create temp dir for hash test");
+        let missing = dir.path().join("does-not-exist.onnx");
+
+        let result = stream_validate_model_hash(&missing, "00", "test/repo").await;
+
+        match result {
+            Err(SemanticError::ModelLoad(_)) => {
+                // Expected
+            },
+            other => panic!("expected ModelLoad, got {other:?}"),
+        }
     }
 }

@@ -833,9 +833,20 @@ pub const DOM_PREPRUNE: OptionSpec = OptionSpec {
     value_delimiter: None,
     };
 
-/// `--clean-ai` (alias `--ai`) — feature-gated: materializes only under
-/// the `ai` cargo feature; without it the runtime command keeps the hidden
-/// compatibility placeholder (builder concern, see slice 3).
+/// `--clean-ai` (alias `--ai`) — UNGATED (ADR-0004, slice C).
+///
+/// Used to materialize only under the `ai` cargo feature, leaving a hidden
+/// compatibility placeholder in every other build. That placeholder made the
+/// flag parse but invisible: an operator on a non-AI build got exit 78 naming
+/// the missing feature, but `--help` never told them the flag existed.
+///
+/// Now that the semantic cleaner needs no ONNX build, the flag renders in
+/// EVERY configuration. It is ALSO the one flag whose meaning differs by
+/// build: a local-ONNX build is what actually runs the cleaner, and a build
+/// without `ai` rejects `--clean-ai` by name via
+/// `cli::preflight::check_clean_ai_feature` (exit 78, before any network
+/// I/O). That gate is feature-independent by construction, so rendering the
+/// flag does not weaken it — it just makes the failure discoverable.
 pub const CLEAN_AI: OptionSpec = OptionSpec {
     id: "clean_ai",
     value_name: "CLEAN_AI",
@@ -850,7 +861,7 @@ pub const CLEAN_AI: OptionSpec = OptionSpec {
     help: "Use AI-powered semantic cleaning for better RAG output",
     heading: Some("Behavior"),
     kind: ValueKind::Bool,
-    feature_gate: Some("ai"),
+    feature_gate: None,
     value_delimiter: None,
 };
 

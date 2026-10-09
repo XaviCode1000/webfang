@@ -638,7 +638,15 @@ fn resolve_max_chars(args: &Args) -> (usize, Option<usize>) {
     }
 }
 
-#[cfg(feature = "ai")]
+/// Build the ungated [`AiConfig`] — ONE reader for every cargo configuration
+/// (ADR-0004, slice C).
+///
+/// This used to be two `cfg`-gated copies: one that read `threshold`,
+/// `offline` and `ai_model`, and one that fell back to
+/// `AiConfig::default()` for them. Now that [`AiArgs`] is entirely ungated,
+/// the split would only be a second, stale copy of the same reads — and the
+/// `..Default` fallback is precisely the silent-reset shape worth deleting: it
+/// dropped three operator-supplied values without a word.
 fn build_ai_config(args: &Args) -> crate::application::crawl_options::AiConfig {
     let (max_chars, deprecated_max_tokens) = resolve_max_chars(args);
     crate::application::crawl_options::AiConfig {
@@ -647,19 +655,6 @@ fn build_ai_config(args: &Args) -> crate::application::crawl_options::AiConfig {
         deprecated_max_tokens,
         offline: args.ai.offline,
         model: args.ai.ai_model.clone().unwrap_or_default(),
-    }
-}
-
-/// The ungated flags resolve in EVERY build (ADR-0004): `--max-chars` and the
-/// deprecated `--max-tokens` both render without the `ai` feature, so both are
-/// carried here — see [`resolve_max_chars`] for the precedence.
-#[cfg(not(feature = "ai"))]
-fn build_ai_config(args: &Args) -> crate::application::crawl_options::AiConfig {
-    let (max_chars, deprecated_max_tokens) = resolve_max_chars(args);
-    crate::application::crawl_options::AiConfig {
-        max_chars,
-        deprecated_max_tokens,
-        ..crate::application::crawl_options::AiConfig::default()
     }
 }
 

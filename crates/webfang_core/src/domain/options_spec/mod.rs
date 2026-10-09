@@ -673,7 +673,7 @@ pub mod obsidian;
 pub mod llm;
 #[cfg(test)]
 mod tests {
-    use super::{crawler, export, schema_object, BoundError, DefaultValue, OptionSpecError};
+    use super::{ai, crawler, export, schema_object, BoundError, DefaultValue, OptionSpecError};
     use serde_json::json;
 
     #[test]
@@ -772,23 +772,72 @@ mod tests {
 
     #[test]
     fn feature_gated_entries_mirror_the_compile_time_cfg() {
-        // The spec's gate must name a known cargo feature and `active()`
-        // must agree with the actual compilation configuration.
-        for (opt, gate) in [
-            (crawler::CLEAN_AI, "ai"),
-            (crawler::ADAPTIVE_SELECTORS, "adaptive-selectors"),
-        ] {
-            assert_eq!(opt.feature_gate, Some(gate));
+        // A gate that DECLARES itself must name a real cargo feature, and
+        // `active()` must agree with the actual compilation configuration.
+        //
+        // `CLEAN_AI` left this loop in ADR-0004 slice C: the semantic cleaner no
+        // longer needs ONNX to exist, so `--clean-ai` is ungated and renders in
+        // every build. Its capability half is still enforced — by
+        // `preflight::check_clean_ai_feature`, exit 78 — so ungating it trades
+        // clap's "unexpected argument" (exit 64, naming neither the flag nor
+        // the capability) for a named, actionable rejection.
+        let gated: Vec<&'static super::OptionSpec> = crawler::GROUP
+            .iter()
+            .chain(ai::GROUP.iter())
+            .chain(export::GROUP.iter())
+            .filter(|s| s.feature_gate.is_some())
+            .collect();
+
+        // Derived, not hard-coded: the ungating in ADR-0004 slice C removed
+        // entries from this set, so a fixed list would rot silently. Asserting
+        // it is NON-EMPTY is what stops the loop from passing vacuously if a
+        // future ungating empties it — that is the one failure mode a
+        // derived set cannot report on its own.
+        assert!(
+            !gated.is_empty(),
+            "at least one spec must stay feature-gated; if this set is empty \
+             the invariant below would pass without checking anything"
+        );
+
+        for opt in gated {
+            let gate = opt.feature_gate.expect("filtered to gated entries above");
+            // A declared gate must name a REAL feature, and `active()` must
+            // mirror the actual compilation configuration for it.
             assert_eq!(
                 opt.active(),
                 match gate {
                     "ai" => cfg!(feature = "ai"),
                     "adaptive-selectors" => cfg!(feature = "adaptive-selectors"),
-                    _ => unreachable!(),
+                    other => panic!(
+                        "gated spec `{}` names unknown feature `{other}`; \
+                         unknown gates must fail closed, and this test is \
+                         where that is pinned",
+                        opt.id
+                    ),
                 },
-                "active() must mirror cfg for gate `{gate}`"
+                "active() must mirror cfg for gate `{gate}` (spec `{}`)",
+                opt.id
             );
         }
+
+        // The NEW contract, asserted rather than assumed (ADR-0004): the
+        // cleaner is OFFERED without the `ai` cargo feature. This is stronger
+        // than the entry's absence from the loop above — it pins both halves,
+        // that `clean_ai` declares no gate and that it is therefore active in
+        // EVERY configuration. Re-gating `CLEAN_AI` fails HERE, naming the
+        // promise it would have broken.
+        assert_eq!(
+            crawler::CLEAN_AI.feature_gate,
+            None,
+            "CLEAN_AI must stay ungated (ADR-0004 slice C): the semantic cleaner \
+             needs no ONNX build, so the flag must render in every configuration"
+        );
+        assert!(
+            crawler::CLEAN_AI.active(),
+            "an ungated spec is always active, so --clean-ai must be offered on \
+             a build with and without the `ai` feature"
+        );
+
         // Ungated entries are always active.
         assert!(export::OUTPUT.active());
     }
