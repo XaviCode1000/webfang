@@ -76,41 +76,11 @@ pub fn log_scrape_error<E: std::fmt::Display + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
-
-    #[derive(Clone)]
-    struct SharedWriter(Arc<Mutex<Vec<u8>>>);
-
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedWriter {
-        type Writer = Guard;
-        fn make_writer(&'a self) -> Self::Writer {
-            Guard(self.0.clone())
-        }
-    }
-
-    struct Guard(Arc<Mutex<Vec<u8>>>);
-
-    impl std::io::Write for Guard {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
-    fn capture_subscriber(buf: Arc<Mutex<Vec<u8>>>) -> impl tracing::Subscriber {
-        tracing_subscriber::fmt()
-            .with_writer(SharedWriter(buf))
-            .with_ansi(false)
-            .finish()
-    }
+    use crate::infrastructure::observability::test_log_capture::LogBuffer;
 
     #[test]
     fn test_log_scrape_error_emits_structured_fields() {
-        let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
-        let _guard = tracing::subscriber::set_default(capture_subscriber(buf.clone()));
+        let (buf, _guard) = LogBuffer::capture();
 
         let corr = CorrelationId::new();
         let err = std::io::Error::other("connection reset");
@@ -122,7 +92,7 @@ mod tests {
             "page fetch failed",
         );
 
-        let out = String::from_utf8_lossy(&buf.lock().unwrap()).to_string();
+        let out = buf.text();
         assert!(out.contains("ERROR"), "should be ERROR level: {out}");
         assert!(out.contains("page fetch failed"), "context message: {out}");
         assert!(out.contains("https://example.com/page"), "url field: {out}");
@@ -136,8 +106,7 @@ mod tests {
 
     #[test]
     fn test_log_classified_error_emits_class_field() {
-        let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
-        let _guard = tracing::subscriber::set_default(capture_subscriber(buf.clone()));
+        let (buf, _guard) = LogBuffer::capture();
 
         let err = std::io::Error::other("connection reset");
         log_classified_error(
@@ -149,7 +118,7 @@ mod tests {
             "page fetch failed",
         );
 
-        let out = String::from_utf8_lossy(&buf.lock().unwrap()).to_string();
+        let out = buf.text();
         assert!(out.contains("ERROR"), "should be ERROR level: {out}");
         assert!(
             out.contains("class=TransientRetriable"),
@@ -160,8 +129,7 @@ mod tests {
 
     #[test]
     fn test_log_scrape_error_without_correlation_id() {
-        let buf = Arc::new(Mutex::new(Vec::<u8>::new()));
-        let _guard = tracing::subscriber::set_default(capture_subscriber(buf.clone()));
+        let (buf, _guard) = LogBuffer::capture();
 
         log_scrape_error(
             &"boom",
@@ -171,7 +139,7 @@ mod tests {
             "extraction failed",
         );
 
-        let out = String::from_utf8_lossy(&buf.lock().unwrap()).to_string();
+        let out = buf.text();
         assert!(out.contains("extraction failed"), "context: {out}");
         assert!(out.contains("https://x.com"), "url: {out}");
         assert!(out.contains("extract"), "stage: {out}");

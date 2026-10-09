@@ -65,6 +65,7 @@ impl Default for PipelineExecutor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infrastructure::observability::test_log_capture::LogBuffer;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
 
@@ -88,30 +89,6 @@ mod tests {
 
     // ─── Span-capture test helper (Fase 2, issue #356) ───
 
-    /// MakeWriter that appends tracing output to a shared buffer so tests can
-    /// assert which spans were emitted.
-    #[derive(Clone)]
-    struct SharedWriter(Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for SharedWriter {
-        type Writer = SharedWriterGuard;
-        fn make_writer(&'a self) -> Self::Writer {
-            SharedWriterGuard(self.0.clone())
-        }
-    }
-
-    struct SharedWriterGuard(Arc<std::sync::Mutex<Vec<u8>>>);
-
-    impl std::io::Write for SharedWriterGuard {
-        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(buf);
-            Ok(buf.len())
-        }
-        fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
-    }
-
     /// Span-capture test for pipeline span emission (issue #417).
     ///
     /// Root cause of flakiness: `tracing` caches per-callsite `Interest`
@@ -127,20 +104,10 @@ mod tests {
     /// actual span capture.
     #[test]
     fn test_execute_emits_pipeline_spans() {
-        use tracing_subscriber::fmt::format::FmtSpan;
-
         // Ensure the global subscriber is set (poison-proof callsite interest).
         ensure_global_subscriber();
 
-        let buf = Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
-        let writer = SharedWriter(buf.clone());
-        let subscriber = tracing_subscriber::fmt()
-            .with_writer(writer)
-            .with_span_events(FmtSpan::NEW)
-            .with_ansi(false)
-            .finish();
-
-        tracing::subscriber::with_default(subscriber, || {
+        let buf = LogBuffer::run_with_span_events(|| {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -158,7 +125,7 @@ mod tests {
             });
         });
 
-        let out = String::from_utf8_lossy(&buf.lock().unwrap()).to_string();
+        let out = buf.text();
         assert!(
             out.contains("execute"),
             "execute span should be emitted, got: {out}"
