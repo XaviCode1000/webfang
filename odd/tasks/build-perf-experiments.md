@@ -26,7 +26,7 @@ Out: `panic = "abort"` (#1219 correctness), `wreq` vs reqwest, release `lto`/`co
 - [ ] T7 — `split-debuginfo`.
 - [ ] T8 — kache as RUSTC_WRAPPER.
 - [x] T9 — mr-boxington (mbx) via mise.
-- [ ] T10 — global build lock (flock) for build/test commands.
+- [ ] T10 — (REJECTED as a repo change: verified no script wraps interactive cargo)  global build lock (flock) for build/test commands.
 
 ## Measured results
 Cold `cargo build --workspace`, virgin target dir each time, same revision. Load is recorded because this machine is shared with other agent worktrees and contention dominates.
@@ -42,11 +42,23 @@ Cold `cargo build --workspace`, virgin target dir each time, same revision. Load
 | T6 | mold 3.0.0 linker, pair order 1 (mold won at the worse load) | 89.9 s vs 106.2 s | 8.5-13.4 | **-15.3%** |
 | T6 | mold, pair order 2 (reversed) | 91.9 s vs 98.9 s | 11.6-12.2 | **-7.1%** |
 | T9 | mbx 1.22.0, second virgin target dir (fake new worktree) | **70.7 s** | 29.7 | **722 cache hits — first tool that hits across dirs** |
+| T9 | mbx via the Cargo shim, two virgin dirs | **60.3 s** / 60.3 s | 2.7 / 5.0 | 722 hits both, 13m31s of compiler work saved per build |
 
 T6 applied as `RUSTFLAGS="-C link-arg=-fuse-ld=mold"` with mold's `bin` on PATH, per-invocation only. mold 3.0.0 came from the GitHub release tarball, not `cargo install` (the crates.io crate named `mold` is an unrelated DI library). `-fuse-ld=<absolute path>` is rejected by gcc: the linker must be found by name, so `ld.mold` has to be on PATH.
 
 Unit CPU total: 2152 s at opt-level 3 -> 712 s at opt-level 0 (-67%). Peak RSS ~2.4 GiB in both.
 Commit `04dc5ce7` lands T5.
+
+### Gate verification with Cargo wrapped
+
+The shim is not a repo change, so the gate still has to pass with every Cargo command routed through mbx. Measured in this worktree with `~/.local/share/mbx/bin` first on PATH:
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all -- --check` | exit 0 — trailing `--` args pass through intact |
+| `cargo check --workspace --all-targets --all-features` | `Finished` in 93.1 s; 108 hits, 1 miss, 1504 not looked up, 20 bypassed |
+
+The arg shapes that worried me most (`clippy ... -- -D warnings -W ratchet`) and the plain build path are both handled. What the numbers also show: `--all-features` gets almost nothing out of the cache (1504 "not looked up" against 108 hits), so the mbx win concentrates on the default-features `build --workspace` route that agents actually run in a loop.
 
 ### Findings so far
 1. T5 is the dominant lever by a wide margin. Everything else measured is within contention noise or smaller.
