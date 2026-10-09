@@ -1163,10 +1163,19 @@ mod spec_parity_tests {
         assert!(ck.get_long_help().is_some());
     }
 
-    /// Slice 3 pin: the feature-gated pair keeps its identity in BOTH
-    /// compile configurations — visible flag under the feature, hidden
-    /// compatibility placeholder without it (`visible_alias` only under
-    /// `ai`, exactly like today's derive output).
+    /// Slice 3 pin: the flags keep their identity in BOTH compile
+    /// configurations.
+    ///
+    /// The two halves of this test now assert DIFFERENT contracts, and the
+    /// split is deliberate:
+    ///
+    /// - `clean_ai` is UNGATED (ADR-0004 slice C), so it is asserted
+    ///   UNCONDITIONALLY — same help, same visibility, same visible alias in
+    ///   every configuration. That is what the test's name asks for
+    ///   ("identity ACROSS cfg combinations"), so it is asserted rather than
+    ///   branched.
+    /// - `adaptive_selectors` is still genuinely gated, so its `cfg` split
+    ///   remains the correct assertion and is untouched.
     #[test]
     fn feature_gated_flags_keep_identity_across_cfg_combinations() {
         let args = command_args();
@@ -1189,28 +1198,46 @@ mod spec_parity_tests {
                 .collect::<Vec<_>>(),
             vec!["false"]
         );
-        if cfg!(feature = "ai") {
-            assert_eq!(
-                help_of(clean),
-                "Use AI-powered semantic cleaning for better RAG output"
-            );
-            assert!(!clean.is_hide_set(), "clean_ai is visible under `ai`");
-            let vis: Vec<&str> = clean.get_visible_aliases().into_iter().flatten().collect();
-            assert_eq!(
-                vis,
-                vec!["ai"],
-                "visible alias `ai` only under the ai feature"
-            );
-        } else {
-            assert_eq!(
-                help_of(clean),
-                "Feature flag placeholder when AI is not enabled"
-            );
-            assert!(
-                clean.is_hide_set(),
-                "clean_ai placeholder must stay hidden without `ai`"
-            );
-        }
+        // `clean_ai` asserts the NEW contract, with no `cfg` at all: the
+        // semantic cleaner no longer needs ONNX to exist, so the flag is
+        // offered in EVERY build.
+        //
+        // Visible with its REAL help is the correct outcome, and worth being
+        // explicit about because "real help on a hidden flag" is incoherent:
+        //
+        // - The old shape hid the flag and swapped in a placeholder string.
+        //   That made the flag invisible in `--help`, so an operator on a
+        //   non-AI build had no way to discover it existed, and only learned
+        //   of it by tripping exit 78 at runtime.
+        // - Un-hiding it is what lets the same operator read what the flag
+        //   does BEFORE running anything.
+        // - The capability half is unchanged and still named: a build without
+        //   `ai` rejects `--clean-ai` through
+        //   `preflight::check_clean_ai_feature` (exit 78, before any network
+        //   I/O). So the operator trades an undiscoverable flag for a
+        //   discoverable one whose rejection says exactly what to do
+        //   ("recompilá con --features ai").
+        //
+        // Keeping the help text identical in both builds is the point of the
+        // assertion: the flag means the same thing whichever build renders it.
+        assert_eq!(
+            help_of(clean),
+            "Use AI-powered semantic cleaning for better RAG output",
+            "clean_ai must carry its real help in EVERY configuration; a \
+             placeholder here is the pre-slice-C contract"
+        );
+        assert!(
+            !clean.is_hide_set(),
+            "clean_ai must stay VISIBLE in every configuration: hiding it \
+             reintroduces the undiscoverable flag the slice removed"
+        );
+        let vis: Vec<&str> = clean.get_visible_aliases().into_iter().flatten().collect();
+        assert_eq!(
+            vis,
+            vec!["ai"],
+            "visible alias `ai` must be offered in every configuration, not \
+             only under the `ai` feature"
+        );
 
         let adaptive = arg_by_id(&args, "adaptive_selectors");
         assert_eq!(adaptive.get_long(), Some("adaptive-selectors"));

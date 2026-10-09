@@ -9,7 +9,10 @@
 /// Parsing stays in production code (NOT the OptionsSpec SSOT) because
 /// the spec does not yet model `f32` ranges; the value parser is bound
 /// by the hand-built `manual_threshold` slot in `cli::spec_command::ai_args`.
-#[cfg(feature = "ai")]
+///
+/// NOT feature-gated: the flag is ungated by decision (ADR-0004, slice C), and
+/// the parser is pure `f32` range logic with no ONNX dependency, so a build
+/// without `ai` both parses and validates it identically.
 pub(crate) fn parse_threshold(s: &str) -> Result<f32, String> {
     let val: f32 = s
         .parse()
@@ -106,12 +109,16 @@ pub(crate) fn parse_max_tokens(s: &str) -> Result<usize, String> {
 
 /// AI-powered semantic cleaning arguments.
 ///
-/// `max_chars` and the deprecated `max_tokens` are UNGATED (ADR-0004): both are
-/// emitted by `ai_args` in every cargo configuration, so the fields and their
-/// reads are too. Every other field is `#[cfg(feature = "ai")]` — mirroring the
-/// pre-migration derive's behavior of producing zero args and a zero-field
-/// struct when the cargo feature is off. `From<Args> for CrawlOptions`
-/// reflects that.
+/// EVERY field is UNGATED (ADR-0004, slice C).
+///
+/// This struct used to carry `#[cfg(feature = "ai")]` on `threshold`,
+/// `offline` and `ai_model`, with `max_chars` and the deprecated
+/// `max_tokens` ungated. That split is gone: the semantic cleaner no longer
+/// needs ONNX to exist, so every flag here describes behavior a build
+/// without the `ai` feature can still honor — the cleaner runs over whatever
+/// `EmbeddingPort` the run built, remote included. `ai_args` renders the same
+/// surface in every configuration, and this struct matches it field for
+/// field. `From<Args> for CrawlOptions` reflects that.
 #[derive(Debug, Default)]
 pub struct AiArgs {
     /// Maximum characters per chunk before rejection (a chunk-size guard, not a context-window setting; the effective ceiling is the embedding backend's own limit, which a remote endpoint enforces server-side as HTTP 400/413)
@@ -133,19 +140,28 @@ pub struct AiArgs {
     /// documents the precedence against `max_chars_explicit`.
     pub max_tokens: Option<usize>,
 
-    /// Relevance threshold for AI semantic filtering (0.0-1.0)
-    #[cfg(feature = "ai")]
+    /// Relevance threshold for AI semantic filtering (0.0-1.0).
+    ///
+    /// UNGATED (ADR-0004, slice C): the relevance filter is the cleaner's own
+    /// logic and computes over vectors from whatever `EmbeddingPort` the run
+    /// built, so every build can honor this value.
     pub threshold: f32,
 
-    /// Run AI model in offline mode
-    #[cfg(feature = "ai")]
+    /// Run AI model in offline mode.
+    ///
+    /// UNGATED, though its effect is local-ONNX only: "offline" constrains the
+    /// hf_hub resolver, a property of THIS build's embedding backend.
     pub offline: bool,
 
     // Raw string on purpose (#827): validation is deferred to the AI init
     // path (`build_ai_cleaner`) so a poisoned AI_MODEL_ID env var cannot
     // make unrelated CLI invocations fail at parse time.
     /// AI model to use: granite-97m (default, fast) or granite-311m (higher quality). Env WEBFANG_AI_MODEL_ID wins; legacy AI_MODEL_ID still accepted but deprecated for removal in v3.0
-    #[cfg(feature = "ai")]
+    ///
+    /// UNGATED, and the raw-string policy is what makes that safe rather than
+    /// merely convenient: an unparseable value is recorded here and rejected by
+    /// the AI init path (which exists only on a local-ONNX build), instead of
+    /// failing at parse time on a build that has no local model to configure.
     pub ai_model: Option<String>,
 }
 
@@ -181,34 +197,21 @@ fn ungated_from_matches(m: &clap::ArgMatches) -> Result<(usize, bool, Option<usi
 impl AiArgs {
     /// The single reader for both builds.
     ///
-    /// ADR-0004 makes `--max-chars` and the `--max-tokens` shim ungated, so
-    /// those three values exist in every configuration; the rest of the struct
-    /// is `#[cfg(feature = "ai")]`. Concentrating the whole read HERE means one
-    /// ungated `FromArgMatches` impl serves both builds — two `cfg`-gated impls
-    /// duplicated the trait methods verbatim, and a fourth ungated field would
-    /// have needed editing in two places with nothing to catch the miss.
+    /// The whole struct is ungated, so this reads EVERY field unconditionally.
+    /// Concentrating the read HERE means one `FromArgMatches` impl serves every
+    /// build: two `cfg`-gated impls once duplicated the trait methods verbatim,
+    /// and any field a build could not read would have needed editing in two
+    /// places with nothing to catch the miss.
     fn from_matches(m: &clap::ArgMatches) -> Result<Self, clap::Error> {
         let (max_chars, max_chars_explicit, max_tokens) = ungated_from_matches(m)?;
-        #[cfg(feature = "ai")]
-        {
-            use crate::cli::spec_command::extract;
-            Ok(Self {
-                max_chars,
-                max_chars_explicit,
-                max_tokens,
-                threshold: extract::value::<f32>(m, "threshold")?,
-                offline: m.get_flag("offline"),
-                ai_model: extract::opt::<String>(m, "ai_model"),
-            })
-        }
-        // Without the feature the rest of the struct is gone; `FromArgMatches`
-        // still reads the ungated triple because those flags render in this
-        // configuration too.
-        #[cfg(not(feature = "ai"))]
+        use crate::cli::spec_command::extract;
         Ok(Self {
             max_chars,
             max_chars_explicit,
             max_tokens,
+            threshold: extract::value::<f32>(m, "threshold")?,
+            offline: m.get_flag("offline"),
+            ai_model: extract::opt::<String>(m, "ai_model"),
         })
     }
 }
@@ -236,9 +239,9 @@ impl clap::Args for AiArgs {
     }
 }
 
-#[cfg(all(test, feature = "ai"))]
+#[cfg(test)]
 mod spec_parity_tests {
-    //! ADR-002 equivalence proof (slice 5a, `cfg(feature = "ai")` only):
+    //! ADR-002 equivalence proof (slice 5a, ALL configurations):
     //! the hand-derived clap surface of [`AiArgs`] must stay in lockstep
     //! with the OptionsSpec AI group. The `threshold` arg is hand-built
     //! (deferred from the spec), so its surface is pinned independently.

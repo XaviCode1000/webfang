@@ -89,6 +89,8 @@ pub mod embedding_port;
 /// Shared excerpt byline-repair invariant (regex + whitespace), pure & IO-free.
 pub(crate) mod excerpt_repair;
 pub mod llm_port;
+// Module docs live in `model_profile.rs` (ADR-0004 §"Perfiles de modelo").
+pub mod model_profile;
 pub mod note_repository;
 /// Single source of truth for user-facing options (ADR-002): declarative
 /// specs that generate clap args, JSON Schema, and shared validators.
@@ -169,8 +171,13 @@ pub use waf::{
 };
 
 pub use providers::{
-    Capability, ProviderConfig, ProviderKind, ProviderRegistry, ProvidersConfig, RegistryError,
+    Capability, ModelProfileOverride, ModelProfileRegistry, ModelProfilesConfig, ProfileError,
+    ProfileProvenance, ProviderConfig, ProviderKind, ProviderRegistry, ProvidersConfig,
+    RegistryError,
 };
+// Re-exported next to the profile overrides above; `providers` only carries the
+// config-file-facing half of the profile API.
+pub use model_profile::{builtin_profiles, ModelProfile};
 
 /// Compression types supported for sitemap parsing
 #[derive(Debug, Clone, PartialEq, Eq)]
