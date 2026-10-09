@@ -7,7 +7,10 @@
 //! embedding provider slot (`--embedding-provider` / default resolution).
 //!
 //! Wire contract (`fixtures/remote_embedding/`):
-//! - request `{model, input}` to `{base_url}/embeddings` with bearer auth;
+//! - request `{model, input}` to `{base_url}/embeddings`, con cabecera
+//!   `Authorization: Bearer` **sólo si** la fuente configurada aporta
+//!   credencial: `auth: {source: "none"}` envía la petición anónima, sin
+//!   sintetizar ni una cabecera vacía;
 //! - response vectors map 1:1 to inputs in order;
 //! - tolerant parse (never `deny_unknown_fields`, `usage` is `Option` +
 //!   `#[serde(default)]`); missing `data` / empty vectors are
@@ -110,7 +113,18 @@ pub struct RemoteEmbeddingAdapter {
     http: wreq::Client,
     base_url: Url,
     model: String,
-    api_key: ApiKey,
+    /// La credencial resuelta, o [`None`] cuando el provider declara
+    /// `auth: {source: "none"}` — es decir, un endpoint anónimo por diseño.
+    ///
+    /// `Option` y no una `ApiKey` vacía: la ausencia de credencial se
+    /// expresa como **ausencia de cabecera**, nunca como `Bearer ` — que un
+    /// servidor puede rechazar como key inválida en vez de entender como
+    /// petición anónima (invariante 2 de [`crate::domain::auth_source`]).
+    api_key: Option<ApiKey>,
+    /// Etiqueta de la fuente declarada (`"none"`, `"env"`, `"keyring"`,
+    /// `"encrypted_file"`), para que un 401 pueda decir en el log si se
+    /// mandó credencial o no. Nunca deriva del secreto.
+    auth_source: &'static str,
     provider_id: String,
     pinned_dim: Option<usize>,
     dim: OnceLock<usize>,
@@ -264,6 +278,7 @@ impl RemoteEmbeddingAdapter {
         http: wreq::Client,
     ) -> Result<Self, ProviderInitError> {
         entry_gate(&config)?;
+        let auth_source = config.auth.label();
         let secret = config
             .auth
             .resolve()
@@ -286,6 +301,7 @@ impl RemoteEmbeddingAdapter {
             base_url: config.base_url.clone(),
             model,
             api_key: secret,
+            auth_source,
             provider_id: config.id.clone(),
             pinned_dim: config.embedding_dim,
             dim: OnceLock::new(),
@@ -363,14 +379,15 @@ impl RemoteEmbeddingAdapter {
         let mut attempt: u32 = 0;
         loop {
             attempt += 1;
-            match self
-                .http
-                .post(&endpoint)
-                .bearer_auth(self.api_key.expose_secret())
-                .json(&request)
-                .send()
-                .await
-            {
+            // Invariante 1: `auth: None` no manda cabecera. La rama `Some`
+            // es la única que puede firmarla, así que no hay forma de que una
+            // credencial llegue a una petición declarada anónima — ni siquiera
+            // si el entorno tiene una key válida.
+            let mut pending = self.http.post(&endpoint);
+            if let Some(key) = &self.api_key {
+                pending = pending.bearer_auth(key.expose_secret());
+            }
+            match pending.json(&request).send().await {
                 Ok(response) => {
                     let status = response.status().as_u16();
                     if response.status().is_success() {
@@ -387,6 +404,13 @@ impl RemoteEmbeddingAdapter {
                         )))
                         .await;
                         continue;
+                    }
+                    // Un 401 se explica según lo que realmente se mandó. Sin
+                    // credencial no es "credencial inválida": mandarle a
+                    // rotar una key que nunca existió es el falso positivo
+                    // que esta fila evita.
+                    if status == 401 {
+                        return Err(self.unauthorized_error(status));
                     }
                     return Err(last_status_error(&self.provider_id, status));
                 },
@@ -408,6 +432,46 @@ impl RemoteEmbeddingAdapter {
                 },
             }
         }
+    }
+
+    /// A 401 reportado según si la petición llevaba credencial.
+    ///
+    /// Sigue siendo [`SemanticError::Inference`] (mismo tipo que cualquier
+    /// otro fallo remoto — no se introduce una variante nueva: `error.rs` está
+    /// fuera de las superficies de esta unidad). Lo que cambia es el texto en
+    /// español y el campo estructurado `auth_source` del log, que es lo que
+    /// permite a un operador —o a un matcher programático— distinguir los dos
+    /// casos sin parsear el estado HTTP.
+    ///
+    /// El secreto nunca aparece: `auth_source` es la etiqueta de la fuente
+    /// declarada, no la credencial.
+    fn unauthorized_error(&self, status: u16) -> SemanticError {
+        if self.api_key.is_none() {
+            tracing::warn!(
+                provider_id = %self.provider_id,
+                status,
+                auth_source = self.auth_source,
+                credential_sent = false,
+                "remote embedding endpoint rejected an anonymous request"
+            );
+            return SemanticError::Inference(format!(
+                "el endpoint de embeddings '{}' devolvió {status} a una petición sin credencial \
+                 (auth source '{}'): el servidor rechazó la petición anónima",
+                self.provider_id, self.auth_source
+            ));
+        }
+        tracing::warn!(
+            provider_id = %self.provider_id,
+            status,
+            auth_source = self.auth_source,
+            credential_sent = true,
+            "remote embedding endpoint rejected the configured credential"
+        );
+        SemanticError::Inference(format!(
+            "el endpoint de embeddings '{}' devolvió {status}: rechazó la credencial configurada \
+             (auth source '{}')",
+            self.provider_id, self.auth_source
+        ))
     }
 
     /// Bounded body read (16 MiB cap) plus the tolerant wire parse, with the

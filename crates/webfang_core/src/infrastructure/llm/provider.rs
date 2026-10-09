@@ -8,6 +8,9 @@
 //!   mensaje — nunca se propaga crudo hasta el Container.
 //! - El cliente HTTP se comparte a nivel proceso vía
 //!   [`build_default_http_client`]; el provider lo acepta con `with_http`.
+//! - `AuthSource::None` resuelve `Ok(None)`: **no** es un fallo de credencial.
+//!   Ver [`ProviderInitError::AnonymousCompletionUnsupported`] por qué el
+//!   camino de completion aún no lo soporta.
 
 use crate::domain::auth_source::AuthError;
 use crate::domain::llm_port::LlmPort;
@@ -49,6 +52,24 @@ pub enum ProviderInitError {
     /// El constructor del cliente HTTP compartido falló (config de red/TLS).
     #[error("no se pudo crear el cliente HTTP compartido: {0}")]
     HttpClient(String),
+    /// El provider declara `auth: {source: none}` en el camino de
+    /// chat/completions, que todavía exige credencial.
+    ///
+    /// **Variante transitoria** (B1): el endpoint anónimo ya está soportado en
+    /// embeddings remotos (`RemoteEmbeddingAdapter`), pero el cliente de
+    /// completion (`OpenAiLlmClient`) almacena un `ApiKey` y llama a
+    /// `bearer_auth` incondicionalmente, así que no puede representar "sin
+    /// credencial". Ese archivo (`infrastructure/llm/client.rs`) queda fuera de
+    /// las superficies de B1 y se pide como parche.
+    ///
+    /// Deliberadamente **NO** es [`AuthFailed`](Self::AuthFailed): `None` no es
+    /// un fallo de credencial, y mapearlo ahí mandaría a rotar una key que el
+    /// usuario nunca declaró.
+    #[error("provider '{provider_id}': endpoint anónimo (`auth: none`) todavía no soportado por el camino de chat/completions")]
+    AnonymousCompletionUnsupported {
+        /// Identificador del provider configurado como anónimo.
+        provider_id: String,
+    },
 }
 
 /// Configuración re-exportada arriba: `crate::domain::providers::ProviderConfig`.
@@ -116,6 +137,9 @@ impl OpenAiCompatibleProvider {
     ///
     /// [`ProviderInitError::AuthFailed`] / `InvalidBaseUrl` — la credencial
     /// se resuelve aquí, NO en la primera llamada.
+    /// [`ProviderInitError::AnonymousCompletionUnsupported`] si el provider
+    /// declara `auth: none` (ver la variante: el cliente de completion aún
+    /// exige credencial).
     pub fn with_http(
         config: ProviderConfig,
         http: wreq::Client,
@@ -127,6 +151,19 @@ impl OpenAiCompatibleProvider {
                 provider_id: config.id.clone(),
                 source,
             })?;
+        // `OpenAiLlmClient` guarda un `ApiKey` y firma toda petición
+        // (`bearer_auth` incondicional en `client.rs`). Sin ese cambio
+        // --`api_key: Option<ApiKey>` + rama `None` que no firma-- no hay
+        // forma de construir un cliente anónimo, y `None` NO puede
+        // materializarse como una key vacía: eso enviaría `Authorization:
+        // Bearer ` en contra del invariante 2. Se pide el cambio a
+        // `client.rs` como parche; mientras tanto se falla de forma
+        // explícita y con una variante que NO es `AuthFailed`.
+        let Some(secret) = secret else {
+            return Err(ProviderInitError::AnonymousCompletionUnsupported {
+                provider_id: config.id.clone(),
+            });
+        };
         let client = OpenAiLlmClient::with_http(http, config.base_url.clone(), secret);
         Ok(Self { client, config })
     }
