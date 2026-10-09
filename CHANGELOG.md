@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.8.0] - 2026-10-09
+
+
+### 🎉 Added
+
+- Ungate the semantic cleaner and its CLI flags (ADR-0004 slice C)
+- Allow an explicitly anonymous provider endpoint (B1)
+
+### 🏗️ Architecture Improvements
+
+- One shared harness for capturing tracing events ([#1945](https://github.com/XaviCode1000/webfang/pull/1945))
+
+### 🔧 Fixed
+
+- A panicked ingestion task no longer drains as success ([#1943](https://github.com/XaviCode1000/webfang/pull/1943))
+
+### 🧪 Testing
+
+- Assert the full anonymous-completion message, drop tautologies
+- Deduplicate the wiremock embeddings mount to clear the ratchet
 ## [2.7.3] - 2026-10-08
 
 
