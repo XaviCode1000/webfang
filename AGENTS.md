@@ -1386,6 +1386,29 @@ merged as `84dc0c1`. Saved ~54 min of CI (3 × 27 min → 1 × 27 min).
 
 **Fast gate (< 5s):**
 
+### Build tooling installed on this machine (#1952)
+
+Two local tools change build wall time by more than any code change will, and both fail **silently** when they are not on the path. Read this before measuring anything.
+
+```bash
+mbx --version                                  # mr-boxington, Cargo cache wrapper (warm worktree ~60 s vs 199 s cold)
+command -v cargo                               # MUST print ~/.local/share/mbx/bin/cargo, NOT ~/.cargo/bin/cargo
+```
+
+**Always run `command -v cargo` before trusting any build measurement.** `~/.cargo/bin` precedes the wrapper by rustup's default, so outside login shells `cargo` resolves to the rustup shim and bypasses mbx with no error and no warning: the build runs cold and looks completely normal. `mise activate bash --shims` puts the wrapper first but only in login shells — `.bashrc` overrides it afterwards on purpose for interactive ones — so the non-login shells that agents, cron and tools actually run in get nothing. This is why the per-worktree `.envrc` carries the `PATH_add` (see Worktree lifecycle). A build that bypassed the cache is indistinguishable from one that hit it; the only tell is a `mbx[cache]` line in the output, so assert the route and fail closed. This trap already produced one false published measurement.
+
+`[profile.dev.package."*"] opt-level = 0` is deliberate, not drift — it is worth -60% of a cold dev build (251 s -> 99 s, paired measurement) and `[profile.dev.build-override] opt-level = 3` keeps build scripts fast. Do not "fix" it.
+
+**mold 3.0.0** is installed locally for faster linking and is worth roughly -28% on `--all-targets` (89 binaries) where linking dominates. It is **not** committed and must not be: `mise.toml` records that CI has no mold and a repo-level install cannot be scoped to local-only builds. Local use only:
+
+```bash
+RUSTFLAGS="-C link-arg=-fuse-ld=mold" PATH=~/.local/opt/mold-3.0.0-x86_64-linux/bin:$PATH cargo build --all-targets
+```
+
+Note `-fuse-ld=<absolute path>` is rejected by gcc, so `ld.mold` must be found by name on PATH. Enabling it invalidates the mbx cache flavour, so the first build in each worktree pays a full cold compile.
+
+**Measured and rejected:** a repo-level global build lock (T10) — twelve scripts run Cargo and none wraps it, so it orders nothing while adding a stall risk. Full reasoning, numbers and the rejected experiments live in `odd/tasks/build-perf-experiments.md`.
+
 ```bash
 git branch --show-current    # Verify correct worktree BEFORE any edit
 cargo check                  # Verify compilation
