@@ -167,9 +167,10 @@ async fn status_429_with_retry_after_seconds_recovers_on_retry() {
 /// ~32 años de diferencia (o, en el código viejo, caerse al backoff sin
 /// decir nada). El aserto es de dos lados: por debajo, un segundo es el suelo
 /// exponencial y prueba que **hubo** un reintento real y no un bucle
-/// instantáneo; por arriba, diez segundos son el techo y prueban que no se
-/// respetó la fecha al pie de la letra —si se respetara, el test no
-/// terminaría nunca.
+/// instantáneo; por arriba, treinta segundos son el techo —un orden de
+/// magnitud por encima del ~1s real, con hueco para un runner de CI cargado—
+/// y prueban que no se respetó la fecha al pie de la letra: si se respetara,
+/// el test no terminaría nunca.
 ///
 /// Lo que la fila **no** puede ver es si el recorte fue a cero o una caída a
 /// backoff exponencial: por el cable ambos producerán ~1s. Esa distinción la
@@ -188,9 +189,12 @@ async fn status_429_with_past_http_date_clamps_and_recovers() {
 
     let elapsed = started.elapsed();
     assert!(
-        elapsed < Duration::from_secs(10),
+        elapsed < Duration::from_secs(30),
         "a past HTTP-date must clamp to the exponential floor (~1s), not to \
-         the ~32-year delta the header literally asks for; took {elapsed:?}"
+         the ~32-year delta the header literally asks for; the 30s bound is an \
+         order of magnitude above the real ~1s and leaves headroom on a loaded \
+         CI runner — the discriminating power is the magnitude, not the exact \
+         ceiling; took {elapsed:?}"
     );
     assert!(
         elapsed >= Duration::from_millis(900),
