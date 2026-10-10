@@ -1,0 +1,21 @@
+# Registro reproducible ADR-0004 — endpoints reales en loopback.
+# allow_loopback habilita el opt-in B1; el allowlist por CIDR (B2) es slice 2.
+[[providers]]
+id = "vllm-granite"
+display_name = "vLLM CPU (granite-embedding 97m, fp32)"
+kind = "open_ai_compatible"
+base_url = "http://127.0.0.1:8101/v1"
+auth = { source = "none" }
+capabilities = ["embedding"]
+model = "ibm-granite/granite-embedding-97m-multilingual-r2"
+allow_loopback = true
+
+[[providers]]
+id = "ollama-granite"
+display_name = "Ollama (granite-embedding 150m, CPU)"
+kind = "open_ai_compatible"
+base_url = "http://127.0.0.1:11434/v1"
+auth = { source = "none" }
+capabilities = ["embedding"]
+model = "granite-embedding:latest"
+allow_loopback = true
