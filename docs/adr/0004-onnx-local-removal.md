@@ -55,7 +55,8 @@ La decisión entre borrado total (6a) y refugio (6b) se arbitra por **dos señal
 **1. Criterio técnico (gate del paso 6).** Se evalúa al llegar al paso 5:
 
 - Los *Criterios de aceptación de M2* (abajo) pasan en verde contra **Ollama y vLLM reales**, no solo wiremock, en al menos un entorno documentado.
-- La suite wiremock del PR-8 (401 —con y sin credencial—, 429 con `Retry-After` en segundos y en fecha, 5xx, timeout, respuesta malformada, orden de batch, truncado de stream, DNS) está verde.
+- La suite wiremock del PR-8 (401 —con y sin credencial—, 429 con `Retry-After` en segundos y en fecha, 5xx, timeout, respuesta malformada, orden de batch, error de lectura de cuerpo, DNS) está verde.
+- Sobre el 429, la regla corregida: `Retry-After` se honra en **ambas** formas que permite RFC 9110 §10.2.3 — `delay-seconds` y fecha HTTP. Antes la fecha HTTP se descartaba en silencio y caía a backoff exponencial, con lo que el cliente reintentaba antes de lo que el servidor pedía; hoy la conversión es una función pura con `now` por parámetro, y una cabecera presente pero inservible emite un `warn!` estructurado en lugar de degradarse sin dejar rastro.
 
 Si ambos se cumplen, el paso 6 puede proceder, sujeto a la señal 2. Si alguno falla, se posterga un release minor y el gap se registra en este ADR.
 
@@ -103,6 +104,7 @@ Confirmado: no hay `model_id` en schema ni DTOs (0 hits en infraestructura+aplic
 - `--offline` + remoto: exit 78 —ya implementado (`EXIT_CONFIG`, `cli/error.rs:36`; `llm_wire.rs:141-147`): es guarda de regresión, no criterio nuevo.
 - Registro reproducible contra Ollama y vLLM reales archivado antes del paso 6.
 - Suite wiremock del PR-8 en verde **más test de 401 con y sin credencial**: con `AuthSource::None` un 401 de un provider sin credencial debe distinguirse de un 401 por credencial inválida. Ese test no existe todavía —es entregable de B1, no criterio preexistente—.
+- **Enmienda sobre "truncado de stream"** (ver *Condición de revisión* §1): el escenario, tal como estaba enumerado, no es expresable en el código y por eso no se puede cubrir. El adapter no tiene camino de lectura en streaming —usa `read_body_capped`, una lectura acotada a 16 MiB—, de modo que no existe un punto donde un stream pueda truncarse a mitad, y wiremock no ofrece ninguna primitiva para abortar un body en curso. El criterio verificable que lo sustituye es el **mapeo de error de lectura de cuerpo**: una lectura que falla se traduce a `SemanticError::Inference` con el mensaje en español que nombra el endpoint, y nunca es silencio ni `panic`.
 
 ## Reversibilidad
 
