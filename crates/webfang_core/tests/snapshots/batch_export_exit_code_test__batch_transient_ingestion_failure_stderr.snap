@@ -1,0 +1,11 @@
+---
+source: crates/webfang_core/tests/batch_export_exit_code_test.rs
+expression: redacted
+---
+  <TIMESTAMP> ERROR <MODULE>: network error starting download, url: http://127.0.0.1:<PORT>/, error: error sending request for uri (http://127.0.0.1:<PORT>/): client error (<KIND>)
+    at <FILE>.rs:<LINE>
+
+  <TIMESTAMP>  WARN <MODULE>: download failed: aborting pipeline, url: http://127.0.0.1:<PORT>/, error: error de red: <TRANSPORT_FAILURE>
+    at <FILE>.rs:<LINE>
+
+Error: Falló la ingesta de vectores: error de red: <TRANSPORT_FAILURE>

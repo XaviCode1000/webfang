@@ -104,6 +104,27 @@ Rows 21-22 classify by `io::ErrorKind`, mirroring the existing
 
 Row 23 is the heart of Gate 2: data-integrity errors are NEVER blindly retried.
 
+Row 26 is materialized end-to-end as of #1949: BOTH call sites — the
+batch pipeline (`cli/batch_flow.rs::run_batch_elastic`) and the single-run
+orchestrator (`cli/orchestrator.rs`) — route every ingestion failure through
+`cli::error::ingestion_exit_for` (classify → typed overrides → class
+default), so the transient backend failure exits 69 as declared. The
+sub-case split is deliberate and pinned:
+
+- **Backend-transient** — a network-class re-download failure or an
+  ingestion timeout → `TransientRetriable` / `TransientBackoff` → 69,
+  "retry yes". This is the cell the row declares.
+- **Panicked or cancelled ingestion task** — constructed as
+  `ScraperError::Ingestion` by `cli/elastic.rs::join_failure` — classifies
+  `InternalFatal` → exit 3: a data-loss defect is never a retryable
+  outage. A closed CPU bridge and a repository persistence failure share
+  this arm (row 23 semantics).
+
+Pins: the `ingestion_*` routing tests in `cli/error.rs` and the behavioral
+`batch_transient_ingestion_failure_exits_unavailable`
+(`tests/batch_export_exit_code_test.rs`, `persistence`-gated like the
+`--elastic` sink it drives).
+
 ### Special cell — `Cancelled`
 
 `Cancelled` is a cooperative control signal (shutdown token), NOT an operational
@@ -138,8 +159,16 @@ permanent-kind I/O failures through `permanent_io_error_exit_for` to
 ExtractionFailed check.
 
 Remaining divergences between `ScraperError::classify` and this matrix
-(ExtractionFailed, Conversion, Readability/Extraction, Middleware,
-Ingestion) are tracked for reconciliation in issue #839.
+(ExtractionFailed, Conversion, Readability/Extraction, Middleware) are
+still open; reconciliation is deferred to a separate audit — #839 is closed
+and tracks nothing. The Ingestion divergence, #839's fifth member, is
+resolved for exit-code purposes by #1949: the batch call site routes
+ingestion failures through `cli::error::ingestion_exit_for`, so the
+transient backend failure honors row 26 (69) while the `Ingestion`
+variant's `InternalFatal` classification (panicked/cancelled tasks) is the
+pinned sub-case split documented under the Family 4 table. The single-run
+call site (`cli/orchestrator.rs`) routes through the same helper as of
+#1949, closing the last pre-fix mapping.
 
 As of #957, the Family 2 budget rows are materialized end-to-end too:
 `ScraperError::CrawlLimit` classifies `DomainRecoverable` (rows 9 and 11) and

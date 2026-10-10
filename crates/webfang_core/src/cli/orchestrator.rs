@@ -257,7 +257,10 @@ pub async fn run(
 
     if let Some(ref ingestion) = elastic_ingestion {
         if let Err(e) = run_elastic_ingestion(ingestion, &results).await {
-            return CliExit::IoError(format!("Falló la ingesta de vectores: {e}"));
+            // #1949: canonical classify → exit routing (matrix row 26), never
+            // a hardcoded IoError (74) — a transient backend failure is
+            // "unavailable, retry" (69).
+            return crate::cli::error::ingestion_exit_for(&e);
         }
     }
 
