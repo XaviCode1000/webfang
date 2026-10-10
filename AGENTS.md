@@ -410,8 +410,22 @@ export CARGO_TARGET_DIR=$HOME/.cache/cargo-target/$TREE
 export CARGO_INCREMENTAL=0
 unset RUSTC_WRAPPER
 export CARGO_LLVM_COV_TARGET_DIR=$HOME/.cache/cargo-target/$TREE-llvm-cov
+PATH_add $HOME/.local/share/mbx/bin
 EOF
 direnv allow     # gitignored; carries the per-tree cache policy
+
+# mbx (mr-boxington) wraps Cargo so a warm worktree compiles ~40% less. The
+# PATH_add line above is not optional, and it must come first: `~/.cargo/bin`
+# is ahead of the wrapper by rustup's default, so without it every `cargo`
+# invocation resolves to the rustup shim and **silently bypasses mbx**. There
+# is no error and no warning — the build looks normal and simply runs cold,
+# which is how a bad measurement gets taken. `mise activate bash --shims` also
+# puts the wrapper first, but only in login shells; agents, cron and other
+# non-login, non-interactive shells never run it, so direnv is the one route
+# that covers them all. Scoped per-worktree on purpose: the global mise config
+# already routes mise-activated interactive shells, and this keeps the wrapper
+# out of unrelated Rust projects. Any fix attempt must be verified with
+# `command -v cargo`, never by trusting the install succeeded.
 
 # There is deliberately NO second check here. The only enforcement is
 # scripts/ci_fast_gate.sh, and it works by canonical identity, not by name.
