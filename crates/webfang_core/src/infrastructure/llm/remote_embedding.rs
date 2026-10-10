@@ -649,6 +649,7 @@ mod tests {
             model: Some("nomic-embed-text".to_string()),
             embedding_dim: None,
             allow_loopback: false,
+            network_policy: crate::domain::network_policy::NetworkPolicy::default(),
         }
     }
 

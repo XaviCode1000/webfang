@@ -57,6 +57,7 @@ fn config_for(server: &wiremock::MockServer, auth: AuthSource) -> ProviderConfig
         embedding_dim: None,
         // Loopback es el wiremock; el opt-in de config es lo que lo permite.
         allow_loopback: true,
+        network_policy: webfang_core::domain::network_policy::NetworkPolicy::default(),
     }
 }
 
@@ -87,6 +88,7 @@ fn config_without_server(auth: AuthSource) -> ProviderConfig {
         model: Some("nomic-embed-text".to_string()),
         embedding_dim: None,
         allow_loopback: false,
+        network_policy: webfang_core::domain::network_policy::NetworkPolicy::default(),
     }
 }
 
