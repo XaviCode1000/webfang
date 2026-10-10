@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.9.0] - 2026-10-10
+
+
+### 🎉 Added
+
+- Per-provider network allowlist policy (B2, slice 1) ([#1957](https://github.com/XaviCode1000/webfang/pull/1957))
+
+### 🔧 Fixed
+
+- Honor Retry-After in both RFC 9110 forms on the embedding adapter ([#1948](https://github.com/XaviCode1000/webfang/pull/1948))
+- Route elastic ingestion exits through the canonical classify machinery ([#1955](https://github.com/XaviCode1000/webfang/pull/1955))
 ## [2.8.0] - 2026-10-09
 
 
