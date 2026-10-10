@@ -1268,68 +1268,40 @@ mod tests {
     // first. Each registry test therefore captures the winner after its own arm
     // and asserts only the order- and race-independent invariant — once armed,
     // no later set replaces it (#996).
+    // A minimal guard that never rewrites the builder. Shared by the
+    // object-safety and keep-first tests: both need a valid `SsrfGuard`, and
+    // two identical copies of these two methods were an exact jscpd clone.
+    struct NoopGuard;
+    impl sealed::Sealed for NoopGuard {}
+    impl SsrfGuard for NoopGuard {
+        fn secure_client(&self, builder: wreq::ClientBuilder) -> wreq::ClientBuilder {
+            builder
+        }
+
+        fn secure_client_with_loopback(
+            &self,
+            builder: wreq::ClientBuilder,
+            _allow_loopback: bool,
+        ) -> wreq::ClientBuilder {
+            builder
+        }
+    }
+
     #[test]
     fn ssrf_guard_port_is_object_safe_via_sealed() {
-        struct FakeGuard;
-        impl sealed::Sealed for FakeGuard {}
-        impl SsrfGuard for FakeGuard {
-            fn secure_client(&self, builder: wreq::ClientBuilder) -> wreq::ClientBuilder {
-                builder
-            }
-
-            fn secure_client_with_loopback(
-                &self,
-                builder: wreq::ClientBuilder,
-                _allow_loopback: bool,
-            ) -> wreq::ClientBuilder {
-                builder
-            }
-        }
         fn assert_dyn(_: &dyn SsrfGuard) {}
-        let fake = FakeGuard;
-        assert_dyn(&fake);
+        assert_dyn(&NoopGuard);
     }
 
     #[test]
     fn registry_is_keep_first() {
-        struct FakeGuard1;
-        struct FakeGuard2;
-        impl sealed::Sealed for FakeGuard1 {}
-        impl sealed::Sealed for FakeGuard2 {}
-        impl SsrfGuard for FakeGuard1 {
-            fn secure_client(&self, builder: wreq::ClientBuilder) -> wreq::ClientBuilder {
-                builder
-            }
-
-            fn secure_client_with_loopback(
-                &self,
-                builder: wreq::ClientBuilder,
-                _allow_loopback: bool,
-            ) -> wreq::ClientBuilder {
-                builder
-            }
-        }
-        impl SsrfGuard for FakeGuard2 {
-            fn secure_client(&self, builder: wreq::ClientBuilder) -> wreq::ClientBuilder {
-                builder
-            }
-
-            fn secure_client_with_loopback(
-                &self,
-                builder: wreq::ClientBuilder,
-                _allow_loopback: bool,
-            ) -> wreq::ClientBuilder {
-                builder
-            }
-        }
-
-        let fake1: Arc<dyn SsrfGuard> = Arc::new(FakeGuard1);
+        let fake1: Arc<dyn SsrfGuard> = Arc::new(NoopGuard);
         set_ssrf_guard(fake1);
         // Read after our own arm, so this is a registry value and never the
-        // fallback: `FakeGuard1` when this test armed an unarmed registry,
-        // or a sibling's guard in a shared `cargo test` process.
+        // fallback: our guard when this test armed an unarmed registry, or a
+        // sibling's guard in a shared `cargo test` process.
         let winner = ssrf_guard();
-        set_ssrf_guard(Arc::new(FakeGuard2));
+        set_ssrf_guard(Arc::new(NoopGuard));
         assert!(
             Arc::ptr_eq(&ssrf_guard(), &winner),
             "a later set must not replace the already-armed guard (#996)"
