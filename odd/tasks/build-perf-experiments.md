@@ -44,6 +44,8 @@ Cold `cargo build --workspace`, virgin target dir each time, same revision. Load
 | T9 | mbx 1.22.0, second virgin target dir (fake new worktree) | **70.7 s** | 29.7 | **722 cache hits — first tool that hits across dirs** |
 | T9 | mbx via the Cargo shim, two virgin dirs | **60.3 s** / 60.3 s | 2.7 / 5.0 | 722 hits both, 13m31s of compiler work saved per build |
 | T9 | mbx via the shim, `--all-features`, two virgin dirs | **60.8 s** | 6.3 | 813 hits, 199 misses — **same benefit as default features** |
+| T6 | mold 3.0.0, `--all-targets` (89 binaries), GNU ld warm baseline | **124.4 s** vs 173.6 s | 18-27 vs 1.3-12.3 | **-28%**, mold won at roughly double the load |
+| T6 | mold, `--all-targets`, cold mbx cache | 159.8 s (0 hits) | 10.7-18.1 | beat GNU ld's **warm** build by 14 s |
 
 T6 applied as `RUSTFLAGS="-C link-arg=-fuse-ld=mold"` with mold's `bin` on PATH, per-invocation only. mold 3.0.0 came from the GitHub release tarball, not `cargo install` (the crates.io crate named `mold` is an unrelated DI library). `-fuse-ld=<absolute path>` is rejected by gcc: the linker must be found by name, so `ld.mold` has to be on PATH.
 
