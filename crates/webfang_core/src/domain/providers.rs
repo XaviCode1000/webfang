@@ -12,6 +12,7 @@
 use url::Url;
 
 use crate::domain::auth_source::AuthSource;
+use crate::domain::network_policy::NetworkPolicy;
 
 /// Versioned model profiles live in the sibling [`crate::domain::model_profile`]
 /// module; they are re-exported here because both are read from the same user
@@ -103,6 +104,15 @@ pub struct ProviderConfig {
     /// state (#1462).
     #[serde(default)]
     pub allow_loopback: bool,
+    /// Per-provider network allowlist policy (B2, ADR-0004, issue #1947).
+    ///
+    /// Absent means today's behavior exactly — public endpoints only,
+    /// loopback via `allow_loopback`. Entries only take effect with
+    /// `mode: "allowlist"` and are validated fail-loud: the never-allowable
+    /// ranges (FIN-017) and loopback are rejected at load, never silently
+    /// ignored (#1462). Threading into the embedding client is slice 2.
+    #[serde(default)]
+    pub network_policy: NetworkPolicy,
 }
 
 impl ProviderConfig {
@@ -326,6 +336,7 @@ mod tests {
             model: Some("gpt-test".to_string()),
             embedding_dim: None,
             allow_loopback: false,
+            network_policy: crate::domain::network_policy::NetworkPolicy::default(),
         }
     }
 
@@ -445,13 +456,72 @@ mod tests {
         "base_url": "https://api.example.com/v1",
         "auth": {"source": "env", "var": "WEBFANG_TEST_KEY"},
         "capabilities": ["embedding"],
-        "model": "nomic-embed"__DIM____LOOPBACK__
+        "model": "nomic-embed"__DIM____LOOPBACK____POLICY__
     }"#;
 
     fn provider_json(dim: &str, loopback: &str) -> String {
+        provider_json_with_policy(dim, loopback, "")
+    }
+
+    fn provider_json_with_policy(dim: &str, loopback: &str, policy: &str) -> String {
         PROVIDER_JSON_TEMPLATE
             .replace("__DIM__", dim)
             .replace("__LOOPBACK__", loopback)
+            .replace("__POLICY__", policy)
+    }
+
+    #[test]
+    fn network_policy_absent_defaults_to_restricted_empty() {
+        let parsed: ProviderConfig =
+            serde_json::from_str(&provider_json("", "")).expect("absent policy must parse");
+        assert_eq!(parsed.network_policy, NetworkPolicy::default());
+    }
+
+    #[test]
+    fn network_policy_null_is_error() {
+        // serde_json reports struct-from-null as "invalid type"; the
+        // invariant is that null errors instead of silently defaulting.
+        let err = serde_json::from_str::<ProviderConfig>(&provider_json_with_policy(
+            "",
+            "",
+            ",\n        \"network_policy\": null",
+        ))
+        .expect_err("explicit null must never silently default");
+        let text = err.to_string();
+        assert!(
+            text.contains("invalid type") || text.contains("expected value"),
+            "unexpected null error text: {text}"
+        );
+    }
+
+    #[test]
+    fn network_policy_allow_cidrs_invalid_is_error() {
+        let err = serde_json::from_str::<ProviderConfig>(&provider_json_with_policy(
+            "",
+            "",
+            ",\n        \"network_policy\": {\"mode\": \"allowlist\", \"allow_cidrs\": [\"garbage\"]}",
+        ))
+        .expect_err("invalid CIDR must fail loud");
+        assert!(
+            err.to_string().contains("no es un CIDR válido"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn network_policy_allowlist_with_entry_parses() {
+        let parsed: ProviderConfig = serde_json::from_str(&provider_json_with_policy(
+            "",
+            "",
+            ",\n        \"network_policy\": {\"mode\": \"allowlist\", \"allow_cidrs\": [\"10.0.0.0/8\"], \"allow_hosts\": [\"MyServer.LAN\"]}",
+        ))
+        .expect("valid allowlist policy must parse");
+        assert_eq!(
+            parsed.network_policy.mode,
+            crate::domain::network_policy::NetworkPolicyMode::Allowlist
+        );
+        assert_eq!(parsed.network_policy.allow_cidrs.len(), 1);
+        assert_eq!(parsed.network_policy.allow_hosts, ["myserver.lan"]);
     }
 
     #[test]
