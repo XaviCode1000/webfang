@@ -182,8 +182,20 @@ opt-level = 0
 # Full debuginfo per-invocation: CARGO_PROFILE_DEV_DEBUG=true cargo build
 debug = "line-tables-only"
 
+# Measured (#1952), not assumed: optimizing every dependency in the dev
+# profile is the single most expensive default in this workspace. Paired cold
+# `cargo build --workspace` on the same machine at the same load (16.5), same
+# revision: 251.1 s with opt-level = 3 vs 99.2 s with 0 — 60% off the wall and
+# 67% off total CPU units (2152 s -> 712 s). The old `opt-level = 3` carried the
+# comment "mejora perf sin costo extra", which is false: the cost is paid on
+# every cold build in every worktree, since each tree has its own target dir.
+#
+# The runtime cost is real and is why this belongs in an experiment branch:
+# test and debug binaries now run unoptimized dependency code. If a gate turns
+# out to need optimized deps, scope them by package instead of restoring a
+# blanket override, e.g. [profile.dev.package.tokio] opt-level = 2.
 [profile.dev.package."*"]
-opt-level = 3
+opt-level = 0
 
 [profile.release]
 opt-level = 3
