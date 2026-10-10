@@ -40,6 +40,17 @@ use wiremock::{Mock, ResponseTemplate};
 /// `webfang_cli`'s `async fn main() -> CliExit` resolves through.
 const EXPECTED_EXIT_CODE: i32 = 74;
 
+/// Write a one-URL batch file pointing at the mock server and return its path.
+///
+/// Shared by every fixture in this module (#1949: the second pin repeated the
+/// write verbatim, and the duplicated-lines ratchet flagged the pair — the
+/// write is not the thing under test, the exit code is).
+fn batch_file_with_server_url(t: &BehavioralTest) -> std::path::PathBuf {
+    let path = t.out.path().join("urls.txt");
+    std::fs::write(&path, format!("{}\n", t.server.uri())).expect("write batch file");
+    path
+}
+
 #[tokio::test]
 async fn batch_export_failure_exits_io_error() {
     let t = BehavioralTest::new().await;
@@ -57,8 +68,7 @@ async fn batch_export_failure_exits_io_error() {
         .mount(&t.server)
         .await;
 
-    let batch_file = t.out.path().join("urls.txt");
-    std::fs::write(&batch_file, format!("{}\n", t.server.uri())).expect("write batch file");
+    let batch_file = batch_file_with_server_url(&t);
 
     // Writable vault: with --quick-save it receives the spool file and the
     // _inbox markdown, so every pre-export phase stays healthy.
@@ -183,8 +193,7 @@ async fn batch_transient_ingestion_failure_exits_unavailable() {
         .mount(&t.server)
         .await;
 
-    let batch_file = t.out.path().join("urls.txt");
-    std::fs::write(&batch_file, format!("{}\n", t.server.uri())).expect("write batch file");
+    let batch_file = batch_file_with_server_url(&t);
 
     let db_path = t.out.path().join("elastic.db");
 
