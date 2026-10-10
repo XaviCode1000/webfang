@@ -480,6 +480,12 @@ fn build_batch_resume_store(
 
 /// Run the elastic / output-vectors ingestion for the batch pipeline (#636,
 /// #637) and release the ingestion handle afterwards.
+///
+/// #1949: the exit decision is NOT made here — every ingestion failure routes
+/// through the canonical helper
+/// [`ingestion_exit_for`](crate::cli::error::ingestion_exit_for), which maps
+/// the error's class per matrix row 26 (transient backend failure → 69,
+/// panicked/cancelled task → 3) instead of a hardcoded `IoError` (74).
 async fn run_batch_elastic(
     ingestion: &Option<
         std::sync::Arc<
@@ -493,7 +499,7 @@ async fn run_batch_elastic(
     if let Some(ref ingestion) = ingestion {
         run_elastic_ingestion(ingestion, results)
             .await
-            .map_err(|e| CliExit::IoError(format!("Falló la ingesta de vectores: {e}")))?;
+            .map_err(|e| crate::cli::error::ingestion_exit_for(&e))?;
     }
     Ok(())
 }
