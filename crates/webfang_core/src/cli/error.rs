@@ -340,6 +340,49 @@ pub fn permanent_io_error_exit_for(error: &std::io::Error) -> Option<CliExit> {
     }
 }
 
+/// Canonical exit for an elastic-ingestion failure (matrix row 26, #1949).
+///
+/// The batch-flow call site routes EVERY ingestion failure through this
+/// helper — zero inline `CliExit` constructions — so the exit code is decided
+/// by the classification machinery instead of the hardcoded `IoError` (74)
+/// that used to tell the operator "I/O problem" for what the matrix declares
+/// "backend unavailable, retry" (69).
+///
+/// Precedence, mirroring the all-failed chains (`report_phase` /
+/// `batch_exit_code`):
+///
+/// 1. Typed overrides that can fire from the ingestion pipeline:
+///    [`config_error_exit_for`] → 78 (the ingestion downloader's SSRF entry
+///    refusal is a `Config` error); `permanent_io_error_exit_for` → 74 (a
+///    sink write failure with a permanent io kind).
+/// 2. Class default via [`cli_exit_for_class`]: the transient backend failure
+///    (network-class re-download error, timeout) → [`CliExit::NetworkError`]
+///    (69, EX_UNAVAILABLE — matrix row 26); [`ErrorClass::InternalFatal`] →
+///    [`CliExit::ScraperFailure`] (3) — a panicked or cancelled ingestion task
+///    (`ScraperError::ingestion`, constructed by `join_failure` in
+///    `cli/elastic.rs`), a closed CPU bridge or a repository persistence
+///    failure is a data-loss defect, never a retryable outage.
+/// 3. Terminal arm for the classes [`default_exit_code_for_class`]
+///    deliberately leaves unpinned: for this call site the reachable member
+///    is `PayloadTooLarge` (matrix row 14 → 65); the remaining
+///    variant-dependent classes have no ingestion-reachable variant today.
+#[must_use]
+pub fn ingestion_exit_for(error: &ScraperError) -> CliExit {
+    let message = format!("Falló la ingesta de vectores: {error}");
+    if let Some(exit) = config_error_exit_for(error) {
+        return exit;
+    }
+    if let ScraperError::Io(io_err) = error {
+        if let Some(exit) = permanent_io_error_exit_for(io_err) {
+            return exit;
+        }
+    }
+    if let Some(exit) = cli_exit_for_class(error.classify(), message.clone()) {
+        return exit;
+    }
+    CliExit::DataFormatError(message)
+}
+
 /// Special cell — Cancelled. Cooperative cancellation is a control signal, NOT
 /// an operational failure: intercepted BEFORE any classification-based routing,
 /// it yields [`CliExit::Success`] (exit 0).
@@ -897,6 +940,133 @@ mod tests {
         ];
         assert_eq!(scraper_failure_exit_when_internal_fatal(&failures), None);
         assert_eq!(scraper_failure_exit_when_internal_fatal(&[]), None);
+    }
+
+    // ---- Elastic-ingestion exit routing (matrix row 26, #1949) ----
+    //
+    // The batch call site routes EVERY ingestion failure through
+    // `ingestion_exit_for`; these pins hold the sub-case split the matrix row
+    // documents: transient backend failure → 69, panicked/cancelled task → 3.
+
+    #[test]
+    fn ingestion_transient_network_failure_maps_to_unavailable_69() {
+        // Row 26: the re-download's transport failure (Network class) is the
+        // transient backend failure the row is about — "unavailable, retry",
+        // never IoError(74).
+        let error = crate::error::ScraperError::Network(Box::new(std::io::Error::from(
+            std::io::ErrorKind::ConnectionRefused,
+        )));
+        let exit = ingestion_exit_for(&error);
+        assert!(matches!(exit, CliExit::NetworkError(_)));
+        let CliExit::NetworkError(message) = exit.clone() else {
+            unreachable!("checked above")
+        };
+        assert_eq!(exit.report(), ExitCode::from(EXIT_UNAVAILABLE));
+        assert!(
+            message.contains("Falló la ingesta de vectores"),
+            "the user-facing message must stay in Spanish and name the phase: {message}"
+        );
+        assert!(
+            message.contains("error de red"),
+            "the class-identifying prefix must survive the routing: {message}"
+        );
+    }
+
+    #[test]
+    fn ingestion_transient_backoff_timeout_maps_to_unavailable_69() {
+        // Row 26 names TransientBackoff as the class: a re-download timeout
+        // lands on the same 69 through the class default.
+        let exit = ingestion_exit_for(&crate::error::ScraperError::GlobalTimeout);
+        assert!(matches!(exit, CliExit::NetworkError(_)));
+        assert_eq!(exit.report(), ExitCode::from(EXIT_UNAVAILABLE));
+    }
+
+    #[test]
+    fn ingestion_panicked_task_maps_to_scraper_failure_3() {
+        // `join_failure` (cli/elastic.rs) constructs exactly this variant for a
+        // panicked task. `Ingestion` classifies InternalFatal, so the panic is
+        // a job failure (3) — a data-loss defect is never a retryable outage.
+        // #1949 pins the sub-case split instead of forcing 69 everywhere.
+        let error = crate::error::ScraperError::ingestion(
+            "tarea de ingesta elástica entró en pánico para https://example.test/pagina",
+        );
+        let exit = ingestion_exit_for(&error);
+        assert!(matches!(exit, CliExit::ScraperFailure(_)));
+        let CliExit::ScraperFailure(message) = exit.clone() else {
+            unreachable!("checked above")
+        };
+        assert_eq!(exit.report(), ExitCode::from(EXIT_SCRAPER_FAILURE));
+        // The #1941 attribution contract survives the rerouting: Spanish
+        // context + the URL whose vectors were lost.
+        assert!(
+            message.contains("Falló la ingesta de vectores")
+                && message.contains("pánico")
+                && message.contains("https://example.test/pagina"),
+            "the failure must keep naming the phase, the cause and the URL: {message}"
+        );
+    }
+
+    #[test]
+    fn ingestion_cancelled_task_maps_to_scraper_failure_3() {
+        // `join_failure` constructs the same `Ingestion` variant for an aborted
+        // task — same class, same exit, pinned separately so the split cannot
+        // silently collapse onto one arm or the other.
+        let error = crate::error::ScraperError::ingestion(
+            "tarea de ingesta elástica cancelada para https://example.test/pagina",
+        );
+        let exit = ingestion_exit_for(&error);
+        assert!(matches!(exit, CliExit::ScraperFailure(_)));
+        assert_eq!(exit.report(), ExitCode::from(EXIT_SCRAPER_FAILURE));
+    }
+
+    #[test]
+    fn ingestion_persistence_failure_maps_to_scraper_failure_3() {
+        // The SQLite/vector-sink write failure classifies InternalFatal (row
+        // 23): a data-integrity error is never blindly retried.
+        let exit = ingestion_exit_for(&crate::error::ScraperError::Persistence(
+            "sqlite write failed".into(),
+        ));
+        assert!(matches!(exit, CliExit::ScraperFailure(_)));
+        assert_eq!(exit.report(), ExitCode::from(EXIT_SCRAPER_FAILURE));
+    }
+
+    #[test]
+    fn ingestion_ssrf_config_refusal_maps_to_config_error_78() {
+        // The ingestion downloader refuses a forbidden literal BEFORE the dial
+        // as a `Config` error — the existing typed override decides (78), not
+        // the class default.
+        let exit = ingestion_exit_for(&crate::error::ScraperError::Config(
+            "destination forbidden by the SSRF entry guard".into(),
+        ));
+        assert!(matches!(exit, CliExit::ConfigError(_)));
+        assert_eq!(exit.report(), ExitCode::from(EXIT_CONFIG));
+    }
+
+    #[test]
+    fn ingestion_permanent_io_maps_to_io_error_74_and_transient_keeps_69() {
+        // Rows 21/22 through the ingestion path: a permanent-kind sink write
+        // failure overrides to 74; the transient kinds keep the class default.
+        let permanent = ingestion_exit_for(&crate::error::ScraperError::Io(std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied,
+        )));
+        assert!(matches!(permanent, CliExit::IoError(_)));
+        assert_eq!(permanent.report(), ExitCode::from(EXIT_IO_ERROR));
+
+        let transient = ingestion_exit_for(&crate::error::ScraperError::Io(std::io::Error::from(
+            std::io::ErrorKind::TimedOut,
+        )));
+        assert!(matches!(transient, CliExit::NetworkError(_)));
+        assert_eq!(transient.report(), ExitCode::from(EXIT_UNAVAILABLE));
+    }
+
+    #[test]
+    fn ingestion_payload_too_large_maps_to_data_format_error_65() {
+        // Terminal arm / row 14: an oversized re-download is the one
+        // ingestion-reachable PermanentFatal with no typed override — 65,
+        // never a retryable 69.
+        let exit = ingestion_exit_for(&crate::error::ScraperError::PayloadTooLarge);
+        assert!(matches!(exit, CliExit::DataFormatError(_)));
+        assert_eq!(exit.report(), ExitCode::from(EXIT_DATA_ERROR));
     }
 
     // ---- Special cell — Cancelled ----
