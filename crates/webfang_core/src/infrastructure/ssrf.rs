@@ -386,19 +386,17 @@ impl crate::domain::ssrf_guard::SsrfGuard for crate::domain::ssrf_guard::Default
 mod tests {
     use super::*;
 
-    /// RFC1918 discard target for the allowlisted-LAN cases, composed at
-    /// runtime rather than written as one `IP:port` literal. The shape reads
-    /// as `path:line` to tooling that scans evidence locations, and the native
+    /// RFC1918 discard target for the allowlisted-LAN cases. Host and port stay
+    /// separate literals rather than one `IP:port` constant: that shape reads
+    /// as `path:line` to tooling scanning evidence locations, and the native
     /// review admission layer rejects a reviewer result citing one as
     /// `evidence_path_out_of_scope`. Nothing listens on the discard port, so a
     /// permitted dial runs out the connect path and a denied one never opens a
-    /// socket.
+    /// socket. Composed inline at each use — `tests/ssrf_policy_e2e_test.rs`
+    /// needs the identical fixture, and a shared helper across the two files
+    /// would be a jscpd clone against a descending ratchet.
     const LAN_DISCARD_HOST: &str = "10.255.255.254";
     const LAN_DISCARD_PORT: u16 = 9;
-
-    fn lan_discard_url() -> String {
-        format!("http://{LAN_DISCARD_HOST}:{LAN_DISCARD_PORT}/v1")
-    }
 
     /// Resolver tests. Determinism note: `tokio::net::lookup_host` resolves
     /// IP literals locally (no network, no resolver daemon), so every case
@@ -425,7 +423,7 @@ mod tests {
         use std::net::SocketAddr;
         use wreq::dns::{Name, Resolve};
 
-        use crate::domain::network_policy::{CidrBlock, NetworkPolicy};
+        use crate::domain::network_policy::{CidrBlock, NetworkPolicy, NetworkPolicyMode};
         use crate::domain::ssrf_guard::SsrfGuard as _;
 
         fn validation_on() -> (webfang_test_utils::EnvGuard, ValidatingResolver) {
@@ -513,7 +511,7 @@ mod tests {
             // locations, and the native review admission layer rejects a
             // reviewer result that cites one as out-of-scope. See the same
             // note in `tests/ssrf_policy_e2e_test.rs`.
-            let target = lan_discard_url();
+            let target = format!("http://{LAN_DISCARD_HOST}:{LAN_DISCARD_PORT}/v1");
             let source = MockServer::start().await;
             Mock::given(method("GET"))
                 .respond_with(ResponseTemplate::new(302).insert_header("location", target))
@@ -564,19 +562,24 @@ mod tests {
 
         // B2 slice 2: the AND decision enforced where the hostname AND the
         // resolved addresses are both known — `fail_closed_scan`.
-        fn lan_answer(ip: &str) -> Vec<SocketAddr> {
-            vec![SocketAddr::new(ip.parse().expect("test literal"), 8000)]
-        }
-
+        /// Allowlist-mode fixture. Its near-twin in
+        /// `tests/ssrf_policy_e2e_test.rs` deliberately does NOT look like this
+        /// one: that suite builds its policies through the serde config path
+        /// instead, which is both more faithful and free of the jscpd clone a
+        /// shared struct literal would create.
         fn lan_policy(cidrs: &[&str], hosts: &[&str]) -> NetworkPolicy {
             NetworkPolicy {
-                mode: crate::domain::network_policy::NetworkPolicyMode::Allowlist,
+                mode: NetworkPolicyMode::Allowlist,
                 allow_cidrs: cidrs
                     .iter()
                     .map(|c| CidrBlock::parse(c).expect("test CIDR parses"))
                     .collect(),
                 allow_hosts: hosts.iter().map(|h| (*h).to_string()).collect(),
             }
+        }
+
+        fn lan_answer(ip: &str) -> Vec<SocketAddr> {
+            vec![SocketAddr::new(ip.parse().expect("test literal"), 8000)]
         }
 
         #[test]
@@ -758,7 +761,7 @@ mod tests {
             // RFC1918 discard target: nothing listens there, so a PERMITTED
             // dial fails at CONNECT while a denied one fails at the guard.
             let err = client
-                .get(lan_discard_url())
+                .get(format!("http://{LAN_DISCARD_HOST}:{LAN_DISCARD_PORT}/v1"))
                 .send()
                 .await
                 .expect_err("nothing listens on the LAN discard port");

@@ -41,35 +41,50 @@ use webfang_core::domain::ssrf_guard::{
     is_forbidden_literal_host, is_forbidden_literal_host_with_policy, is_forbidden_resolved_address,
 };
 use webfang_core::infrastructure::llm::provider::ProviderInitError;
-use webfang_core::infrastructure::llm::remote_embedding::RemoteEmbeddingAdapter;
+use webfang_core::infrastructure::llm::remote_embedding::{
+    render_error_chain, RemoteEmbeddingAdapter,
+};
 
-/// Discard port on an RFC1918 address inside `10.255.255.0/24`: nothing
-/// listens there, so a permitted dial runs out the connect path while a denied
-/// dial never opens a socket.
+/// RFC1918 discard target: nothing listens on the discard port, so a permitted
+/// dial runs out the connect path and a denied one never opens a socket.
 ///
-/// Host and port are deliberately kept as SEPARATE literals rather than one
-/// `http://A.B.C.D:9/v1` constant. The host is RFC1918 by construction — that
-/// is the whole point of the allowlist under test — but a bare `IP:port` token
-/// in source reads as `path:line` to tooling that scans evidence locations:
-/// the native review admission layer rejects a reviewer result that cites one
-/// as `evidence_path_out_of_scope`. Composing the URL at runtime leaves the
-/// fixture byte-identical while offering no ambiguous token to misparse.
+/// Host and port stay SEPARATE literals rather than one `http://A.B.C.D:9/v1`
+/// constant. The host is RFC1918 by construction — that is the whole point of
+/// the allowlist under test — but a bare `IP:port` token in source reads as
+/// `path:line` to tooling that scans evidence locations, and the native review
+/// admission layer rejects a reviewer result citing one as
+/// `evidence_path_out_of_scope`. The URL is composed at each call site rather
+/// than wrapped in a helper: `infrastructure/ssrf.rs` needs the identical
+/// fixture, and a shared five-line helper across the two files is a jscpd clone
+/// against a descending ratchet. One line per use stays under the threshold.
 const LAN_DISCARD_HOST: &str = "10.255.255.254";
 const LAN_DISCARD_PORT: u16 = 9;
 
-fn lan_discard_url() -> String {
-    format!("http://{LAN_DISCARD_HOST}:{LAN_DISCARD_PORT}/v1")
-}
-
-fn policy(cidrs: &[&str], hosts: &[&str]) -> NetworkPolicy {
-    NetworkPolicy {
-        mode: NetworkPolicyMode::Allowlist,
-        allow_cidrs: cidrs
+/// Build a policy the way a real provider config does: through the serde
+/// mirror, so validation runs exactly as it does in production.
+///
+/// It also avoids a struct literal that would be a near-copy of the resolver
+/// unit tests' own fixture builder in `infrastructure/ssrf.rs` — a jscpd clone
+/// against a ratchet that fails the build on any increase. Going through the
+/// config path is the more faithful test anyway: it is the path a user's
+/// `network_policy` block actually takes.
+///
+/// Row 6 builds its policy by hand on purpose — it must prove FIN-017 holds
+/// even for a policy that never passed validation.
+fn policy_json(cidrs: &[&str], hosts: &[&str]) -> NetworkPolicy {
+    let render = |items: &[&str]| {
+        items
             .iter()
-            .map(|c| CidrBlock::parse(c).expect("test CIDR parses"))
-            .collect(),
-        allow_hosts: hosts.iter().map(|h| h.to_ascii_lowercase()).collect(),
-    }
+            .map(|item| format!("{item:?}"))
+            .collect::<Vec<_>>()
+            .join(",")
+    };
+    serde_json::from_str(&format!(
+        r#"{{"mode":"allowlist","allow_cidrs":[{}],"allow_hosts":[{}]}}"#,
+        render(cidrs),
+        render(hosts)
+    ))
+    .expect("test policy parses through the config path")
 }
 
 fn provider(base_url: &str, network_policy: NetworkPolicy) -> ProviderConfig {
@@ -103,31 +118,18 @@ fn policy_client(network_policy: &NetworkPolicy) -> wreq::Client {
 
 /// Render a transport failure together with its whole `source` chain.
 ///
-/// The guard's verdict does NOT live in the top-level `Display` — a denial
-/// renders as `error sending request for uri (...)` -> `client error
-/// (Connect)` -> `dns error` -> the resolver's message. Asserting on
-/// `to_string()` alone would be vacuous: the denial would be invisible and the
-/// row would pass no matter what. Walking the chain is what makes the
-/// negative assertion below able to fail. Production mirrors this in
-/// `remote_embedding::render_error_chain`.
-fn rendered_chain(err: &(dyn std::error::Error + 'static)) -> String {
-    let mut rendered = err.to_string();
-    let mut source = err.source();
-    while let Some(inner) = source {
-        rendered.push_str(": ");
-        rendered.push_str(&inner.to_string());
-        source = inner.source();
-    }
-    rendered
-}
-
+/// This is the PRODUCTION renderer ([`render_error_chain`]), reused rather
+/// than reimplemented. It has to be the same function the test asserts
+/// against: the guard's verdict does not live in the top-level `Display`, so
+/// asserting on `to_string()` alone would be vacuous — a denial would be
+/// invisible and the row would pass no matter what.
 async fn dial_class(url: &str, network_policy: &NetworkPolicy) -> String {
     let err = policy_client(network_policy)
         .get(url)
         .send()
         .await
         .expect_err("nothing listens on the LAN discard target");
-    rendered_chain(&err)
+    render_error_chain(&err)
 }
 
 // ============================================================================
@@ -138,11 +140,12 @@ async fn dial_class(url: &str, network_policy: &NetworkPolicy) -> String {
 
 #[tokio::test]
 async fn row1_allowlisted_lan_literal_reaches_connect() {
-    let net = policy(&["10.0.0.0/8"], &[]);
-    RemoteEmbeddingAdapter::new(provider(&lan_discard_url(), net.clone()))
+    let net = policy_json(&["10.0.0.0/8"], &[]);
+    let target = format!("http://{LAN_DISCARD_HOST}:{LAN_DISCARD_PORT}/v1");
+    RemoteEmbeddingAdapter::new(provider(&target, net.clone()))
         .expect("allowlisted LAN literal must build: allow_cidrs alone suffice for literals");
 
-    let rendered = dial_class(&lan_discard_url(), &net).await;
+    let rendered = dial_class(&target, &net).await;
     assert!(
         !rendered.contains("forbidden") && !rendered.contains("SSRF"),
         "a permitted LAN literal must not be denied by the guard: {rendered}"
@@ -155,11 +158,13 @@ async fn row1_allowlisted_lan_literal_reaches_connect() {
 
 #[tokio::test]
 async fn row2_undeclared_lan_literal_is_rejected_at_entry() {
-    let err =
-        match RemoteEmbeddingAdapter::new(provider(&lan_discard_url(), NetworkPolicy::default())) {
-            Ok(_) => panic!("an undeclared LAN literal stays forbidden"),
-            Err(err) => err,
-        };
+    let err = match RemoteEmbeddingAdapter::new(provider(
+        &format!("http://{LAN_DISCARD_HOST}:{LAN_DISCARD_PORT}/v1"),
+        NetworkPolicy::default(),
+    )) {
+        Ok(_) => panic!("an undeclared LAN literal stays forbidden"),
+        Err(err) => err,
+    };
 
     let text = match &err {
         ProviderInitError::InvalidBaseUrl { source, .. } => source.to_string(),
@@ -187,11 +192,11 @@ fn row3_cgnat_needs_explicit_opt_in() {
         "CGNAT stays denied without the explicit opt-in"
     );
     assert!(
-        is_forbidden_literal_host_with_policy(cgnat, false, &policy(&["10.0.0.0/8"], &[])),
+        is_forbidden_literal_host_with_policy(cgnat, false, &policy_json(&["10.0.0.0/8"], &[])),
         "an unrelated allowlist entry must not open CGNAT"
     );
     assert!(
-        !is_forbidden_literal_host_with_policy(cgnat, false, &policy(&["100.64.0.0/10"], &[])),
+        !is_forbidden_literal_host_with_policy(cgnat, false, &policy_json(&["100.64.0.0/10"], &[])),
         "declaring the CGNAT range IS the opt-in"
     );
 }
@@ -202,7 +207,7 @@ fn row3_cgnat_needs_explicit_opt_in() {
 
 #[test]
 fn row4_hostname_with_cidr_and_allow_hosts_is_permitted() {
-    let net = policy(&["10.0.0.0/8"], &["vllm.lan"]);
+    let net = policy_json(&["10.0.0.0/8"], &["vllm.lan"]);
     let ip: IpAddr = "10.0.0.5".parse().expect("test literal");
     assert!(
         !is_forbidden_resolved_address(&ip, "vllm.lan", false, &net),
@@ -219,7 +224,7 @@ fn row4_hostname_with_cidr_and_allow_hosts_is_permitted() {
 
 #[test]
 fn row5_hostname_with_cidr_without_allow_hosts_is_rejected() {
-    let net = policy(&["10.0.0.0/8"], &[]);
+    let net = policy_json(&["10.0.0.0/8"], &[]);
     let ip: IpAddr = "10.0.0.5".parse().expect("test literal");
     assert!(
         is_forbidden_resolved_address(&ip, "vllm.lan", false, &net),
@@ -227,7 +232,7 @@ fn row5_hostname_with_cidr_without_allow_hosts_is_rejected() {
     );
     // A different declared host does not authorize this one, and an empty
     // policy is exactly today's behavior.
-    let other = policy(&["10.0.0.0/8"], &["otro.lan"]);
+    let other = policy_json(&["10.0.0.0/8"], &["otro.lan"]);
     assert!(is_forbidden_resolved_address(
         &ip, "vllm.lan", false, &other
     ));
@@ -254,7 +259,15 @@ fn row5_hostname_with_cidr_without_allow_hosts_is_rejected() {
 
 #[test]
 fn row6_cloud_metadata_stays_denied_even_when_allowlisted() {
-    let net = policy(&["169.254.0.0/16"], &["metadata.lan"]);
+    // Deliberately hand-built, NOT via `policy_json`: the claim under test is
+    // that the never-allowable set holds even for a policy that never passed
+    // config validation, so going through the validating parser would prove
+    // something weaker.
+    let net = NetworkPolicy {
+        mode: NetworkPolicyMode::Allowlist,
+        allow_cidrs: vec![CidrBlock::parse("169.254.0.0/16").expect("test CIDR parses")],
+        allow_hosts: vec!["metadata.lan".to_string()],
+    };
     let ip: IpAddr = "169.254.169.254".parse().expect("test literal");
     assert!(is_forbidden_literal_host_with_policy(
         "169.254.169.254",
@@ -295,7 +308,7 @@ async fn row7_a_guard_denial_is_visible_in_the_rendered_chain() {
         .send()
         .await
         .expect_err("the default policy denies loopback for a hostname dial");
-    let rendered = rendered_chain(&err);
+    let rendered = render_error_chain(&err);
     assert!(
         rendered.to_lowercase().contains("forbidden"),
         "a denial must be visible in the chain, otherwise row 1's negative \

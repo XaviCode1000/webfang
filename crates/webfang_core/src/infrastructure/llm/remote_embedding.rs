@@ -181,7 +181,13 @@ fn embedding_http_client(
 /// "Connect" and cannot tell a policy decision from a dead network.
 ///
 /// Bounded by the chain itself, so it cannot loop.
-fn render_error_chain(err: &(dyn std::error::Error + 'static)) -> String {
+///
+/// Public because it is also the contract the tests assert against: an E2E
+/// that proved "no guard denial" over `Display` alone would be vacuous, since
+/// the verdict never appears there. Sharing one implementation is what keeps
+/// the test honest rather than merely non-duplicated.
+#[must_use]
+pub fn render_error_chain(err: &(dyn std::error::Error + 'static)) -> String {
     let mut rendered = err.to_string();
     let mut source = err.source();
     while let Some(inner) = source {
