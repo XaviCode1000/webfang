@@ -1,11 +1,11 @@
 # ADR 0004: Retirada de ONNX local; embeddings remotos como única vía AI
 
 - **Status:** Accepted
-- **Date:** 2026-10-08 (revisado 2026-10-09: mecanismo de arbitraje del paso 6 y resolución de Q6 — precisión de mecanismo, la decisión (a) con refugio (c) no cambia)
+- **Date:** 2026-10-08 (revisado 2026-10-09: mecanismo de arbitraje del paso 6 y resolución de Q6 — precisión de mecanismo, la decisión (a) con refugio (c) no cambia; revisado 2026-10-11: corrección factual — el 0.75 de Tier 2 son dos números con roles opuestos — y registro de la condición 2 resuelta como migrar, #1975)
 - **Deciders:** Project owner
 - **Supersedes:** ADR 0003 §5 ("Local ONNX goes dormant, not deleted")
 - **Alcance de la supersesión:** el §5, más las afirmaciones del §Context de 0003 que quedaron obsoletas: "Port defined, never injected" es falso desde que `--extract-with-llm` inyecta un `dyn LlmPort` real en el Container (`webfang_cli/src/main.rs:721-759`, cableado en #1493). No es `resolve_remote_embedding` (`:687`): esa fn devuelve el `RemoteEmbeddingAdapter` del slot de embeddings, no un `LlmPort`. El resto (§1–4, 6, 7, trade-offs, alternativas) sigue vigente.
-- **Related issues:** #1915 (decisión), #1917 (primera revisión, cerrada por #1918), #1919 (re-scope), #1930 (revisión del mecanismo de arbitraje + Q6)
+- **Related issues:** #1915 (decisión), #1917 (primera revisión, cerrada por #1918), #1919 (re-scope), #1930 (revisión del mecanismo de arbitraje + Q6), #1975 (corrección 0.75 Tier 2 + condición 2 resuelta)
 - **Working papers:** auditoría AI-inference fuera del repo (5 pasadas, HEAD `3ac5599`, 47 hallazgos FIN); los números clave van inline abajo para que este ADR se sostenga solo.
 
 ## Context
@@ -28,7 +28,7 @@ ADR 0003 dejó ONNX dormido tras `--features ai` como fallback offline. La dormi
 ## Condiciones del owner (bloqueantes del paso 6)
 
 1. **M2 funciona de verdad**: añadir la variante `AuthSource::None` (hoy solo Keyring/EncryptedFile/Env, `auth_source.rs:55-70`); el loopback ya está permitido (`is_permitted_loopback`, `ssrf_guard.rs:231`); B2 agrega la allowlist CIDR, no el loopback. Gate: el **criterio técnico** de la *Condición de revisión* —los *Criterios de aceptación de M2* (abajo) más la suite wiremock del PR-8 y el test de 401 con y sin credencial— y un **registro reproducible** archivado en el PR que habilita el paso 6 (comando + `--trace-file` + summary con backend/modelo/dim) ejecutado contra Ollama y vLLM reales. "Probado a mano" sin registro no cuenta; el registro es re-ejecutable por cualquiera. El `usage` que reportan Ollama y vLLM sigue sin verificar y es **opcional, nunca bloqueante**. LM Studio: best effort, sin garantía.
-2. **Tier 2 explícito**: migrar sobre endpoint o eliminar documentado. Nunca en silencio.
+2. **Tier 2 explícito**: migrar sobre endpoint o eliminar documentado. Nunca en silencio. **Resuelto 2026-10-11: migrar sobre endpoint**, con el paquete de egress completo (§Egress de Tier 2) — la eliminación documentada queda descartada porque degrada `--adaptive-selectors` a Tier 1 en silencio, exactamente lo que esta condición prohíbe.
 3. **Se asume la pérdida del zero-config offline-total**: M3 cubre sin-inferencia; `--clean-ai` sobrevive (des-gateado, ver Compatibilidad) pero exigirá endpoint del usuario. Se declara en el README.
 4. **Reescritura**: `SemanticCleanerImpl` (1096 LOC) sobre `EmbeddingPort`; `--max-tokens → --max-chars` con `chars_per_token` por perfil (default 3: mejor que 4, insuficiente para CJK —el respaldo real es el degradado por 400/413, nunca la estimación); 400/413 degrada con troceado/bisección.
 5. **Deprecación publicada**: el release del paso 5 salió al menos una minor antes del borrado.
@@ -46,7 +46,9 @@ Superficie, toda verificada bajo gate `ai` hoy (`options_spec/ai.rs:77,102,127`)
 
 ## Umbral por defecto huérfano
 
-El 0.3 está calibrado para Granite y vive en cuatro sitios (`options_spec/ai.rs:37`, `threshold_config.rs:49`, `semantic_cleaner_impl.rs:124`, `relevance_scorer.rs:333`); retirado el único modelo calibrado, cualquier remoto retiene distinto con el mismo número (además del 0.75 de Tier 2, que no es de similitud sino `ErrorHintConfig::semantic_threshold`, `extraction_quality.rs:11-15`, junto a `lexical_escalation_lower_bound: 0.70`). Mitigación obligatoria con **criterio de salida**: mientras el umbral sea el default y el modelo no esté calibrado, aviso una vez por corrida + `threshold_used` en el summary; la mitigación termina en el flip anunciado con tope de 2 releases minor —si no hay golden set para entonces, el owner decide (aviso permanente documentado o mantener 0.3 con riesgo firmado) y lo registra aquí. Sin salida con fecha, el huérfano se vuelve permanente.
+El 0.3 está calibrado para Granite y vive en cuatro sitios (`options_spec/ai.rs:37`, `threshold_config.rs:49`, `semantic_cleaner_impl.rs:124`, `relevance_scorer.rs:333`); retirado el único modelo calibrado, cualquier remoto retiene distinto con el mismo número. Mitigación obligatoria con **criterio de salida**: mientras el umbral sea el default y el modelo no esté calibrado, aviso una vez por corrida + `threshold_used` en el summary; la mitigación termina en el flip anunciado con tope de 2 releases minor —si no hay golden set para entonces, el owner decide (aviso permanente documentado o mantener 0.3 con riesgo firmado) y lo registra aquí. Sin salida con fecha, el huérfano se vuelve permanente.
+
+**Corrección 2026-10-11 (#1975): el 0.75 de Tier 2 son dos números, no uno.** El texto anterior decía que "no es de similitud sino `ErrorHintConfig::semantic_threshold`" — incompleto. (1) `ErrorHintConfig::semantic_threshold = 0.75` (`extraction_quality.rs:29`, junto a `lexical_escalation_lower_bound: 0.70`) no gatea nada: su único consumidor es `semantic_drift_factor` (`structural_score.rs:56-64`), que lo usa como denominador de normalización `1 − (0.75 − t)/0.75` y devuelve 1.0 neutral cuando Tier 2 no corrió. (2) `AdaptiveSelectorOptions::semantic_threshold = 0.75` (`adaptive_engine/mod.rs:99`) sí es la puerta de similitud: decide Repaired/Degraded (`:532`) y se pasa como threshold del inspector (`webfang_cli/src/main.rs:588`), que además filtra por él. El "umbral 0.75 a recalibrar por modelo" del paso 3 refiere a (2); recalibrar (1) es desacoplar un denominador del hint — cambio distinto.
 
 ## Condición de revisión
 
@@ -128,7 +130,9 @@ Si el borrado falla, el árbol ONNX se recupera desde la etiqueta git del últim
 - `crates/webfang_core/src/domain/auth_source.rs:55-70` — sin variante `None`
 - `crates/webfang_core/src/domain/ssrf_guard.rs:231` — loopback ya permitido
 - `crates/webfang_core/src/cli/error.rs:36`, `cli/llm_wire.rs:141-147` — `--offline` ya implementado
-- `crates/webfang_core/src/domain/extraction_quality.rs:11-15` — 0.75 es hint, no similitud
+- `crates/webfang_core/src/domain/extraction_quality.rs:29` — 0.75 del hint: denominador del drift factor, no gatea
+- `crates/webfang_core/src/application/adaptive_engine/mod.rs:99,532` + `crates/webfang_cli/src/main.rs:588` — 0.75 gate real de similitud Tier 2 (Repaired/Degraded + threshold del inspector)
+- `crates/webfang_core/src/application/structural_score.rs:56-64` — único consumidor del 0.75 del hint (normalización)
 - `crates/webfang_core/src/application/vault_search.rs:130-148` — fail-closed por dimensión
 - `docs/adr/0003-remote-inference-adapter.md:35` — env vars declaradas, nunca implementadas
 - `crates/webfang_core/src/cli/preflight.rs:1404,1410` — el gate de la feature que desaparece
