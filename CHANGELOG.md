@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.0] - 2026-10-11
+
+
+### 🎉 Added
+
+- Thread the provider NetworkPolicy to the embedding client (B2, slice 2) ([#1966](https://github.com/XaviCode1000/webfang/pull/1966))
 ## [2.9.0] - 2026-10-10
 
 
