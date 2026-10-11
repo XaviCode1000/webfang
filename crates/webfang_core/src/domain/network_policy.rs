@@ -11,9 +11,10 @@
 //! can never reach them, so a naive allowlist cannot open `169.254.169.254`.
 //! Loopback stays exclusively under the B1 `allow_loopback` flag (#1462).
 //!
-//! `allow_hosts` is parsed and validated here; its resolver-side enforcement
-//! (a hostname that resolves into an allowlisted network) is slice 2, wired
-//! together with the embedding-client threading.
+//! `allow_hosts` is parsed, validated and matched here. Its enforcement lives
+//! in exactly one place — [`crate::infrastructure::ssrf`]'s
+//! `ValidatingResolver::fail_closed_scan`, the only point in the system that
+//! knows the requested name and the resolved addresses at the same time.
 
 use std::fmt;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -181,7 +182,18 @@ pub struct NetworkPolicy {
     /// CGNAT here IS the deliberate opt-in the ADR demands).
     pub allow_cidrs: Vec<CidrBlock>,
     /// Hostnames allowed to bypass the private-resolution denial once the
-    /// resolver yields an allowlisted network. Enforced in slice 2.
+    /// resolver yields an allowlisted network.
+    ///
+    /// **AND, not OR** (B2 slice 2): a hostname dial into an allowlisted
+    /// network requires this entry AND the resolved IP being inside
+    /// `allow_cidrs`. The network is the precondition, the declared name is
+    /// the permission — under OR, allowing `10.0.0.0/8` would open the whole
+    /// range to any domain that resolves there (DNS rebinding).
+    ///
+    /// Matching is case-insensitive and tolerates one trailing root dot on
+    /// either side; IP literals are rejected at validation because they
+    /// belong in `allow_cidrs` (a literal has no name to rebind, so it needs
+    /// no declaration).
     pub allow_hosts: Vec<String>,
 }
 
@@ -194,6 +206,46 @@ impl NetworkPolicy {
         let ip = normalize_mapped(*ip);
         self.allow_cidrs.iter().any(|block| block.contains(&ip))
     }
+
+    /// Whether `host` is a declared hostname.
+    ///
+    /// The AND half of the hostname verdict (B2, slice 2): a dial by
+    /// hostname into an allowlisted network requires BOTH this and
+    /// [`allows_ip`](Self::allows_ip). `allow_cidrs` alone would open the
+    /// whole range to any domain that resolves into it — the DNS-rebinding
+    /// shape the field's own doc comment describes, where the allowlisted
+    /// network is the *precondition* and the declared hostname is the
+    /// *permission*.
+    ///
+    /// Matching is case-insensitive and tolerates ONE trailing dot on either
+    /// side (trimmed, ASCII-lowercased, one trailing root dot stripped):
+    /// `vllm.lan.` and `vllm.lan` are the same DNS
+    /// name, and a URL may legitimately spell it either way. Both sides are
+    /// normalized here rather than relying on config validation alone, because
+    /// a hand-built policy (one that bypassed serde) must not change the
+    /// verdict.
+    #[must_use]
+    pub fn allows_host(&self, host: &str) -> bool {
+        if self.allow_hosts.is_empty() {
+            return false;
+        }
+        let host = normalize_host(host);
+        self.allow_hosts
+            .iter()
+            .any(|declared| normalize_host(declared) == host)
+    }
+}
+
+/// Canonical comparison form for a hostname: trimmed, ASCII-lowercased, with
+/// a single trailing root dot removed.
+///
+/// Applied to config entries AND to the runtime hostname so both sides meet in
+/// the same form; a policy built by hand (bypassing serde validation) matches
+/// exactly like a parsed one. A name that is only dots normalizes to the
+/// empty string, which can never equal a validated entry.
+fn normalize_host(host: &str) -> String {
+    let host = host.trim().to_ascii_lowercase();
+    host.strip_suffix('.').unwrap_or(&host).to_owned()
 }
 
 /// Raw serde mirror: validation converts it into [`NetworkPolicy`], so every
@@ -267,9 +319,10 @@ impl NetworkPolicyRaw {
                     entry: host_text.clone(),
                 });
             }
-            // DNS names are case-insensitive; store normalized so the
-            // resolver-side comparison (slice 2) cannot miss on case.
-            allow_hosts.push(host.to_ascii_lowercase());
+            // DNS names are case-insensitive and a single trailing dot is
+            // the root label, not part of the name: store the canonical form
+            // so the runtime comparison cannot miss on case or spelling.
+            allow_hosts.push(normalize_host(host));
         }
         Ok(NetworkPolicy {
             mode: self.mode,
@@ -528,6 +581,65 @@ mod tests {
             text.contains("invalid type") || text.contains("expected value"),
             "unexpected null-mode error text: {text}"
         );
+    }
+
+    #[test]
+    fn allows_host_is_case_insensitive_and_dot_tolerant() {
+        let parsed: NetworkPolicy =
+            serde_json::from_str(&policy_json("allowlist", "[]", "[\"vllm.lan\"]"))
+                .expect("declared host parses");
+        assert!(parsed.allows_host("vllm.lan"));
+        assert!(parsed.allows_host("VLLM.LAN"));
+        assert!(
+            parsed.allows_host("vllm.lan."),
+            "trailing root dot is the same name"
+        );
+        assert!(
+            parsed.allows_host("  vllm.lan  "),
+            "surrounding blanks are trimmed"
+        );
+        assert!(!parsed.allows_host("otro.lan"));
+        assert!(
+            !parsed.allows_host("vllm.lan.attacker.com"),
+            "no suffix matching"
+        );
+        assert!(!parsed.allows_host(""), "the empty name is never declared");
+        assert!(!parsed.allows_host("..."));
+    }
+
+    #[test]
+    fn allows_host_never_matches_a_suffix_or_subdomain() {
+        // Exact-label matching: declaring `lan` must not authorize
+        // `attacker.lan`, and declaring `vllm.lan` must not authorize
+        // `evil-vllm.lan` or `vllm.lan.evil.com`.
+        let parsed: NetworkPolicy =
+            serde_json::from_str(&policy_json("allowlist", "[]", "[\"vllm.lan\"]"))
+                .expect("declared host parses");
+        for host in [
+            "lan",
+            "attacker.lan",
+            "evilvllm.lan",
+            "vllm.lan.evil.com",
+            "xvllm.lan",
+        ] {
+            assert!(!parsed.allows_host(host), "{host} must not match");
+        }
+    }
+
+    #[test]
+    fn empty_allow_hosts_permits_no_host() {
+        let parsed: NetworkPolicy =
+            serde_json::from_str(&policy_json("allowlist", "[\"10.0.0.0/8\"]", "[]"))
+                .expect("CIDR-only policy parses");
+        assert!(!parsed.allows_host("vllm.lan"));
+    }
+
+    #[test]
+    fn stored_host_entries_are_normalized() {
+        let parsed: NetworkPolicy =
+            serde_json::from_str(&policy_json("allowlist", "[]", "[\" VLLM.Lan. \"]"))
+                .expect("declared host parses");
+        assert_eq!(parsed.allow_hosts, ["vllm.lan"]);
     }
 
     #[test]
