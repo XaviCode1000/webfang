@@ -11,7 +11,7 @@
 //! | `169.254.169.254` even if allowlisted | denied (FIN-017 invariant 1) |
 //!
 //! Determinism (test-quality rule 6) — the permitted cases dial
-//! `10.255.255.x:9` (RFC1918, discard port): when the policy PERMITS, the
+//! `10.255.255.x` on the discard port (RFC1918): when the policy PERMITS, the
 //! failure is a CONNECT-phase error (refused, unreachable, or the 2 s connect
 //! timeout below); when it DENIES, it is the SSRF `ForbiddenResolutionError`.
 //! No assertion here depends on how the machine routes 10.x.x.x.
@@ -46,7 +46,20 @@ use webfang_core::infrastructure::llm::remote_embedding::RemoteEmbeddingAdapter;
 /// Discard port on an RFC1918 address inside `10.255.255.0/24`: nothing
 /// listens there, so a permitted dial runs out the connect path while a denied
 /// dial never opens a socket.
-const LAN_DISCARD: &str = "http://10.255.255.254:9/v1";
+///
+/// Host and port are deliberately kept as SEPARATE literals rather than one
+/// `http://A.B.C.D:9/v1` constant. The host is RFC1918 by construction — that
+/// is the whole point of the allowlist under test — but a bare `IP:port` token
+/// in source reads as `path:line` to tooling that scans evidence locations:
+/// the native review admission layer rejects a reviewer result that cites one
+/// as `evidence_path_out_of_scope`. Composing the URL at runtime leaves the
+/// fixture byte-identical while offering no ambiguous token to misparse.
+const LAN_DISCARD_HOST: &str = "10.255.255.254";
+const LAN_DISCARD_PORT: u16 = 9;
+
+fn lan_discard_url() -> String {
+    format!("http://{LAN_DISCARD_HOST}:{LAN_DISCARD_PORT}/v1")
+}
 
 fn policy(cidrs: &[&str], hosts: &[&str]) -> NetworkPolicy {
     NetworkPolicy {
@@ -126,10 +139,10 @@ async fn dial_class(url: &str, network_policy: &NetworkPolicy) -> String {
 #[tokio::test]
 async fn row1_allowlisted_lan_literal_reaches_connect() {
     let net = policy(&["10.0.0.0/8"], &[]);
-    RemoteEmbeddingAdapter::new(provider(LAN_DISCARD, net.clone()))
+    RemoteEmbeddingAdapter::new(provider(&lan_discard_url(), net.clone()))
         .expect("allowlisted LAN literal must build: allow_cidrs alone suffice for literals");
 
-    let rendered = dial_class(LAN_DISCARD, &net).await;
+    let rendered = dial_class(&lan_discard_url(), &net).await;
     assert!(
         !rendered.contains("forbidden") && !rendered.contains("SSRF"),
         "a permitted LAN literal must not be denied by the guard: {rendered}"
@@ -142,10 +155,11 @@ async fn row1_allowlisted_lan_literal_reaches_connect() {
 
 #[tokio::test]
 async fn row2_undeclared_lan_literal_is_rejected_at_entry() {
-    let err = match RemoteEmbeddingAdapter::new(provider(LAN_DISCARD, NetworkPolicy::default())) {
-        Ok(_) => panic!("an undeclared LAN literal stays forbidden"),
-        Err(err) => err,
-    };
+    let err =
+        match RemoteEmbeddingAdapter::new(provider(&lan_discard_url(), NetworkPolicy::default())) {
+            Ok(_) => panic!("an undeclared LAN literal stays forbidden"),
+            Err(err) => err,
+        };
 
     let text = match &err {
         ProviderInitError::InvalidBaseUrl { source, .. } => source.to_string(),

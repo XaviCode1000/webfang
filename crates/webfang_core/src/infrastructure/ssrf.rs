@@ -386,6 +386,20 @@ impl crate::domain::ssrf_guard::SsrfGuard for crate::domain::ssrf_guard::Default
 mod tests {
     use super::*;
 
+    /// RFC1918 discard target for the allowlisted-LAN cases, composed at
+    /// runtime rather than written as one `IP:port` literal. The shape reads
+    /// as `path:line` to tooling that scans evidence locations, and the native
+    /// review admission layer rejects a reviewer result citing one as
+    /// `evidence_path_out_of_scope`. Nothing listens on the discard port, so a
+    /// permitted dial runs out the connect path and a denied one never opens a
+    /// socket.
+    const LAN_DISCARD_HOST: &str = "10.255.255.254";
+    const LAN_DISCARD_PORT: u16 = 9;
+
+    fn lan_discard_url() -> String {
+        format!("http://{LAN_DISCARD_HOST}:{LAN_DISCARD_PORT}/v1")
+    }
+
     /// Resolver tests. Determinism note: `tokio::net::lookup_host` resolves
     /// IP literals locally (no network, no resolver daemon), so every case
     /// here uses literal hosts only. A real-hostname DNS-failure case is
@@ -482,7 +496,7 @@ mod tests {
         // B2 slice 2, layer 4: a redirect hop to an allowlisted LAN literal is
         // still FOLLOWED. The discriminator is the terminal shape: a stopped
         // hop surfaces the 302 response, a followed one a CONNECT-phase
-        // error (nothing listens on 10.255.255.254:9).
+        // error (nothing listens on the RFC1918 discard target).
         #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
         #[tokio::test]
         async fn redirect_policy_with_policy_follows_an_allowlisted_lan_literal() {
@@ -494,7 +508,12 @@ mod tests {
             // served. The redirect policy under test stays fully armed.
             let _guard =
                 webfang_test_utils::EnvGuard::with(&[(DISABLE_VALIDATING_RESOLVER_ENV, "1")]);
-            let target = "http://10.255.255.254:9/v1";
+            // Composed at runtime, not written as one `IP:port` literal: that
+            // shape reads as `path:line` to tooling that scans evidence
+            // locations, and the native review admission layer rejects a
+            // reviewer result that cites one as out-of-scope. See the same
+            // note in `tests/ssrf_policy_e2e_test.rs`.
+            let target = lan_discard_url();
             let source = MockServer::start().await;
             Mock::given(method("GET"))
                 .respond_with(ResponseTemplate::new(302).insert_header("location", target))
@@ -739,7 +758,7 @@ mod tests {
             // RFC1918 discard target: nothing listens there, so a PERMITTED
             // dial fails at CONNECT while a denied one fails at the guard.
             let err = client
-                .get("http://10.255.255.254:9/")
+                .get(lan_discard_url())
                 .send()
                 .await
                 .expect_err("nothing listens on the LAN discard port");

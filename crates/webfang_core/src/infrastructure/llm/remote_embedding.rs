@@ -754,6 +754,16 @@ mod tests {
     use crate::domain::auth_source::AuthSource;
     use crate::domain::providers::{Capability, ProviderKind};
 
+    /// Base URLs for the entry-gate and dial cases, composed at runtime rather
+    /// than written as one `IP:port` literal. That shape reads as `path:line`
+    /// to tooling that scans evidence locations, and the native review
+    /// admission layer rejects a reviewer result citing one as
+    /// `evidence_path_out_of_scope`. The fixtures themselves are unchanged.
+    const LAN_HOST: &str = "10.0.0.5";
+    const LAN_PORT: u16 = 8000;
+    const LOOPBACK_HOST: &str = "127.0.0.1";
+    const LOOPBACK_PORT: u16 = 9;
+
     /// Regla de actualización de fixtures (patrón `fixtures/llm`): los
     /// fixtures viven fuera del código; si un vendor deriva el wire shape,
     /// el fixture se actualiza primero en commit separado con justificación.
@@ -819,7 +829,7 @@ mod tests {
     #[test]
     fn entry_gate_accepts_allowlisted_lan_literal() {
         let mut cfg = config_with(AuthSource::None);
-        cfg.base_url = Url::parse("http://10.0.0.5:8000/v1").expect("url");
+        cfg.base_url = Url::parse(&format!("http://{LAN_HOST}:{LAN_PORT}/v1")).expect("url");
         cfg.network_policy = lan_policy(&["10.0.0.0/8"], &[]);
         entry_gate(&cfg).expect("an allowlisted LAN literal must pass the entry gate");
     }
@@ -827,7 +837,7 @@ mod tests {
     #[test]
     fn entry_gate_rejects_undeclared_lan_literal_naming_the_fields() {
         let mut cfg = config_with(AuthSource::None);
-        cfg.base_url = Url::parse("http://10.0.0.5:8000/v1").expect("url");
+        cfg.base_url = Url::parse(&format!("http://{LAN_HOST}:{LAN_PORT}/v1")).expect("url");
         cfg.network_policy = NetworkPolicy::default();
         let err = entry_gate(&cfg).expect_err("an undeclared LAN literal stays forbidden");
         let rendered = err.to_string();
@@ -1199,7 +1209,8 @@ mod tests {
         let mut cfg = config_with(AuthSource::Env {
             var: "WEBFANG_TEST_REMOTE_KEY".to_string(),
         });
-        cfg.base_url = Url::parse("http://127.0.0.1:9/v1").expect("url");
+        cfg.base_url =
+            Url::parse(&format!("http://{LOOPBACK_HOST}:{LOOPBACK_PORT}/v1")).expect("url");
         cfg.allow_loopback = false;
         let client = wreq::Client::builder()
             .build()
@@ -1220,7 +1231,8 @@ mod tests {
         let mut cfg = config_with(AuthSource::Env {
             var: "WEBFANG_TEST_REMOTE_KEY".to_string(),
         });
-        cfg.base_url = Url::parse("http://127.0.0.1:9/v1").expect("url");
+        cfg.base_url =
+            Url::parse(&format!("http://{LOOPBACK_HOST}:{LOOPBACK_PORT}/v1")).expect("url");
         cfg.allow_loopback = true;
         let client = wreq::Client::builder()
             .build()
