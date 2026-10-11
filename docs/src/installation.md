@@ -209,7 +209,7 @@ decision, not a release gap, so do not go looking for a fourth `.tar.gz`.
 Building from source is possible, but the `ai` feature cannot link there
 (ONNX Runtime ships no x64 macOS prebuilt), so **everything semantic is
 absent**: `--clean-ai`, `--offline`, `--ai-model`, `--threshold`,
-`--max-tokens`, and Obsidian vault search. Scraping, crawling, and every
+`--max-chars`, and Obsidian vault search. Scraping, crawling, and every
 non-AI export format work normally. Build without `ai`
 (see [from source](#from-source-developers)).
 
