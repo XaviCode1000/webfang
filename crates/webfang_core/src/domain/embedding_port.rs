@@ -16,9 +16,15 @@
 //! - **Separate from `SemanticCleaner`**: the cleaner is a sealed, HTML-only
 //!   pipeline. This port exposes the raw embedding primitive needed by vault
 //!   search (issue #386) and any future semantic feature.
+//! - **Origin is part of the type, not of the value**: the trait object alone
+//!   erases *where* a port points. [`LocalEmbeddingPort`] carries that origin
+//!   so a remote provider can never be substituted where only the local stack
+//!   is legitimate (#1977), and [`cosine_similarity_fail_closed`] carries the
+//!   ranking contract both `application` and `infrastructure` read (#1125).
 
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 
 use crate::error::SemanticError;
 
@@ -76,6 +82,103 @@ pub trait EmbeddingPort: Send + Sync {
     ///
     /// Both supported models (Granite-97M and Granite-311M) return 384.
     fn embedding_dim(&self) -> usize;
+}
+
+/// An [`EmbeddingPort`] whose origin is known to be the LOCAL embedding stack.
+///
+/// # Why the newtype exists
+///
+/// `VaultAiPorts::embedding_port` is `Option<Arc<dyn EmbeddingPort>>`, and
+/// `resolve_remote_embedding` overwrites that slot with a remote adapter the
+/// user opted into for **vault search only**. The slot is a `OnceCell` that
+/// records no origin, so after the overwrite nothing in the type system
+/// distinguishes "local ONNX" from "third-party endpoint".
+///
+/// That matters because Tier 2 semantic repair feeds DOM fragments to whatever
+/// port it holds. Both sides have the SAME type, so the slot is a valid
+/// argument for the inspector: `semantic_inspector(&vault_ports.embedding_port, …)`
+/// compiles with exit 0 and ships page content off-box without consent
+/// (issue #1977, ADR-0004 §Egress).
+///
+/// Wrapping the local port gives the two origins different types, which turns
+/// that mistake into a type error instead of a code-review promise.
+///
+/// # Why the constructor is `pub` and there is no sealer
+///
+/// Rust visibility is per *crate*: a `pub(crate)` marker inside `webfang_core`
+/// would not constrain `webfang_cli` or `webfang_ai`, which are exactly the
+/// crates that must not mint one. A `pub` constructor is therefore the correct
+/// surface, and the constraint that matters is review of its call sites —
+/// exactly one **production** call site, the CLI composition root
+/// (`build_ai_cleaner`), which wraps the port the ONNX stack handed back;
+/// tests mint their own. This boundary is a convention backed by the compiler
+/// where it can be (the newtype), and a reviewed convention where it cannot.
+#[derive(Clone)]
+pub struct LocalEmbeddingPort(Arc<dyn EmbeddingPort>);
+
+impl LocalEmbeddingPort {
+    /// Wrap a port already known to be the local ONNX stack.
+    #[must_use]
+    pub fn new(port: Arc<dyn EmbeddingPort>) -> Self {
+        Self(port)
+    }
+
+    /// Borrow the wrapped port.
+    #[must_use]
+    pub fn port(&self) -> &Arc<dyn EmbeddingPort> {
+        &self.0
+    }
+}
+
+/// Cosine similarity that **fails closed** on a dimension mismatch.
+///
+/// Returns `Some(score)` in `[-1.0, 1.0]`, and `Some(0.0)` for empty or
+/// zero-magnitude vectors — a real absence of signal, not a broken contract.
+/// Returns `None` when the two vectors have different lengths, and the caller
+/// **must** skip that vector.
+///
+/// # Why this lives in `domain`
+///
+/// Both consumers sit on the inward side of the port — `application::vault_search`
+/// (#1125) and `infrastructure::scraper::embedding_semantic_inspector`
+/// (ADR-0004) — and importing a private `fn` from `application/` into
+/// `infrastructure/` is an outward reference the intra-crate gate forbids
+/// (`target_rank < src_rank`). `domain` is the one layer both may read, and
+/// keeping one copy here is what stops the two from drifting apart.
+///
+/// # Why it must never truncate
+///
+/// Two other cosines in this workspace compare over `a.len().min(b.len())`:
+/// `webfang_ai::infrastructure_ai::embedding_ops::cosine_similarity` and
+/// `webfang_core::infrastructure::export::vector_exporter::cosine_similarity`.
+/// Truncation turns a length mismatch into a *plausible* score computed over a
+/// partial vector: `[1.0, 0.0]` against `[1.0, 0.0, 0.0]` reports 1.0 — the
+/// maximum — so a corrupt vector can WIN a ranking instead of losing it. That
+/// is precisely the failure `None` makes unrepresentable.
+pub fn cosine_similarity_fail_closed(a: &[f32], b: &[f32]) -> Option<f32> {
+    if a.len() != b.len() {
+        return None;
+    }
+    if a.is_empty() {
+        return Some(0.0);
+    }
+
+    let mut dot = 0.0f32;
+    let mut mag_a = 0.0f32;
+    let mut mag_b = 0.0f32;
+
+    for (x, y) in a.iter().zip(b.iter()) {
+        dot += x * y;
+        mag_a += x * x;
+        mag_b += y * y;
+    }
+
+    let denom = mag_a.sqrt() * mag_b.sqrt();
+    if denom < f32::EPSILON {
+        Some(0.0)
+    } else {
+        Some(dot / denom)
+    }
 }
 
 #[cfg(test)]

@@ -21,7 +21,8 @@
 //!    mismatch means the port broke its contract (a mixed-model index, a
 //!    profile whose width changed mid-run), and letting such a vector rank is
 //!    how corrupt data wins a comparison. Mismatched vectors are dropped from
-//!    the ranking — see the `cosine_similarity_checked` helper below.
+//!    the ranking — see [`cosine_similarity_fail_closed`], the single domain
+//!    copy of that contract, shared with `vault_search`.
 //!
 //! # Dimension-mismatch policy (degraded, not fatal)
 //!
@@ -52,7 +53,7 @@ use std::sync::Arc;
 use tracing::{debug, info_span, Instrument};
 
 use crate::domain::dom_inspector::SelectorErrorKind;
-use crate::domain::embedding_port::EmbeddingPort;
+use crate::domain::embedding_port::{cosine_similarity_fail_closed, EmbeddingPort};
 use crate::domain::semantic_inspector::{
     BoxFuture, SemanticContext, SemanticInspectorPort, SemanticMatch, TierSource,
 };
@@ -167,7 +168,7 @@ impl SemanticInspectorPort for EmbeddingSemanticInspector {
 
                 for (i, vector) in vectors.iter().enumerate().skip(1) {
                     // `None` = dimensions disagree: skip, never rank as 0.0.
-                    let Some(score) = cosine_similarity_checked(target, vector) else {
+                    let Some(score) = cosine_similarity_fail_closed(target, vector) else {
                         skipped += 1;
                         continue;
                     };
@@ -200,44 +201,6 @@ impl SemanticInspectorPort for EmbeddingSemanticInspector {
 /// Map a port failure onto the inspector's error surface.
 fn embedding_error(err: SemanticError) -> SelectorErrorKind {
     SelectorErrorKind::InvalidSelector(format!("embedding failed: {err}"))
-}
-
-/// Cosine similarity, fail-closed on a dimension mismatch.
-///
-/// Returns `Some(score)` in `[-1.0, 1.0]`; `Some(0.0)` for empty or
-/// zero-magnitude vectors, since those are a real absence of signal rather than
-/// a broken contract. Returns `None` when the two vectors have different
-/// lengths — the caller must SKIP that vector so a corrupt one can never rank,
-/// which is the invariant the truncating variant (`embedding_ops::cosine_similarity`,
-/// `a.len().min(b.len())`) breaks.
-///
-/// Local by design: `application::vault_search` carries an equivalent helper,
-/// but importing a private `fn` from `application/` into `infrastructure/`
-/// is an outward reference and the intra-crate gate forbids it.
-fn cosine_similarity_checked(a: &[f32], b: &[f32]) -> Option<f32> {
-    if a.len() != b.len() {
-        return None;
-    }
-    if a.is_empty() {
-        return Some(0.0);
-    }
-
-    let mut dot = 0.0f32;
-    let mut mag_a = 0.0f32;
-    let mut mag_b = 0.0f32;
-
-    for (x, y) in a.iter().zip(b.iter()) {
-        dot += x * y;
-        mag_a += x * x;
-        mag_b += y * y;
-    }
-
-    let denom = mag_a.sqrt() * mag_b.sqrt();
-    if denom < f32::EPSILON {
-        Some(0.0)
-    } else {
-        Some(dot / denom)
-    }
 }
 
 #[cfg(test)]
@@ -346,6 +309,21 @@ mod tests {
         EmbeddingSemanticInspector::new(embedder.clone(), threshold)
     }
 
+    /// The four-entry table both batch tests arrange with: one target plus
+    /// three fragments of which only `third` is parallel to the target, so a
+    /// reordered batch is visible as the wrong winner rather than as a tie.
+    /// Named because the two tests assert DIFFERENT properties over it (order
+    /// preservation vs. window reassembly) and must keep their own assertions —
+    /// only the arrange is shared.
+    fn target_with_one_winner() -> [(&'static str, &'static [f32]); 4] {
+        [
+            ("target", &[1.0, 0.0]),
+            ("first", &[0.0, 1.0]),
+            ("second", &[0.0, 1.0]),
+            ("third", &[1.0, 0.0]),
+        ]
+    }
+
     #[tokio::test]
     async fn match_above_threshold_returns_the_best_fragment() {
         let embedder = MockEmbedder::new(2, &[("target", &[1.0, 0.0]), ("match", &[1.0, 0.0])]);
@@ -447,15 +425,7 @@ mod tests {
     #[tokio::test]
     async fn batch_order_is_preserved() {
         // Reversed embedding order would attribute "first" to "third".
-        let embedder = MockEmbedder::new(
-            2,
-            &[
-                ("target", &[1.0, 0.0]),
-                ("first", &[0.0, 1.0]),
-                ("second", &[0.0, 1.0]),
-                ("third", &[1.0, 0.0]),
-            ],
-        );
+        let embedder = MockEmbedder::new(2, &target_with_one_winner());
         let inspector = EmbeddingSemanticInspector::new(Arc::new(embedder), 0.75);
 
         let hit = inspector
@@ -502,15 +472,7 @@ mod tests {
 
     #[tokio::test]
     async fn batch_max_splits_into_capped_windows_and_keeps_order() {
-        let embedder = Arc::new(MockEmbedder::new(
-            2,
-            &[
-                ("target", &[1.0, 0.0]),
-                ("first", &[0.0, 1.0]),
-                ("second", &[0.0, 1.0]),
-                ("third", &[1.0, 0.0]),
-            ],
-        ));
+        let embedder = Arc::new(MockEmbedder::new(2, &target_with_one_winner()));
         let inspector = inspector_over(&embedder, 0.75).with_batch_max(Some(2));
 
         let hit = inspector
@@ -549,23 +511,23 @@ mod tests {
     }
 
     #[test]
-    fn cosine_similarity_checked_reports_mismatch_as_none() {
+    fn cosine_similarity_fail_closed_reports_mismatch_as_none() {
         assert_eq!(
-            cosine_similarity_checked(&[1.0, 0.0], &[1.0, 0.0]),
+            cosine_similarity_fail_closed(&[1.0, 0.0], &[1.0, 0.0]),
             Some(1.0)
         );
         assert_eq!(
-            cosine_similarity_checked(&[1.0, 0.0], &[0.0, 1.0]),
+            cosine_similarity_fail_closed(&[1.0, 0.0], &[0.0, 1.0]),
             Some(0.0)
         );
-        assert_eq!(cosine_similarity_checked(&[], &[]), Some(0.0));
+        assert_eq!(cosine_similarity_fail_closed(&[], &[]), Some(0.0));
         assert_eq!(
-            cosine_similarity_checked(&[0.0, 0.0], &[1.0, 0.0]),
+            cosine_similarity_fail_closed(&[0.0, 0.0], &[1.0, 0.0]),
             Some(0.0)
         );
-        assert_eq!(cosine_similarity_checked(&[1.0, 0.0], &[1.0]), None);
+        assert_eq!(cosine_similarity_fail_closed(&[1.0, 0.0], &[1.0]), None);
         assert_eq!(
-            cosine_similarity_checked(&[1.0, 0.0], &[1.0, 0.0, 0.0]),
+            cosine_similarity_fail_closed(&[1.0, 0.0], &[1.0, 0.0, 0.0]),
             None
         );
     }
@@ -574,7 +536,7 @@ mod tests {
     /// compared, never rejected.
     #[test]
     fn equal_width_vectors_are_compared_even_when_not_parallel() {
-        let score = cosine_similarity_checked(&[1.0, 1.0], &[1.0, 0.0])
+        let score = cosine_similarity_fail_closed(&[1.0, 1.0], &[1.0, 0.0])
             .expect("equal widths must produce a score, not a skip");
         assert!(
             (score - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-5,

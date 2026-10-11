@@ -3,7 +3,8 @@
 **ADR:** `docs/adr/0004-onnx-local-removal.md`, paso 3 (condición 2 resuelta 2026-10-11: **migrar**)
 **Branch:** `feat/tier2-port-backed-inspector` (base `main` @ `23b6914e`)
 **Worktree:** `~/Projects/Rust/webfang-worktrees/feat-tier2-port-backed-inspector`
-**Issue:** TBD (lo crea el owner; requiere `status:approved` — label protegida, el agente NO se auto-aprueba)
+**Issue:** #1977
+**PR:** #1978
 
 ## Objetivo
 
@@ -95,34 +96,151 @@ Un rename partido entre work units no es una unidad revisable: es un punto de ro
 | `batch_max` | **Expuesto** (`with_batch_max(Option<usize>)`) | `EmbeddingPort::embed_batch` no lleva cap; sin exponerlo, T4 no podría cablear el perfil sin una segunda ruptura de firma. Se respeta con ventanas consecutivas reensambladas por índice. |
 | Shim `GraniteDomInspector` | **No** | Dejaría Tier 2 en el camino del feature `ai`, que es justo lo que el slice viene a sacar. |
 | `cosine_similarity` de `embedding_ops.rs:72` | **No se toca** | Quedan 5 callers (`relevance_scorer.rs:146,164`, `semantic_cleaner_impl.rs:683`, `embedding_ops.rs:197,221`, `tests/p0_001_measure.rs:274`). |
+| ¿Footer `BREAKING CHANGE:` por borrar `GraniteDomInspector`? (F5) | **NO** | Decisión del owner (2026-10-11). Las crates **no se publican a crates.io** (`publish = false` en `release-plz.toml`, distribución solo por binarios en GitHub Releases), así que no hay consumidor externo cuyo código pueda romperse. El footer dispararía un **major bump** en `main` por un rename interno de un tipo que ninguna superficie publicada expone. El rename sí es un cambio real y worthy de changelog — lo produce el conventional commit (`refactor(ai):`), no el footer. |
 
-## Verificación observada
+## Capa de corrección sobre el commit de slice 1 (2026-10-11)
+
+Un reviewer más el CI unieron cinco correcciones sobre el commit ya pusheado. Se aplican
+**en capa encima** — no se reescribe historia.
+
+### F1 — La guarda era decorativa: el invariante pasa a ser un tipo
+
+`build_ai_cleaner` devolvía `Option<Arc<dyn EmbeddingPort>>` y `VaultAiPorts.embedding_port` es
+**el mismo tipo**. Consecuencia medida: cambiar `semantic_inspector(&shared, …)` por
+`semantic_inspector(&vault_ports.embedding_port, …)` en `main.rs` compilaba con exit 0 (solo un
+warning de `shared` sin uso). El borrado a `dyn EmbeddingPort` — que es lo que habilita el slice
+— es también lo que borra la evidencia de origen.
+
+**Fix (estructural, no convención).** Newtype `LocalEmbeddingPort` en
+`domain/embedding_port.rs`, con constructor `pub` y campo privado + accessor `port()`.
+`semantic_inspector` toma `&Option<LocalEmbeddingPort>`; `VaultAiPorts.embedding_port` **no
+cambia**. La línea equivocada deja de compilar:
+
+```text
+error[E0308]: mismatched types
+  --> crates/webfang_cli/src/main.rs:997:39
+   |
+997 |     let semantic = semantic_inspector(&vault_ports.embedding_port, &engine_options);
+   |                    ------------------ ^^^^^^^^^^^^^^^^^^^^^^^^^^^ expected `&Option<LocalEmbeddingPort>`, found `&Option<Arc<dyn EmbeddingPort>>`
+```
+
+Sin sealers, tokens ni friend-crates: la visibilidad en Rust es por crate, un `pub(crate)` en
+`webfang_core` no alcanzaría a `webfang_cli`/`webfang_ai`, y un `pub` es lo correcto acá. La
+frontera que queda es la **review** de su única call site de construcción.
+
+### F1 (cont.) — El comentario del test decía más de lo que el test prueba
+
+`tier2_inspector_stays_bound_to_the_local_port` construía `vault_slot` y nunca se lo pasaba a
+nada, así que `remote.embedded() == 0` era trivialmente verdadero. Post-fix el invariante
+anti-slot lo sostiene el **sistema de tipos**, y el test pina la FORMA del wiring. El doc
+comment ahora dice exactamente eso, sin sobrevender ni humildad forzada.
+
+`CountingEmbedder` quedó `#[cfg(feature = "ai")]`: su único consumidor es un test gateado por
+`ai`, y el módulo `wiring_tests` compila con `adaptive-selectors` solo — sin el gate, el fixture
+integro era dead code en esa combinación.
+
+### F1 (cont.) — Dónde se envuelve, y por qué NO en la raíz ONNX
+
+El brief pedía que `build_onnx_embedding_port` devolviera el port ya envuelto, para que
+`LocalEmbeddingPort::new` quedara con una sola call site en el workspace. **No se hizo, y no es
+una preferencia.** Medido:
+
+```text
+error[E0308]: mismatched types
+   --> crates/webfang_mcp/src/mcp_server/mod.rs:191:29
+    |
+190 |  Arc::new(webfang_ai::SemanticCleanerImpl::from_parts(
+191 |      port,
+    |      ^^^^ expected `Arc<dyn EmbeddingPort>`, found `LocalEmbeddingPort`
+```
+
+`crates/webfang_mcp/src/mcp_server/mod.rs` está **fuera de las superficies de edición de esta
+capa**. Envolver en la raíz ONNX rompe el daemon MCP, y arreglarlo excede el mandato — el
+experiment se revirtió y el archivo quedó byte-idéntico.
+
+Lo que sí se cumplió: `LocalEmbeddingPort::new` tiene **una sola call site en el workspace**, en
+`build_ai_cleaner` — el composition root de la CLI, que es donde el bind ocurre igual que antes
+del slice. El objetivo de la capa 2 (una sola construcción, revisable) se sostiene; lo que cambia
+es el módulo que la hospeda. Si el owner prefiere la raíz ONNX, el diff es una línea en
+`embedding_adapter.rs` más `.port().clone()` en `mod.rs:191` — pero `mod.rs` necesita entrar en
+las superficies.
+
+### F2 — El coseno fail-closed sube a `domain/`
+
+`vault_search.rs:403` y `embedding_semantic_inspector.rs:217` eran el mismo helper carácter por
+carácter (29 líneas clonadas por jscpd). Movido a `domain/embedding_port.rs` como
+`cosine_similarity_fail_closed` — `domain` es la única capa que puede leer tanto `application`
+como `infrastructure` sin violar `target_rank < src_rank`. **Ambos** consumidores se rewiren; si
+`vault_search` hubiera conserva su copia privada, el clon habría sobrevivido mudado de
+credenciales.
+
+### F3 — `docs/test-inventory.md` desactualizado
+
+Borrar `granite_dom_inspector.rs` se llevó su mención de `#[ignore]` en prosa y el catálogo no se
+enteró. Rebaselineado 46 → 45 filas (35 atributos + 10 doc/comment), fila de
+`granite_dom_inspector.rs` eliminada y renumeración de filas.
+
+### F4/F6 — Ratchet de duplicación y estado del plan
+
+Ver "Verificación observada" (abajo): 9282 → 9244, exactamente la medición local de `main`.
+
+## Verificación observada — capa de corrección (2026-10-11)
 
 Todos los comandos corridos en el worktree con
-`CARGO_TARGET_DIR=$HOME/.cache/cargo-target/feat-tier2-port-backed-inspector`.
+`CARGO_TARGET_DIR=$HOME/.cache/cargo-target/feat-tier2-port-backed-inspector`,
+`CARGO_INCREMENTAL=0`, `RUSTC_WRAPPER` unset y `~/.local/share/mbx/bin` al frente del PATH
+(`command -v cargo` → `/home/xavi/.local/share/mbx/bin/cargo`).
 
 | Comando | Resultado |
 | --- | --- |
 | `cargo check -p webfang_cli --features ai,adaptive-selectors --all-targets` | exit 0 |
-| `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines` | **exit 0** (gate exacto de CI, con los ratchets de #516) |
-| `cargo fmt --all -- --check` | exit 0 |
-| `RUSTDOCFLAGS=-D warnings cargo doc --workspace --all-features --no-deps` | exit 0 (tras corregir un link a `EmbeddingPort` en mi propio doc comment) |
+| `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines` | exit 0 (gate exacto de CI, ratchets #516 incluidos) |
+| `cargo fmt --all -- --check` | exit 0 (tras el fixer, que tocó solo los 2 archivos en superficie) |
+| `env "RUSTDOCFLAGS=-D warnings" cargo doc --workspace --all-features --no-deps` | exit 0 (tras un `redundant_explicit_links` y un `broken_intra_doc_links` propios) |
+| `bash scripts/check_ignored_guard.sh` | exit 0 — `OK: 45 mentions (35 attributes + 10 doc/comment)` |
+| `cargo nextest run -p webfang_core --lib application::vault_search` | 19 passed |
+| …de los cuales los 6 de `cosine_similarity` (incl. `dimension_mismatch` → `None`, #1125) | 6 passed |
+| `cargo nextest run -p webfang_core --features webfang_core/adaptive-selectors --lib infrastructure::scraper` | 34 passed |
 | `cargo nextest run -p webfang_cli --features ai,adaptive-selectors --bin webfang` | 8 passed |
-| `tier2_inspector_stays_bound_to_the_local_port` | PASS (aislado) |
-| `cargo nextest run -p webfang_core --features webfang_core/adaptive-selectors --lib infrastructure::scraper` | 34 passed (del writer) |
-| `cargo nextest run -p webfang_ai --features ai --test erased_engine_ports_test` | 3 passed (del writer) |
-| `scripts/check_intra_crate_direction.sh` | exit 0, `allowlisted 44 (entries: 2)` — sin entrada nueva (del writer) |
+| `bash scripts/check_duplication.sh` | exit 0 — `Duplicated lines (rust): 9244 (baseline: 9250)` |
+
+### Duplicación: el delta, medido con jscpd v5 5.4.0
+
+Los tres árboles medidos con los MISMOS flags del ratchet (`--min-tokens 50 --format rust
+--mode mild`), extrayendo `crates/` con `git archive` para no tocar el worktree:
+
+| Árbol | Líneas duplicadas (rust) | Δ |
+| --- | --- | --- |
+| `main` @ `23b6914e` | **9244** | referencia |
+| slice 1, HEAD `1a206357` | **9282** | +38 vs main |
+| slice 1 + esta capa | **9244** | **+0 vs main** |
+
+Dos correcciones al brief, ambas medidas:
+
+1. **La atribución de los +32 estaba incompleta.** 29 eran el clon
+   `vault_search.rs:403 ↔ embedding_semantic_inspector.rs:217`. Los 3 restantes no eran ruido:
+   main mide **9244** en local, y el slice introducía además un **clon intra-archivo de 9
+   líneas** en `embedding_semantic_inspector.rs` (el literal `MockEmbedder::new(2, &[…])` de
+   4 entradas repetido en `batch_order_is_preserved` y
+   `batch_max_splits_into_capped_windows_and_keeps_order`). Con solo el primer arreglo quedaban
+   9253 — **rojo todavía**. Extraído como helper de arrange `target_with_one_winner()`; las dos
+   pruebas conservan sus propias aserciones, solo se comparte el arrange (el mismo remedio que
+   cada descenso de baseline de este repo).
+2. **El baseline comprometido (9250) está 6 líneas por encima de la medición local de `main`
+   (9244).** No se bumpeó — el ratchet queda en 9244, debajo de los dos.
 
 ## Ruta
 
 **Delegated direct** — un writer. Toca ≥2 archivos no triviales (`core/infrastructure/scraper/`,
 `webfang_cli/main.rs`, `webfang_ai/{lib,infrastructure_ai}`, test) → dispara el writer trigger del
-protocolo ODD.
+protocolo ODD. La capa de corrección es un segundo writer sobre el mismo worktree.
 
 ## Estado
 
 - [x] Mapeo de superficie (10 puntos, verificado contra `main` @ `23b6914e`)
 - [x] Worktree + `.envrc` + `direnv allow` (target aislado: `~/.cache/cargo-target/feat-tier2-port-backed-inspector`)
 - [x] T1–T6
-- [ ] Commit de work-unit
-- [ ] PR + review nativo (RDD `on`, decidido por global)
+- [x] Issue #1977 creado con `status:approved`; PR #1978 abierto
+- [x] Commit de work-unit `1a206357` (pusheado)
+- [x] Capa de corrección (F1–F6) verificada — commit encima, sin reescribir historia
+- [ ] Review nativo + merge (RDD `on`, decidido por global)
