@@ -11,6 +11,10 @@
 //! domain re-exports, AND the semantic cleaner itself — that half carries no
 //! ONNX dependency and exists so the `EmbeddingPort` seam is usable with no
 //! local model, against a remote endpoint or a fake alike.
+//!
+//! The Tier 2 selector inspector is not part of this crate anymore: it is
+//! `webfang_core::infrastructure::scraper::embedding_semantic_inspector::EmbeddingSemanticInspector`
+//! (ADR-0004, slice 1), over the same erased port.
 
 #![deny(missing_docs)]
 
@@ -31,6 +35,4 @@ pub use infrastructure_ai::{
 pub use infrastructure_ai::{AiModel, ModelConfig, SemanticCleanerImpl};
 
 #[cfg(feature = "ai")]
-pub use infrastructure_ai::{
-    EmbeddingAdapter, GraniteDomInspector, InferencePool, MiniLmTokenizer, TokenBatch,
-};
+pub use infrastructure_ai::{EmbeddingAdapter, InferencePool, MiniLmTokenizer, TokenBatch};

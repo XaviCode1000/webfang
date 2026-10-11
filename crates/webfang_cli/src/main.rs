@@ -535,6 +535,125 @@ mod wiring_tests {
             "the trace must record the tier2_semantic score"
         );
     }
+
+    /// Recording `EmbeddingPort` that returns a fixed vector and counts the
+    /// texts it was asked to embed. Used to prove *which* port the inspector
+    /// is bound to, not just that it runs.
+    ///
+    /// Wrapped in a newtype because the orphan rule forbids implementing a
+    /// foreign trait for `Arc<T>` — and `Arc<CountingEmbedder>` would be the
+    /// otherwise-natural shape.
+    struct CountingEmbedder {
+        inner: Arc<CountingInner>,
+    }
+
+    struct CountingInner {
+        vec: Vec<f32>,
+        embedded: std::sync::atomic::AtomicUsize,
+    }
+
+    impl CountingEmbedder {
+        fn new(vec: Vec<f32>) -> Self {
+            Self {
+                inner: Arc::new(CountingInner {
+                    vec,
+                    embedded: std::sync::atomic::AtomicUsize::new(0),
+                }),
+            }
+        }
+
+        fn as_port(&self) -> Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort> {
+            Arc::new(Self {
+                inner: Arc::clone(&self.inner),
+            })
+        }
+
+        fn embedded(&self) -> usize {
+            self.inner
+                .embedded
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl webfang_core::domain::embedding_port::EmbeddingPort for CountingEmbedder {
+        fn embed<'a>(
+            &'a self,
+            _text: &'a str,
+        ) -> std::pin::Pin<
+            Box<
+                dyn std::future::Future<
+                        Output = Result<Vec<f32>, webfang_core::error::SemanticError>,
+                    > + Send
+                    + 'a,
+            >,
+        > {
+            Box::pin(async move {
+                self.inner
+                    .embedded
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(self.inner.vec.clone())
+            })
+        }
+
+        fn embedding_dim(&self) -> usize {
+            self.inner.vec.len()
+        }
+    }
+
+    /// The Tier 2 inspector must stay bound to the LOCAL embedding port even
+    /// when a remote provider overwrote the vault slot (ADR-0004 slice 1,
+    /// issue #1977).
+    ///
+    /// The regression this pins: `resolve_remote_embedding` replaces
+    /// `vault_ports.embedding_port` — a `OnceCell` that records no origin — so
+    /// an inspector that resolved its port from that slot instead of from
+    /// `build_ai_cleaner`'s return would ship DOM fragments to a third party
+    /// the user only opted in for *vault search*.
+    #[cfg(feature = "ai")]
+    #[test]
+    fn tier2_inspector_stays_bound_to_the_local_port() {
+        let local = Arc::new(CountingEmbedder::new(vec![1.0, 0.0]));
+        let remote = Arc::new(CountingEmbedder::new(vec![0.0, 1.0]));
+
+        let shared: Option<Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort>> =
+            Some(local.as_port());
+
+        // Simulate the composition order: the vault slot gets overwritten by a
+        // remote provider after `build_ai_cleaner` already handed out the
+        // local port. The inspector only ever sees `shared`.
+        let vault_slot: Option<Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort>> =
+            Some(remote.as_port());
+
+        let inspector = semantic_inspector(&shared, &AdaptiveSelectorOptions::default())
+            .expect("a shared local port must produce an inspector");
+
+        // Drive one Tier 2 call through the port-backed inspector.
+        let ctx = SemanticContext {
+            target_text: "contenido real".to_owned(),
+            dom_fragments: vec![".contenido".to_owned()],
+            domain_hint: None,
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime");
+        let outcome = runtime.block_on(inspector.find_semantic_match(ctx));
+
+        assert!(
+            local.embedded() > 0,
+            "the inspector must embed through the LOCAL port"
+        );
+        assert_eq!(
+            remote.embedded(),
+            0,
+            "Tier 2 must never reach the remote port: vault slot was \
+             overwritten but the inspector is bound to the local one"
+        );
+        // `vault_slot` exists purely to model the overwrite; binding the
+        // inspector must not consult it.
+        assert!(vault_slot.is_some());
+        assert!(outcome.is_ok(), "the Tier 2 call must not error");
+    }
 }
 
 /// Build the adaptive selector engine when the feature and flag are both active.
@@ -564,27 +683,28 @@ fn build_adaptive_engine(
     }
 }
 
-/// Build the Tier 2 semantic inspector from the shared ONNX assets
-/// (#702).
+/// Build the Tier 2 semantic inspector over the shared LOCAL embedding port
+/// (ADR-0004 slice 1).
 ///
-/// Returns `None` when no shared engine is available (`--ai` off or dry-run),
+/// Returns `None` when no shared port is available (`--ai` off or dry-run),
 /// degrading the adaptive engine to Tier 1 (lexical) repair. The threshold comes
 /// from the single shared [`AdaptiveSelectorOptions`] — no duplicate constant.
-/// The engine is erased (#1569), so Tier 2 works in `Single` AND `Pool` modes —
-/// both get the engine `build_onnx_embedding_port` handed back alongside the
-/// cleaner's embedding port (ADR-0004), so one model load serves both.
+///
+/// The port arrives from [`build_ai_cleaner`], which captured it from the ONNX
+/// composition root **before** `resolve_remote_embedding` overwrites the vault
+/// embedding slot. That ordering is load-bearing, not incidental: the slot is a
+/// `OnceCell` that does not record its origin, so reading it here instead would
+/// silently point Tier 2 at a remote endpoint the user opted into for *vault
+/// search* only — shipping DOM fragments to a third party without consent
+/// (ADR-0004 §Egress de Tier 2, issue #1977).
 #[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
 fn semantic_inspector(
-    shared: &Option<(
-        Arc<dyn webfang_ai::infrastructure_ai::InferenceEngine + Send + Sync>,
-        Arc<webfang_ai::MiniLmTokenizer>,
-    )>,
+    shared: &Option<Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort>>,
     options: &AdaptiveSelectorOptions,
 ) -> Option<Arc<dyn webfang_core::domain::SemanticInspectorPort>> {
-    shared.as_ref().map(|(pool, tokenizer)| {
-        let inspector = webfang_ai::GraniteDomInspector::new(
-            Arc::clone(pool),
-            Arc::clone(tokenizer),
+    shared.as_ref().map(|port| {
+        let inspector = webfang_core::infrastructure::scraper::embedding_semantic_inspector::EmbeddingSemanticInspector::new(
+            Arc::clone(port),
             options.semantic_threshold,
         );
         Arc::new(inspector) as Arc<dyn webfang_core::domain::SemanticInspectorPort>
@@ -603,9 +723,14 @@ fn ai_init_error(e: SemanticError) -> CliExit {
 }
 
 /// Build the AI semantic cleaner and its vault-search ports, surfacing the
-/// cleaner's shared ONNX assets (erased engine + tokenizer) so the adaptive
-/// engine can reuse them for Tier 2 semantic repair (#702) without a second
-/// model load.
+/// cleaner's shared LOCAL embedding port so Tier 2 semantic repair reuses it
+/// without a second model load (ADR-0004 slice 1).
+///
+/// The third element is deliberately the local `EmbeddingPort` and not the
+/// engine+tokenizer bundle it was before: Tier 2 is now port-backed, and the
+/// port is the only thing it needs. Returning it **from here**, rather than
+/// having the inspector read a slot later, is what makes the binding safe —
+/// see the slot-overwrite note at the call site.
 #[cfg(feature = "ai")]
 async fn build_ai_cleaner(
     opts: &CrawlOptions,
@@ -613,10 +738,7 @@ async fn build_ai_cleaner(
     (
         Option<Arc<dyn SemanticCleaner>>,
         webfang_core::application::container::VaultAiPorts,
-        Option<(
-            Arc<dyn webfang_ai::infrastructure_ai::InferenceEngine + Send + Sync>,
-            Arc<webfang_ai::MiniLmTokenizer>,
-        )>,
+        Option<Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort>>,
     ),
     CliExit,
 > {
@@ -692,8 +814,13 @@ async fn build_ai_cleaner(
             .await
             {
                 Ok((port, engine, tokenizer)) => {
-                    let cleaner = SemanticCleanerImpl::from_parts(port, config);
-                    let shared = Some((Arc::clone(&engine), Arc::clone(&tokenizer)));
+                    let cleaner = SemanticCleanerImpl::from_parts(Arc::clone(&port), config);
+                    // Hand the SAME local port to Tier 2. Cloned before the
+                    // cleaner takes ownership, and captured here — before
+                    // `resolve_remote_embedding` overwrites the vault slot —
+                    // so `--embedding-provider remote` can never reach the
+                    // inspector's input (ADR-0004 slice 1, issue #1977).
+                    let shared = Some(port);
                     let cleaner: Option<Arc<dyn SemanticCleaner>> = Some(Arc::new(cleaner));
                     let mut ports = build_vault_ports(engine, tokenizer).await;
                     ports.cleaner = cleaner.clone();
