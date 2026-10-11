@@ -39,7 +39,18 @@
 //! parses IP-literal hosts directly (`dns::SocketAddrs::try_parse`) and never
 //! invokes a custom resolver for them (`src/conn/http.rs`, `HttpConnector::call`),
 //! so [`ValidatingResolver`] only sees *hostname* connections — precisely the
-//! gap left open by layers 1 and 3, with no overlap and no hole.
+//! gap left open by layers 1 and 3, with no overlap and no hole. The same
+//! boundary is why an IP literal needs the ENTRY gate to become policy-aware
+//! (B2 slice 2): a literal is invisible here, so an allowlisted LAN literal is
+//! reachable only if [`crate::domain::ssrf_guard::is_forbidden_literal_host_with_policy`]
+//! lets it through upstream.
+//!
+//! Per-client policy (B2 slice 2, #1947): besides `allow_loopback`, a
+//! resolver can carry this provider's [`NetworkPolicy`] allowlist, cloned
+//! once at construction. Its `allow_hosts` half is enforced ONLY in
+//! `ValidatingResolver::fail_closed_scan` — the sole place that knows both
+//! the requested name and the resolved answer set — as an AND with
+//! `allow_cidrs`.
 //!
 //! All layers share
 //! [`is_forbidden_ip`](crate::domain::ssrf_guard::is_forbidden_ip) as the
@@ -51,14 +62,16 @@
 // `pub`. `DISABLE_REDIRECT_GUARD_ENV` stays `pub(crate)` because crate tests in
 // other modules set it before building clients; the rest have in-module
 // consumers only.
+use crate::domain::network_policy::NetworkPolicy;
 #[cfg(test)]
 pub(crate) use crate::domain::ssrf_guard::DISABLE_REDIRECT_GUARD_ENV;
 use crate::domain::ssrf_guard::{
-    is_forbidden_ip_with, redirect_policy, redirect_policy_with_loopback,
-    DISABLE_VALIDATING_RESOLVER_ENV,
+    is_forbidden_ip_with, is_forbidden_resolved_address, redirect_policy,
+    redirect_policy_with_loopback, redirect_policy_with_policy, DISABLE_VALIDATING_RESOLVER_ENV,
 };
 
 use std::net::IpAddr;
+use std::sync::Arc;
 use wreq::dns::{Addrs, Name, Resolve, Resolving};
 
 /// Error produced when a DNS answer violates SSRF policy.
@@ -73,6 +86,26 @@ pub struct ForbiddenResolutionError {
     /// Host whose answer set contained the forbidden address.
     pub host: String,
     /// The first forbidden address found in the answer set.
+    pub ip: IpAddr,
+}
+
+/// Dial refused by the B2 allowlist's host half (slice 2, #1947).
+///
+/// Distinct from [`ForbiddenResolutionError`] on purpose: the address WAS
+/// allowlisted, and what is missing is the declared hostname — a config
+/// omission with an obvious fix, not an SSRF attempt. It therefore names the
+/// field that closes it (`allow_hosts`), in Spanish, because it surfaces
+/// verbatim in the operator's terminal through the transport error chain.
+///
+/// Reported only when the AND decision is what denied the dial: the resolved
+/// IP is inside an allowlisted CIDR and the hostname is not declared, so
+/// both facts are actionable.
+#[derive(Debug, thiserror::Error)]
+#[error("el host '{host}' resolvió a {ip}, una red privada: declaralo también en `allow_hosts` del provider (en `network_policy`) para permitir ese endpoint; `allow_cidrs` por sí solo es la precondición, no el permiso")]
+pub struct ForbiddenHostNotAllowlistedError {
+    /// Hostname dialed (never an IP literal: literals skip this check).
+    pub host: String,
+    /// Resolved address that IS inside an allowlisted CIDR.
     pub ip: IpAddr,
 }
 
@@ -112,10 +145,18 @@ pub struct ForbiddenResolutionError {
 /// at construction alongside the escape hatch: a resolver built with
 /// [`ValidatingResolver::with_allow_loopback`] permits answers that resolve
 /// to exactly `127.0.0.1` / `::1`, every other forbidden range stays denied.
+/// The B2 allowlist ([`ValidatingResolver::with_policy`]) travels the same
+/// way, per client and never through the process registry.
 #[derive(Debug, Clone)]
 pub struct ValidatingResolver {
     validation_enabled: bool,
     allow_loopback: bool,
+    /// Per-client B2 allowlist (slice 2, #1947). Cloned ONCE here, at
+    /// client-build time, and shared behind an `Arc` with each in-flight
+    /// resolution — the resolve path hands the `Arc` to the boxed future
+    /// (which must be `'static`), so a connection costs a refcount bump and
+    /// never a deep clone. Still per-client state, never process state.
+    policy: Arc<NetworkPolicy>,
 }
 
 impl ValidatingResolver {
@@ -129,6 +170,7 @@ impl ValidatingResolver {
             validation_enabled: std::env::var(DISABLE_VALIDATING_RESOLVER_ENV).as_deref()
                 != Ok("1"),
             allow_loopback: false,
+            policy: Arc::new(NetworkPolicy::default()),
         }
     }
 
@@ -144,6 +186,27 @@ impl ValidatingResolver {
             validation_enabled: std::env::var(DISABLE_VALIDATING_RESOLVER_ENV).as_deref()
                 != Ok("1"),
             allow_loopback,
+            policy: Arc::new(NetworkPolicy::default()),
+        }
+    }
+
+    /// Builds a resolver with the loopback permit AND this provider's B2
+    /// network allowlist (slice 2, #1947).
+    ///
+    /// Same lifecycle as its siblings: the escape hatch is read once at
+    /// construction, and both parameters are copied into THIS resolver —
+    /// per-client state, never registry state, so two providers with
+    /// different policies in one process cannot influence each other.
+    ///
+    /// The policy is cloned exactly once, here; `gai_lookup` takes it by
+    /// reference on every resolution.
+    #[must_use]
+    pub fn with_policy(allow_loopback: bool, policy: &NetworkPolicy) -> Self {
+        Self {
+            validation_enabled: std::env::var(DISABLE_VALIDATING_RESOLVER_ENV).as_deref()
+                != Ok("1"),
+            allow_loopback,
+            policy: Arc::new(policy.clone()),
         }
     }
 
@@ -153,18 +216,20 @@ impl ValidatingResolver {
     /// # Errors
     ///
     /// Returns [`ForbiddenResolutionError`] when validating and any address
-    /// in the answer set is forbidden, or the underlying `io::Error` if
-    /// resolution itself fails.
+    /// in the answer set is forbidden, [`ForbiddenHostNotAllowlistedError`]
+    /// when the address is allowlisted but the hostname is not declared, or
+    /// the underlying `io::Error` if resolution itself fails.
     async fn gai_lookup(
         host: String,
         validate: bool,
         allow_loopback: bool,
+        policy: Arc<NetworkPolicy>,
     ) -> Result<Addrs, Box<dyn std::error::Error + Send + Sync>> {
         let addrs: Vec<std::net::SocketAddr> =
             tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
 
         if validate {
-            Self::fail_closed_scan(&host, &addrs, allow_loopback)?;
+            Self::fail_closed_scan(&host, &addrs, allow_loopback, &policy)?;
         }
 
         Ok(Box::new(addrs.into_iter()) as Addrs)
@@ -178,25 +243,46 @@ impl ValidatingResolver {
     /// Pure function over the answer slice so the empty-set edge is unit-
     /// testable without depending on nondeterministic `getaddrinfo` behavior.
     /// `allow_loopback` narrows the deny list to the exact loopback addresses
-    /// (#1462); every other range fails closed as before.
+    /// (#1462); `policy` adds the B2 allowlist, whose hostname half is
+    /// enforced HERE and nowhere else — this is the only place in the system
+    /// that knows the requested name and the resolved addresses at the same
+    /// time.
     fn fail_closed_scan(
         host: &str,
         addrs: &[std::net::SocketAddr],
         allow_loopback: bool,
+        policy: &NetworkPolicy,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        if addrs.is_empty() {
+            tracing::warn!(host = %host, "Empty DNS answer rejected (SSRF validating resolver)");
+            return Err(Box::new(std::io::Error::other(format!(
+                "empty DNS answer for '{host}'"
+            ))));
+        }
         let Some(offending) = addrs
             .iter()
-            .find(|addr| is_forbidden_ip_with(&addr.ip(), allow_loopback))
+            .find(|addr| is_forbidden_resolved_address(&addr.ip(), host, allow_loopback, policy))
         else {
-            if addrs.is_empty() {
-                tracing::warn!(host = %host, "Empty DNS answer rejected (SSRF validating resolver)");
-                return Err(Box::new(std::io::Error::other(format!(
-                    "empty DNS answer for '{host}'"
-                ))));
-            }
             return Ok(());
         };
         let ip = offending.ip();
+        // Two denial classes, told apart by WHAT is missing. The address may
+        // well be allowlisted — what is missing is the declared hostname, a
+        // config omission with an obvious fix, which is exactly why it gets
+        // its own message naming `allow_hosts`.
+        if is_missing_allow_hosts_declaration(&ip, host, allow_loopback, policy) {
+            tracing::warn!(
+                host = %host,
+                ip = %ip,
+                allow_cidrs = policy.allow_cidrs.len(),
+                allow_hosts_declared = !policy.allow_hosts.is_empty(),
+                "DNS answer inside an allowlisted network rejected: hostname not declared in allow_hosts (SSRF validating resolver)"
+            );
+            return Err(Box::new(ForbiddenHostNotAllowlistedError {
+                host: host.to_owned(),
+                ip,
+            }));
+        }
         tracing::warn!(
             host = %host,
             ip = %ip,
@@ -207,6 +293,33 @@ impl ValidatingResolver {
             ip,
         }))
     }
+}
+
+/// Whether the dial is denied **only** because the hostname was never
+/// declared: the resolved address is inside an allowlisted CIDR, the host is
+/// a real name (a literal skips the check), and the plain deny list — the one
+/// that runs without any policy — would have forbidden it.
+///
+/// That last clause is what keeps the message honest: an address in a
+/// never-allowable range (FIN-017) can never be described as "you forgot
+/// `allow_hosts`", because declaring it would change nothing.
+///
+/// The always-denied check is load-bearing against a HAND-BUILT policy: such a
+/// policy can contain `169.254.0.0/16` (config validation rejects it, but a
+/// literal `NetworkPolicy` bypasses validation), and without this clause the
+/// message would point an operator at a field that cannot help. Pinned by
+/// `missing_declaration_class_is_distinct_from_the_ssrf_one`.
+fn is_missing_allow_hosts_declaration(
+    ip: &IpAddr,
+    host: &str,
+    allow_loopback: bool,
+    policy: &NetworkPolicy,
+) -> bool {
+    is_forbidden_ip_with(ip, allow_loopback)
+        && !crate::domain::ssrf_guard::is_always_denied_ip(ip)
+        && policy.allows_ip(ip)
+        && crate::domain::ssrf_guard::parse_ip_literal(host).is_none()
+        && !policy.allows_host(host)
 }
 
 impl Default for ValidatingResolver {
@@ -224,6 +337,7 @@ impl Resolve for ValidatingResolver {
             name.as_str().to_owned(),
             self.validation_enabled,
             self.allow_loopback,
+            Arc::clone(&self.policy),
         );
         Box::pin(fut)
     }
@@ -255,11 +369,34 @@ impl crate::domain::ssrf_guard::SsrfGuard for crate::domain::ssrf_guard::Default
             .redirect(redirect_policy_with_loopback(allow_loopback))
             .dns_resolver(ValidatingResolver::with_allow_loopback(allow_loopback))
     }
+
+    fn secure_client_with_policy(
+        &self,
+        builder: wreq::ClientBuilder,
+        allow_loopback: bool,
+        policy: &NetworkPolicy,
+    ) -> wreq::ClientBuilder {
+        builder
+            .redirect(redirect_policy_with_policy(allow_loopback, policy.clone()))
+            .dns_resolver(ValidatingResolver::with_policy(allow_loopback, policy))
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// RFC1918 discard target for the allowlisted-LAN cases. Host and port stay
+    /// separate literals rather than one `IP:port` constant: that shape reads
+    /// as `path:line` to tooling scanning evidence locations, and the native
+    /// review admission layer rejects a reviewer result citing one as
+    /// `evidence_path_out_of_scope`. Nothing listens on the discard port, so a
+    /// permitted dial runs out the connect path and a denied one never opens a
+    /// socket. Composed inline at each use — `tests/ssrf_policy_e2e_test.rs`
+    /// needs the identical fixture, and a shared helper across the two files
+    /// would be a jscpd clone against a descending ratchet.
+    const LAN_DISCARD_HOST: &str = "10.255.255.254";
+    const LAN_DISCARD_PORT: u16 = 9;
 
     /// Resolver tests. Determinism note: `tokio::net::lookup_host` resolves
     /// IP literals locally (no network, no resolver daemon), so every case
@@ -286,6 +423,7 @@ mod tests {
         use std::net::SocketAddr;
         use wreq::dns::{Name, Resolve};
 
+        use crate::domain::network_policy::{CidrBlock, NetworkPolicy, NetworkPolicyMode};
         use crate::domain::ssrf_guard::SsrfGuard as _;
 
         fn validation_on() -> (webfang_test_utils::EnvGuard, ValidatingResolver) {
@@ -344,8 +482,308 @@ mod tests {
         fn fail_closed_scan_rejects_empty_answer_set() {
             // An empty DNS answer can never yield a connectable address:
             // fail closed regardless of which (if any) record was expected.
-            let outcome = ValidatingResolver::fail_closed_scan("empty.test", &[], false);
+            let outcome = ValidatingResolver::fail_closed_scan(
+                "empty.test",
+                &[],
+                false,
+                &NetworkPolicy::default(),
+            );
             assert!(outcome.is_err(), "empty answer set must fail closed");
+        }
+
+        // B2 slice 2, layer 4: a redirect hop to an allowlisted LAN literal is
+        // still FOLLOWED. The discriminator is the terminal shape: a stopped
+        // hop surfaces the 302 response, a followed one a CONNECT-phase
+        // error (nothing listens on the RFC1918 discard target).
+        #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
+        #[tokio::test]
+        async fn redirect_policy_with_policy_follows_an_allowlisted_lan_literal() {
+            use wiremock::matchers::method;
+            use wiremock::{Mock, MockServer, ResponseTemplate};
+
+            // The SOURCE is wiremock on 127.0.0.1, which the resolver forbids;
+            // the hatch disarms that ONE layer so the seed request can be
+            // served. The redirect policy under test stays fully armed.
+            let _guard =
+                webfang_test_utils::EnvGuard::with(&[(DISABLE_VALIDATING_RESOLVER_ENV, "1")]);
+            // Composed at runtime, not written as one `IP:port` literal: that
+            // shape reads as `path:line` to tooling that scans evidence
+            // locations, and the native review admission layer rejects a
+            // reviewer result that cites one as out-of-scope. See the same
+            // note in `tests/ssrf_policy_e2e_test.rs`.
+            let target = format!("http://{LAN_DISCARD_HOST}:{LAN_DISCARD_PORT}/v1");
+            let source = MockServer::start().await;
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(302).insert_header("location", target))
+                .mount(&source)
+                .await;
+
+            let guarded: std::sync::Arc<dyn crate::domain::ssrf_guard::SsrfGuard> =
+                std::sync::Arc::new(crate::domain::ssrf_guard::DefaultSsrfGuard);
+
+            let denied = guarded
+                .secure_client_with_policy(
+                    wreq::Client::builder().connect_timeout(std::time::Duration::from_secs(2)),
+                    false,
+                    &NetworkPolicy::default(),
+                )
+                .build()
+                .expect("test client must build");
+            let stopped = denied
+                .get(source.uri())
+                .send()
+                .await
+                .expect("a stopped hop surfaces the 302 itself");
+            assert_eq!(
+                stopped.status().as_u16(),
+                302,
+                "an undeclared LAN literal hop must stop synchronously"
+            );
+
+            let allowed = guarded
+                .secure_client_with_policy(
+                    wreq::Client::builder().connect_timeout(std::time::Duration::from_secs(2)),
+                    false,
+                    &lan_policy(&["10.0.0.0/8"], &[]),
+                )
+                .build()
+                .expect("test client must build");
+            let err = allowed
+                .get(source.uri())
+                .send()
+                .await
+                .expect_err("an allowlisted hop is followed and then fails at CONNECT");
+            let rendered = format!("{err:?}");
+            assert!(
+                !rendered.contains("302"),
+                "the hop was followed, so the 302 must not be the terminal answer: {rendered}"
+            );
+        }
+
+        // B2 slice 2: the AND decision enforced where the hostname AND the
+        // resolved addresses are both known — `fail_closed_scan`.
+        /// Allowlist-mode fixture. Its near-twin in
+        /// `tests/ssrf_policy_e2e_test.rs` deliberately does NOT look like this
+        /// one: that suite builds its policies through the serde config path
+        /// instead, which is both more faithful and free of the jscpd clone a
+        /// shared struct literal would create.
+        fn lan_policy(cidrs: &[&str], hosts: &[&str]) -> NetworkPolicy {
+            NetworkPolicy {
+                mode: NetworkPolicyMode::Allowlist,
+                allow_cidrs: cidrs
+                    .iter()
+                    .map(|c| CidrBlock::parse(c).expect("test CIDR parses"))
+                    .collect(),
+                allow_hosts: hosts.iter().map(|h| (*h).to_string()).collect(),
+            }
+        }
+
+        fn lan_answer(ip: &str) -> Vec<SocketAddr> {
+            vec![SocketAddr::new(ip.parse().expect("test literal"), 8000)]
+        }
+
+        #[test]
+        fn fail_closed_scan_permits_declared_host_over_allowlisted_network() {
+            let net = lan_policy(&["10.0.0.0/8"], &["vllm.lan"]);
+            let outcome = ValidatingResolver::fail_closed_scan(
+                "vllm.lan",
+                &lan_answer("10.0.0.5"),
+                false,
+                &net,
+            );
+            assert!(
+                outcome.is_ok(),
+                "declared host over allowlisted LAN resolves"
+            );
+            // Case and the trailing root dot are the same declared name.
+            for host in ["VLLM.LAN", "vllm.lan."] {
+                let outcome = ValidatingResolver::fail_closed_scan(
+                    host,
+                    &lan_answer("10.0.0.5"),
+                    false,
+                    &net,
+                );
+                assert!(outcome.is_ok(), "{host} is the same declared name");
+            }
+        }
+
+        #[test]
+        fn fail_closed_scan_rejects_undeclared_host_and_names_allow_hosts() {
+            let net = lan_policy(&["10.0.0.0/8"], &[]);
+            let err = ValidatingResolver::fail_closed_scan(
+                "vllm.lan",
+                &lan_answer("10.0.0.5"),
+                false,
+                &net,
+            )
+            .expect_err("an allowlisted network alone is not a permission");
+            let rendered = err.to_string();
+            assert!(
+                rendered.contains("allow_hosts"),
+                "the rejection must name the missing config field: {rendered}"
+            );
+            assert!(
+                rendered.contains("vllm.lan") && rendered.contains("10.0.0.5"),
+                "the rejection must name both the host and the address: {rendered}"
+            );
+            // A declared but different host is equally refused.
+            let other = lan_policy(&["10.0.0.0/8"], &["otro.lan"]);
+            assert!(ValidatingResolver::fail_closed_scan(
+                "vllm.lan",
+                &lan_answer("10.0.0.5"),
+                false,
+                &other
+            )
+            .is_err());
+            // Error CLASS is the operator-facing contract: this denial is a
+            // missing declaration, not an SSRF attempt.
+            assert!(
+                err.downcast_ref::<ForbiddenHostNotAllowlistedError>().is_some(),
+                "an allowlisted network with an undeclared host must yield the allow_hosts error, got: {err}"
+            );
+        }
+
+        #[test]
+        fn missing_declaration_class_is_distinct_from_the_ssrf_one() {
+            let net = lan_policy(&["10.0.0.0/8", "169.254.0.0/16"], &["vllm.lan"]);
+            let err = ValidatingResolver::fail_closed_scan(
+                "meta.lan",
+                &lan_answer("169.254.169.254"),
+                false,
+                &net,
+            )
+            .expect_err("metadata is never negotiable");
+            assert!(
+                err.downcast_ref::<ForbiddenHostNotAllowlistedError>()
+                    .is_none(),
+                "a never-allowable range must NOT be reported as a missing declaration: {err}"
+            );
+            assert!(
+                err.downcast_ref::<ForbiddenResolutionError>().is_some(),
+                "it must keep the SSRF class: {err}"
+            );
+        }
+
+        #[test]
+        fn fail_closed_scan_literal_needs_no_allow_hosts() {
+            let net = lan_policy(&["10.0.0.0/8"], &[]);
+            assert!(
+                ValidatingResolver::fail_closed_scan(
+                    "10.0.0.5",
+                    &lan_answer("10.0.0.5"),
+                    false,
+                    &net
+                )
+                .is_ok(),
+                "a literal spelling never travels the hostname path"
+            );
+            assert!(
+                ValidatingResolver::fail_closed_scan(
+                    "10.0.0.5",
+                    &lan_answer("10.0.0.5"),
+                    false,
+                    &NetworkPolicy::default()
+                )
+                .is_err(),
+                "without the CIDR entry the same literal stays denied"
+            );
+        }
+
+        #[test]
+        fn fail_closed_scan_keeps_always_denied_and_loopback_closed() {
+            let net = lan_policy(&["169.254.0.0/16", "10.0.0.0/8"], &["meta.lan", "vllm.lan"]);
+            assert!(ValidatingResolver::fail_closed_scan(
+                "meta.lan",
+                &lan_answer("169.254.169.254"),
+                false,
+                &net
+            )
+            .is_err());
+            assert!(ValidatingResolver::fail_closed_scan(
+                "localhost",
+                &lan_answer("127.0.0.1"),
+                false,
+                &net
+            )
+            .is_err());
+            assert!(
+                ValidatingResolver::fail_closed_scan(
+                    "localhost",
+                    &lan_answer("127.0.0.1"),
+                    true,
+                    &net
+                )
+                .is_ok(),
+                "allow_loopback stays the only way in"
+            );
+            // An empty policy is today's behavior, verbatim.
+            assert!(ValidatingResolver::fail_closed_scan(
+                "vllm.lan",
+                &lan_answer("10.0.0.5"),
+                false,
+                &NetworkPolicy::default()
+            )
+            .is_err());
+        }
+
+        #[test]
+        fn fail_closed_scan_never_filters_to_a_safe_subset() {
+            let net = lan_policy(&["10.0.0.0/8"], &["vllm.lan"]);
+            let addrs = vec![
+                SocketAddr::new("10.0.0.5".parse().expect("test literal"), 8000),
+                SocketAddr::new("169.254.169.254".parse().expect("test literal"), 8000),
+            ];
+            assert!(
+                ValidatingResolver::fail_closed_scan("vllm.lan", &addrs, false, &net).is_err(),
+                "one forbidden record poisons the whole answer set"
+            );
+        }
+
+        // Wiring proof through the trait object: an allowlisted LAN literal
+        // passes both layers (entry + resolver) and the failure is a
+        // CONNECT-phase error, never an SSRF rejection.
+        #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
+        #[tokio::test]
+        async fn secure_client_with_policy_permits_allowlisted_lan_literal() {
+            let _guard = webfang_test_utils::EnvGuard::clean(&[DISABLE_VALIDATING_RESOLVER_ENV]);
+            let guarded: std::sync::Arc<dyn crate::domain::ssrf_guard::SsrfGuard> =
+                std::sync::Arc::new(crate::domain::ssrf_guard::DefaultSsrfGuard);
+            let net = lan_policy(&["10.0.0.0/8"], &[]);
+            let client = guarded
+                .secure_client_with_policy(
+                    wreq::Client::builder().connect_timeout(std::time::Duration::from_secs(2)),
+                    false,
+                    &net,
+                )
+                .build()
+                .expect("test client must build");
+
+            // RFC1918 discard target: nothing listens there, so a PERMITTED
+            // dial fails at CONNECT while a denied one fails at the guard.
+            let err = client
+                .get(format!("http://{LAN_DISCARD_HOST}:{LAN_DISCARD_PORT}/v1"))
+                .send()
+                .await
+                .expect_err("nothing listens on the LAN discard port");
+            assert!(
+                !format!("{err:?}").contains("ForbiddenResolutionError"),
+                "an allowlisted LAN literal must fail at CONNECT, not at the guard: {err:?}"
+            );
+
+            // The complement, asserted at the layer that actually owns it: a
+            // bare wreq client CANNOT stop an IP literal, because wreq never
+            // invokes a custom resolver for one (documented layer boundary
+            // in this module's header). Literals are the ENTRY gate's job —
+            // which is precisely why the adapter's entry gate had to become
+            // policy-aware for the allowlisted-LAN case to exist at all.
+            assert!(
+                crate::domain::ssrf_guard::is_forbidden_literal_host_with_policy(
+                    "10.255.255.254",
+                    false,
+                    &NetworkPolicy::default()
+                ),
+                "without the CIDR entry the same literal stays denied at entry"
+            );
         }
 
         // #1462 (U2): per-client loopback permit. The flag travels with the

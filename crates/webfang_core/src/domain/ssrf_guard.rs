@@ -35,7 +35,11 @@
 //!
 //! All layers share [`is_forbidden_ip`] as the single deny list; the
 //! per-client loopback opt-in ([`is_forbidden_ip_with`], #1462) narrows it
-//! for exactly `127.0.0.1` / `::1` and nothing else.
+//! for exactly `127.0.0.1` / `::1` and nothing else, and the per-provider
+//! B2 allowlist ([`is_forbidden_ip_with_policy`] /
+//! [`is_forbidden_resolved_address`], #1947) widens it for declared LAN
+//! networks — with the never-allowable set (FIN-017) staying closed above
+//! both.
 //!
 //! # Third-party types in `domain/` — accepted deliberately
 //!
@@ -425,6 +429,83 @@ pub fn is_forbidden_literal_host_with(host: &str, allow_loopback: bool) -> bool 
     parse_ip_literal(host).is_some_and(|ip| is_forbidden_ip_with(&ip, allow_loopback))
 }
 
+/// Policy-parameterized literal-host verdict (B2 slice 2): the entry gate
+/// for a provider that declares a [`NetworkPolicy`].
+///
+/// Required, not merely nice: wreq's connector parses IP-literal hosts
+/// directly and never invokes the custom resolver, so a literal target is
+/// invisible to every later layer — without this the whole literal half of
+/// the allowlist would be unreachable *by construction*, whatever the
+/// resolver does.
+///
+/// The `allow_hosts` half deliberately does NOT apply here: a literal is not
+/// a declared hostname (validation rejects an IP literal in `allow_hosts`),
+/// and the LAN use case addresses the box directly, so `allow_cidrs` alone
+/// opens it. That asymmetry is pinned by
+/// `literal_spelling_needs_no_allow_hosts_on_the_resolved_path`.
+#[must_use]
+pub fn is_forbidden_literal_host_with_policy(
+    host: &str,
+    allow_loopback: bool,
+    policy: &NetworkPolicy,
+) -> bool {
+    parse_ip_literal(host)
+        .is_some_and(|ip| is_forbidden_ip_with_policy(&ip, allow_loopback, policy))
+}
+
+/// Resolved-address verdict for a dial by name (B2 slice 2) — the AND
+/// decision.
+///
+/// [`is_forbidden_ip_with_policy`] answers "is this address allowed at
+/// all?"; this one additionally answers "is THIS name allowed to reach it?".
+/// A hostname dial into an allowlisted network requires **both** the
+/// resolved IP in `allow_cidrs` and the hostname in `allow_hosts`:
+///
+/// - **AND** is the only reading that gives `allow_hosts` a security
+///   function. Under OR, allowing `10.0.0.0/8` opens the whole range to any
+///   domain that resolves there — the classic DNS-rebinding shape, where an
+///   attacker-controlled name points at your LAN and walks straight through
+///   the allowlist. The allowlisted network is the *precondition*; the
+///   declared hostname is the *permission*.
+///
+/// A host that is an IP *literal* skips the `allow_hosts` requirement: the
+/// address is the whole identity of the target, so there is no name for an
+/// attacker to rebind.
+///
+/// Evaluation order is the same security-first ladder as
+/// [`is_forbidden_ip_with_policy`]: always-denied set, then the exclusive
+/// loopback flag, then public addresses, then the NAT64/6to4 embedded IPv4,
+/// and only then the allowlist plus the host gate.
+#[must_use]
+pub fn is_forbidden_resolved_address(
+    ip: &IpAddr,
+    host: &str,
+    allow_loopback: bool,
+    policy: &NetworkPolicy,
+) -> bool {
+    if is_always_denied_ip(ip) {
+        return true;
+    }
+    if allow_loopback && is_permitted_loopback(ip) {
+        return false;
+    }
+    if !is_forbidden_ip(ip) {
+        return false;
+    }
+    if let IpAddr::V6(v6) = ip {
+        if let Some(v4) = ipv6_nat64_embedded_v4(v6).or_else(|| ipv6_6to4_embedded_v4(v6)) {
+            return is_forbidden_resolved_address(&IpAddr::V4(v4), host, allow_loopback, policy);
+        }
+    }
+    // Only an allowlist entry can reach this point — and it is the
+    // precondition, not the permission.
+    if !policy.allows_ip(ip) {
+        return true;
+    }
+    let host_is_literal = parse_ip_literal(host).is_some();
+    !(host_is_literal || policy.allows_host(host))
+}
+
 /// Parses `host` as an IP literal in every encoding the URL/HTTP stacks
 /// accept, returning `None` for hostnames.
 ///
@@ -642,6 +723,19 @@ pub fn redirect_literal_blocked(host: Option<&str>, allow_loopback: bool) -> boo
     host.is_some_and(|h| is_forbidden_literal_host_with(h, allow_loopback))
 }
 
+/// Pure verdict behind [`redirect_policy_with_policy`]: does a redirect to
+/// `host` stop synchronously under this provider's policy? Same shape as
+/// [`redirect_literal_blocked`], with the B2 allowlist applied — so a hop to
+/// an allowlisted LAN literal is still followed.
+#[must_use]
+pub fn redirect_literal_blocked_with_policy(
+    host: Option<&str>,
+    allow_loopback: bool,
+    policy: &NetworkPolicy,
+) -> bool {
+    host.is_some_and(|h| is_forbidden_literal_host_with_policy(h, allow_loopback, policy))
+}
+
 /// Redirect policy with a per-client loopback permit (#1462).
 ///
 /// Same 10-hop base as [`redirect_policy`], but the synchronous literal-IP
@@ -659,6 +753,39 @@ pub fn redirect_policy_with_loopback(allow_loopback: bool) -> Policy {
                 target_uri = %attempt.uri,
                 allow_loopback,
                 "Redirect to forbidden literal IP blocked (SSRF guard)"
+            );
+            attempt.stop()
+        } else {
+            base.redirect(attempt)
+        }
+    })
+}
+
+/// Redirect policy with a per-provider loopback permit AND network allowlist
+/// (B2 slice 2, #1947).
+///
+/// Same 10-hop base as [`redirect_policy`], but the synchronous literal-IP
+/// stop honors this provider's `allow_loopback` + [`NetworkPolicy`]: a
+/// redirect hop to an allowlisted LAN literal is still followed, while an
+/// undeclared one (and every never-allowable range, FIN-017) is stopped
+/// before any socket opens.
+///
+/// Hostname hops are the resolver's business — each hop's connection
+/// resolves through the validating resolver, which applies the AND decision
+/// per hop, so a redirect cannot smuggle an undeclared hostname into the LAN.
+///
+/// Reads NO environment, exactly like [`redirect_policy_with_loopback`]; the
+/// policy is explicit at the call site. The policy is cloned once into the
+/// callback (it is per-client state owned by the client, not process state).
+#[must_use]
+pub fn redirect_policy_with_policy(allow_loopback: bool, policy: NetworkPolicy) -> Policy {
+    let base = Policy::default();
+    Policy::custom(move |attempt| {
+        if redirect_literal_blocked_with_policy(attempt.uri.host(), allow_loopback, &policy) {
+            tracing::warn!(
+                target_uri = %attempt.uri,
+                allow_loopback,
+                "Redirect to forbidden literal IP blocked (SSRF guard, provider network policy)"
             );
             attempt.stop()
         } else {
@@ -711,6 +838,26 @@ pub trait SsrfGuard: Send + Sync + sealed::Sealed {
         &self,
         builder: wreq::ClientBuilder,
         allow_loopback: bool,
+    ) -> wreq::ClientBuilder;
+
+    /// Additive policy-parameterized variant (B2 slice 2, #1947):
+    /// [`secure_client_with_loopback`](Self::secure_client_with_loopback)
+    /// plus this provider's [`NetworkPolicy`] allowlist, applied in both the
+    /// synchronous redirect stop and the connect-time validating resolver.
+    ///
+    /// Additive on purpose: `secure_client_with_loopback` keeps its exact
+    /// signature, so the scrape path (`wreq_downloader.rs`) and every
+    /// caller that never declares a policy are untouched.
+    ///
+    /// Same contract as the loopback flag — a per-client parameter, never
+    /// process registry state: the allowlist is copied into the client's own
+    /// resolver, so two providers with different policies in the same process
+    /// cannot influence each other.
+    fn secure_client_with_policy(
+        &self,
+        builder: wreq::ClientBuilder,
+        allow_loopback: bool,
+        policy: &NetworkPolicy,
     ) -> wreq::ClientBuilder;
 }
 
@@ -779,6 +926,12 @@ mod tests {
     /// even when a `NetworkPolicy` bypassed serde validation, so these
     /// fixtures are constructed directly, never parsed.
     fn hand_built_policy(cidrs: &[&str]) -> NetworkPolicy {
+        hand_built_policy_with_hosts(cidrs, &[])
+    }
+
+    /// Same, with declared hostnames: defense-in-depth fixtures must never
+    /// depend on serde validation having normalized them.
+    fn hand_built_policy_with_hosts(cidrs: &[&str], hosts: &[&str]) -> NetworkPolicy {
         let allow_cidrs = cidrs
             .iter()
             .map(|c| {
@@ -789,7 +942,7 @@ mod tests {
         NetworkPolicy {
             mode: crate::domain::network_policy::NetworkPolicyMode::Allowlist,
             allow_cidrs,
-            allow_hosts: Vec::new(),
+            allow_hosts: hosts.iter().map(|h| (*h).to_string()).collect(),
         }
     }
 
@@ -923,6 +1076,211 @@ mod tests {
             &addr("2001:4860:4860::8888"),
             false,
             &empty
+        ));
+    }
+
+    // ---- B2 slice 2: policy-aware entry + resolution verdicts ----
+
+    /// Hostname verdict under an allowlist (the AND decision). The literal
+    /// path is the asymmetry pinned here on purpose: literals never travel
+    /// the hostname path, so `allow_cidrs` alone opens them.
+    #[test]
+    fn literal_host_policy_mirrors_address_policy() {
+        let net = hand_built_policy_with_hosts(&["10.0.0.0/8"], &["vllm.lan"]);
+        assert!(!is_forbidden_literal_host_with_policy(
+            "10.0.0.5", false, &net
+        ));
+        assert!(is_forbidden_literal_host_with_policy(
+            "10.0.0.5",
+            false,
+            &NetworkPolicy::default()
+        ));
+        // Hostnames are never literals: they are enforced at resolution.
+        assert!(!is_forbidden_literal_host_with_policy(
+            "vllm.lan", false, &net
+        ));
+        assert!(!is_forbidden_literal_host_with_policy(
+            "vllm.lan", true, &net
+        ));
+        // The always-denied set (FIN-017) stays denied through this layer too.
+        let metadata = hand_built_policy_with_hosts(&["169.254.0.0/16"], &["meta.lan"]);
+        assert!(is_forbidden_literal_host_with_policy(
+            "169.254.169.254",
+            false,
+            &metadata
+        ));
+        // Alternate spellings of an allowlisted address stay allowed.
+        assert!(!is_forbidden_literal_host_with_policy(
+            "0xa000005",
+            false,
+            &net
+        ));
+        // Loopback stays exclusively under `allow_loopback`.
+        assert!(is_forbidden_literal_host_with_policy(
+            "127.0.0.1",
+            false,
+            &net
+        ));
+        assert!(!is_forbidden_literal_host_with_policy(
+            "127.0.0.1",
+            true,
+            &net
+        ));
+        // Empty policy is byte-for-byte today's behavior.
+        assert!(is_forbidden_literal_host_with_policy(
+            "10.0.0.5",
+            false,
+            &NetworkPolicy::default()
+        ));
+        assert!(!is_forbidden_literal_host_with_policy(
+            "8.8.8.8",
+            false,
+            &NetworkPolicy::default()
+        ));
+    }
+
+    #[test]
+    fn resolved_address_requires_cidr_and_host_together() {
+        let net = hand_built_policy_with_hosts(&["10.0.0.0/8"], &["vllm.lan"]);
+        let lan: IpAddr = addr("10.0.0.5");
+        // AND: the allowlisted network is the precondition, the declared
+        // hostname the permission.
+        assert!(!is_forbidden_resolved_address(
+            &lan, "vllm.lan", false, &net
+        ));
+        assert!(is_forbidden_resolved_address(&lan, "otro.lan", false, &net));
+        let cidr_only = hand_built_policy_with_hosts(&["10.0.0.0/8"], &[]);
+        assert!(is_forbidden_resolved_address(
+            &lan, "vllm.lan", false, &cidr_only
+        ));
+        let hosts_only = hand_built_policy_with_hosts(&[], &["vllm.lan"]);
+        assert!(is_forbidden_resolved_address(
+            &lan,
+            "vllm.lan",
+            false,
+            &hosts_only
+        ));
+        // Case and the trailing root dot are the same declared name.
+        assert!(!is_forbidden_resolved_address(
+            &lan, "VLLM.LAN", false, &net
+        ));
+        assert!(!is_forbidden_resolved_address(
+            &lan,
+            "vllm.lan.",
+            false,
+            &net
+        ));
+        // Empty policy keeps today's verdict.
+        assert!(is_forbidden_resolved_address(
+            &lan,
+            "vllm.lan",
+            false,
+            &NetworkPolicy::default()
+        ));
+        // Public addresses are unaffected by the host gate.
+        assert!(!is_forbidden_resolved_address(
+            &addr("8.8.8.8"),
+            "ejemplo.com",
+            false,
+            &NetworkPolicy::default()
+        ));
+    }
+
+    #[test]
+    fn literal_spelling_needs_no_allow_hosts_on_the_resolved_path() {
+        // Intentional asymmetry: `tokio::net::lookup_host` resolves a literal
+        // too, so this is the one path where `allow_cidrs` alone suffices.
+        let cidr_only = hand_built_policy_with_hosts(&["10.0.0.0/8"], &[]);
+        assert!(!is_forbidden_resolved_address(
+            &addr("10.0.0.5"),
+            "10.0.0.5",
+            false,
+            &cidr_only
+        ));
+        assert!(!is_forbidden_resolved_address(
+            &addr("10.0.0.5"),
+            "10.1",
+            false,
+            &cidr_only
+        ));
+    }
+
+    #[test]
+    fn resolved_address_keeps_fin017_and_loopback_closed() {
+        let net = hand_built_policy_with_hosts(
+            &["169.254.0.0/16", "100.64.0.0/10", "10.0.0.0/8"],
+            &["meta.lan", "cgnat.lan", "vllm.lan"],
+        );
+        assert!(is_forbidden_resolved_address(
+            &addr("169.254.169.254"),
+            "meta.lan",
+            false,
+            &net
+        ));
+        assert!(is_forbidden_resolved_address(
+            &addr("::ffff:169.254.169.254"),
+            "meta.lan",
+            false,
+            &net
+        ));
+        assert!(is_forbidden_resolved_address(
+            &addr("127.0.0.1"),
+            "vllm.lan",
+            false,
+            &net
+        ));
+        assert!(!is_forbidden_resolved_address(
+            &addr("127.0.0.1"),
+            "vllm.lan",
+            true,
+            &net
+        ));
+        // CGNAT needs the explicit opt-in, which it has here.
+        assert!(!is_forbidden_resolved_address(
+            &addr("100.64.0.5"),
+            "cgnat.lan",
+            false,
+            &net
+        ));
+        // NAT64/6to4: the verdict follows the embedded IPv4.
+        assert!(!is_forbidden_resolved_address(
+            &addr("64:ff9b::a00:5"),
+            "vllm.lan",
+            false,
+            &net
+        ));
+        assert!(is_forbidden_resolved_address(
+            &addr("64:ff9b::a9fe:a9fe"),
+            "meta.lan",
+            false,
+            &net
+        ));
+    }
+
+    #[test]
+    fn redirect_literal_blocked_honors_the_allowlist() {
+        let net = hand_built_policy_with_hosts(&["10.0.0.0/8"], &["vllm.lan"]);
+        assert!(!redirect_literal_blocked_with_policy(
+            Some("10.0.0.5"),
+            false,
+            &net
+        ));
+        assert!(redirect_literal_blocked_with_policy(
+            Some("10.0.0.5"),
+            false,
+            &NetworkPolicy::default()
+        ));
+        // Hostname hops are the resolver's business, never this sync guard.
+        assert!(!redirect_literal_blocked_with_policy(
+            Some("vllm.lan"),
+            false,
+            &NetworkPolicy::default()
+        ));
+        assert!(!redirect_literal_blocked_with_policy(None, false, &net));
+        assert!(redirect_literal_blocked_with_policy(
+            Some("169.254.169.254"),
+            false,
+            &hand_built_policy_with_hosts(&["169.254.0.0/16"], &[])
         ));
     }
 
@@ -1282,6 +1640,15 @@ mod tests {
             &self,
             builder: wreq::ClientBuilder,
             _allow_loopback: bool,
+        ) -> wreq::ClientBuilder {
+            builder
+        }
+
+        fn secure_client_with_policy(
+            &self,
+            builder: wreq::ClientBuilder,
+            _allow_loopback: bool,
+            _policy: &crate::domain::network_policy::NetworkPolicy,
         ) -> wreq::ClientBuilder {
             builder
         }

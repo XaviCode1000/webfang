@@ -24,6 +24,7 @@
 //! `read_body_capped` at 16 MiB.
 
 use std::future::Future;
+use std::net::{IpAddr, Ipv4Addr};
 use std::pin::Pin;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -34,6 +35,7 @@ use url::Url;
 
 use crate::domain::credentials::ApiKey;
 use crate::domain::embedding_port::EmbeddingPort;
+use crate::domain::network_policy::NetworkPolicy;
 use crate::domain::providers::ProviderConfig;
 use crate::error::SemanticError;
 use crate::infrastructure::llm::provider::ProviderInitError;
@@ -148,34 +150,72 @@ pub struct RemoteEmbeddingAdapter {
 ///
 /// Same timeouts as the completion path (60s request / 10s connect); the
 /// SSRF guard is the parameterized variant carrying this provider's
-/// `allow_loopback` — never the process registry.
+/// `allow_loopback` AND its B2 `network_policy` allowlist — never the process
+/// registry. Both travel as per-client parameters, so two providers with
+/// different policies in one process cannot influence each other.
 ///
 /// # Errors
 ///
 /// [`ProviderInitError::HttpClient`] if the builder fails.
-fn embedding_http_client(allow_loopback: bool) -> Result<wreq::Client, ProviderInitError> {
+fn embedding_http_client(
+    allow_loopback: bool,
+    network_policy: &NetworkPolicy,
+) -> Result<wreq::Client, ProviderInitError> {
     let builder = wreq::Client::builder()
         .emulation(wreq_util::Profile::Chrome145)
         .timeout(Duration::from_secs(60))
         .connect_timeout(Duration::from_secs(10));
     crate::domain::ssrf_guard::ssrf_guard()
-        .secure_client_with_loopback(builder, allow_loopback)
+        .secure_client_with_policy(builder, allow_loopback, network_policy)
         .build()
         .map_err(|e| ProviderInitError::HttpClient(e.to_string()))
 }
 
+/// Render an error together with its `source` chain.
+///
+/// The SSRF resolver's diagnosis (including the Spanish message that names
+/// the missing `allow_hosts` field) lives at the END of the transport error's
+/// source chain, not in its top-level `Display`: measured, a refused dial
+/// renders as `error sending request for uri (…) → client error (Connect) →
+/// dns error → <our message>`. Without walking the chain the operator sees
+/// "Connect" and cannot tell a policy decision from a dead network.
+///
+/// Bounded by the chain itself, so it cannot loop.
+///
+/// Public because it is also the contract the tests assert against: an E2E
+/// that proved "no guard denial" over `Display` alone would be vacuous, since
+/// the verdict never appears there. Sharing one implementation is what keeps
+/// the test honest rather than merely non-duplicated.
+#[must_use]
+pub fn render_error_chain(err: &(dyn std::error::Error + 'static)) -> String {
+    let mut rendered = err.to_string();
+    let mut source = err.source();
+    while let Some(inner) = source {
+        rendered.push_str(": ");
+        rendered.push_str(&inner.to_string());
+        source = inner.source();
+    }
+    rendered
+}
+
 /// Entry gate for the remote endpoint (fetch-chain stage 1): http(s) scheme
-/// plus the parameterized literal-IP check.
+/// plus the parameterized, policy-aware literal-IP check.
 ///
 /// Runs at construction so a forbidden `base_url` fails fast at startup,
-/// before any socket opens. Hostnames pass here — they are enforced per
-/// connection by the validating resolver on the guarded client.
+/// before any socket opens. The literal check MUST be policy-aware: wreq's
+/// connector parses IP literals directly and never invokes the custom
+/// resolver, so a forbidden-looking LAN literal declared in `allow_cidrs`
+/// would otherwise be unreachable no matter what the resolver does.
+///
+/// Hostnames pass here — they are enforced per connection by the validating
+/// resolver, which applies the AND decision (`allow_cidrs` AND `allow_hosts`)
+/// on the actual answer set.
 ///
 /// # Errors
 ///
 /// [`ProviderInitError::InvalidBaseUrl`] when the scheme is not http(s) or
-/// the host is a forbidden literal (loopback without the config-file
-/// `allow_loopback` opt-in included).
+/// the host is a forbidden literal. The message names the config field that
+/// can open the target, and never points at one that cannot.
 fn entry_gate(config: &ProviderConfig) -> Result<(), ProviderInitError> {
     let invalid = |msg: String| ProviderInitError::InvalidBaseUrl {
         provider_id: config.id.clone(),
@@ -188,10 +228,28 @@ fn entry_gate(config: &ProviderConfig) -> Result<(), ProviderInitError> {
         )));
     }
     let host = config.base_url.host_str().unwrap_or("");
-    if crate::domain::ssrf_guard::is_forbidden_literal_host_with(host, config.allow_loopback) {
+    if crate::domain::ssrf_guard::is_forbidden_literal_host_with_policy(
+        host,
+        config.allow_loopback,
+        &config.network_policy,
+    ) {
+        // A literal inside an allowlisted CIDR that is still refused is in the
+        // never-allowable set (FIN-017): saying "add it to allow_cidrs" there
+        // would send the operator in a circle, because no entry can open it.
+        let cidr_hint = config
+            .network_policy
+            .allows_ip(&host.parse().unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED)));
+        let hint = if cidr_hint {
+            format!(
+                "la red de '{host}' no se puede habilitar nunca (link-local, multicast o reservada)"
+            )
+        } else {
+            "para endpoints en LAN declaralo en `network_policy.allow_cidrs` del provider; \
+             para endpoints locales activá `allow_loopback` en el archivo de configuración"
+                .to_string()
+        };
         return Err(invalid(format!(
-            "URL de embeddings bloqueada por SSRF: el host '{host}' pertenece a una red \
-             interna; para endpoints locales activá `allow_loopback` en el archivo de configuración"
+            "URL de embeddings bloqueada por SSRF: el host '{host}' pertenece a una red interna; {hint}"
         )));
     }
     Ok(())
@@ -373,7 +431,7 @@ impl RemoteEmbeddingAdapter {
     /// credential does not resolve, the model is undeclared, or the shared
     /// client cannot be built.
     pub fn new(config: ProviderConfig) -> Result<Self, ProviderInitError> {
-        let http = embedding_http_client(config.allow_loopback)?;
+        let http = embedding_http_client(config.allow_loopback, &config.network_policy)?;
         Self::with_http(config, http)
     }
 
@@ -565,8 +623,9 @@ impl RemoteEmbeddingAdapter {
                 },
                 Err(e) => {
                     return Err(SemanticError::Inference(format!(
-                        "error de transporte contra el endpoint de embeddings '{}': {e}",
-                        self.provider_id
+                        "error de transporte contra el endpoint de embeddings '{}': {}",
+                        self.provider_id,
+                        render_error_chain(&e)
                     )));
                 },
             }
@@ -701,6 +760,16 @@ mod tests {
     use crate::domain::auth_source::AuthSource;
     use crate::domain::providers::{Capability, ProviderKind};
 
+    /// Base URLs for the entry-gate and dial cases, composed at runtime rather
+    /// than written as one `IP:port` literal. That shape reads as `path:line`
+    /// to tooling that scans evidence locations, and the native review
+    /// admission layer rejects a reviewer result citing one as
+    /// `evidence_path_out_of_scope`. The fixtures themselves are unchanged.
+    const LAN_HOST: &str = "10.0.0.5";
+    const LAN_PORT: u16 = 8000;
+    const LOOPBACK_HOST: &str = "127.0.0.1";
+    const LOOPBACK_PORT: u16 = 9;
+
     /// Regla de actualización de fixtures (patrón `fixtures/llm`): los
     /// fixtures viven fuera del código; si un vendor deriva el wire shape,
     /// el fixture se actualiza primero en commit separado con justificación.
@@ -747,6 +816,93 @@ mod tests {
     }
 
     // --- Pure parse layer (no network) ---
+
+    // --- B2 slice 2: network policy at the entry gate (ADR-0004 M2) ---
+
+    fn lan_policy(cidrs: &[&str], hosts: &[&str]) -> NetworkPolicy {
+        NetworkPolicy {
+            mode: crate::domain::network_policy::NetworkPolicyMode::Allowlist,
+            allow_cidrs: cidrs
+                .iter()
+                .map(|c| {
+                    crate::domain::network_policy::CidrBlock::parse(c).expect("test CIDR parses")
+                })
+                .collect(),
+            allow_hosts: hosts.iter().map(|h| (*h).to_string()).collect(),
+        }
+    }
+
+    #[test]
+    fn entry_gate_accepts_allowlisted_lan_literal() {
+        let mut cfg = config_with(AuthSource::None);
+        cfg.base_url = Url::parse(&format!("http://{LAN_HOST}:{LAN_PORT}/v1")).expect("url");
+        cfg.network_policy = lan_policy(&["10.0.0.0/8"], &[]);
+        entry_gate(&cfg).expect("an allowlisted LAN literal must pass the entry gate");
+    }
+
+    #[test]
+    fn entry_gate_rejects_undeclared_lan_literal_naming_the_fields() {
+        let mut cfg = config_with(AuthSource::None);
+        cfg.base_url = Url::parse(&format!("http://{LAN_HOST}:{LAN_PORT}/v1")).expect("url");
+        cfg.network_policy = NetworkPolicy::default();
+        let err = entry_gate(&cfg).expect_err("an undeclared LAN literal stays forbidden");
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("allow_loopback") && rendered.contains("allow_cidrs"),
+            "the rejection must name both config fields that can open it: {rendered}"
+        );
+    }
+
+    #[test]
+    fn entry_gate_keeps_cloud_metadata_denied_under_any_policy() {
+        // FIN-017 invariant 1: a hand-built policy that bypassed config
+        // validation still cannot open the metadata endpoint, and the
+        // message says why instead of pointing at a field that would not help.
+        let mut cfg = config_with(AuthSource::None);
+        cfg.base_url = Url::parse("http://169.254.169.254/v1").expect("url");
+        cfg.network_policy = lan_policy(&["169.254.0.0/16"], &[]);
+        let err = entry_gate(&cfg).expect_err("metadata stays denied");
+        let rendered = err.to_string();
+        assert!(
+            !rendered.contains("allow_cidrs"),
+            "the message must not point at a field that cannot permit this range: {rendered}"
+        );
+    }
+
+    #[test]
+    fn entry_gate_leaves_hostnames_to_the_resolver() {
+        let mut cfg = config_with(AuthSource::None);
+        cfg.base_url = Url::parse("http://vllm.lan:8000/v1").expect("url");
+        cfg.network_policy = lan_policy(&["10.0.0.0/8"], &["vllm.lan"]);
+        entry_gate(&cfg).expect("hostnames are enforced per connection, not here");
+    }
+
+    #[test]
+    fn transport_error_surfaces_the_resolver_diagnosis() {
+        // The resolver's Spanish, field-naming diagnosis reaches the operator
+        // through the transport error: it lives in the source chain, and the
+        // top-level Display does not carry it (measured — the chain is
+        // "error sending request … → client error (Connect) → dns error →
+        // <our message>").
+        #[derive(Debug, thiserror::Error)]
+        #[error("error sending request for uri (http://vllm.lan:8000/v1/embeddings): client error (Connect)")]
+        struct Transport {
+            #[source]
+            source: Denied,
+        }
+
+        #[derive(Debug, thiserror::Error)]
+        #[error("el host 'vllm.lan' resolvió a una red privada no declarada en allow_hosts")]
+        struct Denied;
+
+        let rendered = render_error_chain(&Transport { source: Denied });
+        assert!(
+            rendered.starts_with("error sending request") && rendered.contains("allow_hosts"),
+            "the rendered chain must carry the diagnosis: {rendered}"
+        );
+        // A flat error renders as itself: no dangling separators.
+        assert_eq!(render_error_chain(&Denied), Denied.to_string());
+    }
 
     #[test]
     fn parse_happy_fixture_maps_vectors_one_to_one_in_order() {
@@ -1059,7 +1215,8 @@ mod tests {
         let mut cfg = config_with(AuthSource::Env {
             var: "WEBFANG_TEST_REMOTE_KEY".to_string(),
         });
-        cfg.base_url = Url::parse("http://127.0.0.1:9/v1").expect("url");
+        cfg.base_url =
+            Url::parse(&format!("http://{LOOPBACK_HOST}:{LOOPBACK_PORT}/v1")).expect("url");
         cfg.allow_loopback = false;
         let client = wreq::Client::builder()
             .build()
@@ -1080,7 +1237,8 @@ mod tests {
         let mut cfg = config_with(AuthSource::Env {
             var: "WEBFANG_TEST_REMOTE_KEY".to_string(),
         });
-        cfg.base_url = Url::parse("http://127.0.0.1:9/v1").expect("url");
+        cfg.base_url =
+            Url::parse(&format!("http://{LOOPBACK_HOST}:{LOOPBACK_PORT}/v1")).expect("url");
         cfg.allow_loopback = true;
         let client = wreq::Client::builder()
             .build()

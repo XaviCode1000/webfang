@@ -110,7 +110,12 @@ pub struct ProviderConfig {
     /// loopback via `allow_loopback`. Entries only take effect with
     /// `mode: "allowlist"` and are validated fail-loud: the never-allowable
     /// ranges (FIN-017) and loopback are rejected at load, never silently
-    /// ignored (#1462). Threading into the embedding client is slice 2.
+    /// ignored (#1462).
+    ///
+    /// Threaded into the remote-embedding client as a per-client parameter
+    /// (`secure_client_with_policy`), never process state: an allowlisted LAN
+    /// literal is reachable with `allow_cidrs` alone, while a LAN *hostname*
+    /// additionally requires itself in `allow_hosts` (AND, #1947).
     #[serde(default)]
     pub network_policy: NetworkPolicy,
 }
