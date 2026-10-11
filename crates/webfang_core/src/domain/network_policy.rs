@@ -201,8 +201,21 @@ impl NetworkPolicy {
     /// Whether `ip` falls inside an allowlisted block. Dial-time helper used
     /// by [`crate::domain::ssrf_guard::is_forbidden_ip_with_policy`]; never
     /// a verdict on its own — the always-denied set is checked first.
+    ///
+    /// Entries only take effect in [`NetworkPolicyMode::Allowlist`]. Parsed
+    /// config already guarantees that (declaring entries under `restricted`
+    /// is a validation error), but this is the decision point every dial
+    /// passes through, so it re-checks rather than trusting its caller: a
+    /// policy built in code without going through serde must not be able to
+    /// open a private range by populating the vectors and leaving `mode` at
+    /// its default. Checking here closes the literal path AND the hostname
+    /// path at once — they share this helper, so neither can drift from the
+    /// documented rule.
     #[must_use]
     pub fn allows_ip(&self, ip: &IpAddr) -> bool {
+        if self.mode != NetworkPolicyMode::Allowlist {
+            return false;
+        }
         let ip = normalize_mapped(*ip);
         self.allow_cidrs.iter().any(|block| block.contains(&ip))
     }
@@ -226,7 +239,7 @@ impl NetworkPolicy {
     /// verdict.
     #[must_use]
     pub fn allows_host(&self, host: &str) -> bool {
-        if self.allow_hosts.is_empty() {
+        if self.mode != NetworkPolicyMode::Allowlist || self.allow_hosts.is_empty() {
             return false;
         }
         let host = normalize_host(host);
@@ -581,6 +594,47 @@ mod tests {
             text.contains("invalid type") || text.contains("expected value"),
             "unexpected null-mode error text: {text}"
         );
+    }
+
+    #[test]
+    fn entries_never_take_effect_outside_allowlist_mode() {
+        // Parsed config already rejects this shape (`entries_without_allowlist_mode_error`),
+        // but the decision points must not depend on that: a policy assembled in
+        // code, never touching serde, would otherwise open a private range by
+        // populating the vectors and leaving `mode` at its default. Both halves
+        // are checked, and so are both dial paths — literal and by-name.
+        let restricted_with_entries = NetworkPolicy {
+            mode: NetworkPolicyMode::Restricted,
+            allow_cidrs: vec![CidrBlock::parse("10.0.0.0/8").expect("test CIDR parses")],
+            allow_hosts: vec!["vllm.lan".to_string()],
+        };
+        let ip: IpAddr = "10.0.0.5".parse().expect("test literal");
+        assert!(!restricted_with_entries.allows_ip(&ip));
+        assert!(!restricted_with_entries.allows_host("vllm.lan"));
+        assert!(
+            crate::domain::ssrf_guard::is_forbidden_ip_with_policy(
+                &ip,
+                false,
+                &restricted_with_entries
+            ),
+            "the literal path must deny it too"
+        );
+        assert!(
+            crate::domain::ssrf_guard::is_forbidden_resolved_address(
+                &ip,
+                "vllm.lan",
+                false,
+                &restricted_with_entries
+            ),
+            "the hostname path must deny it too"
+        );
+        // The very same policy in allowlist mode is what B2 is for.
+        let allowlisted = NetworkPolicy {
+            mode: NetworkPolicyMode::Allowlist,
+            ..restricted_with_entries.clone()
+        };
+        assert!(allowlisted.allows_ip(&ip));
+        assert!(allowlisted.allows_host("vllm.lan"));
     }
 
     #[test]
