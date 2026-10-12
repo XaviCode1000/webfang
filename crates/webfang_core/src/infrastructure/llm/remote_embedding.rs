@@ -106,12 +106,26 @@ struct EmbeddingDatum {
 }
 
 /// Token usage reported by the vendor (informational only).
-#[derive(serde::Deserialize)]
+#[derive(Debug, serde::Deserialize)]
 struct EmbeddingUsage {
     #[serde(default)]
     prompt_tokens: u32,
     #[serde(default)]
     total_tokens: u32,
+}
+
+/// Accumulated embedding usage metrics for a single run.
+///
+/// Collected by [`RemoteEmbeddingAdapter::metrics`] from the atomic counters
+/// updated on each successful `embed_batch` call.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EmbeddingRunMetrics {
+    /// Total prompt tokens across all embedding requests in this run.
+    pub prompt_tokens: u64,
+    /// Total tokens (prompt + completion) across all embedding requests in this run.
+    pub total_tokens: u64,
+    /// Number of embedding requests made in this run.
+    pub request_count: u64,
 }
 
 /// Remote embedding adapter: `EmbeddingPort` over `POST {base_url}/embeddings`.
@@ -144,6 +158,13 @@ pub struct RemoteEmbeddingAdapter {
     provider_id: String,
     pinned_dim: Option<usize>,
     dim: OnceLock<usize>,
+    /// Acumuladores de usage por corrida (thread-safe).
+    /// prompt_tokens + total_tokens + request_count se incrementan en cada
+    /// llamada exitosa a post_embeddings. Se leen vía `metrics()` al final
+    /// de la corrida para el ScrapeSummary.
+    usage_prompt_tokens: std::sync::atomic::AtomicU64,
+    usage_total_tokens: std::sync::atomic::AtomicU64,
+    usage_request_count: std::sync::atomic::AtomicU64,
 }
 
 /// Build the guarded HTTP client for a remote embedding provider.
@@ -380,22 +401,29 @@ fn retry_after_delay(header: Option<&str>, now: DateTime<Utc>) -> Option<Duratio
 /// a vector count that does not match the input count are all
 /// [`SemanticError::Inference`]. The count check keeps chunk↔vector
 /// alignment from silently shifting when a vendor truncates.
+/// Result of parsing an embedding response body.
+#[derive(Debug)]
+struct ParsedEmbeddingBody {
+    vectors: Vec<Vec<f32>>,
+    usage: Option<EmbeddingUsage>,
+}
+
+/// Pure wire parse: response body → vectors + optional usage, with 1:1 count check.
+///
+/// Tolerant by contract (unknown fields ignored); honest on degenerate
+/// bodies — invalid JSON, missing `data`, empty `data`, an empty vector, or
+/// a vector count that does not match the input count are all
+/// [`SemanticError::Inference`]. The count check keeps chunk↔vector
+/// alignment from silently shifting when a vendor truncates.
 fn parse_embedding_body(
     body: &str,
     expected_inputs: usize,
-) -> Result<Vec<Vec<f32>>, SemanticError> {
+) -> Result<ParsedEmbeddingBody, SemanticError> {
     let parsed: EmbeddingResponse = serde_json::from_str(body).map_err(|e| {
         SemanticError::Inference(format!(
             "el endpoint de embeddings devolvió un cuerpo inválido: {e}"
         ))
     })?;
-    if let Some(usage) = &parsed.usage {
-        tracing::debug!(
-            prompt_tokens = usage.prompt_tokens,
-            total_tokens = usage.total_tokens,
-            "remote embedding usage"
-        );
-    }
     if parsed.data.is_empty() {
         return Err(SemanticError::Inference(
             "el endpoint de embeddings devolvió `data` vacío".to_string(),
@@ -416,7 +444,10 @@ fn parse_embedding_body(
         }
         vecs.push(datum.embedding.clone());
     }
-    Ok(vecs)
+    Ok(ParsedEmbeddingBody {
+        vectors: vecs,
+        usage: parsed.usage,
+    })
 }
 
 impl RemoteEmbeddingAdapter {
@@ -480,6 +511,9 @@ impl RemoteEmbeddingAdapter {
             provider_id: config.id.clone(),
             pinned_dim: config.embedding_dim,
             dim: OnceLock::new(),
+            usage_prompt_tokens: std::sync::atomic::AtomicU64::new(0),
+            usage_total_tokens: std::sync::atomic::AtomicU64::new(0),
+            usage_request_count: std::sync::atomic::AtomicU64::new(0),
         })
     }
 
@@ -487,6 +521,15 @@ impl RemoteEmbeddingAdapter {
     #[must_use]
     pub fn id(&self) -> &str {
         &self.provider_id
+    }
+
+    /// Base endpoint of the provider (`POST {base_url}/embeddings`).
+    ///
+    /// Read-only: exposes the configured endpoint for audit logging (e.g. the
+    /// Tier 2 consent hash in the CLI) without leaking the credential.
+    #[must_use]
+    pub fn base_url(&self) -> &Url {
+        &self.base_url
     }
 
     /// Startup probe: pin-or-adopt the served dimension.
@@ -673,7 +716,7 @@ impl RemoteEmbeddingAdapter {
     }
 
     /// Bounded body read (16 MiB cap) plus the tolerant wire parse, with the
-    /// 1:1 input↔vector count check.
+    /// 1:1 input↔vector count check. Accumulates usage metrics.
     async fn read_and_parse(
         &self,
         response: wreq::Response,
@@ -693,7 +736,34 @@ impl RemoteEmbeddingAdapter {
                     self.provider_id
                 ))
             })?;
-        parse_embedding_body(&body, expected_inputs)
+        let parsed = parse_embedding_body(&body, expected_inputs)?;
+        if let Some(usage) = parsed.usage {
+            self.usage_prompt_tokens.fetch_add(
+                usage.prompt_tokens as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            self.usage_total_tokens.fetch_add(
+                usage.total_tokens as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            self.usage_request_count
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            tracing::debug!(
+                prompt_tokens = usage.prompt_tokens,
+                total_tokens = usage.total_tokens,
+                accumulated_prompt = self
+                    .usage_prompt_tokens
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                accumulated_total = self
+                    .usage_total_tokens
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                accumulated_requests = self
+                    .usage_request_count
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                "remote embedding usage accumulated"
+            );
+        }
+        Ok(parsed.vectors)
     }
 }
 
@@ -706,16 +776,18 @@ fn last_status_error(provider_id: &str, status: u16) -> SemanticError {
 
 impl EmbeddingPort for RemoteEmbeddingAdapter {
     fn embed<'a>(&'a self, text: &'a str) -> BoxFuture<'a, Result<Vec<f32>, SemanticError>> {
+        let correlation_id = uuid::Uuid::new_v4();
         let span = tracing::debug_span!(
             "embed",
             provider_id = %self.provider_id,
             model = %self.model,
-            dim = self.embedding_dim()
+            dim = self.embedding_dim(),
+            correlation_id = %correlation_id
         );
         Box::pin(
             async move {
                 let batch = self
-                    .embed_batch(std::slice::from_ref(&text.to_owned()))
+                    .embed_batch_impl(std::slice::from_ref(&text.to_owned()), correlation_id)
                     .await?;
                 batch.into_iter().next().ok_or_else(|| {
                     SemanticError::Inference(
@@ -731,26 +803,64 @@ impl EmbeddingPort for RemoteEmbeddingAdapter {
         &'a self,
         texts: &'a [String],
     ) -> BoxFuture<'a, Result<Vec<Vec<f32>>, SemanticError>> {
+        let correlation_id = uuid::Uuid::new_v4();
+        Box::pin(self.embed_batch_impl(texts, correlation_id))
+    }
+
+    fn embedding_dim(&self) -> usize {
+        self.embedding_dim()
+    }
+}
+
+/// Private implementation with explicit correlation_id for span propagation.
+/// Not part of the trait — called directly on the concrete type.
+impl RemoteEmbeddingAdapter {
+    async fn embed_batch_impl(
+        &self,
+        texts: &[String],
+        correlation_id: uuid::Uuid,
+    ) -> Result<Vec<Vec<f32>>, SemanticError> {
         let span = tracing::debug_span!(
             "embed_batch",
             provider_id = %self.provider_id,
             model = %self.model,
             count = texts.len(),
-            dim = self.embedding_dim()
+            dim = self.embedding_dim(),
+            correlation_id = %correlation_id
         );
-        Box::pin(
-            async move {
-                if texts.is_empty() {
-                    return Ok(Vec::new());
-                }
-                self.post_embeddings(texts).await
+        async move {
+            if texts.is_empty() {
+                return Ok(Vec::new());
             }
-            .instrument(span),
-        )
+            self.post_embeddings(texts).await
+        }
+        .instrument(span)
+        .await
     }
 
-    fn embedding_dim(&self) -> usize {
-        self.embedding_dim()
+    /// Returns the accumulated embedding usage metrics for this run.
+    ///
+    /// Includes prompt_tokens, total_tokens, and request_count since the
+    /// adapter was created (or since startup). Thread-safe via AtomicU64.
+    #[must_use]
+    pub fn metrics(&self) -> EmbeddingRunMetrics {
+        EmbeddingRunMetrics {
+            prompt_tokens: self
+                .usage_prompt_tokens
+                .load(std::sync::atomic::Ordering::Relaxed),
+            total_tokens: self
+                .usage_total_tokens
+                .load(std::sync::atomic::Ordering::Relaxed),
+            request_count: self
+                .usage_request_count
+                .load(std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+
+    /// Returns a reference to the concrete implementation for downcasting.
+    #[allow(dead_code)]
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
     }
 }
 
@@ -906,8 +1016,9 @@ mod tests {
 
     #[test]
     fn parse_happy_fixture_maps_vectors_one_to_one_in_order() {
-        let vecs = parse_embedding_body(&load_fixture("embeddings_happy.json"), 2)
+        let parsed = parse_embedding_body(&load_fixture("embeddings_happy.json"), 2)
             .expect("happy fixture parses");
+        let vecs = parsed.vectors;
         assert_eq!(vecs.len(), 2, "one vector per input, in order");
         assert_eq!(vecs[0], vec![0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8]);
         assert_eq!(vecs[1], vec![0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1]);
@@ -915,8 +1026,9 @@ mod tests {
 
     #[test]
     fn parse_tolerant_fixture_ignores_unknown_fields() {
-        let vecs = parse_embedding_body(&load_fixture("embeddings_tolerant.json"), 1)
+        let parsed = parse_embedding_body(&load_fixture("embeddings_tolerant.json"), 1)
             .expect("vendor extras must be ignored");
+        let vecs = parsed.vectors;
         assert_eq!(vecs.len(), 1);
         assert_eq!(vecs[0].len(), 8, "non-384d dims pass through");
         assert!((vecs[0][0] - 0.5).abs() < f32::EPSILON);

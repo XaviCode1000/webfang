@@ -262,6 +262,10 @@ impl EmbeddingPort for EmbeddingAdapter {
     fn embedding_dim(&self) -> usize {
         self.pool.embedding_dim()
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// Resolve and validate model assets from the hf_hub cache.

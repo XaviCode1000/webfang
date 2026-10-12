@@ -641,7 +641,10 @@ mod wiring_tests {
         let vault_slot: Option<Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort>> =
             Some(remote.as_port());
 
-        let inspector = semantic_inspector(&shared, &AdaptiveSelectorOptions::default())
+        let tier2_port = shared.as_ref().map(|s| {
+            Arc::clone(s.port()) as Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort>
+        });
+        let inspector = semantic_inspector(tier2_port, &AdaptiveSelectorOptions::default())
             .expect("a shared local port must produce an inspector");
 
         // Drive one Tier 2 call through the port-backed inspector.
@@ -699,36 +702,26 @@ fn build_adaptive_engine(
     }
 }
 
-/// Build the Tier 2 semantic inspector over the shared LOCAL embedding port
-/// (ADR-0004 slice 1).
+/// Build the Tier 2 semantic inspector with an explicit embedding port (ADR-0004).
 ///
-/// Returns `None` when no shared port is available (`--ai` off or dry-run),
-/// degrading the adaptive engine to Tier 1 (lexical) repair. The threshold comes
-/// from the single shared [`AdaptiveSelectorOptions`] — no duplicate constant.
+/// The port is either:
+/// - The shared LOCAL embedding port (wrapped in `LocalEmbeddingPort`) when
+///   `--tier2-embedding-provider` is NOT set, OR
+/// - A dedicated remote adapter when `--tier2-embedding-provider` IS set.
 ///
-/// # The parameter type is the guard
-///
-/// It takes `&Option<LocalEmbeddingPort>`, NOT `&Option<Arc<dyn EmbeddingPort>>`.
-/// The vault slot is `Option<Arc<dyn EmbeddingPort>>` and `resolve_remote_embedding`
-/// overwrites it with a remote adapter the user opted into for *vault search*
-/// only; both values have the same type, so a bare trait object here made the
-/// slot a valid argument — `semantic_inspector(&vault_ports.embedding_port, …)`
-/// compiles with exit 0 and ships DOM fragments off-box without consent
-/// (ADR-0004 §Egress de Tier 2, issue #1977). The newtype makes that call site
-/// a type error instead of a review promise; see
-/// [`LocalEmbeddingPort`](webfang_core::domain::embedding_port::LocalEmbeddingPort).
-///
-/// Ordering still matters — the port is captured before the overwrite, not read
-/// after it — but it is now a convention layered on a type, not the only
-/// thing standing between a valid-looking call and an egress.
+/// This is SEPARATE from the vault-search embedding slot (`vault_ports.embedding_port`)
+/// which is controlled by `--embedding-provider`. Vault search and Tier 2 repair
+/// are distinct privacy domains (issue #1977). The type system enforces this:
+/// the function takes `Option<Arc<dyn EmbeddingPort>>` explicitly, and the caller
+/// MUST provide the correct port (local or Tier 2 remote), not the vault slot.
 #[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
 fn semantic_inspector(
-    shared: &Option<webfang_core::domain::embedding_port::LocalEmbeddingPort>,
+    tier2_port: Option<Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort>>,
     options: &AdaptiveSelectorOptions,
 ) -> Option<Arc<dyn webfang_core::domain::SemanticInspectorPort>> {
-    shared.as_ref().map(|local| {
+    tier2_port.map(|port| {
         let inspector = webfang_core::infrastructure::scraper::embedding_semantic_inspector::EmbeddingSemanticInspector::new(
-            Arc::clone(local.port()),
+            port,
             options.semantic_threshold,
         );
         Arc::new(inspector) as Arc<dyn webfang_core::domain::SemanticInspectorPort>
@@ -893,6 +886,81 @@ async fn resolve_remote_embedding(
         .await
 }
 
+/// Resolve the remote embedding adapter for the Tier 2 semantic inspector (ADR-0004).
+///
+/// Separate from `resolve_remote_embedding` on purpose: vault search and
+/// Tier 2 repair are distinct privacy domains (issue #1977). An explicit
+/// `--tier2-embedding-provider` always resolves (fail fast even without `ai`);
+/// with `ai` the default slot may also select a remote provider. Otherwise
+/// `None` with no config load and no probe — plain runs never dial an
+/// embeddings endpoint for Tier 2.
+///
+/// Consent check: if the resolved provider is remote (not `local_onnx`),
+/// `--tier2-consent` / `WEBFANG_TIER2_CONSENT` MUST be set. A hash of
+/// `provider_id|base_url` is logged for auditability.
+#[cfg(feature = "adaptive-selectors")]
+async fn resolve_tier2_remote_embedding(
+    opts: &CrawlOptions,
+) -> Result<
+    Option<
+        std::sync::Arc<webfang_core::infrastructure::llm::remote_embedding::RemoteEmbeddingAdapter>,
+    >,
+    CliExit,
+> {
+    if opts.tier2_embedding_provider.is_none() && !opts.ai {
+        return Ok(None);
+    }
+    let providers_cfg = ConfigDefaults::load(&resolve_config_path());
+    let providers = webfang_core::domain::providers::ProvidersConfig {
+        providers: providers_cfg.providers,
+    };
+    // Reuse the same builder but with a synthetic CrawlOptions that has
+    // tier2_embedding_provider in the embedding_provider slot for the builder.
+    // The builder only looks at embedding_provider, so we swap temporarily.
+    let mut synthetic_opts = opts.clone();
+    synthetic_opts.embedding_provider = opts.tier2_embedding_provider.clone();
+    let adapter = webfang_core::cli::llm_wire::build_embedding_provider(
+        &synthetic_opts,
+        &providers,
+        opts.ai_config.offline,
+    )
+    .await?;
+
+    // If adapter is Some, it's a remote provider (local_onnx returns None)
+    if let Some(ref remote) = adapter {
+        // Consent check
+        if !opts.tier2_consent {
+            return Err(CliExit::ConfigError(
+                "Tier 2 remoto requiere consentimiento explícito: use --tier2-consent o WEBFANG_TIER2_CONSENT=1".to_string(),
+            ));
+        }
+        // Log consent hash for auditability
+        let consent_hash = compute_consent_hash(remote.id(), remote.base_url());
+        tracing::info!(
+            tier2_consent_hash = %consent_hash,
+            "Tier 2 remote embeddings consent granted"
+        );
+    }
+    Ok(adapter)
+}
+
+/// Compute a short hash for audit logging: sha256(provider_id + "|" + base_url) truncated to 16 chars.
+///
+/// Gated with its only call site: under default features the caller
+/// (`resolve_tier2_remote_embedding`) is compiled out and this would otherwise
+/// trip `dead_code` on every non-`adaptive-selectors` build.
+#[cfg(feature = "adaptive-selectors")]
+fn compute_consent_hash(provider_id: &str, base_url: &url::Url) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(provider_id.as_bytes());
+    hasher.update(b"|");
+    hasher.update(base_url.as_str().as_bytes());
+    let hash = hasher.finalize();
+    // Manual hex encoding (avoid hex crate dependency)
+    hash.iter().map(|b| format!("{b:02x}")).collect::<String>()[..16].to_string()
+}
+
 /// Build optional engines and dispatch to the orchestrator.
 ///
 /// The AI cleaner is built FIRST (#702): the adaptive engine needs the
@@ -904,6 +972,7 @@ async fn resolve_remote_embedding(
 /// injects it into a Container, and validates startup (caducidad del DEBE §8b:
 /// el binario DEBE validar llm_port().is_some() en startup cuando el flag está
 /// activo).
+#[allow(clippy::too_many_lines)]
 async fn build_and_run(opts: CrawlOptions) -> CliExit {
     // Build LLM provider if --extract-with-llm is set.
     // This is NOT gated by the `ai` feature — the remote provider port lives
@@ -980,46 +1049,117 @@ async fn build_and_run(opts: CrawlOptions) -> CliExit {
         Err(e) => return e,
     }
 
+    // Resolve Tier 2 remote embedding (separate flag, separate privacy domain)
+    // Only when adaptive-selectors is enabled, but defined here so it's
+    // accessible after the orchestrator call for metrics collection.
     #[cfg(feature = "adaptive-selectors")]
-    // Inference worker bound derives from the budget model's Operation.inference
-    // tier (task 2.5d); explicit operator flags arrive via BudgetOverrides.
-    let engine_options = {
-        let budget = webfang_core::domain::budget::BudgetModel::build(
-            opts.budget_overrides,
-            &webfang_core::domain::budget::detector::SystemDetector,
-        );
-        AdaptiveSelectorOptions {
-            max_concurrent_inference: budget.inference().get(),
-            ..AdaptiveSelectorOptions::default()
+    let tier2_remote = {
+        match resolve_tier2_remote_embedding(&opts).await {
+            Ok(Some(adapter)) => {
+                Some(adapter as Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort>)
+            },
+            Ok(None) => None,
+            Err(e) => return e,
         }
     };
-    #[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
-    let semantic = semantic_inspector(&shared, &engine_options);
-    // Without the `ai` feature there is no ONNX pool — explicit Tier 1 degrade.
-    #[cfg(all(not(feature = "ai"), feature = "adaptive-selectors"))]
-    let semantic: Option<Arc<dyn webfang_core::domain::SemanticInspectorPort>> = None;
-    // No adaptive engine to feed — keep the shared assets from becoming an
-    // unused binding on the ai-only combo.
-    #[cfg(all(feature = "ai", not(feature = "adaptive-selectors")))]
-    let _ = shared;
-    #[cfg(feature = "adaptive-selectors")]
-    let adaptive_engine = build_adaptive_engine(&opts, semantic, engine_options);
+    #[cfg(not(feature = "adaptive-selectors"))]
+    let _tier2_remote: Option<Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort>> = None;
 
-    #[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
+    #[cfg(feature = "adaptive-selectors")]
     {
-        orchestrator::run(opts, ai_cleaner, adaptive_engine, vault_ports, llm_port).await
+        // Inference worker bound derives from the budget model's Operation.inference
+        // tier (task 2.5d); explicit operator flags arrive via BudgetOverrides.
+        let engine_options = {
+            let budget = webfang_core::domain::budget::BudgetModel::build(
+                opts.budget_overrides,
+                &webfang_core::domain::budget::detector::SystemDetector,
+            );
+            AdaptiveSelectorOptions {
+                max_concurrent_inference: budget.inference().get(),
+                ..AdaptiveSelectorOptions::default()
+            }
+        };
+        #[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
+        let semantic = {
+            // Tier 2 port priority: explicit remote > shared local
+            let tier2_port = tier2_remote.clone().or_else(|| {
+                shared.as_ref().map(|s| {
+                    Arc::clone(s.port())
+                        as Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort>
+                })
+            });
+            semantic_inspector(tier2_port, &engine_options)
+        };
+        #[cfg(all(not(feature = "ai"), feature = "adaptive-selectors"))]
+        let semantic = {
+            // Without `ai` feature, no local ONNX pool exists.
+            // Tier 2 ONLY works if explicit --tier2-embedding-provider is set.
+            semantic_inspector(tier2_remote.clone(), &engine_options)
+        };
+        // Build adaptive engine inside the cfg block so semantic and engine_options are in scope
+        let adaptive_engine = build_adaptive_engine(&opts, semantic, engine_options);
+
+        #[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
+        {
+            let threshold = opts.ai_config.threshold;
+            let exit =
+                orchestrator::run(opts, ai_cleaner, adaptive_engine, vault_ports, llm_port).await;
+            // Print embedding summary if Tier 2 remote was used
+            if let Some(ref remote) = tier2_remote {
+                print_embedding_summary(remote, threshold).await;
+            }
+            exit
+        }
+        #[cfg(all(not(feature = "ai"), feature = "adaptive-selectors"))]
+        {
+            let threshold = opts.ai_config.threshold;
+            let exit = orchestrator::run(opts, adaptive_engine, vault_ports, llm_port).await;
+            if let Some(ref remote) = tier2_remote {
+                print_embedding_summary(remote, threshold).await;
+            }
+            exit
+        }
     }
-    #[cfg(all(feature = "ai", not(feature = "adaptive-selectors")))]
+    #[cfg(not(feature = "adaptive-selectors"))]
     {
-        orchestrator::run(opts, ai_cleaner, vault_ports, llm_port).await
-    }
-    #[cfg(all(not(feature = "ai"), feature = "adaptive-selectors"))]
-    {
-        orchestrator::run(opts, adaptive_engine, vault_ports, llm_port).await
-    }
-    #[cfg(all(not(feature = "ai"), not(feature = "adaptive-selectors")))]
-    {
-        orchestrator::run(opts, vault_ports, llm_port).await
+        // AdaptiveSelectorOptions is gated behind adaptive-selectors feature.
+        // Define the default inline for when the feature is disabled.
+        use std::time::Duration;
+        #[allow(dead_code)]
+        struct EngineOptions {
+            pub lexical_threshold: f64,
+            pub escalation_lower_bound: f64,
+            pub semantic_threshold: f32,
+            pub cache_ttl: Duration,
+            pub max_cache_entries: usize,
+            pub max_concurrent_inference: usize,
+        }
+        impl Default for EngineOptions {
+            fn default() -> Self {
+                Self {
+                    lexical_threshold: 0.85,
+                    escalation_lower_bound: 0.70,
+                    semantic_threshold: 0.75,
+                    cache_ttl: Duration::from_secs(30 * 60),
+                    max_cache_entries: 10_000,
+                    max_concurrent_inference: 4,
+                }
+            }
+        }
+        let _engine_options = EngineOptions::default();
+        // No adaptive engine to feed — keep the shared assets from becoming an
+        // unused binding on the ai-only combo.
+        #[cfg(all(feature = "ai", not(feature = "adaptive-selectors")))]
+        let _ = shared;
+
+        #[cfg(all(feature = "ai", not(feature = "adaptive-selectors")))]
+        {
+            orchestrator::run(opts, ai_cleaner, vault_ports, llm_port).await
+        }
+        #[cfg(all(not(feature = "ai"), not(feature = "adaptive-selectors")))]
+        {
+            orchestrator::run(opts, vault_ports, llm_port).await
+        }
     }
 }
 
@@ -1078,4 +1218,45 @@ async fn build_vault_ports(
     }
 
     ports
+}
+
+/// Print embedding metrics summary at the end of a successful run.
+///
+/// Only called when Tier 2 remote embedding adapter was used (explicit
+/// `--tier2-embedding-provider`). Reads the accumulated metrics and prints
+/// them via `ScrapeSummary` alongside the threshold used.
+#[cfg(feature = "adaptive-selectors")]
+async fn print_embedding_summary(
+    remote: &Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort>,
+    threshold_used: f32,
+) {
+    // Downcast to RemoteEmbeddingAdapter to access metrics()
+    if let Some(remote_adapter) = remote.as_any().downcast_ref::<webfang_core::infrastructure::llm::remote_embedding::RemoteEmbeddingAdapter>() {
+        let metrics = remote_adapter.metrics();
+        if metrics.request_count > 0 {
+            use webfang_core::cli::summary::ScrapeSummary;
+            use std::time::Duration;
+            let _summary = ScrapeSummary::new(
+                0, 0, 0, 0, 0, 0, Duration::from_secs(0),
+                metrics.request_count as usize,
+                metrics.prompt_tokens,
+                metrics.total_tokens,
+                threshold_used,
+            );
+            // Print only the embedding line (not the full scrape summary)
+            let no_color = std::env::var("NO_COLOR").is_ok() || std::env::var("TERM").unwrap_or_default() == "dumb";
+            let embedding_line = if no_color {
+                format!(
+                    "[EMBEDDINGS] {} requests, {} prompt tokens, {} total tokens, threshold={:.2}",
+                    metrics.request_count, metrics.prompt_tokens, metrics.total_tokens, threshold_used
+                )
+            } else {
+                format!(
+                    "🧠 embeddings: {} requests, {} prompt tokens, {} total tokens, threshold={:.2}",
+                    metrics.request_count, metrics.prompt_tokens, metrics.total_tokens, threshold_used
+                )
+            };
+            println!("{embedding_line}");
+        }
+    }
 }

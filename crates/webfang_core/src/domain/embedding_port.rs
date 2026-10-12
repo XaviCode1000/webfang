@@ -22,6 +22,7 @@
 //!   is legitimate (#1977), and [`cosine_similarity_fail_closed`] carries the
 //!   ranking contract both `application` and `infrastructure` read (#1125).
 
+use std::any::Any;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -82,6 +83,17 @@ pub trait EmbeddingPort: Send + Sync {
     ///
     /// Both supported models (Granite-97M and Granite-311M) return 384.
     fn embedding_dim(&self) -> usize;
+
+    /// Returns a reference to the concrete implementation as `&dyn Any`,
+    /// enabling downcasting for implementation-specific metrics.
+    ///
+    /// Default implementation panics; implementations SHOULD override this
+    /// to return `self` as `&dyn Any`. This is a controlled escape hatch for
+    /// telemetry collection (e.g., embedding usage counters) without leaking
+    /// implementation details into the domain trait.
+    fn as_any(&self) -> &dyn Any {
+        panic!("as_any not implemented for EmbeddingPort; concrete type must override");
+    }
 }
 
 /// An [`EmbeddingPort`] whose origin is known to be the LOCAL embedding stack.
@@ -127,6 +139,27 @@ impl LocalEmbeddingPort {
     #[must_use]
     pub fn port(&self) -> &Arc<dyn EmbeddingPort> {
         &self.0
+    }
+}
+
+impl EmbeddingPort for LocalEmbeddingPort {
+    fn embed<'a>(&'a self, text: &'a str) -> BoxFuture<'a, Result<Vec<f32>, SemanticError>> {
+        self.0.embed(text)
+    }
+
+    fn embed_batch<'a>(
+        &'a self,
+        texts: &'a [String],
+    ) -> BoxFuture<'a, Result<Vec<Vec<f32>>, SemanticError>> {
+        self.0.embed_batch(texts)
+    }
+
+    fn embedding_dim(&self) -> usize {
+        self.0.embedding_dim()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self.0.as_any()
     }
 }
 
@@ -203,6 +236,10 @@ mod tests {
 
         fn embedding_dim(&self) -> usize {
             self.dim
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
         }
     }
 
