@@ -810,6 +810,18 @@ impl EmbeddingPort for RemoteEmbeddingAdapter {
     fn embedding_dim(&self) -> usize {
         self.embedding_dim()
     }
+
+    /// Returns the concrete adapter for downcasting.
+    ///
+    /// Required, not optional: the trait default **panics**, and the CLI's
+    /// embedding summary reaches these usage counters through
+    /// `Arc<dyn EmbeddingPort>::as_any` — a call that dispatches on the
+    /// vtable. A private inherent method of the same name does NOT satisfy
+    /// this contract: it never enters the vtable, so the call still lands
+    /// on the panicking default and aborts the run.
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
 }
 
 /// Private implementation with explicit correlation_id for span propagation.
@@ -855,12 +867,6 @@ impl RemoteEmbeddingAdapter {
                 .usage_request_count
                 .load(std::sync::atomic::Ordering::Relaxed),
         }
-    }
-
-    /// Returns a reference to the concrete implementation for downcasting.
-    #[allow(dead_code)]
-    fn as_any(&self) -> &dyn std::any::Any {
-        self
     }
 }
 
@@ -923,6 +929,34 @@ mod tests {
         // the env guard here proves later calls never re-resolve.
         drop(env);
         adapter
+    }
+
+    // --- Trait contract through the vtable ---
+
+    #[tokio::test]
+    async fn as_any_dispatches_through_the_vtable() {
+        // Regression pin: `EmbeddingPort::as_any` panics by default, so an
+        // impl carrying only a private *inherent* method of the same name
+        // still resolves to that panicking default when called through
+        // `Arc<dyn EmbeddingPort>`. That shape aborted the CLI's embedding
+        // summary after a Tier 2 run had already emitted its output.
+        let server = wiremock::MockServer::start().await;
+        let adapter = adapter_for(&server, |_| {});
+
+        // Erase the concrete type exactly like the caller does, so the
+        // dispatch below must reach the trait impl and not an inherent one.
+        let erased: std::sync::Arc<dyn EmbeddingPort> = std::sync::Arc::new(adapter);
+
+        let adapter = erased
+            .as_any()
+            .downcast_ref::<RemoteEmbeddingAdapter>()
+            .expect("as_any must dispatch to the trait impl, not the panicking default");
+        // Reaching `metrics()` is the reason this downcast exists at all.
+        let metrics = adapter.metrics();
+        assert_eq!(
+            metrics.request_count, 0,
+            "a freshly built adapter has issued no requests"
+        );
     }
 
     // --- Pure parse layer (no network) ---
