@@ -44,8 +44,10 @@
 //!   constructor — the local-ONNX convenience path that resolves a model off the hub
 //!   — stays behind the feature.
 //! - **ONNX half** (feature-gated behind `ai`): `inference_engine`, `tokenizer`,
-//!   `embedding_adapter` (which now owns model resolution), `granite_dom_inspector`,
-//!   the env compat layer and the test fixture.
+//!   `embedding_adapter` (which now owns model resolution), the env compat layer
+//!   and the test fixture. The Tier 2 selector inspector is NOT here anymore —
+//!   it moved to `webfang_core::infrastructure::scraper::embedding_semantic_inspector`
+//!   (ADR-0004, slice 1), where it consumes the same erased port as the cleaner.
 //!
 //! ```toml
 //! [dependencies]
@@ -153,11 +155,11 @@ pub mod threshold_config;
 
 pub mod content_pruner;
 
-// Tier 2 DOM inspector — ONNX half: it imports `tokenizer` and
-// `inference_engine` (`granite_dom_inspector.rs:21-22`), so it cannot compile
-// without them even though its relevance scoring is plain cosine similarity.
-#[cfg(feature = "ai")]
-pub mod granite_dom_inspector;
+// Tier 2 DOM inspector: MOVED (ADR-0004, slice 1). It now lives in
+// `webfang_core::infrastructure::scraper::embedding_semantic_inspector` as
+// `EmbeddingSemanticInspector`, holding an erased `EmbeddingPort` and nothing
+// engine-shaped, so this crate's `ai` feature is no longer on Tier 2's code
+// path at all.
 
 /// Shared AI test fixture (#1575) — the in-memory WordPiece tokenizer used by
 /// this crate's unit tests AND, via `#[path = "ai_test_fixture.rs"]`, by
@@ -208,6 +210,3 @@ pub use relevance_scorer::RelevanceScorer;
 pub use threshold_config::ThresholdConfig;
 
 pub use content_pruner::{ContentPruner, LegibleContentPruner, PruneAggressiveness};
-
-#[cfg(feature = "ai")]
-pub use granite_dom_inspector::GraniteDomInspector;

@@ -18,7 +18,7 @@ use std::time::Instant;
 
 use tracing::{debug, info, instrument, warn};
 
-use crate::domain::embedding_port::EmbeddingPort;
+use crate::domain::embedding_port::{cosine_similarity_fail_closed, EmbeddingPort};
 use crate::domain::note_repository::{NoteRepository, VaultNoteReader};
 use crate::domain::text_chunker::TextChunker;
 use crate::error::ScraperError;
@@ -156,8 +156,8 @@ impl VaultSearchService {
         let mut first_actual_dim = 0usize;
         let mut scored: Vec<VaultSearchResult> = chunks
             .into_iter()
-            .filter_map(
-                |chunk| match cosine_similarity(&query_embedding, &chunk.embedding) {
+            .filter_map(|chunk| {
+                match cosine_similarity_fail_closed(&query_embedding, &chunk.embedding) {
                     Some(score) => Some(VaultSearchResult {
                         note_path: chunk.note_path,
                         content: chunk.content,
@@ -172,8 +172,8 @@ impl VaultSearchService {
                         }
                         None
                     },
-                },
-            )
+                }
+            })
             .collect();
 
         if skipped > 0 {
@@ -393,39 +393,6 @@ impl VaultSearchService {
     }
 }
 
-/// Cosine similarity between two vectors.
-///
-/// Returns `Some(score)` with a value in [-1.0, 1.0]. For normalized
-/// embedding vectors (as produced by Granite models), this equals the dot
-/// product. Returns `Some(0.0)` for empty or zero-magnitude vectors.
-/// Returns `None` when the dimensions differ (e.g. a mixed-model index):
-/// the caller must skip the vector so corruption can never rank silently.
-fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
-    if a.len() != b.len() {
-        return None;
-    }
-    if a.is_empty() {
-        return Some(0.0);
-    }
-
-    let mut dot = 0.0f32;
-    let mut mag_a = 0.0f32;
-    let mut mag_b = 0.0f32;
-
-    for (x, y) in a.iter().zip(b.iter()) {
-        dot += x * y;
-        mag_a += x * x;
-        mag_b += y * y;
-    }
-
-    let denom = mag_a.sqrt() * mag_b.sqrt();
-    if denom < f32::EPSILON {
-        Some(0.0)
-    } else {
-        Some(dot / denom)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -433,7 +400,7 @@ mod tests {
     #[test]
     fn test_cosine_similarity_identical() {
         let v = vec![1.0, 0.0, 0.0];
-        let score = cosine_similarity(&v, &v).expect("same dims must score");
+        let score = cosine_similarity_fail_closed(&v, &v).expect("same dims must score");
         assert!((score - 1.0).abs() < 1e-6, "identical vectors → 1.0");
     }
 
@@ -441,7 +408,7 @@ mod tests {
     fn test_cosine_similarity_orthogonal() {
         let a = vec![1.0, 0.0, 0.0];
         let b = vec![0.0, 1.0, 0.0];
-        let score = cosine_similarity(&a, &b).expect("same dims must score");
+        let score = cosine_similarity_fail_closed(&a, &b).expect("same dims must score");
         assert!(score.abs() < 1e-6, "orthogonal vectors → 0.0");
     }
 
@@ -449,13 +416,13 @@ mod tests {
     fn test_cosine_similarity_opposite() {
         let a = vec![1.0, 0.0];
         let b = vec![-1.0, 0.0];
-        let score = cosine_similarity(&a, &b).expect("same dims must score");
+        let score = cosine_similarity_fail_closed(&a, &b).expect("same dims must score");
         assert!((score + 1.0).abs() < 1e-6, "opposite vectors → -1.0");
     }
 
     #[test]
     fn test_cosine_similarity_empty() {
-        assert_eq!(cosine_similarity(&[], &[]), Some(0.0));
+        assert_eq!(cosine_similarity_fail_closed(&[], &[]), Some(0.0));
     }
 
     #[test]
@@ -463,7 +430,7 @@ mod tests {
         let a = vec![0.0, 0.0, 0.0];
         let b = vec![1.0, 2.0, 3.0];
         assert_eq!(
-            cosine_similarity(&a, &b),
+            cosine_similarity_fail_closed(&a, &b),
             Some(0.0),
             "zero vector → Some(0.0)"
         );
@@ -474,7 +441,7 @@ mod tests {
         let a = vec![1.0, 2.0];
         let b = vec![1.0, 2.0, 3.0];
         assert_eq!(
-            cosine_similarity(&a, &b),
+            cosine_similarity_fail_closed(&a, &b),
             None,
             "mismatched dims → None (skip, never a silent 0.0)"
         );

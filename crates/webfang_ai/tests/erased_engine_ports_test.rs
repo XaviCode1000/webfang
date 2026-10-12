@@ -5,10 +5,11 @@
 //! `Arc<dyn EmbeddingPort>` and NOTHING engine-shaped. The same ONE engine +
 //! tokenizer still backs three consumers — the cleaner, the vault-search
 //! embedding port ([`EmbeddingAdapter`]) and the Tier 2 semantic inspector
-//! ([`GraniteDomInspector`]) — so the default `WEBFANG_AI_ENGINE` rollout
-//! serves all of them from a single model in memory. The `Single` rollback
-//! hatch compiles unchanged via unsized coercion of the concrete
-//! `Arc<InferencePool>` into the erased engine.
+//! ([`EmbeddingSemanticInspector`], which moved to `webfang_core` in ADR-0004
+//! slice 1 and consumes the SAME erased port) — so the default
+//! `WEBFANG_AI_ENGINE` rollout serves all of them from a single model in
+//! memory. The `Single` rollback hatch compiles unchanged via unsized coercion
+//! of the concrete `Arc<InferencePool>` into the erased engine.
 //!
 //! Requires the `ai` feature (same gate as the other AI integration tests).
 
@@ -20,10 +21,11 @@ use std::time::Duration;
 use webfang_ai::infrastructure_ai::{
     InferenceEngine, MockInferenceEngine, ModelConfig, SemanticCleanerImpl,
 };
-use webfang_ai::{EmbeddingAdapter, GraniteDomInspector, MiniLmTokenizer};
+use webfang_ai::{EmbeddingAdapter, MiniLmTokenizer};
 use webfang_core::domain::embedding_port::EmbeddingPort;
 use webfang_core::domain::semantic_cleaner::SemanticCleaner;
 use webfang_core::domain::semantic_inspector::{SemanticContext, SemanticInspectorPort};
+use webfang_core::infrastructure::scraper::embedding_semantic_inspector::EmbeddingSemanticInspector;
 
 // The ONE home of the in-memory tokenizer, shared with the `embedding_adapter`
 // unit tests in `src/infrastructure_ai/embedding_adapter.rs` (#1575). Included by
@@ -48,9 +50,10 @@ fn in_memory_mini_lm() -> Arc<MiniLmTokenizer> {
 }
 
 /// The same three-tuple `build_onnx_embedding_port` hands its callers: the
-/// erased domain port for the cleaner, plus the erased engine and tokenizer
-/// the other two consumers still need. Built by hand here because the
-/// production helper downloads a model.
+/// erased domain port for the cleaner AND for the Tier 2 inspector, plus the
+/// erased engine and tokenizer the vault-search port still builds its own
+/// adapter from. Built by hand here because the production helper downloads a
+/// model.
 fn mock_port_and_engine() -> (
     Arc<dyn EmbeddingPort>,
     Arc<dyn InferenceEngine + Send + Sync>,
@@ -89,7 +92,7 @@ fn cleaner_erases_to_the_domain_trait_and_leaves_the_engine_free() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn pool_cleaner_serves_vault_embedding_and_tier2_from_one_engine() {
     let (port, engine, tokenizer) = mock_port_and_engine();
-    let cleaner = SemanticCleanerImpl::from_parts(port, ModelConfig::default());
+    let cleaner = SemanticCleanerImpl::from_parts(Arc::clone(&port), ModelConfig::default());
     let cleaner: Arc<dyn SemanticCleaner> = Arc::new(cleaner);
     assert!(cleaner.is_ready());
 
@@ -103,10 +106,12 @@ async fn pool_cleaner_serves_vault_embedding_and_tier2_from_one_engine() {
     assert_eq!(embedding.len(), 384, "Granite output dim is 384");
     assert_eq!(vault.embedding_dim(), 384);
 
-    // Port 2 — Tier 2 semantic inspector over the SAME erased engine. The mock
+    // Port 2 — Tier 2 semantic inspector over the SAME erased PORT (ADR-0004
+    // slice 1: it no longer takes an engine and a tokenizer, only the port, and
+    // it batches target + fragments into ONE `embed_batch` call). The mock
     // engine answers every input with the same deterministic embedding, so the
     // target matches every fragment at cosine 1.0 and the best fragment wins.
-    let inspector = GraniteDomInspector::new(engine, tokenizer, 0.75);
+    let inspector = EmbeddingSemanticInspector::new(port, 0.75);
     let tier2: Arc<dyn SemanticInspectorPort> = Arc::new(inspector);
     let ctx = SemanticContext {
         target_text: "hello world".to_string(),
@@ -131,10 +136,11 @@ async fn pool_cleaner_serves_vault_embedding_and_tier2_from_one_engine() {
 }
 
 /// Rollback hatch (`WEBFANG_AI_ENGINE=single`): the concrete Single-path
-/// `Arc<InferencePool>` coerces into the erased `EmbeddingAdapter::new` /
-/// `GraniteDomInspector::new` parameters, so both consumers keep compiling
-/// unchanged for the concrete engine too (compile-time proof, no model load —
-/// an unloadable model path still constructs the drainer-backed pool).
+/// `Arc<InferencePool>` coerces into the erased `EmbeddingAdapter::new`
+/// parameter, and the resulting port feeds the Tier 2 inspector unchanged —
+/// so both consumers keep compiling for the concrete engine too (compile-time
+/// proof, no model load — an unloadable model path still constructs the
+/// drainer-backed pool).
 #[test]
 fn concrete_single_pool_coerces_into_erased_ports() {
     use webfang_ai::infrastructure_ai::{AiModel, InferencePool};
@@ -154,5 +160,9 @@ fn concrete_single_pool_coerces_into_erased_ports() {
     // generic `clone` blocks coercion inference).
     let pool_for_adapter = Arc::clone(&pool);
     let _adapter = EmbeddingAdapter::new(pool_for_adapter, Arc::clone(&tokenizer));
-    let _inspector = GraniteDomInspector::new(pool, tokenizer, 0.75);
+
+    // The inspector takes the PORT, so the same erased-engine coercion the
+    // vault-search port performs is all Tier 2 needs.
+    let port: Arc<dyn EmbeddingPort> = Arc::new(EmbeddingAdapter::new(pool, tokenizer));
+    let _inspector = EmbeddingSemanticInspector::new(port, 0.75);
 }
