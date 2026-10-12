@@ -609,18 +609,16 @@ mod wiring_tests {
     }
 
     /// Pins the SHAPE of the Tier 2 wiring: an inspector is built only from a
-    /// [`LocalEmbeddingPort`](webfang_core::domain::embedding_port::LocalEmbeddingPort),
-    /// and it embeds through the port that newtype carries.
+    /// `Tier2EmbeddingPort`, and it embeds through the port that type carries.
     ///
     /// What this test does NOT claim: it does not prove the inspector is
     /// *prevented* from reaching the vault slot. `vault_slot` below is built
     /// and then never handed to anything — `remote.embedded() == 0` is true by
-    /// construction, not by an observed refusal. That invariant is now carried
-    /// by the type system: `semantic_inspector` takes
-    /// `&Option<LocalEmbeddingPort>` while `VaultAiPorts::embedding_port` is
-    /// `Option<Arc<dyn EmbeddingPort>>`, so passing the slot is a compile
-    /// error (issue #1977). Compile-time evidence is the T1 swap experiment,
-    /// not this test.
+    /// construction, not by an observed refusal. That invariant is carried by
+    /// the type system: `semantic_inspector` takes `Option<Tier2EmbeddingPort>`
+    /// while `VaultAiPorts::embedding_port` is `Option<Arc<dyn EmbeddingPort>>`,
+    /// so passing the slot is a compile error (issue #1977). Compile-time
+    /// evidence is the T1 swap experiment, not this test.
     ///
     /// What it does prove: the port the inspector embeds through is the one
     /// handed in, all the way down to the adapter — the part that would break
@@ -641,9 +639,8 @@ mod wiring_tests {
         let vault_slot: Option<Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort>> =
             Some(remote.as_port());
 
-        let tier2_port = shared.as_ref().map(|s| {
-            Arc::clone(s.port()) as Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort>
-        });
+        let tier2_port =
+            shared.map(webfang_core::domain::embedding_port::Tier2EmbeddingPort::Local);
         let inspector = semantic_inspector(tier2_port, &AdaptiveSelectorOptions::default())
             .expect("a shared local port must produce an inspector");
 
@@ -704,24 +701,26 @@ fn build_adaptive_engine(
 
 /// Build the Tier 2 semantic inspector with an explicit embedding port (ADR-0004).
 ///
-/// The port is either:
-/// - The shared LOCAL embedding port (wrapped in `LocalEmbeddingPort`) when
-///   `--tier2-embedding-provider` is NOT set, OR
-/// - A dedicated remote adapter when `--tier2-embedding-provider` IS set.
+/// The slot is either:
+/// - [`Tier2EmbeddingPort::Local`](webfang_core::domain::embedding_port::Tier2EmbeddingPort::Local)
+///   — the shared LOCAL embedding port when `--tier2-embedding-provider` is NOT
+///   set, OR
+/// - [`Tier2EmbeddingPort::Remote`](webfang_core::domain::embedding_port::Tier2EmbeddingPort::Remote)
+///   — a dedicated remote adapter when it IS set.
 ///
 /// This is SEPARATE from the vault-search embedding slot (`vault_ports.embedding_port`)
 /// which is controlled by `--embedding-provider`. Vault search and Tier 2 repair
-/// are distinct privacy domains (issue #1977). The type system enforces this:
-/// the function takes `Option<Arc<dyn EmbeddingPort>>` explicitly, and the caller
-/// MUST provide the correct port (local or Tier 2 remote), not the vault slot.
+/// are distinct privacy domains (issue #1977), and the type system enforces it:
+/// the parameter is `Option<Tier2EmbeddingPort>`, and the vault slot's
+/// `Option<Arc<dyn EmbeddingPort>>` is not assignable to it.
 #[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
 fn semantic_inspector(
-    tier2_port: Option<Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort>>,
+    tier2_port: Option<webfang_core::domain::embedding_port::Tier2EmbeddingPort>,
     options: &AdaptiveSelectorOptions,
 ) -> Option<Arc<dyn webfang_core::domain::SemanticInspectorPort>> {
-    tier2_port.map(|port| {
+    tier2_port.map(|slot| {
         let inspector = webfang_core::infrastructure::scraper::embedding_semantic_inspector::EmbeddingSemanticInspector::new(
-            port,
+            Arc::clone(slot.port()),
             options.semantic_threshold,
         );
         Arc::new(inspector) as Arc<dyn webfang_core::domain::SemanticInspectorPort>
@@ -1048,17 +1047,19 @@ async fn build_and_run(opts: CrawlOptions) -> CliExit {
     // Only when adaptive-selectors is enabled, but defined here so it's
     // accessible after the orchestrator call for metrics collection.
     #[cfg(feature = "adaptive-selectors")]
-    let tier2_remote = {
+    let tier2_remote: Option<webfang_core::domain::embedding_port::Tier2EmbeddingPort> = {
         match resolve_tier2_remote_embedding(&opts).await {
-            Ok(Some(adapter)) => {
-                Some(adapter as Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort>)
-            },
+            Ok(Some(adapter)) => Some(
+                webfang_core::domain::embedding_port::Tier2EmbeddingPort::Remote(
+                    adapter as Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort>,
+                ),
+            ),
             Ok(None) => None,
             Err(e) => return e,
         }
     };
     #[cfg(not(feature = "adaptive-selectors"))]
-    let _tier2_remote: Option<Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort>> = None;
+    let _tier2_remote: Option<webfang_core::domain::embedding_port::Tier2EmbeddingPort> = None;
 
     #[cfg(feature = "adaptive-selectors")]
     {
@@ -1076,11 +1077,12 @@ async fn build_and_run(opts: CrawlOptions) -> CliExit {
         };
         #[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
         let semantic = {
-            // Tier 2 port priority: explicit remote > shared local
+            // Tier 2 slot priority: explicit remote > shared local. BOTH arms
+            // produce `Tier2EmbeddingPort`, so `vault_ports.embedding_port` —
+            // in scope right here — cannot reach `semantic_inspector`.
             let tier2_port = tier2_remote.clone().or_else(|| {
                 shared.as_ref().map(|s| {
-                    Arc::clone(s.port())
-                        as Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort>
+                    webfang_core::domain::embedding_port::Tier2EmbeddingPort::Local(s.clone())
                 })
             });
             semantic_inspector(tier2_port, &engine_options)
@@ -1100,8 +1102,8 @@ async fn build_and_run(opts: CrawlOptions) -> CliExit {
             let exit =
                 orchestrator::run(opts, ai_cleaner, adaptive_engine, vault_ports, llm_port).await;
             // Print embedding summary if Tier 2 remote was used
-            if let Some(ref remote) = tier2_remote {
-                print_embedding_summary(remote, threshold).await;
+            if let Some(ref tier2) = tier2_remote {
+                print_embedding_summary(tier2.port(), threshold).await;
             }
             exit
         }
@@ -1109,8 +1111,8 @@ async fn build_and_run(opts: CrawlOptions) -> CliExit {
         {
             let threshold = opts.ai_config.threshold;
             let exit = orchestrator::run(opts, adaptive_engine, vault_ports, llm_port).await;
-            if let Some(ref remote) = tier2_remote {
-                print_embedding_summary(remote, threshold).await;
+            if let Some(ref tier2) = tier2_remote {
+                print_embedding_summary(tier2.port(), threshold).await;
             }
             exit
         }
