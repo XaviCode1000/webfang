@@ -865,6 +865,18 @@ async fn build_ai_cleaner(
 /// An explicit `--embedding-provider` always resolves (fail fast even
 /// without `ai`, so vault search works with no local model); with `ai` the
 /// default slot may also select a remote provider. Otherwise `None` with no
+/// Load the provider registry from the config file.
+///
+/// Shared by the vault and Tier 2 embedding resolvers, which otherwise repeat
+/// this prologue verbatim — the duplication ratchet (`scripts/check_duplication.sh`)
+/// counts it against a DESCENDING baseline, so it lives here once.
+fn load_providers() -> webfang_core::domain::providers::ProvidersConfig {
+    let providers_cfg = ConfigDefaults::load(&resolve_config_path());
+    webfang_core::domain::providers::ProvidersConfig {
+        providers: providers_cfg.providers,
+    }
+}
+
 /// config load and no probe — plain runs never dial an embeddings endpoint.
 async fn resolve_remote_embedding(
     opts: &CrawlOptions,
@@ -877,10 +889,7 @@ async fn resolve_remote_embedding(
     if opts.embedding_provider.is_none() && !opts.ai {
         return Ok(None);
     }
-    let providers_cfg = ConfigDefaults::load(&resolve_config_path());
-    let providers = webfang_core::domain::providers::ProvidersConfig {
-        providers: providers_cfg.providers,
-    };
+    let providers = load_providers();
     webfang_core::cli::llm_wire::build_embedding_provider(opts, &providers, opts.ai_config.offline)
         .await
 }
@@ -912,10 +921,7 @@ async fn resolve_tier2_remote_embedding(
     if opts.tier2_embedding_provider.is_none() && !opts.ai {
         return Ok(None);
     }
-    let providers_cfg = ConfigDefaults::load(&resolve_config_path());
-    let providers = webfang_core::domain::providers::ProvidersConfig {
-        providers: providers_cfg.providers,
-    };
+    let providers = load_providers();
     // By the time this returns an adapter, the remote endpoint was authorized
     // first and probed second, in that order.
     let adapter = webfang_core::cli::llm_wire::build_tier2_embedding_provider(
