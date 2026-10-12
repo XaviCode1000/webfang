@@ -185,6 +185,56 @@ pub async fn build_embedding_provider(
     Ok(Some(Arc::new(adapter)))
 }
 
+/// Build the remote adapter for the **Tier 2 semantic** slot, enforcing
+/// consent before anything can leave the machine.
+///
+/// Tier 2 is a second consumer of the remote embedding slot: the semantic
+/// inspector drives the embedder along a repair path the operator did not ask
+/// for, so it owes an explicit opt-in beyond `--ai`. That gate has to sit at
+/// the *pure resolution* step — registry lookup and kind check, no credential
+/// and no dial — because [`build_embedding_provider`] resolves the credential
+/// and then probes the endpoint, i.e. it sends a real request carrying it.
+/// Authorizing after that build refuses an egress that already happened, which
+/// inverts the fetch guard-chain (AGENTS.md, stage 1: validate at entry,
+/// before the network is touched).
+///
+/// `tier2_provider` is the Tier 2 id (`--tier2-embedding-provider`), passed
+/// separately from `CrawlOptions::embedding_provider` so no caller has to fake
+/// a `CrawlOptions` to reuse the embedding builder.
+///
+/// # Errors
+///
+/// [`CliExit::ConfigError`] (exit 78) when the slot resolves to a remote
+/// provider and `consent` is false, plus every failure
+/// [`build_embedding_provider`] can already report.
+pub async fn build_tier2_embedding_provider(
+    tier2_provider: Option<&str>,
+    consent: bool,
+    providers: &ProvidersConfig,
+    offline: bool,
+) -> Result<Option<Arc<RemoteEmbeddingAdapter>>, CliExit> {
+    // Resolution only: the one step that knows whether the slot resolves to a
+    // remote endpoint at all, and it performs no I/O.
+    let resolve_opts = CrawlOptions {
+        embedding_provider: tier2_provider.map(str::to_string),
+        ..Default::default()
+    };
+    // `None` means `LocalOnnx` or no provider configured: the local pool serves
+    // Tier 2, nothing leaves the machine, so no consent is owed.
+    let Some(_remote) = resolve_embedding_config(&resolve_opts, providers)? else {
+        return build_embedding_provider(&resolve_opts, providers, offline).await;
+    };
+    if !consent {
+        return Err(CliExit::ConfigError(
+            "Tier 2 remoto requiere consentimiento explícito: use --tier2-consent o WEBFANG_TIER2_CONSENT=1".to_string(),
+        ));
+    }
+    // Deliberate second resolution: `build_embedding_provider` owns its own
+    // lookup and changing its signature would ripple through every other
+    // caller. The cost is one registry scan over a small Vec, no I/O.
+    build_embedding_provider(&resolve_opts, providers, offline).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -554,6 +604,88 @@ mod tests {
             0,
             "offline fast-fail must never dial"
         );
+    }
+
+    // --- Tier 2 consent: authorized before anything can leave the machine ---
+
+    /// The sharpest statement of the fix: a remote Tier 2 slot with no consent
+    /// refuses at the pure resolution step, so the startup probe never fires.
+    /// Before the reorder, the build ran first and dialed, meaning the refusal
+    /// arrived after the egress it was supposed to gate.
+    #[cfg_attr(
+        miri,
+        ignore = "builds a real wreq client (btls-sys TLS_method FFI) against a TCP MockServer; both unsupported by Miri (run 35914433586)"
+    )]
+    #[tokio::test]
+    async fn tier2_remote_without_consent_refuses_before_any_dial() {
+        use wiremock::MockServer;
+        let server = MockServer::start().await;
+        // No mock mounted: any dial would 404 and count as a request.
+        let providers = remote_providers_for(&server, |_| {});
+        let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_TEST_EMB_OK", "test-key")]);
+
+        let err =
+            match build_tier2_embedding_provider(Some("ollama"), false, &providers, false).await {
+                Err(e) => e,
+                Ok(_) => panic!("a remote Tier 2 slot without consent must refuse"),
+            };
+        assert!(matches!(err, CliExit::ConfigError(_)));
+        assert!(config_message(&err).contains("consent"), "{err:?}");
+        assert_eq!(
+            server.received_requests().await.unwrap_or_default().len(),
+            0,
+            "consent must be evaluated before the probe dials"
+        );
+    }
+
+    /// The other half of the gate: with consent the same slot builds and
+    /// probes, so this is a real decision and not a blanket refusal.
+    #[cfg_attr(
+        miri,
+        ignore = "builds a real wreq client (btls-sys TLS_method FFI) against a TCP MockServer; both unsupported by Miri (run 35914433586)"
+    )]
+    #[tokio::test]
+    async fn tier2_remote_with_consent_builds_and_probes() {
+        use wiremock::MockServer;
+        let server = MockServer::start().await;
+        let _mock = mount_probe(&server, PROBE_SINGLE_8D).await;
+        let providers = remote_providers_for(&server, |_| {});
+        let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_TEST_EMB_OK", "test-key")]);
+
+        let out =
+            match build_tier2_embedding_provider(Some("ollama"), true, &providers, false).await {
+                Ok(o) => o,
+                Err(e) => panic!("consent must let the slot build: {e:?}"),
+            };
+        assert!(
+            out.is_some(),
+            "a consented remote slot must yield an adapter"
+        );
+        assert_eq!(
+            server.received_requests().await.unwrap_or_default().len(),
+            1,
+            "the probe is the one request consent authorized"
+        );
+    }
+
+    /// The gate must not over-block: a local Tier 2 slot owes no consent and
+    /// must still serve, because nothing leaves the machine.
+    #[tokio::test]
+    async fn tier2_local_slot_needs_no_consent() {
+        let providers = ProvidersConfig {
+            providers: vec![emb_provider(
+                "local-embeddings",
+                ProviderKind::LocalOnnx,
+                AuthSource::Env {
+                    var: "WEBFANG_TEST_EMB_UNUSED".to_string(),
+                },
+            )],
+        };
+        let out =
+            build_tier2_embedding_provider(Some("local-embeddings"), false, &providers, false)
+                .await
+                .expect("a local Tier 2 slot resolves");
+        assert!(out.is_none(), "local pool serves Tier 2 without consent");
     }
 
     #[cfg_attr(

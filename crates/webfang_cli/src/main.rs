@@ -898,6 +898,9 @@ async fn resolve_remote_embedding(
 /// Consent check: if the resolved provider is remote (not `local_onnx`),
 /// `--tier2-consent` / `WEBFANG_TIER2_CONSENT` MUST be set. A hash of
 /// `provider_id|base_url` is logged for auditability.
+///
+/// The gate is decided inside the builder, at the pure resolution step, so an
+/// unauthorized remote slot never reaches the credential or the dial.
 #[cfg(feature = "adaptive-selectors")]
 async fn resolve_tier2_remote_embedding(
     opts: &CrawlOptions,
@@ -914,13 +917,11 @@ async fn resolve_tier2_remote_embedding(
     let providers = webfang_core::domain::providers::ProvidersConfig {
         providers: providers_cfg.providers,
     };
-    // Reuse the same builder but with a synthetic CrawlOptions that has
-    // tier2_embedding_provider in the embedding_provider slot for the builder.
-    // The builder only looks at embedding_provider, so we swap temporarily.
-    let mut synthetic_opts = opts.clone();
-    synthetic_opts.embedding_provider = opts.tier2_embedding_provider.clone();
-    let adapter = webfang_core::cli::llm_wire::build_embedding_provider(
-        &synthetic_opts,
+    // By the time this returns an adapter, the remote endpoint was authorized
+    // first and probed second, in that order.
+    let adapter = webfang_core::cli::llm_wire::build_tier2_embedding_provider(
+        opts.tier2_embedding_provider.as_deref(),
+        opts.tier2_consent,
         &providers,
         opts.ai_config.offline,
     )
@@ -928,12 +929,6 @@ async fn resolve_tier2_remote_embedding(
 
     // If adapter is Some, it's a remote provider (local_onnx returns None)
     if let Some(ref remote) = adapter {
-        // Consent check
-        if !opts.tier2_consent {
-            return Err(CliExit::ConfigError(
-                "Tier 2 remoto requiere consentimiento explícito: use --tier2-consent o WEBFANG_TIER2_CONSENT=1".to_string(),
-            ));
-        }
         // Log consent hash for auditability
         let consent_hash = compute_consent_hash(remote.id(), remote.base_url());
         tracing::info!(
