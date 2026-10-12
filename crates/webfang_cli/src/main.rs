@@ -713,7 +713,14 @@ fn build_adaptive_engine(
 /// are distinct privacy domains (issue #1977), and the type system enforces it:
 /// the parameter is `Option<Tier2EmbeddingPort>`, and the vault slot's
 /// `Option<Arc<dyn EmbeddingPort>>` is not assignable to it.
-#[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
+///
+/// Gated on `adaptive-selectors` alone, NOT `all(ai, adaptive-selectors)`:
+/// both the `ai` and the `not(ai)` call sites reach it — without `ai` there
+/// is no local pool, but an explicit `--tier2-embedding-provider` still
+/// resolves. Requiring `ai` here left the `not(ai)` arm calling a function
+/// that did not exist, which is exactly what the Feature-matrix job exists
+/// to catch (`cargo hack check --each-feature`).
+#[cfg(feature = "adaptive-selectors")]
 fn semantic_inspector(
     tier2_port: Option<webfang_core::domain::embedding_port::Tier2EmbeddingPort>,
     options: &AdaptiveSelectorOptions,
