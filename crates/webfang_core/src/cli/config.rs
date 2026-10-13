@@ -49,6 +49,15 @@ pub struct ConfigDefaults {
     /// contract as the rest of this file.
     #[serde(default)]
     pub providers: Vec<crate::domain::providers::ProviderConfig>,
+    /// Per-profile overrides of the shipped model profiles (ADR-0004 step 4).
+    ///
+    /// TOML shape: `[[model_profiles.profiles]]` entries with `id` plus the
+    /// fields to patch (`dim`, `matryoshka`, `context`, `chars_per_token`, …).
+    /// An override only ever patches a shipped profile: a new model is a
+    /// repo-side change, never an invented number in a config file. Absent
+    /// section = the repo's verified defaults, unchanged.
+    #[serde(default)]
+    pub model_profiles: crate::domain::model_profile::ModelProfilesConfig,
 }
 
 /// Why a configuration file could not be used (#1659).

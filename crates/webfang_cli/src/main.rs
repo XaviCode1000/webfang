@@ -33,6 +33,7 @@ use webfang_core::application::adaptive_engine::{AdaptiveSelectorEngine, Adaptiv
 use webfang_core::application::crawl_options::CrawlOptions;
 use webfang_core::cli::config::{load_config_defaults, resolve_config_path, ConfigDefaults};
 use webfang_core::cli::error::{CliError, CliExit};
+use webfang_core::cli::parse::subcommand_args;
 use webfang_core::cli::preflight;
 use webfang_core::cli::preflight::ArgSources;
 #[cfg(feature = "ai")]
@@ -87,12 +88,19 @@ async fn __main() -> CliExit {
         args.crawler.url = Some(pos_url);
     }
 
-    // 2. Handle subcommands (completions)
-    if let Some(Commands::Completions { shell }) = args.subcommand {
-        return orchestrator::handle_completions(shell);
+    // 2. Handle subcommands. `connect` / `doctor` / `show` (issue #1933,
+    //    ADR-0004 step 4) run BEFORE URL resolution: they do not touch the
+    //    scrape path, and `connect`/`doctor` legitimately run with no URL.
+    if let Some(subcommand) = args.subcommand.as_ref() {
+        return match subcommand {
+            Commands::Completions { shell } => orchestrator::handle_completions(*shell),
+            Commands::Connect { .. } => handle_connect(&args).await,
+            Commands::Doctor => handle_doctor(&args).await,
+            Commands::Show => handle_show(&args),
+        };
     }
 
-    // 4. URL handling with interactive wizard
+    // 3. URL handling with interactive wizard
     if let Err(exit) = resolve_url(&mut args).await {
         return exit;
     }
@@ -281,6 +289,47 @@ async fn __main() -> CliExit {
 
     // 8. Build optional engines and delegate to orchestrator
     build_and_run(opts).await
+}
+
+/// Handle the `connect` subcommand (issue #1933, ADR-0004 step 4).
+///
+/// The variant carries the endpoint, the required model, and an optional
+/// provider id. With no id, a `connect-<hex>` name is generated from the URL
+/// so repeated runs against the same endpoint are idempotent-ish and readable.
+async fn handle_connect(args: &Args) -> CliExit {
+    let Some(Commands::Connect { url, model, id }) = args.subcommand.as_ref() else {
+        return CliExit::UsageError("connect invocado sin sus argumentos".into());
+    };
+    let id = id
+        .clone()
+        .unwrap_or_else(|| generated_provider_id(url.as_str()));
+    let config_path = resolve_config_path();
+    webfang_core::cli::commands::connect::run(url.as_url(), &id, model, &config_path).await
+}
+
+/// Handle the `doctor` subcommand: diagnose the embedding path from config.
+async fn handle_doctor(_args: &Args) -> CliExit {
+    let config_path = resolve_config_path();
+    webfang_core::cli::commands::doctor::run(&config_path).await
+}
+
+/// Handle the `show` subcommand: print the effective profile + budget.
+fn handle_show(args: &Args) -> CliExit {
+    let config_path = resolve_config_path();
+    let sub = subcommand_args(args);
+    webfang_core::cli::commands::show::run(&sub, &config_path)
+}
+
+/// A stable, readable provider id derived from the endpoint URL.
+///
+/// Uses a short hash of the URL so two different endpoints never collide, and
+/// the same endpoint reconnects under the same name. Not a cryptographic
+/// choice — a naming convenience the operator can override with `--id`.
+fn generated_provider_id(url: &str) -> String {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    url.hash(&mut hasher);
+    format!("connect-{:04x}", hasher.finish() & 0xffff)
 }
 
 /// Parse CLI arguments, translating clap's help/version/error cases into exits.
