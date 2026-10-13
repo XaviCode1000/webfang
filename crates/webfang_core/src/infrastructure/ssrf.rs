@@ -148,9 +148,9 @@ pub struct ForbiddenHostNotAllowlistedError {
 /// The B2 allowlist ([`ValidatingResolver::with_policy`]) travels the same
 /// way, per client and never through the process registry.
 ///
-/// The `name_source` field is the lookup seam: production always holds
-/// [`GaiNameSource`], and only the `#[cfg(test)]` construction can hold a
-/// fixed answer set, so the `resolve` → `fail_closed_scan` join is testable
+/// The `name_source` field is the lookup seam: production always holds the
+/// private `GaiNameSource`, and only the `#[cfg(test)]` construction can hold
+/// a fixed answer set, so the `resolve` → `fail_closed_scan` join is testable
 /// without a real LAN.
 #[derive(Debug, Clone)]
 pub struct ValidatingResolver {
