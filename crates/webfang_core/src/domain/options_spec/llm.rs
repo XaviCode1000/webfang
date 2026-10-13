@@ -94,17 +94,18 @@ pub const EMBEDDING_PROVIDER: OptionSpec = OptionSpec {
 /// `--tier2-embedding-provider <TIER2_EMBEDDING_PROVIDER>` (env `WEBFANG_TIER2_EMBEDDING_PROVIDER`).
 ///
 /// Selects which configured provider serves the Tier 2 semantic inspector
-/// embedding slot (selector repair, ADR-0004). Absent, the first provider
-/// declaring the `embedding` capability wins (config order) — the same rule
-/// as [`crate::domain::providers::ProviderRegistry::resolve_default_embedding`].
-/// This flag is **separate** from `--embedding-provider` on purpose: vault
-/// search and Tier 2 repair are distinct privacy domains. A user enabling
-/// remote embeddings for vault search does NOT implicitly enable remote
-/// embeddings for DOM fragment inspection (issue #1977).
-/// A `local_onnx` selection (or no tier2 embedding provider at all) serves
-/// the local pool adapter with no network probe; an `open_ai_compatible`
-/// selection builds the remote adapter and verifies the served dimension at
-/// startup (exit 78 on mismatch).
+/// embedding slot (selector repair, ADR-0004). This flag is **separate** from
+/// `--embedding-provider` on purpose: vault search and Tier 2 repair are
+/// distinct privacy domains, so the vault slot's default resolution (first
+/// provider declaring `embedding`, config order —
+/// [`crate::domain::providers::ProviderRegistry::resolve_default_embedding`])
+/// deliberately does NOT apply here. A user enabling remote embeddings for
+/// vault search does NOT implicitly enable remote embeddings for DOM fragment
+/// inspection (issue #1977, #1981).
+/// Absent (or an explicit `local_onnx` selection) serves the local pool `--ai`
+/// builds, with no network probe and no config lookup; an
+/// `open_ai_compatible` selection requires `--tier2-consent` (exit 78 without
+/// it) and verifies the served dimension at startup.
 pub const TIER2_EMBEDDING_PROVIDER: OptionSpec = OptionSpec {
     id: "tier2_embedding_provider",
     value_name: "TIER2_EMBEDDING_PROVIDER",
@@ -113,7 +114,7 @@ pub const TIER2_EMBEDDING_PROVIDER: OptionSpec = OptionSpec {
     aliases: &[],
     env: Some("WEBFANG_TIER2_EMBEDDING_PROVIDER"),
     default: None,
-    help: "Provider id to use for Tier 2 semantic inspector embeddings (default: first provider declaring the `embedding` capability; local pool when unset or local)",
+    help: "Provider id to use for Tier 2 semantic inspector embeddings (default: local pool; the vault-search provider is never adopted — an explicit remote id requires --tier2-consent)",
     heading: Some("Tier 2 Embeddings"),
     kind: ValueKind::Text,
     visible_aliases: &[],

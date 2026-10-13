@@ -202,9 +202,17 @@ pub async fn build_embedding_provider(
 /// separately from `CrawlOptions::embedding_provider` so no caller has to fake
 /// a `CrawlOptions` to reuse the embedding builder.
 ///
+/// **Absent means local, never the registry default (#1981).** The vault
+/// slot's own contract — no `--embedding-provider` → first embedding-capable
+/// provider in config order — must not leak into Tier 2. A provider the
+/// operator enabled for vault search would otherwise be adopted for DOM
+/// inspection, which is the cross-domain egress #1977 forbids, and the consent
+/// gate below would fire over a path the operator never opened. So `None`
+/// resolves to the local pool `--ai` serves, with no config lookup and no dial.
+///
 /// # Errors
 ///
-/// [`CliExit::ConfigError`] (exit 78) when the slot resolves to a remote
+/// [`CliExit::ConfigError`] (exit 78) when an explicit id resolves to a remote
 /// provider and `consent` is false, plus every failure
 /// [`build_embedding_provider`] can already report.
 pub async fn build_tier2_embedding_provider(
@@ -213,14 +221,19 @@ pub async fn build_tier2_embedding_provider(
     providers: &ProvidersConfig,
     offline: bool,
 ) -> Result<Option<Arc<RemoteEmbeddingAdapter>>, CliExit> {
+    // Absent id: the local pool serves Tier 2, nothing leaves the machine, and
+    // no provider is consulted — an explicit id is the only way into a remote
+    // Tier 2 slot (#1981).
+    let Some(id) = tier2_provider else {
+        return Ok(None);
+    };
     // Resolution only: the one step that knows whether the slot resolves to a
     // remote endpoint at all, and it performs no I/O.
     let resolve_opts = CrawlOptions {
-        embedding_provider: tier2_provider.map(str::to_string),
+        embedding_provider: Some(id.to_string()),
         ..Default::default()
     };
-    // `None` means `LocalOnnx` or no provider configured: the local pool serves
-    // Tier 2, nothing leaves the machine, so no consent is owed.
+    // An explicit `LocalOnnx` id serves the local pool, so no consent is owed.
     let Some(_remote) = resolve_embedding_config(&resolve_opts, providers)? else {
         return build_embedding_provider(&resolve_opts, providers, offline).await;
     };
@@ -607,6 +620,36 @@ mod tests {
     }
 
     // --- Tier 2 consent: authorized before anything can leave the machine ---
+
+    /// #1981: an ABSENT Tier 2 id is the local pool, never the registry's
+    /// default embedding provider. The vault slot's contract (no
+    /// `--embedding-provider` → first embedding-capable provider, config
+    /// order) must not leak into Tier 2: adopting it would send DOM fragments
+    /// to a provider the operator enabled for vault search, which is the
+    /// cross-domain egress #1977 forbids. The provider in this test IS that
+    /// remote default, so before the fix the call refuses on consent.
+    #[tokio::test]
+    async fn tier2_absent_slot_is_local_and_never_adopts_a_remote_default() {
+        use wiremock::MockServer;
+        let server = MockServer::start().await;
+        // No mock mounted: adoption would dial and count as a request.
+        let providers = remote_providers_for(&server, |_| {});
+        let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_TEST_EMB_OK", "test-key")]);
+
+        let out = build_tier2_embedding_provider(None, false, &providers, false)
+            .await
+            .expect("an absent Tier 2 slot is local: it must not fail on consent");
+
+        assert!(
+            out.is_none(),
+            "no explicit Tier 2 id means the local pool serves"
+        );
+        assert_eq!(
+            server.received_requests().await.unwrap_or_default().len(),
+            0,
+            "the vault-search provider must never be dialed for Tier 2"
+        );
+    }
 
     /// The sharpest statement of the fix: a remote Tier 2 slot with no consent
     /// refuses at the pure resolution step, so the startup probe never fires.

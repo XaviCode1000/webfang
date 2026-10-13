@@ -495,7 +495,7 @@ LLM Extraction:
 
 Tier 2 Embeddings:
       --tier2-embedding-provider <TIER2_EMBEDDING_PROVIDER>
-          Provider id to use for Tier 2 semantic inspector embeddings (default: first provider declaring the `embedding` capability; local pool when unset or local)
+          Provider id to use for Tier 2 semantic inspector embeddings (default: local pool; the vault-search provider is never adopted — an explicit remote id requires --tier2-consent)
           
           [env: WEBFANG_TIER2_EMBEDDING_PROVIDER=]
 

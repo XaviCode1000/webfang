@@ -116,11 +116,12 @@ pub struct CrawlOptions {
     /// adapter with no network probe (#1462).
     pub embedding_provider: Option<String>,
     /// Provider id selected for the Tier 2 semantic inspector embedding slot
-    /// (`--tier2-embedding-provider`). `None` picks the first provider
-    /// declaring the `embedding` capability; `local_onnx` serves the local
-    /// pool adapter with no network probe. Separate from `embedding_provider`
-    /// on purpose: vault search and Tier 2 repair are distinct privacy domains
-    /// (issue #1977).
+    /// (`--tier2-embedding-provider`). `None` serves the local pool adapter
+    /// with no network probe — it deliberately does NOT fall back to the first
+    /// provider declaring the `embedding` capability, so the vault-search
+    /// provider is never adopted for DOM inspection (issue #1977, #1981). An
+    /// explicit `local_onnx` id also serves the local pool. Separate from
+    /// `embedding_provider` on purpose: distinct privacy domains.
     pub tier2_embedding_provider: Option<String>,
     /// Explicit consent for Tier 2 remote embeddings egress
     /// (`--tier2-consent` / `WEBFANG_TIER2_CONSENT`). Required when

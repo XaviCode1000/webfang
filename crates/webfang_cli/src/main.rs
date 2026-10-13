@@ -905,8 +905,10 @@ async fn resolve_remote_embedding(
 ///
 /// Separate from `resolve_remote_embedding` on purpose: vault search and
 /// Tier 2 repair are distinct privacy domains (issue #1977). An explicit
-/// `--tier2-embedding-provider` always resolves (fail fast even without `ai`);
-/// with `ai` the default slot may also select a remote provider. Otherwise
+/// `--tier2-embedding-provider` always resolves (fail fast even without `ai`).
+/// Without it, the local ONNX pool `--ai` already builds serves Tier 2: the
+/// vault slot's default embedding provider is never adopted, so a remote
+/// provider configured for vault search cannot open a Tier 2 egress (#1981).
 /// `None` with no config load and no probe — plain runs never dial an
 /// embeddings endpoint for Tier 2.
 ///
@@ -925,7 +927,9 @@ async fn resolve_tier2_remote_embedding(
     >,
     CliExit,
 > {
-    if opts.tier2_embedding_provider.is_none() && !opts.ai {
+    // Absent id → the local pool (#1981). Return before loading providers, so
+    // the vault-search default can never be adopted here and no config is read.
+    if opts.tier2_embedding_provider.is_none() {
         return Ok(None);
     }
     let providers = load_providers();

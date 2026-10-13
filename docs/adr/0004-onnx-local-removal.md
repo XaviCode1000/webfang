@@ -80,7 +80,7 @@ models.dev no basta (sin dim/batch/prefijos; `limit.output` ≠ dimensión —mi
 
 ## Egress de Tier 2 (ruta nueva, explícita)
 
-El inspector pasa de local a enviar fragmentos del DOM a un tercero: entra en el consentimiento por hash provider+endpoint y en el contador de gasto. Observabilidad del salto (regla de hierro: sin traza no está terminado): los spans ya existen —`remote_embedding.rs:456-460` en `embed` (`provider_id`/`model`/`dim`) y `:482-487` en `embed_batch` (los tres más `count`=textos)— y hay que extenderlos con `CorrelationId` propagado + summary por corrida con tokens/retries/degradados.
+El inspector pasa de local a enviar fragmentos del DOM a un tercero: entra en el consentimiento por hash provider+endpoint y en el contador de gasto. El slot de Tier 2 es explícito por diseño: sin `--tier2-embedding-provider` sirve el pool local, y **nunca** adopta por defecto el provider de embeddings del vault — la resolución por defecto del slot de vault no se hereda aquí (#1981, #1977). Observabilidad del salto (regla de hierro: sin traza no está terminado): los spans ya existen —`remote_embedding.rs:456-460` en `embed` (`provider_id`/`model`/`dim`) y `:482-487` en `embed_batch` (los tres más `count`=textos)— y hay que extenderlos con `CorrelationId` propagado + summary por corrida con tokens/retries/degradados.
 
 ## Migración de vaults
 
