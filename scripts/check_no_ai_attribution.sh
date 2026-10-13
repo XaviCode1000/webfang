@@ -45,9 +45,17 @@ ALLOWED_CO_AUTHORS=(
 )
 
 # scan_message <message> -> prints one line per offence, nothing when clean.
+#
+# Only the TRAILER BLOCK is scanned — the contiguous lines after the final
+# blank line, which is where git trailers live by definition. A marker quoted
+# in body prose (discussing the rule, citing the evidence, explaining the
+# allowlist) is not a trailer and must not fire. Scanning the whole body
+# false-positived on exactly that: a commit explaining the check quoted
+# "Generated with Codebuff", which the body-wide rule reported as an offence.
 scan_message() {
   local msg="$1"
-  local subject
+  local trailers subject
+  trailers="$(printf '%s\n' "$msg" | awk 'BEGIN{buf=""} /^[[:space:]]*$/{buf=""; next} {buf = (buf == "" ? $0 : buf ORS $0)} END{print buf}')"
   subject="$(printf '%s' "$msg" | head -1)"
 
   # A blank message is itself an anomaly: there is nothing to review and
@@ -58,11 +66,11 @@ scan_message() {
   fi
 
   # 1. Attribution markers with no co-author meaning to allow.
-  if printf '%s\n' "$msg" | grep -qiE '^[[:space:]]*generated[[:space:]]+(with|by)[[:space:]]'; then
+  if printf '%s\n' "$trailers" | grep -qiE '^[[:space:]]*generated[[:space:]]+(with|by)[[:space:]]'; then
     printf 'generated-marker\t%s\n' "$subject"
     return 0
   fi
-  if printf '%s\n' "$msg" | grep -q '🤖'; then
+  if printf '%s\n' "$trailers" | grep -q '🤖'; then
     printf 'robot-emoji\t%s\n' "$subject"
     return 0
   fi
@@ -86,7 +94,7 @@ scan_message() {
     if [ "$allowed" = false ]; then
       printf 'co-author\t%s\t%s\n' "$subject" "$value"
     fi
-  done < <(printf '%s\n' "$msg" | grep -iE '^[[:space:]]*co-?authored-by:' || true)
+  done < <(printf '%s\n' "$trailers" | grep -iE '^[[:space:]]*co-?authored-by:' || true)
 }
 
 # scan_messages <messages...> -> aggregate and exit non-zero on any offence.

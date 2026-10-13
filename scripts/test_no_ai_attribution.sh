@@ -75,6 +75,16 @@ The message body may discuss Co-Authored-By without being one: this line is
 indented prose, so it is not matched as a trailer.
 "
 
+expect ok "quoted Generated marker in BODY prose, clean trailer block" \
+"ci: explain the trailer rule to the next reader
+
+This commit explains why a line shaped like \"Generated with Codebuff\" is
+rejected when it sits in the trailer block, and why the release-plz bot is
+allowed. Quoting the marker here must not fire: only the trailing block —
+everything after the final blank line — is scanned.
+
+Nothing attributable follows."
+
 # --- must be rejected ------------------------------------------------------
 
 expect reject "Codebuff co-author (the case that slipped through)" \
