@@ -166,6 +166,18 @@ ignore = [
     # Tracking: https://rustsec.org/advisories/RUSTSEC-2026-0253
     # Expires: 2027-03-20
     { id = "RUSTSEC-2026-0253", reason = "lru 0.16.4 and 0.18.1 unsound; potential use-after-free on a panicking Drop inside LruCache::pop(), via html-to-markdown-rs and wreq, neither of which runs panicking code inside pop" },
+
+    # RUSTSEC-2024-0449 (unsafe-libyaml 0.2.11, severity: unmaintained)
+    # The repository was archived by its owner on 2024-03-25, so bugs in this
+    # machine translation of libyaml's C code will not be fixed upstream. Via
+    # serde_yaml 0.9.34+deprecated (itself deprecated) <- webfang_core. The
+    # production call site SERIALIZES the frontmatter this repo emits itself
+    # (frontmatter.rs, `to_string`); the deserializing API appears only in
+    # tests, over that same self-emitted YAML. Cargo-deny reports no patched
+    # version available.
+    # Tracking: https://rustsec.org/advisories/RUSTSEC-2024-0449
+    # Expires: 2027-03-20
+    { id = "RUSTSEC-2024-0449", reason = "unsafe-libyaml 0.2.11 unmaintained; via serde_yaml 0.9.34+deprecated, whose production use in webfang_core is serialize-only frontmatter output and whose parsing API runs only in tests over self-emitted YAML; no patched version exists" },
 ]
 
 [licenses]
