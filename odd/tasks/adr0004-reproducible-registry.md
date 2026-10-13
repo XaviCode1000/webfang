@@ -57,8 +57,9 @@ su de-gating al build por defecto es trabajo pendiente del propio ADR).
 3. **La dim no se declara: se adopta del probe de startup** del backend
    (`embedding_dim` omitido → adopt; exit 78 en mismatch). El summary la reporta explícita.
 4. El allowlist por CIDR (B2, slice 2) no interviene aquí porque ambos backends están en
-   loopback; su caso de aceptación es "vLLM en LAN con `allow_cidrs`", que requiere el
-   wiring del slice 2.
+   loopback; su caso de aceptación es "vLLM en LAN con `allow_cidrs`", cubierto desde el
+   wiring del slice 2 (ver "Pendiente..." abajo). Este registro no lo reproduce: corre
+   contra loopback, no contra una IP de LAN.
 
 ## Pendiente para cerrar el gate técnico del paso 6
 

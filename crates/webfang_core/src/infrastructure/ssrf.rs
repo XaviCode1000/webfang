@@ -290,7 +290,7 @@ impl ValidatingResolver {
         allow_loopback: bool,
         policy: Arc<NetworkPolicy>,
         name_source: Arc<dyn NameSource>,
-    ) -> Result<Addrs, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Addrs, BoxedLookupError> {
         let addrs = name_source.lookup(host.clone()).await?;
 
         if validate {
@@ -317,7 +317,7 @@ impl ValidatingResolver {
         addrs: &[std::net::SocketAddr],
         allow_loopback: bool,
         policy: &NetworkPolicy,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<(), BoxedLookupError> {
         if addrs.is_empty() {
             tracing::warn!(host = %host, "Empty DNS answer rejected (SSRF validating resolver)");
             return Err(Box::new(std::io::Error::other(format!(
@@ -861,13 +861,7 @@ mod tests {
         #[tokio::test]
         async fn resolve_admits_a_declared_host_over_an_allowlisted_network() {
             let net = lan_policy(&["10.0.0.0/8"], &["vllm.lan"]);
-            let resolver = resolver_with_answers(
-                &net,
-                vec![SocketAddr::new(
-                    "10.0.0.5".parse().expect("test literal"),
-                    8000,
-                )],
-            );
+            let resolver = resolver_with_answers(&net, lan_answer("10.0.0.5"));
 
             let addrs = resolved_addrs(&resolver, "vllm.lan").await;
             assert_eq!(
@@ -883,13 +877,7 @@ mod tests {
             // real resolve path, and the error CLASS proven to be the
             // actionable one (a missing declaration, not an SSRF attempt).
             let net = lan_policy(&["10.0.0.0/8"], &[]);
-            let resolver = resolver_with_answers(
-                &net,
-                vec![SocketAddr::new(
-                    "10.0.0.5".parse().expect("test literal"),
-                    8000,
-                )],
-            );
+            let resolver = resolver_with_answers(&net, lan_answer("10.0.0.5"));
 
             let err = match resolver.resolve(Name::from("vllm.lan")).await {
                 Ok(_) => panic!("an allowlisted network alone is not a permission"),
@@ -927,17 +915,13 @@ mod tests {
 
         #[tokio::test]
         async fn resolve_skips_the_scan_when_validation_is_disarmed() {
-            // The env hatch must short-circuit BEFORE the scan: a forbidden
-            // answer resolves anyway. Pins that the seam did not accidentally
-            // bypass the `validation_enabled` gate.
+            // `validation_enabled = false` must short-circuit BEFORE the scan:
+            // a forbidden answer resolves anyway. Pins that the seam did not
+            // accidentally bypass the gate. (The env-var → flag wiring is
+            // pinned separately by `disable_flag_is_read_once_at_construction`;
+            // this row sets the flag directly, no env var involved.)
             let net = NetworkPolicy::default();
-            let mut resolver = resolver_with_answers(
-                &net,
-                vec![SocketAddr::new(
-                    "169.254.169.254".parse().expect("test literal"),
-                    8000,
-                )],
-            );
+            let mut resolver = resolver_with_answers(&net, lan_answer("169.254.169.254"));
             resolver.validation_enabled = false;
 
             let addrs = resolved_addrs(&resolver, "anywhere.example").await;
