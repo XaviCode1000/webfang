@@ -21,24 +21,48 @@
 
 use std::path::Path;
 
+use crate::cli::args::SubcommandArgs;
 use crate::cli::error::CliExit;
 use crate::cli::llm_wire;
-use crate::domain::model_profile::{ModelProfileRegistry, GRANITE_97M_PROFILE_ID};
+use crate::domain::model_profile::{
+    ModelProfileRegistry, ModelProfilesConfig, GRANITE_97M_PROFILE_ID,
+};
 use crate::domain::network_policy::NetworkPolicyMode;
 use crate::domain::options_spec::ai::{DEFAULT_CHARS_PER_TOKEN, DEFAULT_MAX_CHARS};
 use crate::domain::providers::{Capability, ProviderConfig, ProviderRegistry, ProvidersConfig};
 
 /// Run the diagnosis against the providers declared in `config_path`.
-pub async fn run(config_path: &Path) -> CliExit {
+///
+/// `args` carries the operator's budget knobs and the explicit
+/// `--embedding-provider` id, if any. When the id is present it is resolved by
+/// id — the same provider the scrape path would dial — and an unknown id is a
+/// hard `ConfigError`, never a silent fallback to the config-order default. A
+/// diagnostic that reports OK about a provider the run never uses is the worst
+/// failure mode for `doctor`.
+pub async fn run(config_path: &Path, args: &SubcommandArgs) -> CliExit {
     let defaults = crate::cli::config::ConfigDefaults::load(config_path);
+    let profiles = defaults.model_profiles.clone();
     let providers = defaults.providers;
     let registry = ProviderRegistry::new(ProvidersConfig {
         providers: providers.clone(),
     });
 
-    match registry.resolve_default_embedding() {
-        Ok(provider) => diagnose_provider(&provider.clone(), &providers).await,
-        Err(_) => diagnose_no_usable_provider(&providers),
+    match args.provider_id.as_deref() {
+        Some(id) => match registry.resolve(id, Capability::Embedding) {
+            Ok(provider) => diagnose_provider(&provider.clone(), args, &profiles).await,
+            Err(e) => {
+                println!("\n=== doctor: ruta de embeddings ===\n");
+                println!("Estado: provider '{id}' no resoluble");
+                println!("  {e}");
+                CliExit::ConfigError(format!(
+                    "el provider de embeddings '{id}' no existe o no declara la capacidad `embedding`: {e}"
+                ))
+            },
+        },
+        None => match registry.resolve_default_embedding() {
+            Ok(provider) => diagnose_provider(&provider.clone(), args, &profiles).await,
+            Err(_) => diagnose_no_usable_provider(&providers),
+        },
     }
 }
 
@@ -83,10 +107,14 @@ fn diagnose_no_usable_provider(providers: &[ProviderConfig]) -> CliExit {
 }
 
 /// Diagnose a resolved provider: config, credential, reachability, budget.
-async fn diagnose_provider(provider: &ProviderConfig, all: &[ProviderConfig]) -> CliExit {
+async fn diagnose_provider(
+    provider: &ProviderConfig,
+    args: &SubcommandArgs,
+    profiles: &ModelProfilesConfig,
+) -> CliExit {
     println!("\n=== doctor: ruta de embeddings ===\n");
     print_provider_block(provider);
-    print_profile_and_budget();
+    print_profile_and_budget(args, profiles);
 
     // 1. Credential — a hard failure blocks the run before any network hop.
     if let Err(exit) = check_credential(provider) {
@@ -94,7 +122,7 @@ async fn diagnose_provider(provider: &ProviderConfig, all: &[ProviderConfig]) ->
     }
 
     // 2. Reachability — the real preflight, same as the scrape path.
-    diagnose_reachability(provider, all).await
+    diagnose_reachability(provider).await
 }
 
 /// Resolve the provider's credential and report the outcome.
@@ -129,7 +157,7 @@ fn check_credential(provider: &ProviderConfig) -> Result<(), CliExit> {
 }
 
 /// Build the real adapter and probe the endpoint, reporting reachability.
-async fn diagnose_reachability(provider: &ProviderConfig, _all: &[ProviderConfig]) -> CliExit {
+async fn diagnose_reachability(provider: &ProviderConfig) -> CliExit {
     let providers = ProvidersConfig {
         providers: vec![provider.clone()],
     };
@@ -214,23 +242,66 @@ fn print_provider_block(provider: &ProviderConfig) {
 }
 
 /// The profile / budget block: what the cleaner would use for this run.
-fn print_profile_and_budget() {
-    let registry = ModelProfileRegistry::new(Default::default());
-    let context = match registry.resolve(GRANITE_97M_PROFILE_ID) {
-        Ok(profile) => profile.context,
+///
+/// Reads the same inputs `show` does — the operator's `[[model_profiles]]`
+/// overrides and the argv budget knobs — so the two diagnostics cannot
+/// contradict each other on identical input.
+fn print_profile_and_budget(args: &SubcommandArgs, profiles: &ModelProfilesConfig) {
+    let registry = ModelProfileRegistry::new(profiles.clone());
+    let profile = match registry.resolve(GRANITE_97M_PROFILE_ID) {
+        Ok(profile) => profile,
         // The shipped profiles are repo constants; a miss here is a build bug,
         // not operator input. Fall back to the spec context so doctor still
         // prints a coherent budget rather than panicking.
-        Err(_) => 32_768,
+        Err(_) => {
+            let max_chars = args.max_chars_value.unwrap_or(DEFAULT_MAX_CHARS);
+            println!("\nBudget del cleaner:");
+            println!("  --max-chars (o WEBFANG_MAX_CHARS): {max_chars}");
+            println!("  chars_per_token (default del spec): {DEFAULT_CHARS_PER_TOKEN}");
+            println!(
+                "  umbral de relevancia: {}",
+                args.threshold_value.unwrap_or(0.3)
+            );
+            println!("  (no se pudo resolver el perfil {GRANITE_97M_PROFILE_ID})\n");
+            return;
+        },
+    };
+
+    let max_chars = args.max_chars_value.unwrap_or(DEFAULT_MAX_CHARS);
+    let max_chars_origin = if args.max_chars_explicit {
+        "operatorio"
+    } else {
+        "default del spec"
+    };
+    let threshold_origin = if args.threshold_explicit {
+        "operatorio"
+    } else {
+        "default del spec"
+    };
+    let context_origin = if profile.provenance
+        == crate::domain::model_profile::ProfileProvenance::OperatorOverride
+    {
+        "operatorio"
+    } else {
+        "default del repo"
     };
 
     println!("\nBudget del cleaner:");
-    println!("  --max-chars (o WEBFANG_MAX_CHARS): {DEFAULT_MAX_CHARS} por defecto");
-    println!("  chars_per_token (default del perfil): {DEFAULT_CHARS_PER_TOKEN}");
-    println!("  contexto del perfil (default repo): {context} tokens");
-    let derived = (context as f64 * DEFAULT_CHARS_PER_TOKEN as f64).round() as usize;
+    println!("  --max-chars (o WEBFANG_MAX_CHARS): {max_chars} ({max_chars_origin})");
+    println!(
+        "  chars_per_token (perfil {}): {} ({context_origin})",
+        profile.id, profile.chars_per_token
+    );
+    println!(
+        "  contexto del perfil: {} tokens ({context_origin})",
+        profile.context
+    );
+    let derived = (profile.context as f64 * f64::from(profile.chars_per_token)).round() as usize;
     println!("  budget derivado (contexto × chars_per_token): {derived} caracteres");
-    println!("  umbral de relevancia: 0.3 (default; sin flag explícita todavía)\n");
+    println!(
+        "  umbral de relevancia: {} ({threshold_origin})\n",
+        args.threshold_value.unwrap_or(0.3)
+    );
 }
 
 #[cfg(test)]
@@ -287,5 +358,41 @@ mod tests {
     fn an_anonymous_provider_resolves_no_credential_without_failing() {
         let p = provider("anon", AuthSource::None, vec![Capability::Embedding]);
         assert!(check_credential(&p).is_ok());
+    }
+
+    /// `--embedding-provider <unknown>` must be a hard error naming the id,
+    /// never a silent fallback to the config-order default. Regression guard
+    /// for the false-green where doctor probed a provider the run never used.
+    #[tokio::test]
+    async fn an_unknown_explicit_provider_id_is_a_config_error() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[[providers]]\nid = \"known\"\ndisplay_name = \"Known\"\n\
+             kind = \"open_ai_compatible\"\nbase_url = \"https://api.example.test/v1\"\n\
+             auth = { source = \"none\" }\ncapabilities = [\"embedding\"]\n\
+             model = \"nomic-embed-text\"\n",
+        )
+        .expect("write config");
+
+        let exit = run(
+            &path,
+            &SubcommandArgs {
+                provider_id: Some("does-not-exist".into()),
+                max_chars_explicit: false,
+                max_chars_value: None,
+                threshold_explicit: false,
+                threshold_value: None,
+            },
+        )
+        .await;
+        match exit {
+            CliExit::ConfigError(msg) => assert!(
+                msg.contains("does-not-exist"),
+                "the error must name the unknown id, got: {msg}"
+            ),
+            other => panic!("expected ConfigError naming the id, got {other:?}"),
+        }
     }
 }

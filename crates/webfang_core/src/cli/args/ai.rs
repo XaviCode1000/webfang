@@ -147,6 +147,12 @@ pub struct AiArgs {
     /// built, so every build can honor this value.
     pub threshold: f32,
 
+    /// Whether the operator chose `--threshold`, as distinct from letting it
+    /// fall to the spec default. Same `value_source` distinction as
+    /// [`max_chars_explicit`](Self::max_chars_explicit): `show` must not claim
+    /// a value is "the spec default" when the operator typed it.
+    pub threshold_explicit: bool,
+
     /// Run AI model in offline mode.
     ///
     /// UNGATED, though its effect is local-ONNX only: "offline" constrains the
@@ -174,6 +180,20 @@ pub struct AiArgs {
 fn max_chars_was_chosen(m: &clap::ArgMatches) -> bool {
     matches!(
         m.value_source("max_chars"),
+        Some(clap::parser::ValueSource::CommandLine) | Some(clap::parser::ValueSource::EnvVariable)
+    )
+}
+
+/// Whether the operator (or their `WEBFANG_*` env) chose `--threshold`, as
+/// distinct from accepting the spec default.
+///
+/// The manual `--threshold` slot does not route its env var through clap (see
+/// `spec_command::ai_args`), so `CommandLine` is the only source that can
+/// appear today; `EnvVariable` is checked so the predicate stays correct if
+/// that wiring changes.
+fn threshold_was_chosen(m: &clap::ArgMatches) -> bool {
+    matches!(
+        m.value_source("threshold"),
         Some(clap::parser::ValueSource::CommandLine) | Some(clap::parser::ValueSource::EnvVariable)
     )
 }
@@ -210,6 +230,7 @@ impl AiArgs {
             max_chars_explicit,
             max_tokens,
             threshold: extract::value::<f32>(m, "threshold")?,
+            threshold_explicit: threshold_was_chosen(m),
             offline: m.get_flag("offline"),
             ai_model: extract::opt::<String>(m, "ai_model"),
         })

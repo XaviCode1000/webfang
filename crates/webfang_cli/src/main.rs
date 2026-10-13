@@ -76,6 +76,19 @@ pub async fn main() -> CliExit {
     __main().await
 }
 
+/// Dispatch a parsed subcommand. Split out of `__main` so the top-level
+/// function stays under the cognitive-complexity / length ratchet.
+async fn dispatch_subcommand(args: &Args) -> CliExit {
+    match args.subcommand.as_ref() {
+        Some(Commands::Completions { shell }) => orchestrator::handle_completions(*shell),
+        Some(Commands::Connect { .. }) => handle_connect(args).await,
+        Some(Commands::Doctor) => handle_doctor(args).await,
+        Some(Commands::Show) => handle_show(args),
+        // Callers only reach here when a subcommand is present.
+        None => CliExit::Success,
+    }
+}
+
 async fn __main() -> CliExit {
     // 1. Parse CLI arguments (single pass, provenance captured)
     let (mut args, arg_sources) = match parse_args() {
@@ -91,13 +104,8 @@ async fn __main() -> CliExit {
     // 2. Handle subcommands. `connect` / `doctor` / `show` (issue #1933,
     //    ADR-0004 step 4) run BEFORE URL resolution: they do not touch the
     //    scrape path, and `connect`/`doctor` legitimately run with no URL.
-    if let Some(subcommand) = args.subcommand.as_ref() {
-        return match subcommand {
-            Commands::Completions { shell } => orchestrator::handle_completions(*shell),
-            Commands::Connect { .. } => handle_connect(&args).await,
-            Commands::Doctor => handle_doctor(&args).await,
-            Commands::Show => handle_show(&args),
-        };
+    if args.subcommand.is_some() {
+        return dispatch_subcommand(&args).await;
     }
 
     // 3. URL handling with interactive wizard
@@ -308,9 +316,10 @@ async fn handle_connect(args: &Args) -> CliExit {
 }
 
 /// Handle the `doctor` subcommand: diagnose the embedding path from config.
-async fn handle_doctor(_args: &Args) -> CliExit {
+async fn handle_doctor(args: &Args) -> CliExit {
     let config_path = resolve_config_path();
-    webfang_core::cli::commands::doctor::run(&config_path).await
+    let sub = subcommand_args(args);
+    webfang_core::cli::commands::doctor::run(&config_path, &sub).await
 }
 
 /// Handle the `show` subcommand: print the effective profile + budget.
@@ -325,11 +334,24 @@ fn handle_show(args: &Args) -> CliExit {
 /// Uses a short hash of the URL so two different endpoints never collide, and
 /// the same endpoint reconnects under the same name. Not a cryptographic
 /// choice — a naming convenience the operator can override with `--id`.
+/// Derive a stable provider id from the endpoint URL.
+///
+/// FNV-1a over the URL, formatted as 64 bits: deterministic across runs and
+/// toolchain versions (unlike `DefaultHasher`, which std documents as not
+/// stable across Rust releases), and wide enough that two endpoints do not
+/// collide in any realistic config. `write_provider` replaces by id, so a
+/// repeat `connect` of the same URL updates the same record instead of
+/// appending a duplicate.
 fn generated_provider_id(url: &str) -> String {
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    url.hash(&mut hasher);
-    format!("connect-{:04x}", hasher.finish() & 0xffff)
+    // FNV-1a, 64-bit.
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET;
+    for byte in url.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(PRIME);
+    }
+    format!("connect-{hash:016x}")
 }
 
 /// Parse CLI arguments, translating clap's help/version/error cases into exits.

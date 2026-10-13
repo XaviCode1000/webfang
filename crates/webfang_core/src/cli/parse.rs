@@ -41,17 +41,18 @@ pub(super) fn parse_asset_naming(s: &str) -> crate::adapters::downloader::AssetN
 /// invented a default would be a claim about a value the operator never typed.
 ///
 /// Provenance for `--max-chars` is carried by
-/// [`AiArgs::max_chars_explicit`](crate::cli::args::ai::AiArgs::max_chars_explicit),
-/// which the argv boundary already computed from
-/// `clap::ArgMatches::value_source` (the only place the distinction exists).
-/// `--threshold` has no explicitness flag today, so it is always reported as
-/// the spec default.
+/// [`AiArgs::max_chars_explicit`](crate::cli::args::ai::AiArgs::max_chars_explicit)
+/// and for `--threshold` by
+/// [`AiArgs::threshold_explicit`](crate::cli::args::ai::AiArgs::threshold_explicit),
+/// both computed at the argv boundary from `clap::ArgMatches::value_source`
+/// (the only place the distinction exists).
 pub fn subcommand_args(args: &Args) -> SubcommandArgs {
     SubcommandArgs {
         // `--embedding-provider` names the slot these diagnostics inspect.
         provider_id: args.llm.embedding_provider.clone(),
         max_chars_explicit: args.ai.max_chars_explicit,
         max_chars_value: Some(args.ai.max_chars),
+        threshold_explicit: args.ai.threshold_explicit,
         threshold_value: Some(args.ai.threshold),
     }
 }

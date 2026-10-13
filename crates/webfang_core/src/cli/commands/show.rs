@@ -1,5 +1,6 @@
 //! `webfang show` — dump the effective model profile and character budget the
-//! run will use, with provenance per value (issue #1933, ADR-0004 step 4).
+//! operator has configured, with provenance per value (issue #1933, ADR-0004
+//! step 4).
 //!
 //! Each numeric value that ships from the repo is marked `verified`; anything
 //! the operator overrode in their config drops the profile to
@@ -7,8 +8,17 @@
 //! knobs report whether they came from the operator or from the spec default.
 //!
 //! This subcommand performs **no network I/O**: it reads the user's config and
-//! prints what the run would use. Probing an endpoint is `connect` / `doctor`'s
-//! job.
+//! prints what will be used. Probing an endpoint is `connect` / `doctor`'s job.
+//!
+//! ## Scope: step 4 is configuration, not consumption
+//!
+//! ADR-0004 step 4 is *easy configuration* — the profiles plus the
+//! `connect`/`doctor`/`show` surface that lets the operator see what a config
+//! means. **Consuming** a profile (deriving the cleaner's chunk budget from
+//! `context × chars_per_token`, pinning the vault dimension from `dim`) is
+//! Tramo D, steps 2–3. Until that wiring lands, this output describes the
+//! profile the configuration declares — it does **not** claim the run already
+//! reads it.
 
 use std::path::Path;
 
@@ -18,7 +28,7 @@ use crate::domain::model_profile::{
     ModelProfile, ModelProfileRegistry, ProfileProvenance, GRANITE_97M_PROFILE_ID,
 };
 
-/// Print the effective profile + budget for the run.
+/// Print the configured profile + budget.
 ///
 /// The profile is named by `args.provider_id` when the operator gave one;
 /// otherwise the repo default (`granite-97m`) is shown and labelled as the
@@ -81,7 +91,7 @@ fn print_profile(profile: &ModelProfile) {
     if profile.provenance == ProfileProvenance::OperatorOverride {
         println!("\nATENCIÓN: el operador sobrescribió la identidad auditada (dim / matryoshka).");
         println!("  El perfil ya no es repo-verified; la cita sigue siendo del repo por");
-        println!("  rastreabilidad, pero el número que se usará es el del operador.");
+        println!("  rastreabilidad, y el valor declarado es el del operador.");
     }
 }
 
@@ -98,7 +108,11 @@ fn print_budget(profile: &ModelProfile, args: &SubcommandArgs) {
     };
 
     let threshold = args.threshold_value.unwrap_or(0.3);
-    let threshold_origin = "default del spec (0.3; sin flag explícita todavía)";
+    let threshold_origin = if args.threshold_explicit {
+        "operatorio (--threshold)"
+    } else {
+        "default del spec"
+    };
 
     println!("\n=== show: budget efectivo ===\n");
     println!("max_chars: {max_chars}");
@@ -109,7 +123,7 @@ fn print_budget(profile: &ModelProfile, args: &SubcommandArgs) {
 
     println!("\nNotas:");
     println!(
-        "  - '{0}' es el perfil que el run usará para embeddings.",
+        "  - '{0}' es el perfil de modelo declarado en la configuración.",
         profile.id
     );
     println!("  - El techo del cleaner lo da --max-chars (o WEBFANG_MAX_CHARS); el número");
@@ -117,6 +131,8 @@ fn print_budget(profile: &ModelProfile, args: &SubcommandArgs) {
     println!(
         "  - Ningún valor viene de models.dev: los números salen del repo (profile.citation)."
     );
+    println!("  - Consumir el perfil en el cleaner (budget real, dim de vault) es Tramo D");
+    println!("    (pasos 2–3 del ADR-0004); todavía no está cableado al run.");
 }
 
 #[cfg(test)]
@@ -135,6 +151,10 @@ mod tests {
             provider_id: provider_id.map(String::from),
             max_chars_explicit,
             max_chars_value: max_chars,
+            // Tests that pass a `Some(threshold)` are modelling the operator
+            // having typed the flag; the render-level provenance assertions
+            // live in the operator-override test below.
+            threshold_explicit: threshold.is_some(),
             threshold_value: threshold,
         }
     }

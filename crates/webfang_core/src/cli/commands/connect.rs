@@ -20,7 +20,7 @@
 //!
 //! ## Why a model is required
 //!
-//! [`RemoteEmbeddingAdapter`] refuses to build without a declared `model` (the
+//! `RemoteEmbeddingAdapter` refuses to build without a declared `model` (the
 //! remote endpoint requires it on every request), so the probe cannot run
 //! without one. `connect` therefore requires `--model`: guessing it would
 //! register a provider that fails at first use, which is exactly the failure
@@ -121,9 +121,19 @@ async fn validate_endpoint(provider: &ProviderConfig) -> Result<(), CliExit> {
              el endpoint respondió pero no es OpenAI-compatible",
             provider.id
         ))),
-        // `build_embedding_provider` maps construction/probe failures to
-        // `ConfigError`; surface it as a network failure so the operator sees
-        // "the endpoint did not answer" rather than "bad config".
+        // `build_embedding_provider` maps BOTH construction failures (bad
+        // `--model`, an SSRF loopback rejection) and probe failures
+        // (connection, status, parse) onto `CliExit::ConfigError`, with the
+        // real cause in the message. The exit code is remapped to
+        // `NetworkError` (69) because a `connect` that could not validate an
+        // endpoint is, from the operator's seat, an endpoint that did not
+        // answer.
+        //
+        // Known limitation: a construction failure that is NOT a network
+        // problem (an HTTP 401 for a wrong model, or the loopback rejection)
+        // also lands on 69. Distinguishing them needs `build_embedding_provider`
+        // to surface the category separately; until then the message — not the
+        // exit code — carries the cause.
         Err(CliExit::ConfigError(msg)) => Err(CliExit::NetworkError(msg)),
         Err(other) => Err(other),
     }
@@ -152,51 +162,54 @@ fn display_for_id(id: &str) -> String {
         .join(" ")
 }
 
-/// Append the provider record to `path` as valid TOML.
+/// Write (or replace) the provider record in `path`.
 ///
-/// The written shape is the generic connect form (ADR-0004 "forma B"):
-/// anonymous, embedding-only, no pinned dimension, no allowlist. It round-trips
-/// through `ConfigDefaults` as-is, so the next run resolves it.
+/// Idempotent by id: a provider already registered under the same id is
+/// replaced in place, never appended a second time. `ProvidersConfig::find`
+/// returns the FIRST match, so an append-only write would let a stale record
+/// silently shadow the newly connected endpoint forever.
+///
+/// The whole file is re-serialized from the parsed config, so unrelated keys
+/// the operator wrote are preserved as far as the `ProvidersConfig` shape
+/// models them. A file that is not valid TOML fails loudly instead of being
+/// corrupted further.
 fn write_provider(path: &Path, provider: &ProviderConfig) -> Result<(), std::io::Error> {
-    use std::io::Write as _;
+    // The `webfang/` parent directory does not exist on a first run — exactly
+    // the case `connect` exists for. Create it before opening, or the write
+    // fails AFTER the network probe already succeeded.
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
 
-    // A fresh config file is valid TOML with no tables; appending a
-    // `[[providers]]` array-of-tables is valid on top of it. We do NOT seed a
-    // placeholder table — an empty file is already valid.
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
+    let mut config = if path.exists() {
+        let existing = std::fs::read_to_string(path)?;
+        toml::from_str::<ProvidersConfig>(&existing).map_err(|e| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "la configuración existente en '{}' no es TOML válido: {e}",
+                    path.display()
+                ),
+            )
+        })?
+    } else {
+        ProvidersConfig::default()
+    };
 
-    // Escape the two fields that can carry a quote; the URL and id are
-    // validated upstream and cannot.
-    let display = provider
-        .display_name
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
-    let base_url = provider.base_url.as_str();
-    let model = provider
-        .model
-        .as_deref()
-        .unwrap_or_default()
-        .replace('\\', "\\\\")
-        .replace('"', "\\\"");
+    match config.providers.iter_mut().find(|p| p.id == provider.id) {
+        Some(existing) => *existing = provider.clone(),
+        None => config.providers.push(provider.clone()),
+    }
 
-    let mut record = String::new();
-    let _ = write!(
-        record,
-        "\n[[providers]]\n  id = \"{}\"\n  display_name = \"{}\"\n  kind = \"open_ai_compatible\"\n  base_url = \"{}\"\n  auth = {{ source = \"none\" }}\n  capabilities = [\"embedding\"]\n  model = \"{}\"\n",
-        provider.id, display, base_url, model
-    );
-
-    file.write_all(record.as_bytes())?;
-    file.flush()
+    let serialized = toml::to_string_pretty(&config).map_err(|e| {
+        std::io::Error::other(format!("no se pudo serializar la configuración: {e}"))
+    })?;
+    std::fs::write(path, serialized)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     use wiremock::matchers::{method, path as path_matcher};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -215,11 +228,6 @@ mod tests {
             .mount(&server)
             .await;
         server
-    }
-
-    fn temp_config_path() -> PathBuf {
-        let dir = tempfile::tempdir().expect("temp dir");
-        dir.path().join("webfang-connect.toml")
     }
 
     #[test]
@@ -256,6 +264,67 @@ mod tests {
         assert_eq!(written.id, "connect-a1b2");
         assert_eq!(written.model.as_deref(), Some("nomic-embed-text"));
         assert!(written.has_capability(Capability::Embedding));
+    }
+
+    /// A first run has no `webfang/` directory yet — the write must create it
+    /// rather than fail after the endpoint probe already succeeded.
+    #[test]
+    fn write_provider_creates_a_missing_parent_directory() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("webfang").join("config.toml");
+        let provider = ProviderConfig {
+            id: "connect-fresh".into(),
+            display_name: "Connect Fresh".into(),
+            kind: ProviderKind::OpenAiCompatible,
+            base_url: url::Url::parse("https://api.example.test/v1").expect("url"),
+            auth: AuthSource::None,
+            capabilities: vec![Capability::Embedding],
+            model: Some("nomic-embed-text".into()),
+            embedding_dim: None,
+            allow_loopback: false,
+            network_policy: NetworkPolicy::default(),
+        };
+
+        write_provider(&path, &provider).expect("the parent dir is created on demand");
+        assert!(path.exists());
+    }
+
+    /// Re-registering the same id must replace the record, never append a
+    /// second one: `ProvidersConfig::find` is first-match, so a duplicate
+    /// would let the stale endpoint shadow the newly connected one forever.
+    #[test]
+    fn write_provider_replaces_an_existing_id_instead_of_duplicating() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        let mut provider = ProviderConfig {
+            id: "connect-a1b2".into(),
+            display_name: "Connect A1b2".into(),
+            kind: ProviderKind::OpenAiCompatible,
+            base_url: url::Url::parse("https://old.example.test/v1").expect("url"),
+            auth: AuthSource::None,
+            capabilities: vec![Capability::Embedding],
+            model: Some("nomic-embed-text".into()),
+            embedding_dim: None,
+            allow_loopback: false,
+            network_policy: NetworkPolicy::default(),
+        };
+
+        write_provider(&path, &provider).expect("first write");
+        provider.base_url = url::Url::parse("https://new.example.test/v1").expect("url");
+        write_provider(&path, &provider).expect("second write");
+
+        let loaded =
+            crate::cli::config::ConfigDefaults::load_explicit(&path).expect("config must parse");
+        assert_eq!(
+            loaded.providers.len(),
+            1,
+            "re-registering the same id must not append a duplicate"
+        );
+        assert_eq!(
+            loaded.providers[0].base_url.as_str(),
+            "https://new.example.test/v1",
+            "the record must be the one just connected"
+        );
     }
 
     #[tokio::test]

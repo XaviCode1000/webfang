@@ -345,48 +345,6 @@ mod tests {
         }
     }
 
-    /// A `ProviderConfig` shaped exactly like what `connect` writes to the
-    /// user's config file: anonymous, no explicit model, no explicit dimension,
-    /// no allowlist — the minimum a remote embedding endpoint needs to exist.
-    fn anonymous_connect_provider(id: &str, base_url: Url) -> ProviderConfig {
-        ProviderConfig {
-            id: id.to_string(),
-            display_name: display_for(&id),
-            kind: ProviderKind::OpenAiCompatible,
-            base_url,
-            auth: AuthSource::None,
-            capabilities: vec![Capability::Embedding],
-            model: None,
-            embedding_dim: None,
-            allow_loopback: false,
-            network_policy: crate::domain::network_policy::NetworkPolicy::default(),
-        }
-    }
-
-    fn display_for(id: &str) -> String {
-        let stripped = id
-            .strip_prefix("connect-")
-            .unwrap_or(id)
-            .trim_end_matches(|c: char| c.is_ascii_digit());
-        // Best-effort human label from the id the connect runner generated:
-        // replace the only separator we use (hyphen) with a space and
-        // title-case the words we can — anything uglier is still a valid
-        // label that round-trips through the config unchanged.
-        stripped
-            .split('-')
-            .map(|word| {
-                let mut chars = word.chars();
-                match chars.next() {
-                    None => String::new(),
-                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(" ")
-            .trim()
-            .to_string()
-    }
-
     #[test]
     fn resolve_returns_provider_when_capability_present() {
         let registry = ProviderRegistry::new(ProvidersConfig {

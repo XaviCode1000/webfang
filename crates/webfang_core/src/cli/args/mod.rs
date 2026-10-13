@@ -368,12 +368,18 @@ pub enum Commands {
 /// Carrier for the values `doctor` / `show` read, so diagnostics can name
 /// their provenance instead of emitting anonymous numbers.
 pub struct SubcommandArgs {
-    /// The provider / profile id the operator named, if any.
+    /// The provider id the operator named via `--embedding-provider`, if any.
+    ///
+    /// `doctor` resolves this provider directly. `show` interprets the same id
+    /// as a model-profile name, because no `--model-profile` flag exists yet;
+    /// that namespace conflation is a known gap, not a design choice.
     pub provider_id: Option<String>,
     /// Whether the operator chose `--max-chars` (or `WEBFANG_MAX_CHARS`).
     pub max_chars_explicit: bool,
     /// The effective `--max-chars` value.
     pub max_chars_value: Option<usize>,
+    /// Whether the operator chose `--threshold`.
+    pub threshold_explicit: bool,
     /// The effective `--threshold` value.
     pub threshold_value: Option<f32>,
 }
