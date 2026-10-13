@@ -29,7 +29,9 @@ use crate::domain::model_profile::{
 };
 use crate::domain::network_policy::NetworkPolicyMode;
 use crate::domain::options_spec::ai::{DEFAULT_CHARS_PER_TOKEN, DEFAULT_MAX_CHARS};
-use crate::domain::providers::{Capability, ProviderConfig, ProviderRegistry, ProvidersConfig};
+use crate::domain::providers::{
+    Capability, ProviderConfig, ProviderKind, ProviderRegistry, ProvidersConfig,
+};
 
 /// Run the diagnosis against the providers declared in `config_path`.
 ///
@@ -173,6 +175,21 @@ async fn diagnose_reachability(provider: &ProviderConfig) -> CliExit {
             CliExit::Success
         },
         Ok(None) => {
+            // `Ok(None)` is not one verdict — `llm_wire::resolve_embedding_config`
+            // returns it to mean "the local ONNX pool serves this slot", and the
+            // run dials nothing. Reporting a `ConfigError` there told the
+            // operator their working provider was broken. Every OTHER kind
+            // reaching `Ok(None)` would mean the resolution produced no remote
+            // endpoint at all, which is still a config error.
+            if provider.kind == ProviderKind::LocalOnnx {
+                println!("Conexión: sin endpoint remoto que sondear");
+                println!(
+                    "  El provider '{}' resuelve al pool local de ONNX, que es el que \
+                     sirve el slot de embeddings; no hay endpoint remoto que sondear",
+                    provider.id
+                );
+                return CliExit::Success;
+            }
             println!("Conexión: el provider no se resolvió como endpoint remoto de embeddings");
             CliExit::ConfigError(format!(
                 "el provider '{}' no es un endpoint remoto de embeddings",
@@ -241,7 +258,14 @@ fn print_provider_block(provider: &ProviderConfig) {
     }
 }
 
-/// The profile / budget block: what the cleaner would use for this run.
+/// The profile / budget block: the budget the cleaner is CONFIGURED with.
+///
+/// It is **not** what a scrape run uses today. ADR-0004 schedules wiring
+/// `[[model_profiles]]` into the semantic-cleaner run path for Tramo D (steps
+/// 2–3); step 4 — this subcommand — only added the connect/doctor/show surface
+/// and the config key. Claiming otherwise would hand the operator a number the
+/// run would not honour, which is exactly the false-provenance defect this
+/// block must not reintroduce.
 ///
 /// Reads the same inputs `show` does — the operator's `[[model_profiles]]`
 /// overrides and the argv budget knobs — so the two diagnostics cannot
@@ -262,7 +286,9 @@ fn print_profile_and_budget(args: &SubcommandArgs, profiles: &ModelProfilesConfi
                 "  umbral de relevancia: {}",
                 args.threshold_value.unwrap_or(0.3)
             );
-            println!("  (no se pudo resolver el perfil {GRANITE_97M_PROFILE_ID})\n");
+            println!("  (no se pudo resolver el perfil {GRANITE_97M_PROFILE_ID})");
+            println!("  Nota: consumir el perfil en el cleaner es Tramo D del ADR-0004;");
+            println!("  todavía no está cableado al run.\n");
             return;
         },
     };
@@ -302,6 +328,8 @@ fn print_profile_and_budget(args: &SubcommandArgs, profiles: &ModelProfilesConfi
         "  umbral de relevancia: {} ({threshold_origin})\n",
         args.threshold_value.unwrap_or(0.3)
     );
+    println!("  Nota: consumir el perfil en el cleaner (budget real, dim de vault) es");
+    println!("  Tramo D (pasos 2–3 del ADR-0004); todavía no está cableado al run.\n");
 }
 
 #[cfg(test)]

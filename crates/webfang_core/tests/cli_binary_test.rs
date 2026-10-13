@@ -111,6 +111,114 @@ fn test_dry_run_with_url() {
 }
 
 // ============================================================================
+// Tests: doctor / show help text (false-provenance guard)
+// ============================================================================
+
+/// `webfang --help` must NOT promise that `show` dumps what a run will use:
+/// ADR-0004 wires `[[model_profiles]]` into the cleaner in Tramo D, so the
+/// help text describes a configured budget, not a consumed one. The snapshot
+/// in `test_help_contains_scraper` baked in the old, false wording; this
+/// asserts the corrected contract directly against the binary.
+///
+/// Issue #1933 (ADR-0004 step 4).
+#[test]
+fn test_issue_1933_show_about_does_not_claim_the_run_uses_the_profile() {
+    let output = cmd().args(["show", "--help"]).output().expect("run binary");
+    assert!(output.status.success(), "expected success");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        !stdout.contains("the run will use"),
+        "show's help must not claim the run uses the configured profile \
+         (Tramo D is not wired), got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("configured profile and budget"),
+        "show's help must describe the CONFIGURED budget, got:\n{stdout}"
+    );
+}
+
+/// `webfang doctor` must disclose the Tramo D boundary in its budget block:
+/// the profile numbers are CONFIGURED, not consumed by a run yet. Captured
+/// from the real binary so the assertion is on what the operator actually
+/// sees, not on an in-source string mirrored by the test.
+///
+/// Issue #1933 (ADR-0004 step 4).
+#[test]
+fn test_issue_1933_doctor_budget_discloses_the_tramo_d_boundary() {
+    let dir = TempDir::new().expect("temp dir");
+    let config = dir.path().join("config.toml");
+    std::fs::write(
+        &config,
+        "[[providers]]\nid = \"known\"\ndisplay_name = \"Known\"\n\
+         kind = \"open_ai_compatible\"\nbase_url = \"https://api.example.test/v1\"\n\
+         auth = { source = \"none\" }\ncapabilities = [\"embedding\"]\n\
+         model = \"nomic-embed-text\"\n",
+    )
+    .expect("write config");
+
+    let output = cmd()
+        .arg("doctor")
+        .env("WEBFANG_CONFIG", &config)
+        .output()
+        .expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // `doctor` may exit non-zero if the reachability probe fails (no network
+    // in CI); the budget block prints regardless. Assert on the text, not the
+    // exit code.
+    assert!(
+        stdout.contains("Tramo D"),
+        "doctor's budget block must name the Tramo D boundary, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("no está cableado al run"),
+        "doctor must say the profile is not wired to the run yet, got:\n{stdout}"
+    );
+}
+
+/// `webfang --embedding-provider <local-onnx-id> doctor` must NOT hard-fail:
+/// `llm_wire::build_embedding_provider` maps `ProviderKind::LocalOnnx` to
+/// `Ok(None)` precisely to mean "the local ONNX pool serves this slot" — the
+/// same provider a run uses happily. Reporting a `ConfigError` there was a
+/// false diagnostic an operator would act on.
+///
+/// Deliberately NOT an insta snapshot and NOT feature-gated: the contract is
+/// the exit code plus the Spanish sentence that explains what the local pool
+/// means, both of which are stable and worth asserting directly.
+#[test]
+fn test_doctor_reports_a_local_onnx_provider_as_served_by_the_local_pool() {
+    let dir = TempDir::new().expect("temp dir");
+    let config = dir.path().join("config.toml");
+    std::fs::write(
+        &config,
+        "[[providers]]\nid = \"local\"\ndisplay_name = \"Local\"\n\
+         kind = \"local_onnx\"\nbase_url = \"http://127.0.0.1:8080/\"\n\
+         auth = { source = \"none\" }\ncapabilities = [\"embedding\"]\n",
+    )
+    .expect("write config");
+
+    let output = cmd()
+        .arg("--embedding-provider")
+        .arg("local")
+        .arg("doctor")
+        .env("WEBFANG_CONFIG", &config)
+        .output()
+        .expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "a local-ONNX provider serves the slot; doctor must exit 0, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("pool local"),
+        "doctor must say the local ONNX pool serves this provider, got:\n{stdout}"
+    );
+}
+
+// ============================================================================
 // Tests: Feature flags
 // ============================================================================
 

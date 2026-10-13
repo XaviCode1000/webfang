@@ -361,7 +361,10 @@ pub enum Commands {
     },
     /// Diagnose the embedding path — config, credential, network, budget
     Doctor,
-    /// Dump the effective profile and budget the run will use, with provenance
+    /// Dump the configured profile and budget, with provenance
+    ///
+    /// The numbers reflect the configuration; consuming the profile in the
+    /// cleaner is Tramo D of ADR-0004 and is not wired into the run yet.
     Show,
 }
 

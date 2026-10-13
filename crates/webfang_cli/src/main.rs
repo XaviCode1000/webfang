@@ -331,17 +331,15 @@ fn handle_show(args: &Args) -> CliExit {
 
 /// A stable, readable provider id derived from the endpoint URL.
 ///
-/// Uses a short hash of the URL so two different endpoints never collide, and
-/// the same endpoint reconnects under the same name. Not a cryptographic
-/// choice — a naming convenience the operator can override with `--id`.
-/// Derive a stable provider id from the endpoint URL.
-///
 /// FNV-1a over the URL, formatted as 64 bits: deterministic across runs and
 /// toolchain versions (unlike `DefaultHasher`, which std documents as not
 /// stable across Rust releases), and wide enough that two endpoints do not
-/// collide in any realistic config. `write_provider` replaces by id, so a
-/// repeat `connect` of the same URL updates the same record instead of
-/// appending a duplicate.
+/// collide in any realistic config. Not a cryptographic choice — a naming
+/// convenience the operator can override with `--id`. Because the id is
+/// derived from the URL, a repeat `connect` of the same URL names the same
+/// record; `write_provider` then MERGES into it field by field (refreshing the
+/// probe-owned keys, preserving the operator-owned ones) instead of replacing
+/// it or appending a duplicate.
 fn generated_provider_id(url: &str) -> String {
     // FNV-1a, 64-bit.
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
