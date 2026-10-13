@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.10.1] - 2026-10-13
+
+
+### 🏗️ Architecture Improvements
+
+- Tier 2 semántico sobre EmbeddingPort (ADR-0004 slice 1) ([#1978](https://github.com/XaviCode1000/webfang/pull/1978))
+- Tier 2 semántico sobre EmbeddingPort + consentimiento explícito (ADR-0004 slices 2/3) ([#1983](https://github.com/XaviCode1000/webfang/pull/1983))
+
+### 📦 Dependencies
+
+- Update Cargo.lock dependencies
+
+### 🧪 Testing
+
+- Cubrir la costura lookup→scan de B2 con resolver determinista (ADR-0004) ([#1988](https://github.com/XaviCode1000/webfang/pull/1988))
 ## [2.10.0] - 2026-10-11
 
 
