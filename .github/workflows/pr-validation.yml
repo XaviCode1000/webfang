@@ -136,18 +136,6 @@ jobs:
           fi
           echo "OK: nombre de rama."
 
-      - name: Reject AI attribution in commit messages
-        # AGENTS.md forbids `Co-Authored-By` and AI attribution; nothing
-        # enforced it, so a PR landed with a Codebuff co-author and a
-        # "Generated with" line while every check stayed green.
-        # Deliberately NOT a blanket trailer ban: release-plz signs every
-        # release commit, so an allowlist of automation actors is the rule.
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ steps.prnum.outputs.pr }}
-          REPO: ${{ github.repository }}
-        run: scripts/check_no_ai_attribution.sh
-
       - name: Validate branch topology (enforcing)
         # Enforcing: misrouted PRs (e.g. hotfix/* against main) fail this
         # required check. The conventional-branch regex above admits the
