@@ -57,13 +57,18 @@ su de-gating al build por defecto es trabajo pendiente del propio ADR).
 3. **La dim no se declara: se adopta del probe de startup** del backend
    (`embedding_dim` omitido → adopt; exit 78 en mismatch). El summary la reporta explícita.
 4. El allowlist por CIDR (B2, slice 2) no interviene aquí porque ambos backends están en
-   loopback; su caso de aceptación es "vLLM en LAN con `allow_cidrs`", que requiere el
-   wiring del slice 2.
+   loopback; su caso de aceptación es "vLLM en LAN con `allow_cidrs`", cubierto desde el
+   wiring del slice 2 (ver "Pendiente..." abajo). Este registro no lo reproduce: corre
+   contra loopback, no contra una IP de LAN.
 
 ## Pendiente para cerrar el gate técnico del paso 6
 
 - Este registro cubre la mitad "registro reproducible" de la condición 1 del owner.
-- Falta **B2 slice 2** (wiring `network_policy` al cliente de embeddings + E2E LAN),
-  bloqueado por el merge de la suite wiremock (toca `remote_embedding.rs`).
+- **B2 slice 2**: cerrado. El wiring `network_policy` → cliente de embeddings aterrizó
+  en #1983 (`remote_embedding.rs`: `embedding_http_client(allow_loopback, &policy)`), la
+  suite `tests/ssrf_policy_e2e_test.rs` cubre el camino de literales y el AND por función
+  pura, y el path REAL `Resolve::resolve` → `fail_closed_scan` se ejercita ahora con un
+  resolver determinista (seam `NameSource`; `infrastructure/ssrf.rs`). El desbloqueo que
+  este registro anotaba (esperar al merge de la suite wiremock) ya ocurrió.
 - LM Studio: best effort, sin garantía (no requerido).
 - `usage` de Ollama/vLLM: sigue sin verificar y es **opcional, nunca bloqueante** (ADR-0004:30).

@@ -147,6 +147,11 @@ pub struct ForbiddenHostNotAllowlistedError {
 /// to exactly `127.0.0.1` / `::1`, every other forbidden range stays denied.
 /// The B2 allowlist ([`ValidatingResolver::with_policy`]) travels the same
 /// way, per client and never through the process registry.
+///
+/// The `name_source` field is the lookup seam: production always holds the
+/// private `GaiNameSource`, and only the `#[cfg(test)]` construction can hold
+/// a fixed answer set, so the `resolve` → `fail_closed_scan` join is testable
+/// without a real LAN.
 #[derive(Debug, Clone)]
 pub struct ValidatingResolver {
     validation_enabled: bool,
@@ -157,6 +162,57 @@ pub struct ValidatingResolver {
     /// (which must be `'static`), so a connection costs a refcount bump and
     /// never a deep clone. Still per-client state, never process state.
     policy: Arc<NetworkPolicy>,
+    /// Answer-set lookup seam. `Arc` because the boxed resolve future must be
+    /// `'static`; in production this is always [`GaiNameSource`].
+    name_source: Arc<dyn NameSource>,
+}
+
+/// Boxed error shared by the lookup seam and the scan: the same
+/// `Box<dyn Error + Send + Sync>` wreq's `Resolving` hands back.
+type BoxedLookupError = Box<dyn std::error::Error + Send + Sync>;
+
+/// Boxed future returned by [`NameSource::lookup`].
+type LookupFuture = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = Result<Vec<std::net::SocketAddr>, BoxedLookupError>>
+            + Send,
+    >,
+>;
+
+/// The answer-set lookup seam behind [`ValidatingResolver`].
+///
+/// Production uses [`GaiNameSource`] — the same blocking `getaddrinfo`
+/// (through `tokio::net::lookup_host`) that `gai_lookup` called inline before.
+/// The trait exists so the wiring from `resolve` to `fail_closed_scan` can be
+/// exercised by a test with a fixed answer set: a real LAN resolution is not
+/// reproducible in CI (it depends on the machine's resolver/routing), and the
+/// two halves — the lookup and the scan — were previously only tested in
+/// isolation, so a bug in how `gai_lookup` joins them could not be observed.
+///
+/// It is deliberately NOT public API: the only non-test implementor is the
+/// private default below, and the injection point is `#[cfg(test)]`.
+trait NameSource: Send + Sync + std::fmt::Debug {
+    /// Resolve `host` to its answer set, without policy (the caller applies
+    /// [`ValidatingResolver::fail_closed_scan`]).
+    fn lookup(&self, host: String) -> LookupFuture;
+}
+
+/// The production [`NameSource`]: blocking `getaddrinfo` via
+/// `tokio::net::lookup_host`, exactly the call `gai_lookup` used inline.
+///
+/// `tokio::net::lookup_host` resolves IP literals locally (no network, no
+/// resolver daemon) and delegates real names to the system resolver.
+#[derive(Debug)]
+struct GaiNameSource;
+
+impl NameSource for GaiNameSource {
+    fn lookup(&self, host: String) -> LookupFuture {
+        Box::pin(async move {
+            let addrs: Vec<std::net::SocketAddr> =
+                tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
+            Ok(addrs)
+        })
+    }
 }
 
 impl ValidatingResolver {
@@ -171,6 +227,7 @@ impl ValidatingResolver {
                 != Ok("1"),
             allow_loopback: false,
             policy: Arc::new(NetworkPolicy::default()),
+            name_source: Arc::new(GaiNameSource),
         }
     }
 
@@ -187,6 +244,7 @@ impl ValidatingResolver {
                 != Ok("1"),
             allow_loopback,
             policy: Arc::new(NetworkPolicy::default()),
+            name_source: Arc::new(GaiNameSource),
         }
     }
 
@@ -207,11 +265,18 @@ impl ValidatingResolver {
                 != Ok("1"),
             allow_loopback,
             policy: Arc::new(policy.clone()),
+            name_source: Arc::new(GaiNameSource),
         }
     }
 
-    /// Resolves `host` through the GAI path (`getaddrinfo`), optionally
-    /// validating every address in the answer set.
+    /// Resolves `host` through the injected [`NameSource`] (production: the
+    /// GAI path, `getaddrinfo`), optionally validating every address in the
+    /// answer set.
+    ///
+    /// Taking the source by value behind an `Arc` is what lets a test drive a
+    /// fixed answer set through this exact function — and therefore exercise
+    /// the join to [`Self::fail_closed_scan`] that the isolated unit tests
+    /// cannot reach.
     ///
     /// # Errors
     ///
@@ -224,9 +289,9 @@ impl ValidatingResolver {
         validate: bool,
         allow_loopback: bool,
         policy: Arc<NetworkPolicy>,
-    ) -> Result<Addrs, Box<dyn std::error::Error + Send + Sync>> {
-        let addrs: Vec<std::net::SocketAddr> =
-            tokio::net::lookup_host((host.as_str(), 0)).await?.collect();
+        name_source: Arc<dyn NameSource>,
+    ) -> Result<Addrs, BoxedLookupError> {
+        let addrs = name_source.lookup(host.clone()).await?;
 
         if validate {
             Self::fail_closed_scan(&host, &addrs, allow_loopback, &policy)?;
@@ -252,7 +317,7 @@ impl ValidatingResolver {
         addrs: &[std::net::SocketAddr],
         allow_loopback: bool,
         policy: &NetworkPolicy,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<(), BoxedLookupError> {
         if addrs.is_empty() {
             tracing::warn!(host = %host, "Empty DNS answer rejected (SSRF validating resolver)");
             return Err(Box::new(std::io::Error::other(format!(
@@ -338,6 +403,7 @@ impl Resolve for ValidatingResolver {
             self.validation_enabled,
             self.allow_loopback,
             Arc::clone(&self.policy),
+            Arc::clone(&self.name_source),
         );
         Box::pin(fut)
     }
@@ -425,6 +491,45 @@ mod tests {
 
         use crate::domain::network_policy::{CidrBlock, NetworkPolicy, NetworkPolicyMode};
         use crate::domain::ssrf_guard::SsrfGuard as _;
+
+        /// Test [`NameSource`] returning a FIXED answer set, whatever the
+        /// query name. This is the whole point of the seam: a real LAN
+        /// resolution is not reproducible in CI (machine resolver + routing),
+        /// so the answer is injected and only the wiring under test varies.
+        ///
+        /// `Err` mode lets a case prove that a lookup failure propagates
+        /// unchanged rather than being swallowed by the scan.
+        #[derive(Debug)]
+        enum FixedNameSource {
+            Answers(Vec<std::net::SocketAddr>),
+            Fails(&'static str),
+        }
+
+        impl NameSource for FixedNameSource {
+            fn lookup(&self, _host: String) -> LookupFuture {
+                let outcome = match self {
+                    Self::Answers(addrs) => Ok(addrs.clone()),
+                    Self::Fails(msg) => {
+                        Err(Box::new(std::io::Error::other(*msg)) as BoxedLookupError)
+                    },
+                };
+                Box::pin(async move { outcome })
+            }
+        }
+
+        /// Build a resolver whose lookup is fixed, driving the REAL
+        /// `gai_lookup` → `fail_closed_scan` join with a deterministic answer.
+        fn resolver_with_answers(
+            policy: &NetworkPolicy,
+            addrs: Vec<std::net::SocketAddr>,
+        ) -> ValidatingResolver {
+            ValidatingResolver {
+                validation_enabled: true,
+                allow_loopback: false,
+                policy: std::sync::Arc::new(policy.clone()),
+                name_source: std::sync::Arc::new(FixedNameSource::Answers(addrs)),
+            }
+        }
 
         fn validation_on() -> (webfang_test_utils::EnvGuard, ValidatingResolver) {
             let guard = webfang_test_utils::EnvGuard::clean(&[DISABLE_VALIDATING_RESOLVER_ENV]);
@@ -736,6 +841,112 @@ mod tests {
             assert!(
                 ValidatingResolver::fail_closed_scan("vllm.lan", &addrs, false, &net).is_err(),
                 "one forbidden record poisons the whole answer set"
+            );
+        }
+
+        // The `fail_closed_scan` cases above call the scan DIRECTLY. These
+        // drive the REAL `Resolve::resolve` entry point with a fixed answer
+        // set, so the join from the lookup seam to the scan is exercised too —
+        // the half that the isolated cases, by construction, cannot reach.
+        //
+        // The seam's absence left a real hole: `gai_lookup` performed the
+        // lookup inline and its two halves were tested separately, so a bug
+        // in how it connected them (dropping the answer before scanning it,
+        // scanning an empty slice, passing the wrong policy) would pass every
+        // existing test. These rows pin that join.
+        //
+        // Nothing here depends on the machine: the answer set is injected, so
+        // no DNS server, no routing, no `/etc/hosts`.
+
+        #[tokio::test]
+        async fn resolve_admits_a_declared_host_over_an_allowlisted_network() {
+            let net = lan_policy(&["10.0.0.0/8"], &["vllm.lan"]);
+            let resolver = resolver_with_answers(&net, lan_answer("10.0.0.5"));
+
+            let addrs = resolved_addrs(&resolver, "vllm.lan").await;
+            assert_eq!(
+                addrs[0].ip().to_string(),
+                "10.0.0.5",
+                "the allowed answer set must survive the scan and reach the caller"
+            );
+        }
+
+        #[tokio::test]
+        async fn resolve_rejects_an_undeclared_host_with_the_allow_hosts_class() {
+            // CIDR declared, hostname NOT: the AND decision made through the
+            // real resolve path, and the error CLASS proven to be the
+            // actionable one (a missing declaration, not an SSRF attempt).
+            let net = lan_policy(&["10.0.0.0/8"], &[]);
+            let resolver = resolver_with_answers(&net, lan_answer("10.0.0.5"));
+
+            let err = match resolver.resolve(Name::from("vllm.lan")).await {
+                Ok(_) => panic!("an allowlisted network alone is not a permission"),
+                Err(err) => err,
+            };
+            assert!(
+                err.downcast_ref::<ForbiddenHostNotAllowlistedError>()
+                    .is_some(),
+                "the resolve path must preserve the allow_hosts class: {err}"
+            );
+        }
+
+        #[tokio::test]
+        async fn resolve_poisons_the_whole_answer_set_through_the_real_path() {
+            // Mixed answer set (one allowed, one metadata): the scan must run
+            // over the WHOLE set the lookup returned, not the first address.
+            let net = lan_policy(&["10.0.0.0/8"], &["vllm.lan"]);
+            let resolver = resolver_with_answers(
+                &net,
+                vec![
+                    SocketAddr::new("10.0.0.5".parse().expect("test literal"), 8000),
+                    SocketAddr::new("169.254.169.254".parse().expect("test literal"), 8000),
+                ],
+            );
+
+            let err = match resolver.resolve(Name::from("vllm.lan")).await {
+                Ok(_) => panic!("one forbidden record poisons the resolution"),
+                Err(err) => err,
+            };
+            assert!(
+                err.downcast_ref::<ForbiddenResolutionError>().is_some(),
+                "a never-allowable record keeps the SSRF class: {err}"
+            );
+        }
+
+        #[tokio::test]
+        async fn resolve_skips_the_scan_when_validation_is_disarmed() {
+            // `validation_enabled = false` must short-circuit BEFORE the scan:
+            // a forbidden answer resolves anyway. Pins that the seam did not
+            // accidentally bypass the gate. (The env-var → flag wiring is
+            // pinned separately by `disable_flag_is_read_once_at_construction`;
+            // this row sets the flag directly, no env var involved.)
+            let net = NetworkPolicy::default();
+            let mut resolver = resolver_with_answers(&net, lan_answer("169.254.169.254"));
+            resolver.validation_enabled = false;
+
+            let addrs = resolved_addrs(&resolver, "anywhere.example").await;
+            assert_eq!(addrs.len(), 1, "disarmed validation returns the answer");
+        }
+
+        #[tokio::test]
+        async fn resolve_propagates_a_lookup_failure_unchanged() {
+            // A lookup error must surface as itself, never be absorbed by a
+            // scan over an empty slice (which would mis-report "empty DNS
+            // answer" for what is really a resolver failure).
+            let resolver = ValidatingResolver {
+                validation_enabled: true,
+                allow_loopback: false,
+                policy: std::sync::Arc::new(NetworkPolicy::default()),
+                name_source: std::sync::Arc::new(FixedNameSource::Fails("resolver unavailable")),
+            };
+
+            let err = match resolver.resolve(Name::from("vllm.lan")).await {
+                Ok(_) => panic!("a lookup failure must not resolve"),
+                Err(err) => err,
+            };
+            assert!(
+                err.to_string().contains("resolver unavailable"),
+                "the lookup error must pass through verbatim: {err}"
             );
         }
 
