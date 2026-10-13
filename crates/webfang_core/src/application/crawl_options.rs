@@ -115,6 +115,19 @@ pub struct CrawlOptions {
     /// `LocalOnnx` (or no embedding provider at all) serves the local pool
     /// adapter with no network probe (#1462).
     pub embedding_provider: Option<String>,
+    /// Provider id selected for the Tier 2 semantic inspector embedding slot
+    /// (`--tier2-embedding-provider`). `None` serves the local pool adapter
+    /// with no network probe — it deliberately does NOT fall back to the first
+    /// provider declaring the `embedding` capability, so the vault-search
+    /// provider is never adopted for DOM inspection (issue #1977, #1981). An
+    /// explicit `local_onnx` id also serves the local pool. Separate from
+    /// `embedding_provider` on purpose: distinct privacy domains.
+    pub tier2_embedding_provider: Option<String>,
+    /// Explicit consent for Tier 2 remote embeddings egress
+    /// (`--tier2-consent` / `WEBFANG_TIER2_CONSENT`). Required when
+    /// `--tier2-embedding-provider` resolves to a remote endpoint;
+    /// a hash of `provider_id|base_url` is logged for audit.
+    pub tier2_consent: bool,
     /// Operator-level budget overrides (design D4). Feeds
     /// `BudgetModel::build` at engine/orchestrator entry; the default
     /// (`rate_burst: None`) reproduces today's derived numbers exactly.
@@ -433,6 +446,8 @@ impl Default for CrawlOptions {
             extract_with_llm: false,
             llm_provider: None,
             embedding_provider: None,
+            tier2_embedding_provider: None,
+            tier2_consent: false,
             budget_overrides: crate::domain::budget::BudgetOverrides::default(),
         }
     }

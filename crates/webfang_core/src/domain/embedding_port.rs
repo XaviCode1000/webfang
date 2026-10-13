@@ -16,12 +16,17 @@
 //! - **Separate from `SemanticCleaner`**: the cleaner is a sealed, HTML-only
 //!   pipeline. This port exposes the raw embedding primitive needed by vault
 //!   search (issue #386) and any future semantic feature.
-//! - **Origin is part of the type, not of the value**: the trait object alone
-//!   erases *where* a port points. [`LocalEmbeddingPort`] carries that origin
-//!   so a remote provider can never be substituted where only the local stack
-//!   is legitimate (#1977), and [`cosine_similarity_fail_closed`] carries the
-//!   ranking contract both `application` and `infrastructure` read (#1125).
+//! - **Origin AND slot are part of the type, not of the value**: the trait
+//!   object alone erases both *where* a port points and *which slot* it
+//!   occupies. [`LocalEmbeddingPort`] carries origin so a remote provider can
+//!   never be substituted where only the local stack is legitimate (#1977);
+//!   [`Tier2EmbeddingPort`] carries the slot so the vault-search port can
+//!   never be substituted where only the Tier 2 slot is legitimate (F1 in
+//!   `odd/tasks/tier2-port-backed-inspector.md`, restored here); and
+//!   [`cosine_similarity_fail_closed`] carries the ranking contract both
+//!   `application` and `infrastructure` read (#1125).
 
+use std::any::Any;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
@@ -82,6 +87,17 @@ pub trait EmbeddingPort: Send + Sync {
     ///
     /// Both supported models (Granite-97M and Granite-311M) return 384.
     fn embedding_dim(&self) -> usize;
+
+    /// Returns a reference to the concrete implementation as `&dyn Any`,
+    /// enabling downcasting for implementation-specific metrics.
+    ///
+    /// Default implementation panics; implementations SHOULD override this
+    /// to return `self` as `&dyn Any`. This is a controlled escape hatch for
+    /// telemetry collection (e.g., embedding usage counters) without leaking
+    /// implementation details into the domain trait.
+    fn as_any(&self) -> &dyn Any {
+        panic!("as_any not implemented for EmbeddingPort; concrete type must override");
+    }
 }
 
 /// An [`EmbeddingPort`] whose origin is known to be the LOCAL embedding stack.
@@ -100,8 +116,12 @@ pub trait EmbeddingPort: Send + Sync {
 /// compiles with exit 0 and ships page content off-box without consent
 /// (issue #1977, ADR-0004 §Egress).
 ///
-/// Wrapping the local port gives the two origins different types, which turns
-/// that mistake into a type error instead of a code-review promise.
+/// Wrapping the local port gives the two origins different types.
+///
+/// That alone does NOT close the hole: the Tier 2 slot was separately erased
+/// to `Arc<dyn EmbeddingPort>` by 79ca0b66, which re-opened it from the other
+/// side. Origin and slot are two axes, and each needs its own type — see
+/// [`Tier2EmbeddingPort`].
 ///
 /// # Why the constructor is `pub` and there is no sealer
 ///
@@ -127,6 +147,72 @@ impl LocalEmbeddingPort {
     #[must_use]
     pub fn port(&self) -> &Arc<dyn EmbeddingPort> {
         &self.0
+    }
+}
+
+impl EmbeddingPort for LocalEmbeddingPort {
+    fn embed<'a>(&'a self, text: &'a str) -> BoxFuture<'a, Result<Vec<f32>, SemanticError>> {
+        self.0.embed(text)
+    }
+
+    fn embed_batch<'a>(
+        &'a self,
+        texts: &'a [String],
+    ) -> BoxFuture<'a, Result<Vec<Vec<f32>>, SemanticError>> {
+        self.0.embed_batch(texts)
+    }
+
+    fn embedding_dim(&self) -> usize {
+        self.0.embedding_dim()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self.0.as_any()
+    }
+}
+
+/// The Tier 2 semantic embedding slot — *which slot* a port occupies.
+///
+/// [`LocalEmbeddingPort`] marks the other axis, *where* a port points. The two
+/// are orthogonal, and both were needed: a Tier 2 slot may legitimately hold
+/// either the local ONNX stack (`Local`, with its origin still carried one
+/// level down) or a remote provider the operator consented to (`Remote`).
+/// Neither may hold the vault-search port.
+///
+/// # Why this exists
+///
+/// `VaultAiPorts::embedding_port` is `Option<Arc<dyn EmbeddingPort>>` — the
+/// same type the Tier 2 slot used to carry, so `semantic_inspector` accepted
+/// the vault slot and it compiled with exit 0, feeding DOM fragments to
+/// whatever the vault slot had been overwritten with (#1977, ADR-0004
+/// §Egress). Fix F1 closed exactly that with `&Option<LocalEmbeddingPort>`,
+/// pinned by a checked E0308. The remote Tier 2 path (79ca0b66) then widened
+/// the parameter back to the erased type, because `LocalEmbeddingPort` cannot
+/// express a remote arm — reverting the guard without updating the doc that
+/// promised it. This enum is F1 restored, with the arm F1 had no way to state.
+///
+/// Deliberately does NOT implement [`EmbeddingPort`]: [`port`](Self::port) is
+/// the only way out, so the erased form cannot be reached by an implicit
+/// coercion.
+#[derive(Clone)]
+pub enum Tier2EmbeddingPort {
+    /// The local ONNX stack, with its origin still carried by the inner type.
+    Local(LocalEmbeddingPort),
+    /// A remote provider resolved for the Tier 2 slot.
+    ///
+    /// Consent is the caller's contract — see `build_tier2_embedding_provider`
+    /// in `crate::cli::llm_wire`, which refuses before the dial.
+    Remote(Arc<dyn EmbeddingPort>),
+}
+
+impl Tier2EmbeddingPort {
+    /// Borrow the wrapped port, whichever arm it came from.
+    #[must_use]
+    pub fn port(&self) -> &Arc<dyn EmbeddingPort> {
+        match self {
+            Self::Local(local) => local.port(),
+            Self::Remote(remote) => remote,
+        }
     }
 }
 
@@ -204,6 +290,10 @@ mod tests {
         fn embedding_dim(&self) -> usize {
             self.dim
         }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
     }
 
     #[tokio::test]
@@ -246,5 +336,26 @@ mod tests {
         fn assert_dyn_compatible(_: &dyn EmbeddingPort) {}
         let embedder = MockEmbedder { dim: 384 };
         assert_dyn_compatible(&embedder);
+    }
+
+    /// Both arms hand back the port they were built from, so a caller never
+    /// has to match on the arm just to embed. The `Local` arm is the load-
+    /// bearing one: it must forward to the same allocation the newtype was
+    /// built from, not to a clone with a different refcount.
+    #[test]
+    fn tier2_port_borrows_the_underlying_port_from_either_arm() {
+        let erased: Arc<dyn EmbeddingPort> = Arc::new(MockEmbedder { dim: 384 });
+
+        let local_slot = Tier2EmbeddingPort::Local(LocalEmbeddingPort::new(Arc::clone(&erased)));
+        let remote_slot = Tier2EmbeddingPort::Remote(Arc::clone(&erased));
+
+        assert!(
+            Arc::ptr_eq(local_slot.port(), &erased),
+            "the Local arm must forward, not copy"
+        );
+        assert!(
+            Arc::ptr_eq(remote_slot.port(), &erased),
+            "the Remote arm must hand back its own port"
+        );
     }
 }

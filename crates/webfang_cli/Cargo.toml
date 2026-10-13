@@ -41,6 +41,10 @@ tokio = { workspace = true }
 # Logging
 tracing = { workspace = true }
 
+# Crypto / encoding (for consent hash)
+sha2 = { workspace = true }
+url = { workspace = true }
+
 
 [lints]
 workspace = true

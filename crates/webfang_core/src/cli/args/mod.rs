@@ -539,6 +539,8 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
             extract_with_llm: args.llm.extract_with_llm,
             llm_provider: args.llm.llm_provider.clone(),
             embedding_provider: args.llm.embedding_provider.clone(),
+            tier2_embedding_provider: args.llm.tier2_embedding_provider.clone(),
+            tier2_consent: args.llm.tier2_consent,
             budget_overrides: crate::domain::budget::BudgetOverrides {
                 // #1813: `--rate-limit-burst` is resolved by ONE authority —
                 // `preflight::stage_budget_overrides`, reached through

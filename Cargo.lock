@@ -6790,8 +6790,10 @@ name = "webfang_cli"
 version = "2.10.0"
 dependencies = [
  "clap",
+ "sha2 0.10.9",
  "tokio",
  "tracing",
+ "url",
  "webfang_ai",
  "webfang_core",
 ]

@@ -609,6 +609,17 @@ LLM Extraction:
           
           [env: WEBFANG_EMBEDDING_PROVIDER=]
 
+Tier 2 Embeddings:
+      --tier2-embedding-provider <TIER2_EMBEDDING_PROVIDER>
+          Provider id to use for Tier 2 semantic inspector embeddings (default: local pool; the vault-search provider is never adopted — an explicit remote id requires --tier2-consent)
+          
+          [env: WEBFANG_TIER2_EMBEDDING_PROVIDER=]
+
+      --tier2-consent
+          Explicit consent for Tier 2 remote embeddings egress (required when --tier2-embedding-provider is remote; hash of provider|endpoint logged for audit)
+          
+          [env: WEBFANG_TIER2_CONSENT=]
+
 EXIT CODES:
   0    Success
   2    No URLs discovered

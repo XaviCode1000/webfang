@@ -27,6 +27,21 @@ pub struct LlmArgs {
     /// `None` selects the first provider declaring the `embedding`
     /// capability (config order); `local_onnx` serves the local pool.
     pub embedding_provider: Option<String>,
+
+    /// Provider id to use for the Tier 2 semantic inspector embedding slot (ADR-0004).
+    ///
+    /// `None` selects the first provider declaring the `embedding`
+    /// capability (config order); `local_onnx` serves the local pool.
+    /// Separate from `embedding_provider` on purpose: vault search and
+    /// Tier 2 repair are distinct privacy domains (issue #1977).
+    pub tier2_embedding_provider: Option<String>,
+
+    /// Explicit consent for Tier 2 remote embeddings egress (ADR-0004).
+    ///
+    /// Required when `--tier2-embedding-provider` resolves to a remote
+    /// endpoint (not `local_onnx`). A hash of `provider_id|base_url` is
+    /// logged at consent time for auditability.
+    pub tier2_consent: bool,
 }
 
 impl clap::FromArgMatches for LlmArgs {
@@ -36,6 +51,8 @@ impl clap::FromArgMatches for LlmArgs {
             extract_with_llm: m.get_flag("extract_with_llm"),
             llm_provider: extract::opt::<String>(m, "llm_provider"),
             embedding_provider: extract::opt::<String>(m, "embedding_provider"),
+            tier2_embedding_provider: extract::opt::<String>(m, "tier2_embedding_provider"),
+            tier2_consent: m.get_flag("tier2_consent"),
         })
     }
 
@@ -103,6 +120,8 @@ mod spec_parity_tests {
         assert!(!defaults.llm.extract_with_llm);
         assert!(defaults.llm.llm_provider.is_none());
         assert!(defaults.llm.embedding_provider.is_none());
+        assert!(defaults.llm.tier2_embedding_provider.is_none());
+        assert!(!defaults.llm.tier2_consent);
 
         // Explicit values.
         let parsed = parse_args_hermetic(&["--extract-with-llm", "--llm-provider", "openai"])
@@ -113,6 +132,17 @@ mod spec_parity_tests {
         let parsed = parse_args_hermetic(&["--embedding-provider", "ollama"])
             .expect("embedding provider flag must parse");
         assert_eq!(parsed.llm.embedding_provider.as_deref(), Some("ollama"));
+
+        let parsed = parse_args_hermetic(&["--tier2-embedding-provider", "ollama"])
+            .expect("tier2 embedding provider flag must parse");
+        assert_eq!(
+            parsed.llm.tier2_embedding_provider.as_deref(),
+            Some("ollama")
+        );
+
+        let parsed =
+            parse_args_hermetic(&["--tier2-consent"]).expect("tier2 consent flag must parse");
+        assert!(parsed.llm.tier2_consent);
     }
 
     #[test]
