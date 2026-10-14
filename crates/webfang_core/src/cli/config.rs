@@ -255,6 +255,50 @@ pub fn load_config_defaults() -> Result<ConfigDefaults, ConfigLoadError> {
     }
 }
 
+/// Load the configuration a DIAGNOSTIC renders, refusing to degrade.
+///
+/// Sister of [`load_config_defaults`] for `doctor` / `show`: same override
+/// asymmetry, opposite fallback. A run may proceed on defaults when its
+/// config is unusable (that is [`ConfigDefaults::load`]'s product decision),
+/// but a diagnostic may not: a tool whose whole job is to describe the
+/// config, handed a degraded `Self::default()`, describes a config that does
+/// not exist — it prints "No hay ningún provider en el archivo de
+/// configuración" about a file the operator filled with providers. And the
+/// `tracing::error!` [`ConfigDefaults::load`] emits is no safety net here:
+/// subcommands dispatch before the tracing subscriber is installed, so the
+/// event is silently dropped and the operator sees only the false
+/// diagnosis. The error is therefore RETURNED, never logged.
+///
+/// `config_path` is the path the caller resolved ([`resolve_config_path`]).
+/// When it is the explicit `WEBFANG_CONFIG` override the policy is
+/// [`ConfigDefaults::load_explicit`] — fail-closed on everything, exactly
+/// like the run. Otherwise it is the platform default, where ONLY
+/// [`ConfigLoadError::NotFound`] degrades to [`ConfigDefaults::default`]:
+/// a fresh install legitimately has no file yet, and "sin provider
+/// configurado" is the correct diagnosis for it. Every other failure —
+/// unreadable, invalid UTF-8, malformed TOML — is an `Err` the caller
+/// renders.
+///
+/// # Errors
+///
+/// [`ConfigLoadError`] verbatim from [`ConfigDefaults::load_explicit`] or
+/// from the same read-and-parse core both loaders share; nothing is logged
+/// (see above).
+pub fn load_config_defaults_or_diag(config_path: &Path) -> Result<ConfigDefaults, ConfigLoadError> {
+    match explicit_config_path() {
+        // Identical to the override the caller resolved — this arm is what
+        // keeps an explicit `WEBFANG_CONFIG` fail-closed (#1659) for
+        // diagnostics too.
+        Some(explicit) if explicit == config_path => ConfigDefaults::load_explicit(config_path),
+        // Platform default: only a missing file may degrade.
+        _ => match ConfigDefaults::read_and_parse(config_path) {
+            Ok(config) => Ok(config),
+            Err(ConfigLoadError::NotFound { .. }) => Ok(ConfigDefaults::default()),
+            Err(e) => Err(e),
+        },
+    }
+}
+
 /// Check if NO_COLOR env var is set (any non-empty value).
 pub fn is_no_color() -> bool {
     std::env::var("NO_COLOR")
@@ -727,5 +771,46 @@ max_pages = 20
             },
             other => panic!("an unreadable override must be an Io error, got {other:?}"),
         }
+    }
+
+    // ========================================================================
+    // load_config_defaults_or_diag — the diagnostic policy (R4-1)
+    //
+    // The binary tests cannot pin the fresh-install arm: they always set
+    // WEBFANG_CONFIG (the fail-closed arm of the same function), so the
+    // default-path degradation is asserted here, against a path directly.
+    // ========================================================================
+
+    /// A nonexistent platform-default path degrades to empty defaults: that
+    /// is a fresh install, and "sin provider configurado" is the CORRECT
+    /// diagnosis for it. `EnvGuard` keeps the ambient environment from
+    /// flipping the call into the explicit-override arm (issue #926 class).
+    #[test]
+    fn or_diag_degrades_only_a_missing_default_path() {
+        let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_CONFIG"]);
+        let config = load_config_defaults_or_diag(&missing_absolute_path())
+            .expect("a missing default-path file is a fresh install, not an error");
+        assert!(config.format.is_none());
+        assert!(config.providers.is_empty());
+        assert!(config.model_profiles.is_empty());
+    }
+
+    /// A malformed platform-default path is an `Err`, never a degraded
+    /// diagnosis: this is the exact case `doctor`/`show` used to render as
+    /// "No hay ningún provider en el archivo de configuración".
+    #[test]
+    fn or_diag_refuses_a_malformed_default_path() {
+        let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_CONFIG"]);
+        let tmp = tempfile::tempdir().expect("tempdir should be created");
+        let path = tmp.path().join("config.toml");
+        std::fs::write(&path, "format = ").expect("write broken TOML");
+        let err = load_config_defaults_or_diag(&path)
+            .expect_err("a malformed config must not degrade a diagnostic");
+        assert!(matches!(err, ConfigLoadError::Malformed { .. }));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("no es TOML válido"),
+            "the error must name the file problem in Spanish, got: {msg}"
+        );
     }
 }

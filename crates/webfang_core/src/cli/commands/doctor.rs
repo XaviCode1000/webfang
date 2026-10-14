@@ -41,8 +41,19 @@ use crate::domain::providers::{
 /// hard `ConfigError`, never a silent fallback to the config-order default. A
 /// diagnostic that reports OK about a provider the run never uses is the worst
 /// failure mode for `doctor`.
+///
+/// The config itself is loaded with the diagnostic policy
+/// [`crate::cli::config::load_config_defaults_or_diag`]: a config the run
+/// could not load is a hard `ConfigError` naming the file, never a degraded
+/// diagnosis about defaults the operator never wrote.
 pub async fn run(config_path: &Path, args: &SubcommandArgs) -> CliExit {
-    let defaults = crate::cli::config::ConfigDefaults::load(config_path);
+    let defaults = match crate::cli::config::load_config_defaults_or_diag(config_path) {
+        Ok(defaults) => defaults,
+        // The exact rendering the run uses for the identical failure
+        // (`main.rs`: `Err(e) => CliExit::ConfigError(e.to_string())`), so
+        // the diagnostic and the run can never disagree on this message.
+        Err(e) => return CliExit::ConfigError(e.to_string()),
+    };
     let profiles = defaults.model_profiles.clone();
     let providers = defaults.providers;
     let registry = ProviderRegistry::new(ProvidersConfig {

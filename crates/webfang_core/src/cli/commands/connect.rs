@@ -188,9 +188,11 @@ fn display_for_id(id: &str) -> String {
 /// keys, tables, ordering, comments — survives verbatim.
 ///
 /// **What is guaranteed about a successful write.** The `providers` array is
-/// well-formed TOML and matches the `ProvidersConfig` shape (the whole file is
-/// deserialized as a gate before anything is written, so a record the run could
-/// not resolve is refused rather than written through); the matching entry was
+/// well-formed TOML and the whole file deserializes as the `ConfigDefaults`
+/// document the run loads (that gate runs before anything is written, so
+/// anything the next run could not load — a type-invalid provider record or a
+/// mistyped key anywhere in the file — is refused rather than written
+/// through); the matching entry was
 /// merged or appended and no duplicate id was created; the document was
 /// rendered from the parsed tree, which preserves every untouched key, table
 /// and comment — including the comments attached to the merged entry's own
@@ -200,7 +202,8 @@ fn display_for_id(id: &str) -> String {
 /// # Errors
 ///
 /// [`std::io::ErrorKind::InvalidData`] — the existing file is not valid TOML,
-/// does not match the `ProvidersConfig` shape, declares a `providers` value
+/// does not match the full `ConfigDefaults` document the run loads, declares a
+/// `providers` value
 /// that is neither an array of tables nor a convertible inline array, or holds
 /// a record whose operator-owned fields belong to a different endpoint. Every
 /// one of these is checked before the atomic write, so the file is left
@@ -217,21 +220,24 @@ fn write_provider(path: &Path, provider: &ProviderConfig) -> Result<(), std::io:
     let mut document = if path.exists() {
         let existing = std::fs::read_to_string(path)?;
         // The `DocumentMut` parse below only proves the file is WELL-FORMED
-        // TOML; it accepts content the run cannot resolve. `ProvidersConfig` is
-        // the shape `ConfigDefaults` actually deserializes, so a second, typed
-        // pass rejects a record such as `base_url = 42` here — before any write
-        // handle is opened, so a refusal leaves the file byte-identical.
-        //
-        // Without this gate connect reported success on a config that the very
-        // next run resolved ZERO providers from (the documented `#[serde(
-        // default)]` fallback at `cli/config.rs`): a loud refusal became a
-        // false success plus a silently degraded run.
-        toml::from_str::<ProvidersConfig>(&existing).map_err(|e| {
+        // TOML; it accepts content the run cannot resolve. The gate therefore
+        // deserializes the SAME document the run loads — `ConfigDefaults` —
+        // not just its `providers` slice: `ProvidersConfig` models exactly one
+        // field, so a mistyped key anywhere else (`format = 42`, an invalid
+        // `[[model_profiles.profiles]]` entry) passed the old gate, connect
+        // printed success and wrote — and the next run degraded EVERYTHING to
+        // defaults in silence through the documented `#[serde(default)]`
+        // fallback at `cli/config.rs`. `ConfigDefaults` deliberately does NOT
+        // deny unknown fields (an operator's unmodeled keys keep working, and
+        // an empty file — a fresh install — parses), so the gate only refuses
+        // what the run itself could not load. It runs before any write handle
+        // is opened, so a refusal leaves the file byte-identical.
+        toml::from_str::<crate::cli::config::ConfigDefaults>(&existing).map_err(|e| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
-                    "la configuración en '{}' no coincide con el esquema de providers \
-                     (no se toca el archivo para no corromperlo): {e}",
+                    "la configuración en '{}' no coincide con el documento completo que \
+                     el run carga (no se toca el archivo para no corromperlo): {e}",
                     path.display()
                 ),
             )
@@ -1057,6 +1063,182 @@ model = \"nomic-embed-text\"
             std::fs::read(&path).expect("read back"),
             "a refused write must leave the config byte-for-byte identical"
         );
+    }
+
+    /// A valid `[[providers]]` block PLUS a mistyped unrelated top-level key
+    /// (`format = 42`) used to pass the gate: `ProvidersConfig` models one
+    /// field and ignores the rest, so connect printed success and wrote — and
+    /// the next run degraded EVERYTHING to defaults in silence. The gate must
+    /// validate the same document the run loads, so the whole flow (probe OK,
+    /// write refused) ends in `CliExit::ConfigError` with the file untouched.
+    #[tokio::test]
+    async fn connect_refuses_a_config_with_a_mistyped_unrelated_top_level_key() {
+        let server = serve_embeddings().await;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        let seeded = "\
+format = 42
+
+[[providers]]
+id = \"existing\"
+display_name = \"Existing\"
+kind = \"open_ai_compatible\"
+base_url = \"https://api.example.test/v1\"
+auth = { source = \"none\" }
+capabilities = [\"embedding\"]
+model = \"nomic-embed-text\"
+";
+        std::fs::write(&path, seeded).expect("seed config");
+        let before = std::fs::read(&path).expect("read seed");
+
+        let provider = ProviderConfig {
+            id: "connect-a1b2".into(),
+            display_name: "Connect A1b2".into(),
+            kind: ProviderKind::OpenAiCompatible,
+            base_url: server.uri().parse().expect("mock uri"),
+            auth: AuthSource::None,
+            capabilities: vec![Capability::Embedding],
+            model: Some("nomic-embed-text".into()),
+            embedding_dim: None,
+            allow_loopback: true,
+            network_policy: NetworkPolicy::default(),
+        };
+
+        // The probe answers; only the pre-write gate can refuse. The incoming
+        // id differs from the seeded one on purpose: the merge /
+        // cross-endpoint guards would refuse on their own and mask the gate.
+        let exit = register(&provider, &path).await;
+        match exit {
+            CliExit::ConfigError(msg) => {
+                assert!(
+                    msg.contains("documento completo"),
+                    "the refusal must name the full-document gate: {msg}"
+                );
+                assert!(
+                    msg.contains("config.toml"),
+                    "the refusal must name the file: {msg}"
+                );
+            },
+            other => panic!("a mistyped config key must be a ConfigError, got {other:?}"),
+        }
+
+        assert_eq!(
+            before,
+            std::fs::read(&path).expect("read back"),
+            "a refused write must leave the config byte-for-byte identical"
+        );
+    }
+
+    /// A valid `[[providers]]` block PLUS an invalid `[[model_profiles]]
+    /// .profiles]]` override (`dim = "no-numérico"`) is the same defect one
+    /// table further away: the run loads `model_profiles` through
+    /// `ConfigDefaults`, so a value it cannot deserialize must refuse the
+    /// write, not pass a providers-only gate (also closes R4-3).
+    #[tokio::test]
+    async fn connect_refuses_a_config_with_an_invalid_model_profiles_override() {
+        let server = serve_embeddings().await;
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        let seeded = "\
+[[providers]]
+id = \"existing\"
+display_name = \"Existing\"
+kind = \"open_ai_compatible\"
+base_url = \"https://api.example.test/v1\"
+auth = { source = \"none\" }
+capabilities = [\"embedding\"]
+model = \"nomic-embed-text\"
+
+[[model_profiles.profiles]]
+id = \"granite-97m\"
+dim = \"no-numérico\"
+";
+        std::fs::write(&path, seeded).expect("seed config");
+        let before = std::fs::read(&path).expect("read seed");
+
+        let provider = ProviderConfig {
+            id: "connect-a1b2".into(),
+            display_name: "Connect A1b2".into(),
+            kind: ProviderKind::OpenAiCompatible,
+            base_url: server.uri().parse().expect("mock uri"),
+            auth: AuthSource::None,
+            capabilities: vec![Capability::Embedding],
+            model: Some("nomic-embed-text".into()),
+            embedding_dim: None,
+            allow_loopback: true,
+            network_policy: NetworkPolicy::default(),
+        };
+
+        // The incoming id differs from the seeded one on purpose: the merge /
+        // cross-endpoint guards would refuse on their own and mask the gate.
+        let exit = register(&provider, &path).await;
+        assert!(
+            matches!(exit, CliExit::ConfigError(_)),
+            "an invalid model_profiles override must be a ConfigError, got {exit:?}"
+        );
+
+        assert_eq!(
+            before,
+            std::fs::read(&path).expect("read back"),
+            "a refused write must leave the config byte-for-byte identical"
+        );
+    }
+
+    /// The permission the full-document gate buys its honesty with: keys the
+    /// `ConfigDefaults` struct does NOT model — an `[obsidian]` table, a
+    /// future key — but that are well typed must keep passing, or the gate
+    /// narrows the config language connect is allowed to edit. `format` is
+    /// modeled; `[obsidian]` (the struct models the flat `obsidian_*` fields,
+    /// not a table) is not. Both must survive the write.
+    #[test]
+    fn write_provider_accepts_well_typed_keys_the_config_does_not_model() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        let seeded = "\
+format = \"json\"
+
+# Sección que ConfigDefaults no modela — debe sobrevivir igual.
+[obsidian]
+vault = \"/home/op/notes\"
+
+[[providers]]
+id = \"existing\"
+display_name = \"Existing\"
+kind = \"open_ai_compatible\"
+base_url = \"https://api.example.test/v1\"
+auth = { source = \"none\" }
+capabilities = [\"embedding\"]
+model = \"nomic-embed-text\"
+";
+        std::fs::write(&path, seeded).expect("seed config");
+
+        let provider = ProviderConfig {
+            id: "connect-a1b2".into(),
+            display_name: "Connect A1b2".into(),
+            kind: ProviderKind::OpenAiCompatible,
+            base_url: url::Url::parse("https://api.example.test/v1").expect("url"),
+            auth: AuthSource::None,
+            capabilities: vec![Capability::Embedding],
+            model: Some("nomic-embed-text".into()),
+            embedding_dim: None,
+            allow_loopback: false,
+            network_policy: NetworkPolicy::default(),
+        };
+        write_provider(&path, &provider).expect("well-typed unmodeled keys must pass the gate");
+
+        let written = std::fs::read_to_string(&path).expect("read back");
+        assert!(
+            written.contains("format = \"json\""),
+            "the modeled key was lost\n---\n{written}"
+        );
+        assert!(
+            written.contains("[obsidian]") && written.contains("vault = \"/home/op/notes\""),
+            "an unmodeled but well-typed section was refused or lost\n---\n{written}"
+        );
+
+        let loaded = crate::cli::config::ConfigDefaults::load_explicit(&path)
+            .expect("written config must parse through the real loader");
+        assert_eq!(loaded.providers.len(), 2, "both providers must survive");
     }
 
     /// `providers = [ { … } ]` is legal TOML, deserializes through

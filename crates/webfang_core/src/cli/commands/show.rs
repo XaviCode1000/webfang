@@ -33,8 +33,19 @@ use crate::domain::model_profile::{
 /// The profile is named by `args.provider_id` when the operator gave one;
 /// otherwise the repo default (`granite-97m`) is shown and labelled as the
 /// default, not a choice the operator made.
+///
+/// The config itself is loaded with the diagnostic policy
+/// [`crate::cli::config::load_config_defaults_or_diag`]: a config the run
+/// could not load is a hard `ConfigError` naming the file, never a degraded
+/// render about defaults the operator never wrote.
 pub fn run(args: &SubcommandArgs, config_path: &Path) -> CliExit {
-    let defaults = crate::cli::config::ConfigDefaults::load(config_path);
+    let defaults = match crate::cli::config::load_config_defaults_or_diag(config_path) {
+        Ok(defaults) => defaults,
+        // The exact rendering the run uses for the identical failure
+        // (`main.rs`: `Err(e) => CliExit::ConfigError(e.to_string())`), so
+        // the diagnostic and the run can never disagree on this message.
+        Err(e) => return CliExit::ConfigError(e.to_string()),
+    };
     let registry = ModelProfileRegistry::new(defaults.model_profiles.clone());
 
     let profile_id = args

@@ -493,6 +493,120 @@ fn test_doctor_budget_names_the_threshold_origin() {
 }
 
 // ============================================================================
+// Tests: doctor / show config diagnostics (R4-1)
+//
+// A malformed config used to degrade silently to defaults inside the
+// subcommand (ConfigDefaults::load), and the tracing::error! that carried
+// the real cause was dropped — subcommands dispatch before the tracing
+// subscriber exists. The operator saw "No hay ningún provider en el archivo
+// de configuración": a false diagnosis about a file full of providers.
+// The contract now: the error names the file's own problem, exit 78, and
+// the false-providers message never appears.
+// ============================================================================
+
+/// `doctor` with a malformed `WEBFANG_CONFIG`: exit 78, stderr names the
+/// file's TOML problem, and the false "No hay ningún provider" diagnosis is
+/// absent from every stream.
+#[test]
+fn doctor_names_a_malformed_config_instead_of_inventing_a_diagnosis() {
+    let dir = TempDir::new().expect("temp dir");
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "format = ").expect("write broken TOML");
+
+    let output = cmd()
+        .arg("doctor")
+        .env("WEBFANG_CONFIG", &config)
+        .output()
+        .expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(
+        output.status.code(),
+        Some(78),
+        "a malformed config is a configuration error (exit 78), got:\n{stdout}\n{stderr}"
+    );
+    assert!(
+        stderr.contains("no es TOML válido"),
+        "the error must name the file's own problem, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("config.toml"),
+        "the error must name the offending file, got:\n{stderr}"
+    );
+    assert!(
+        !stdout.contains("No hay ningún provider") && !stderr.contains("No hay ningún provider"),
+        "the false no-providers diagnosis must not appear, got:\n{stdout}\n{stderr}"
+    );
+}
+
+/// `show` with a malformed `WEBFANG_CONFIG`: the same contract as `doctor` —
+/// exit 78 and stderr naming the file's problem, never a degraded render of
+/// repo defaults dressed up as the operator's configuration.
+#[test]
+fn show_names_a_malformed_config_instead_of_inventing_a_diagnosis() {
+    let dir = TempDir::new().expect("temp dir");
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "format = ").expect("write broken TOML");
+
+    let output = cmd()
+        .arg("show")
+        .env("WEBFANG_CONFIG", &config)
+        .output()
+        .expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(
+        output.status.code(),
+        Some(78),
+        "a malformed config is a configuration error (exit 78), got:\n{stdout}\n{stderr}"
+    );
+    assert!(
+        stderr.contains("no es TOML válido"),
+        "the error must name the file's own problem, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("config.toml"),
+        "the error must name the offending file, got:\n{stderr}"
+    );
+}
+
+/// `doctor` with a NONEXISTENT `WEBFANG_CONFIG` override is fail-closed,
+/// exactly like the run: `load_explicit` classifies a missing override as
+/// `NotFound` — an error, never a degradation (pinned by
+/// `load_explicit_rejects_a_missing_file` in `cli::config`). The diagnostic
+/// must therefore exit 78 naming the missing path, not pretend the operator
+/// has no providers.
+#[test]
+fn doctor_refuses_a_missing_explicit_config_override() {
+    let dir = TempDir::new().expect("temp dir");
+    let config = dir.path().join("no-such-config.toml");
+
+    let output = cmd()
+        .arg("doctor")
+        .env("WEBFANG_CONFIG", &config)
+        .output()
+        .expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(
+        output.status.code(),
+        Some(78),
+        "a missing explicit override is a configuration error (exit 78), got:\n{stdout}\n{stderr}"
+    );
+    assert!(
+        stderr.contains("no existe el archivo de configuración"),
+        "the error must say the file does not exist, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("no-such-config.toml"),
+        "the error must name the missing path, got:\n{stderr}"
+    );
+}
+
+// ============================================================================
 // Tests: Feature flags
 // ============================================================================
 
