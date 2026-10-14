@@ -187,10 +187,12 @@ fn max_chars_was_chosen(m: &clap::ArgMatches) -> bool {
 /// Whether the operator (or their `WEBFANG_*` env) chose `--threshold`, as
 /// distinct from accepting the spec default.
 ///
-/// The manual `--threshold` slot does not route its env var through clap (see
-/// `spec_command::ai_args`), so `CommandLine` is the only source that can
-/// appear today; `EnvVariable` is checked so the predicate stays correct if
-/// that wiring changes.
+/// The hand-built `--threshold` slot DOES route its env var through clap:
+/// `spec_command::manual_threshold` declares `.env("WEBFANG_THRESHOLD")`
+/// (pinned by `manual_threshold_surface_is_pinned` in this file), so
+/// `EnvVariable` appears today whenever the operator exported the variable,
+/// and `CommandLine` when they typed the flag. The predicate covers both;
+/// only `DefaultValue` (or absent) means "nobody chose".
 fn threshold_was_chosen(m: &clap::ArgMatches) -> bool {
     matches!(
         m.value_source("threshold"),

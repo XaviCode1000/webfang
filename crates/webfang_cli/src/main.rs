@@ -466,6 +466,47 @@ mod log_level_tests {
     }
 }
 
+/// `generated_provider_id` is the fallback identity `webfang connect` writes
+/// when the operator gave no `--id`: the SAME endpoint must always resolve to
+/// the SAME provider id, or a reconnect would append a second record for one
+/// endpoint instead of updating the existing one.
+#[cfg(test)]
+mod generated_provider_id_tests {
+    use super::generated_provider_id;
+
+    #[test]
+    fn the_same_url_always_yields_the_same_id() {
+        let url = "https://api.example.test/v1";
+        assert_eq!(
+            generated_provider_id(url),
+            generated_provider_id(url),
+            "the FNV-1a hash must be deterministic across calls"
+        );
+    }
+
+    #[test]
+    fn the_id_is_connect_prefixed_with_16_lowercase_hex_digits() {
+        let id = generated_provider_id("https://api.example.test/v1");
+        let hash = id
+            .strip_prefix("connect-")
+            .unwrap_or_else(|| panic!("the id must carry the connect- prefix, got: {id}"));
+        assert_eq!(hash.len(), 16, "a 64-bit hash is 16 hex digits, got: {id}");
+        assert!(
+            hash.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+            "the hash must be lowercase hex, got: {id}"
+        );
+    }
+
+    #[test]
+    fn different_urls_yield_different_ids() {
+        assert_ne!(
+            generated_provider_id("https://api.example.test/v1"),
+            generated_provider_id("https://other.example.test/v1"),
+            "two distinct endpoints must not collide on one provider id"
+        );
+    }
+}
+
 /// Create FileTraceLayer when --trace-file is present (always available, no feature gate).
 ///
 /// The trace file is an explicitly requested artifact: a failure to create it

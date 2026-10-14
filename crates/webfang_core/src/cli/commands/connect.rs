@@ -538,8 +538,11 @@ fn merge_capabilities(existing: &mut toml_edit::Table, incoming: &toml_edit::Ite
 }
 
 /// Write `contents` to `path` atomically: temp file in the same directory,
-/// then rename over the target. A same-filesystem rename is atomic, so a crash
-/// leaves either the old file or the new one — never a truncated config.
+/// then rename over the target. A same-filesystem rename is atomic, so a
+/// PROCESS crash (panic, kill, failed write) leaves either the old file or
+/// the new one — never a truncated config. A POWER crash is NOT covered:
+/// neither the temp file nor the parent directory is fsynced, so after power
+/// loss the rename may be durable while the new contents are not.
 ///
 /// The rename replaces the destination INODE and does not follow symlinks, so
 /// two things are corrected before the rename: a symlinked config is resolved

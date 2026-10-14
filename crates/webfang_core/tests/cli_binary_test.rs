@@ -219,6 +219,280 @@ fn test_doctor_reports_a_local_onnx_provider_as_served_by_the_local_pool() {
 }
 
 // ============================================================================
+// Tests: show / doctor rendered output (issue #1933, ADR-0004 step 4)
+//
+// The unit tests in `cli::commands::show` match `CliExit` variants only. The
+// RENDERED contract — provenance labels, the citation, the budget origins and
+// the Tramo D boundary — is pinned here against the real binary, because that
+// text is what the operator actually reads.
+// ============================================================================
+
+/// Default profile (no `--embedding-provider`): the output names the repo
+/// default, carries `repo-verified` provenance plus the repo citation, and
+/// shows the native dim and the profile context.
+#[test]
+fn show_default_profile_renders_repo_verified_provenance_and_citation() {
+    let dir = TempDir::new().expect("temp dir");
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "").expect("write config");
+
+    let output = cmd()
+        .arg("show")
+        .env("WEBFANG_CONFIG", &config)
+        .output()
+        .expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        output.status.success(),
+        "show must exit 0 for the default profile, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("provenance: repo-verified"),
+        "the default profile is repo-verified, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("citation: crates/webfang_ai/src/infrastructure_ai/cache_config.rs"),
+        "the profile must cite its repo source, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("dim (nativa): 384"),
+        "granite-97m is 384d native, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("context: 32768 tokens"),
+        "the profile context must be shown, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("se muestra el default del repo: granite-97m"),
+        "the output must say the repo default is being shown, got:\n{stdout}"
+    );
+}
+
+/// Operator override of `dim`: the output drops to `operator-override`, shows
+/// the OVERRIDDEN value, and warns that the audited identity was overwritten.
+#[test]
+fn show_operator_override_renders_override_provenance_value_and_warning() {
+    let dir = TempDir::new().expect("temp dir");
+    let config = dir.path().join("config.toml");
+    std::fs::write(
+        &config,
+        "[[model_profiles.profiles]]\nid = \"granite-97m\"\ndim = 512\n",
+    )
+    .expect("write config");
+
+    let output = cmd()
+        .arg("show")
+        .env("WEBFANG_CONFIG", &config)
+        .output()
+        .expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        output.status.success(),
+        "show must exit 0 with an operator override, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("provenance: operator-override"),
+        "an overridden profile is operator-override, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("dim (nativa): 512"),
+        "the overridden dim must be the rendered value, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("ATENCIÓN") && stdout.contains("identidad auditada"),
+        "the override must warn that the audited identity was overwritten, got:\n{stdout}"
+    );
+}
+
+/// An explicit `--max-chars` must appear in the budget block with its
+/// operator origin named.
+#[test]
+fn show_budget_names_the_operator_origin_for_an_explicit_max_chars() {
+    let dir = TempDir::new().expect("temp dir");
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "").expect("write config");
+
+    let output = cmd()
+        .args(["--max-chars", "4096", "show"])
+        .env("WEBFANG_CONFIG", &config)
+        .output()
+        .expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        output.status.success(),
+        "show must exit 0 with an explicit --max-chars, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("max_chars: 4096"),
+        "the explicit --max-chars value must be shown, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("operatorio (--max-chars o WEBFANG_MAX_CHARS)"),
+        "an explicit --max-chars must be labelled operator-supplied, got:\n{stdout}"
+    );
+}
+
+/// Without flags the budget block names the spec default for BOTH knobs —
+/// `show` may not dress a default up as a choice the operator made.
+#[test]
+fn show_budget_names_the_spec_default_without_flags() {
+    let dir = TempDir::new().expect("temp dir");
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "").expect("write config");
+
+    let output = cmd()
+        .arg("show")
+        .env("WEBFANG_CONFIG", &config)
+        .output()
+        .expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert_eq!(
+        stdout.matches("default del spec").count(),
+        2,
+        "max_chars AND threshold must both name the spec default when no flag \
+         is given, got:\n{stdout}"
+    );
+}
+
+/// An explicit `--threshold` must appear in the budget block with its operator
+/// origin — the flag is global, so it precedes the `show` subcommand.
+#[test]
+fn show_budget_names_the_operator_origin_for_an_explicit_threshold() {
+    let dir = TempDir::new().expect("temp dir");
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "").expect("write config");
+
+    let output = cmd()
+        .args(["--threshold", "0.5", "show"])
+        .env("WEBFANG_CONFIG", &config)
+        .output()
+        .expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        output.status.success(),
+        "show must exit 0 with an explicit --threshold, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("threshold: 0.5"),
+        "the explicit --threshold value must be shown, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("operatorio (--threshold)"),
+        "an explicit --threshold must be labelled operator-supplied, got:\n{stdout}"
+    );
+    assert_eq!(
+        stdout.matches("default del spec").count(),
+        1,
+        "max_chars is still the spec default in this run, got:\n{stdout}"
+    );
+}
+
+/// The Tramo D boundary note must appear in `show` output: the numbers are
+/// shown, but consuming them in the cleaner is explicitly not wired yet.
+#[test]
+fn show_output_discloses_the_tramo_d_boundary() {
+    let dir = TempDir::new().expect("temp dir");
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "").expect("write config");
+
+    let output = cmd()
+        .arg("show")
+        .env("WEBFANG_CONFIG", &config)
+        .output()
+        .expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(
+        stdout.contains("Tramo D"),
+        "show must name the Tramo D boundary, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("no está cableado al run"),
+        "show must say the profile is not wired to the run yet, got:\n{stdout}"
+    );
+}
+
+/// An unknown profile id is a configuration error that NAMES the id, in
+/// Spanish — never a silent fallback to the default profile.
+#[test]
+fn show_unknown_profile_is_a_spanish_error_naming_the_id() {
+    let dir = TempDir::new().expect("temp dir");
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "").expect("write config");
+
+    let output = cmd()
+        .args(["--embedding-provider", "no-such-model", "show"])
+        .env("WEBFANG_CONFIG", &config)
+        .output()
+        .expect("run binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(
+        output.status.code(),
+        Some(78),
+        "an unknown profile is a configuration error (exit 78), got:\n{stdout}\n{stderr}"
+    );
+    assert!(
+        stderr.contains("no-such-model"),
+        "the error must name the unknown profile id, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("perfil de modelo"),
+        "the error must name the profile concept in Spanish, got:\n{stderr}"
+    );
+}
+
+/// `doctor`'s budget block names the threshold origin on its own render path:
+/// `operatorio` with an explicit `--threshold`, `default del spec` without it
+/// (the provenance contract `show` asserts, pinned for doctor as well).
+#[test]
+fn test_doctor_budget_names_the_threshold_origin() {
+    let dir = TempDir::new().expect("temp dir");
+    let config = dir.path().join("config.toml");
+    std::fs::write(
+        &config,
+        "[[providers]]\nid = \"known\"\ndisplay_name = \"Known\"\n\
+         kind = \"open_ai_compatible\"\nbase_url = \"https://api.example.test/v1\"\n\
+         auth = { source = \"none\" }\ncapabilities = [\"embedding\"]\n\
+         model = \"nomic-embed-text\"\n",
+    )
+    .expect("write config");
+
+    // No flag: the threshold is the spec default, and doctor must say so.
+    // (doctor may exit non-zero if the reachability probe fails — no network
+    // in CI; the budget block prints regardless. Assert on the text.)
+    let default = cmd()
+        .arg("doctor")
+        .env("WEBFANG_CONFIG", &config)
+        .output()
+        .expect("run binary");
+    let default_stdout = String::from_utf8_lossy(&default.stdout);
+    assert!(
+        default_stdout.contains("umbral de relevancia: 0.3 (default del spec)"),
+        "doctor must label the threshold a spec default when no flag is given, \
+         got:\n{default_stdout}"
+    );
+
+    let explicit = cmd()
+        .args(["--threshold", "0.5", "doctor"])
+        .env("WEBFANG_CONFIG", &config)
+        .output()
+        .expect("run binary");
+    let explicit_stdout = String::from_utf8_lossy(&explicit.stdout);
+    assert!(
+        explicit_stdout.contains("umbral de relevancia: 0.5 (operatorio)"),
+        "doctor must label an explicit --threshold operator-supplied, \
+         got:\n{explicit_stdout}"
+    );
+}
+
+// ============================================================================
 // Tests: Feature flags
 // ============================================================================
 

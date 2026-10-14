@@ -371,6 +371,14 @@ mod tests {
     #[test]
     fn an_unresolvable_credential_is_a_config_error() {
         // `Env` pointing at a variable that is not set: resolution fails.
+        //
+        // Hermetic on purpose: the contract under test is "the variable is
+        // ABSENT, so resolution fails". A shell that exported
+        // WEBFANG_TEST_DOCTOR_MISSING would otherwise turn this red with the
+        // production code perfectly healthy. `EnvGuard::clean` removes the
+        // variable under ENV_LOCK and restores the operator's value on drop,
+        // so the test is identical in every environment (issue #926 class).
+        let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_TEST_DOCTOR_MISSING"]);
         let p = provider(
             "needs-key",
             AuthSource::Env {
