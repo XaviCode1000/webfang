@@ -47,12 +47,9 @@ use crate::domain::providers::{
 /// could not load is a hard `ConfigError` naming the file, never a degraded
 /// diagnosis about defaults the operator never wrote.
 pub async fn run(config_path: &Path, args: &SubcommandArgs) -> CliExit {
-    let defaults = match crate::cli::config::load_config_defaults_or_diag(config_path) {
+    let defaults = match crate::cli::config::load_diagnostic_defaults_or_exit(config_path) {
         Ok(defaults) => defaults,
-        // The exact rendering the run uses for the identical failure
-        // (`main.rs`: `Err(e) => CliExit::ConfigError(e.to_string())`), so
-        // the diagnostic and the run can never disagree on this message.
-        Err(e) => return CliExit::ConfigError(e.to_string()),
+        Err(exit) => return exit,
     };
     let profiles = defaults.model_profiles.clone();
     let providers = defaults.providers;

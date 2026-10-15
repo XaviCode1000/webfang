@@ -16,6 +16,59 @@ use tempfile::TempDir;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+/// Seeded `[[providers]]` block shared by the doctor arrange blocks: one
+/// known embedding provider so the budget render has something to name.
+const KNOWN_PROVIDER_TOML: &str = "[[providers]]\nid = \"known\"\ndisplay_name = \"Known\"\n\
+     kind = \"open_ai_compatible\"\nbase_url = \"https://api.example.test/v1\"\n\
+     auth = { source = \"none\" }\ncapabilities = [\"embedding\"]\n\
+     model = \"nomic-embed-text\"\n";
+
+/// Temp dir + `config.toml` seeded with `contents` for show/doctor arrange
+/// blocks (issue #1933). The dir is returned so it outlives the test body.
+fn seeded_config(contents: &str) -> (TempDir, std::path::PathBuf) {
+    let dir = TempDir::new().expect("temp dir");
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, contents).expect("write config");
+    (dir, config)
+}
+
+/// Run the `webfang` binary with `args` under `WEBFANG_CONFIG=config`.
+fn run_with_config(args: &[&str], config: &Path) -> std::process::Output {
+    cmd()
+        .args(args)
+        .env("WEBFANG_CONFIG", config)
+        .output()
+        .expect("run binary")
+}
+
+/// Split a spawned binary's output into owned stdout/stderr strings for the
+/// assertions below.
+fn output_text(output: &std::process::Output) -> (String, String) {
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+    )
+}
+
+/// Shared assert for the R4-1 malformed-config contract: exit 78 with stderr
+/// naming the file's own TOML problem. The `doctor` test additionally asserts
+/// the absent false diagnosis inline.
+fn assert_malformed_config_refused(output: &std::process::Output, stdout: &str, stderr: &str) {
+    assert_eq!(
+        output.status.code(),
+        Some(78),
+        "a malformed config is a configuration error (exit 78), got:\n{stdout}\n{stderr}"
+    );
+    assert!(
+        stderr.contains("no es TOML válido"),
+        "the error must name the file's own problem, got:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("config.toml"),
+        "the error must name the offending file, got:\n{stderr}"
+    );
+}
+
 // ============================================================================
 // Tests: Binary error handling
 // ============================================================================
@@ -146,22 +199,9 @@ fn test_issue_1933_show_about_does_not_claim_the_run_uses_the_profile() {
 /// Issue #1933 (ADR-0004 step 4).
 #[test]
 fn test_issue_1933_doctor_budget_discloses_the_tramo_d_boundary() {
-    let dir = TempDir::new().expect("temp dir");
-    let config = dir.path().join("config.toml");
-    std::fs::write(
-        &config,
-        "[[providers]]\nid = \"known\"\ndisplay_name = \"Known\"\n\
-         kind = \"open_ai_compatible\"\nbase_url = \"https://api.example.test/v1\"\n\
-         auth = { source = \"none\" }\ncapabilities = [\"embedding\"]\n\
-         model = \"nomic-embed-text\"\n",
-    )
-    .expect("write config");
+    let (_dir, config) = seeded_config(KNOWN_PROVIDER_TOML);
 
-    let output = cmd()
-        .arg("doctor")
-        .env("WEBFANG_CONFIG", &config)
-        .output()
-        .expect("run binary");
+    let output = run_with_config(&["doctor"], &config);
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // `doctor` may exit non-zero if the reachability probe fails (no network
@@ -188,23 +228,13 @@ fn test_issue_1933_doctor_budget_discloses_the_tramo_d_boundary() {
 /// means, both of which are stable and worth asserting directly.
 #[test]
 fn test_doctor_reports_a_local_onnx_provider_as_served_by_the_local_pool() {
-    let dir = TempDir::new().expect("temp dir");
-    let config = dir.path().join("config.toml");
-    std::fs::write(
-        &config,
+    let (_dir, config) = seeded_config(
         "[[providers]]\nid = \"local\"\ndisplay_name = \"Local\"\n\
          kind = \"local_onnx\"\nbase_url = \"http://127.0.0.1:8080/\"\n\
          auth = { source = \"none\" }\ncapabilities = [\"embedding\"]\n",
-    )
-    .expect("write config");
+    );
 
-    let output = cmd()
-        .arg("--embedding-provider")
-        .arg("local")
-        .arg("doctor")
-        .env("WEBFANG_CONFIG", &config)
-        .output()
-        .expect("run binary");
+    let output = run_with_config(&["--embedding-provider", "local", "doctor"], &config);
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert_eq!(
@@ -232,15 +262,9 @@ fn test_doctor_reports_a_local_onnx_provider_as_served_by_the_local_pool() {
 /// shows the native dim and the profile context.
 #[test]
 fn show_default_profile_renders_repo_verified_provenance_and_citation() {
-    let dir = TempDir::new().expect("temp dir");
-    let config = dir.path().join("config.toml");
-    std::fs::write(&config, "").expect("write config");
+    let (_dir, config) = seeded_config("");
 
-    let output = cmd()
-        .arg("show")
-        .env("WEBFANG_CONFIG", &config)
-        .output()
-        .expect("run binary");
+    let output = run_with_config(&["show"], &config);
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(
@@ -273,19 +297,10 @@ fn show_default_profile_renders_repo_verified_provenance_and_citation() {
 /// the OVERRIDDEN value, and warns that the audited identity was overwritten.
 #[test]
 fn show_operator_override_renders_override_provenance_value_and_warning() {
-    let dir = TempDir::new().expect("temp dir");
-    let config = dir.path().join("config.toml");
-    std::fs::write(
-        &config,
-        "[[model_profiles.profiles]]\nid = \"granite-97m\"\ndim = 512\n",
-    )
-    .expect("write config");
+    let (_dir, config) =
+        seeded_config("[[model_profiles.profiles]]\nid = \"granite-97m\"\ndim = 512\n");
 
-    let output = cmd()
-        .arg("show")
-        .env("WEBFANG_CONFIG", &config)
-        .output()
-        .expect("run binary");
+    let output = run_with_config(&["show"], &config);
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(
@@ -310,15 +325,9 @@ fn show_operator_override_renders_override_provenance_value_and_warning() {
 /// operator origin named.
 #[test]
 fn show_budget_names_the_operator_origin_for_an_explicit_max_chars() {
-    let dir = TempDir::new().expect("temp dir");
-    let config = dir.path().join("config.toml");
-    std::fs::write(&config, "").expect("write config");
+    let (_dir, config) = seeded_config("");
 
-    let output = cmd()
-        .args(["--max-chars", "4096", "show"])
-        .env("WEBFANG_CONFIG", &config)
-        .output()
-        .expect("run binary");
+    let output = run_with_config(&["--max-chars", "4096", "show"], &config);
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(
@@ -339,15 +348,9 @@ fn show_budget_names_the_operator_origin_for_an_explicit_max_chars() {
 /// `show` may not dress a default up as a choice the operator made.
 #[test]
 fn show_budget_names_the_spec_default_without_flags() {
-    let dir = TempDir::new().expect("temp dir");
-    let config = dir.path().join("config.toml");
-    std::fs::write(&config, "").expect("write config");
+    let (_dir, config) = seeded_config("");
 
-    let output = cmd()
-        .arg("show")
-        .env("WEBFANG_CONFIG", &config)
-        .output()
-        .expect("run binary");
+    let output = run_with_config(&["show"], &config);
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert_eq!(
@@ -362,15 +365,9 @@ fn show_budget_names_the_spec_default_without_flags() {
 /// origin — the flag is global, so it precedes the `show` subcommand.
 #[test]
 fn show_budget_names_the_operator_origin_for_an_explicit_threshold() {
-    let dir = TempDir::new().expect("temp dir");
-    let config = dir.path().join("config.toml");
-    std::fs::write(&config, "").expect("write config");
+    let (_dir, config) = seeded_config("");
 
-    let output = cmd()
-        .args(["--threshold", "0.5", "show"])
-        .env("WEBFANG_CONFIG", &config)
-        .output()
-        .expect("run binary");
+    let output = run_with_config(&["--threshold", "0.5", "show"], &config);
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(
@@ -396,15 +393,9 @@ fn show_budget_names_the_operator_origin_for_an_explicit_threshold() {
 /// shown, but consuming them in the cleaner is explicitly not wired yet.
 #[test]
 fn show_output_discloses_the_tramo_d_boundary() {
-    let dir = TempDir::new().expect("temp dir");
-    let config = dir.path().join("config.toml");
-    std::fs::write(&config, "").expect("write config");
+    let (_dir, config) = seeded_config("");
 
-    let output = cmd()
-        .arg("show")
-        .env("WEBFANG_CONFIG", &config)
-        .output()
-        .expect("run binary");
+    let output = run_with_config(&["show"], &config);
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     assert!(
@@ -421,17 +412,10 @@ fn show_output_discloses_the_tramo_d_boundary() {
 /// Spanish — never a silent fallback to the default profile.
 #[test]
 fn show_unknown_profile_is_a_spanish_error_naming_the_id() {
-    let dir = TempDir::new().expect("temp dir");
-    let config = dir.path().join("config.toml");
-    std::fs::write(&config, "").expect("write config");
+    let (_dir, config) = seeded_config("");
 
-    let output = cmd()
-        .args(["--embedding-provider", "no-such-model", "show"])
-        .env("WEBFANG_CONFIG", &config)
-        .output()
-        .expect("run binary");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let output = run_with_config(&["--embedding-provider", "no-such-model", "show"], &config);
+    let (stdout, stderr) = output_text(&output);
 
     assert_eq!(
         output.status.code(),
@@ -453,25 +437,12 @@ fn show_unknown_profile_is_a_spanish_error_naming_the_id() {
 /// (the provenance contract `show` asserts, pinned for doctor as well).
 #[test]
 fn test_doctor_budget_names_the_threshold_origin() {
-    let dir = TempDir::new().expect("temp dir");
-    let config = dir.path().join("config.toml");
-    std::fs::write(
-        &config,
-        "[[providers]]\nid = \"known\"\ndisplay_name = \"Known\"\n\
-         kind = \"open_ai_compatible\"\nbase_url = \"https://api.example.test/v1\"\n\
-         auth = { source = \"none\" }\ncapabilities = [\"embedding\"]\n\
-         model = \"nomic-embed-text\"\n",
-    )
-    .expect("write config");
+    let (_dir, config) = seeded_config(KNOWN_PROVIDER_TOML);
 
     // No flag: the threshold is the spec default, and doctor must say so.
     // (doctor may exit non-zero if the reachability probe fails — no network
     // in CI; the budget block prints regardless. Assert on the text.)
-    let default = cmd()
-        .arg("doctor")
-        .env("WEBFANG_CONFIG", &config)
-        .output()
-        .expect("run binary");
+    let default = run_with_config(&["doctor"], &config);
     let default_stdout = String::from_utf8_lossy(&default.stdout);
     assert!(
         default_stdout.contains("umbral de relevancia: 0.3 (default del spec)"),
@@ -479,11 +450,7 @@ fn test_doctor_budget_names_the_threshold_origin() {
          got:\n{default_stdout}"
     );
 
-    let explicit = cmd()
-        .args(["--threshold", "0.5", "doctor"])
-        .env("WEBFANG_CONFIG", &config)
-        .output()
-        .expect("run binary");
+    let explicit = run_with_config(&["--threshold", "0.5", "doctor"], &config);
     let explicit_stdout = String::from_utf8_lossy(&explicit.stdout);
     assert!(
         explicit_stdout.contains("umbral de relevancia: 0.5 (operatorio)"),
@@ -509,31 +476,12 @@ fn test_doctor_budget_names_the_threshold_origin() {
 /// absent from every stream.
 #[test]
 fn doctor_names_a_malformed_config_instead_of_inventing_a_diagnosis() {
-    let dir = TempDir::new().expect("temp dir");
-    let config = dir.path().join("config.toml");
-    std::fs::write(&config, "format = ").expect("write broken TOML");
+    let (_dir, config) = seeded_config("format = ");
 
-    let output = cmd()
-        .arg("doctor")
-        .env("WEBFANG_CONFIG", &config)
-        .output()
-        .expect("run binary");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let output = run_with_config(&["doctor"], &config);
+    let (stdout, stderr) = output_text(&output);
 
-    assert_eq!(
-        output.status.code(),
-        Some(78),
-        "a malformed config is a configuration error (exit 78), got:\n{stdout}\n{stderr}"
-    );
-    assert!(
-        stderr.contains("no es TOML válido"),
-        "the error must name the file's own problem, got:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("config.toml"),
-        "the error must name the offending file, got:\n{stderr}"
-    );
+    assert_malformed_config_refused(&output, &stdout, &stderr);
     assert!(
         !stdout.contains("No hay ningún provider") && !stderr.contains("No hay ningún provider"),
         "the false no-providers diagnosis must not appear, got:\n{stdout}\n{stderr}"
@@ -545,31 +493,12 @@ fn doctor_names_a_malformed_config_instead_of_inventing_a_diagnosis() {
 /// repo defaults dressed up as the operator's configuration.
 #[test]
 fn show_names_a_malformed_config_instead_of_inventing_a_diagnosis() {
-    let dir = TempDir::new().expect("temp dir");
-    let config = dir.path().join("config.toml");
-    std::fs::write(&config, "format = ").expect("write broken TOML");
+    let (_dir, config) = seeded_config("format = ");
 
-    let output = cmd()
-        .arg("show")
-        .env("WEBFANG_CONFIG", &config)
-        .output()
-        .expect("run binary");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let output = run_with_config(&["show"], &config);
+    let (stdout, stderr) = output_text(&output);
 
-    assert_eq!(
-        output.status.code(),
-        Some(78),
-        "a malformed config is a configuration error (exit 78), got:\n{stdout}\n{stderr}"
-    );
-    assert!(
-        stderr.contains("no es TOML válido"),
-        "the error must name the file's own problem, got:\n{stderr}"
-    );
-    assert!(
-        stderr.contains("config.toml"),
-        "the error must name the offending file, got:\n{stderr}"
-    );
+    assert_malformed_config_refused(&output, &stdout, &stderr);
 }
 
 /// `doctor` with a NONEXISTENT `WEBFANG_CONFIG` override is fail-closed,
@@ -583,13 +512,8 @@ fn doctor_refuses_a_missing_explicit_config_override() {
     let dir = TempDir::new().expect("temp dir");
     let config = dir.path().join("no-such-config.toml");
 
-    let output = cmd()
-        .arg("doctor")
-        .env("WEBFANG_CONFIG", &config)
-        .output()
-        .expect("run binary");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let output = run_with_config(&["doctor"], &config);
+    let (stdout, stderr) = output_text(&output);
 
     assert_eq!(
         output.status.code(),

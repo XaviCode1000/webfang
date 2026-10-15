@@ -6,6 +6,7 @@ use std::io::IsTerminal as _;
 use std::path::{Path, PathBuf};
 
 use crate::cli::error::CliError;
+use crate::cli::error::CliExit;
 
 /// Default configuration values that can be overridden by a TOML file.
 #[derive(Debug, Clone, Default, serde::Deserialize)]
@@ -296,6 +297,25 @@ pub fn load_config_defaults_or_diag(config_path: &Path) -> Result<ConfigDefaults
             Err(ConfigLoadError::NotFound { .. }) => Ok(ConfigDefaults::default()),
             Err(e) => Err(e),
         },
+    }
+}
+
+/// Load the diagnostic config, mapping a load failure to the exit the run
+/// uses for the identical failure.
+///
+/// Shared contract for the `doctor` / `show` prologues (and any future
+/// diagnostic): the [`Ok`] value is the [`ConfigDefaults`] the diagnostic
+/// renders, and the [`Err`] is [`CliExit::ConfigError`] carrying the exact
+/// rendering the run uses for the identical failure (`main.rs`:
+/// `Err(e) => CliExit::ConfigError(e.to_string())`), so the diagnostic and
+/// the run can never disagree on the message. Behavior-identical to the
+/// inline match this replaces in both callers.
+pub fn load_diagnostic_defaults_or_exit(config_path: &Path) -> Result<ConfigDefaults, CliExit> {
+    match load_config_defaults_or_diag(config_path) {
+        Ok(defaults) => Ok(defaults),
+        // The exact rendering the run uses for the identical failure — kept
+        // here once so the two diagnostics cannot drift apart.
+        Err(e) => Err(CliExit::ConfigError(e.to_string())),
     }
 }
 

@@ -39,12 +39,9 @@ use crate::domain::model_profile::{
 /// could not load is a hard `ConfigError` naming the file, never a degraded
 /// render about defaults the operator never wrote.
 pub fn run(args: &SubcommandArgs, config_path: &Path) -> CliExit {
-    let defaults = match crate::cli::config::load_config_defaults_or_diag(config_path) {
+    let defaults = match crate::cli::config::load_diagnostic_defaults_or_exit(config_path) {
         Ok(defaults) => defaults,
-        // The exact rendering the run uses for the identical failure
-        // (`main.rs`: `Err(e) => CliExit::ConfigError(e.to_string())`), so
-        // the diagnostic and the run can never disagree on this message.
-        Err(e) => return CliExit::ConfigError(e.to_string()),
+        Err(exit) => return exit,
     };
     let registry = ModelProfileRegistry::new(defaults.model_profiles.clone());
 
@@ -176,27 +173,30 @@ mod tests {
         dir
     }
 
+    /// Render `show` for `provider_id` against the seeded `dir`.
+    fn run_show(dir: &tempfile::TempDir, provider_id: Option<&str>) -> CliExit {
+        let args = subcmd(provider_id, None, false, None);
+        run(&args, &dir.path().join("config.toml"))
+    }
+
     #[test]
     fn show_defaults_to_granite_97m_when_no_profile_is_named() {
         let dir = temp_config("");
-        let args = subcmd(None, None, false, None);
-        let exit = run(&args, &dir.path().join("config.toml"));
+        let exit = run_show(&dir, None);
         assert!(matches!(exit, CliExit::Success));
     }
 
     #[test]
     fn show_rejects_an_unknown_profile_id() {
         let dir = temp_config("");
-        let args = subcmd(Some("no-such-model"), None, false, None);
-        let exit = run(&args, &dir.path().join("config.toml"));
+        let exit = run_show(&dir, Some("no-such-model"));
         assert!(matches!(exit, CliExit::ConfigError(_)));
     }
 
     #[test]
     fn show_resolves_a_named_shipped_profile() {
         let dir = temp_config("");
-        let args = subcmd(Some("granite-311m"), None, false, None);
-        let exit = run(&args, &dir.path().join("config.toml"));
+        let exit = run_show(&dir, Some("granite-311m"));
         assert!(matches!(exit, CliExit::Success));
     }
 

@@ -848,6 +848,94 @@ mod tests {
         server
     }
 
+    /// Canonical embedding provider for arrange blocks: the anonymous,
+    /// loopback-forbidden, dim-unpinned shape `connect` builds. Tests that
+    /// need another id, endpoint, model or loopback flag mutate the returned
+    /// value — the arrange stays one line either way.
+    fn test_provider(id: &str) -> ProviderConfig {
+        ProviderConfig {
+            id: id.into(),
+            display_name: display_for_id(id),
+            kind: ProviderKind::OpenAiCompatible,
+            base_url: url::Url::parse("https://api.example.test/v1").expect("url"),
+            auth: AuthSource::None,
+            capabilities: vec![Capability::Embedding],
+            model: Some("nomic-embed-text".into()),
+            embedding_dim: None,
+            allow_loopback: false,
+            network_policy: NetworkPolicy::default(),
+        }
+    }
+
+    /// Fresh `config.toml` path inside a temp dir. The dir is returned so it
+    /// outlives the test body.
+    fn temp_config() -> (tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        (dir, path)
+    }
+
+    /// Seed `path` with `contents` for merge/gate tests.
+    fn seed_config(path: &Path, contents: &str) {
+        std::fs::write(path, contents).expect("seed config");
+    }
+
+    /// Provider pointed at the mock embeddings server, with the loopback
+    /// opt-in the guarded production client requires for it.
+    fn loopback_provider(server: &MockServer, id: &str) -> ProviderConfig {
+        let mut provider = test_provider(id);
+        provider.base_url = server.uri().parse().expect("mock uri");
+        provider.allow_loopback = true;
+        provider
+    }
+
+    /// First write of the canonical provider for the file-mode tests: every
+    /// mode test starts from the same written record, then chmods it and
+    /// rewrites.
+    #[cfg(unix)]
+    fn first_write_canonical() -> (tempfile::TempDir, std::path::PathBuf, ProviderConfig) {
+        let (dir, path) = temp_config();
+        let provider = test_provider("connect-a1b2");
+        write_provider(&path, &provider).expect("first write");
+        (dir, path, provider)
+    }
+
+    /// Second write plus the mode assertion shared by the file-mode tests:
+    /// the atomic rewrite must keep the operator's mode, wide or narrow.
+    #[cfg(unix)]
+    fn assert_second_write_keeps_mode(
+        path: &Path,
+        provider: &ProviderConfig,
+        mode: u32,
+        context: &str,
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+        write_provider(path, provider).expect("second write");
+        let actual = std::fs::metadata(path).expect("stat").permissions().mode();
+        assert_eq!(actual & 0o777, mode, "{context}");
+    }
+
+    /// Names of the entries directly inside `dir` that satisfy `keep`, for
+    /// the temp-sweep assertions (a failed write leaves none; a success
+    /// sweeps stale siblings).
+    fn dir_file_names_matching(dir: &Path, keep: impl Fn(&str) -> bool) -> Vec<String> {
+        std::fs::read_dir(dir)
+            .expect("list the parent directory")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| keep(name))
+            .collect()
+    }
+
+    /// Config path plus a pre-planted temp candidate for the symlink-safety
+    /// tests.
+    fn planted_temp() -> (tempfile::TempDir, std::path::PathBuf, std::path::PathBuf) {
+        let (dir, target) = temp_config();
+        let planted = dir.path().join(".config.toml.connect-planted.tmp");
+        std::fs::write(&planted, b"PLANT\n").expect("seed the plant");
+        (dir, target, planted)
+    }
+
     #[test]
     fn display_for_id_derives_a_readable_label() {
         assert_eq!(display_for_id("connect-f82b"), "Connect F82b");
@@ -857,20 +945,8 @@ mod tests {
 
     #[test]
     fn write_provider_appends_a_parseable_record() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
-        let provider = ProviderConfig {
-            id: "connect-a1b2".into(),
-            display_name: "Connect A1b2".into(),
-            kind: ProviderKind::OpenAiCompatible,
-            base_url: url::Url::parse("https://api.example.test/v1").expect("url"),
-            auth: AuthSource::None,
-            capabilities: vec![Capability::Embedding],
-            model: Some("nomic-embed-text".into()),
-            embedding_dim: None,
-            allow_loopback: false,
-            network_policy: NetworkPolicy::default(),
-        };
+        let (_dir, path) = temp_config();
+        let provider = test_provider("connect-a1b2");
 
         write_provider(&path, &provider).expect("append record");
 
@@ -890,18 +966,7 @@ mod tests {
     fn write_provider_creates_a_missing_parent_directory() {
         let dir = tempfile::tempdir().expect("temp dir");
         let path = dir.path().join("webfang").join("config.toml");
-        let provider = ProviderConfig {
-            id: "connect-fresh".into(),
-            display_name: "Connect Fresh".into(),
-            kind: ProviderKind::OpenAiCompatible,
-            base_url: url::Url::parse("https://api.example.test/v1").expect("url"),
-            auth: AuthSource::None,
-            capabilities: vec![Capability::Embedding],
-            model: Some("nomic-embed-text".into()),
-            embedding_dim: None,
-            allow_loopback: false,
-            network_policy: NetworkPolicy::default(),
-        };
+        let provider = test_provider("connect-fresh");
 
         write_provider(&path, &provider).expect("the parent dir is created on demand");
         assert!(path.exists());
@@ -912,20 +977,9 @@ mod tests {
     /// would let the stale endpoint shadow the newly connected one forever.
     #[test]
     fn write_provider_replaces_an_existing_id_instead_of_duplicating() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
-        let mut provider = ProviderConfig {
-            id: "connect-a1b2".into(),
-            display_name: "Connect A1b2".into(),
-            kind: ProviderKind::OpenAiCompatible,
-            base_url: url::Url::parse("https://old.example.test/v1").expect("url"),
-            auth: AuthSource::None,
-            capabilities: vec![Capability::Embedding],
-            model: Some("nomic-embed-text".into()),
-            embedding_dim: None,
-            allow_loopback: false,
-            network_policy: NetworkPolicy::default(),
-        };
+        let (_dir, path) = temp_config();
+        let mut provider = test_provider("connect-a1b2");
+        provider.base_url = url::Url::parse("https://old.example.test/v1").expect("url");
 
         write_provider(&path, &provider).expect("first write");
         // Same endpoint, refreshed model: the id is what must stay unique, and
@@ -955,8 +1009,7 @@ mod tests {
     /// first `connect`.
     #[test]
     fn write_provider_preserves_unrelated_config_keys_and_comments() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
+        let (_dir, path) = temp_config();
         let original = "\
 # Configuración de webfang — no borrar a mano
 format = \"markdown\"
@@ -980,20 +1033,9 @@ capabilities = [\"embedding\"]
 model = \"text-embedding-3-small\"
 allow_loopback = false
 ";
-        std::fs::write(&path, original).expect("seed config");
+        seed_config(&path, original);
 
-        let provider = ProviderConfig {
-            id: "connect-a1b2".into(),
-            display_name: "Connect A1b2".into(),
-            kind: ProviderKind::OpenAiCompatible,
-            base_url: url::Url::parse("https://api.example.test/v1").expect("url"),
-            auth: AuthSource::None,
-            capabilities: vec![Capability::Embedding],
-            model: Some("nomic-embed-text".into()),
-            embedding_dim: None,
-            allow_loopback: false,
-            network_policy: NetworkPolicy::default(),
-        };
+        let provider = test_provider("connect-a1b2");
         write_provider(&path, &provider).expect("append record");
 
         let written = std::fs::read_to_string(&path).expect("read back");
@@ -1048,8 +1090,7 @@ allow_loopback = false
     /// the refusal that guards the other direction.
     #[test]
     fn write_provider_preserves_operator_fields_when_reconnecting_the_same_endpoint() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
+        let (_dir, path) = temp_config();
         let seeded = "\
 [[providers]]
 id = \"connect-a1b2\"
@@ -1063,21 +1104,11 @@ embedding_dim = 768
 allow_loopback = true
 network_policy = { mode = \"allowlist\", allow_cidrs = [\"10.0.0.0/8\"], allow_hosts = [\"vllm.lan\"] }
 ";
-        std::fs::write(&path, seeded).expect("seed config");
+        seed_config(&path, seeded);
 
         // What `connect` would produce: anonymous, loopback forbidden, no dim.
-        let provider = ProviderConfig {
-            id: "connect-a1b2".into(),
-            display_name: "Connect A1b2".into(),
-            kind: ProviderKind::OpenAiCompatible,
-            base_url: url::Url::parse("https://api.example.test/v1").expect("url"),
-            auth: AuthSource::None,
-            capabilities: vec![Capability::Embedding],
-            model: Some("nomic-embed-text-v2".into()),
-            embedding_dim: None,
-            allow_loopback: false,
-            network_policy: NetworkPolicy::default(),
-        };
+        let mut provider = test_provider("connect-a1b2");
+        provider.model = Some("nomic-embed-text-v2".into());
         write_provider(&path, &provider).expect("merge record");
 
         let loaded =
@@ -1116,8 +1147,7 @@ network_policy = { mode = \"allowlist\", allow_cidrs = [\"10.0.0.0/8\"], allow_h
     /// write fails closed and the file is untouched.
     #[test]
     fn write_provider_refuses_to_carry_operator_fields_across_endpoints() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
+        let (_dir, path) = temp_config();
         let seeded = "\
 [[providers]]
 id = \"openai\"
@@ -1130,21 +1160,13 @@ model = \"text-embedding-3-small\"
 embedding_dim = 1024
 network_policy = { mode = \"allowlist\", allow_cidrs = [\"10.0.0.0/8\"], allow_hosts = [\"old.host\"] }
 ";
-        std::fs::write(&path, seeded).expect("seed config");
+        seed_config(&path, seeded);
         let before = std::fs::read(&path).expect("read seed");
 
-        let provider = ProviderConfig {
-            id: "openai".into(),
-            display_name: "OpenAI".into(),
-            kind: ProviderKind::OpenAiCompatible,
-            base_url: url::Url::parse("https://new.host/v1").expect("url"),
-            auth: AuthSource::None,
-            capabilities: vec![Capability::Embedding],
-            model: Some("text-embedding-3-small".into()),
-            embedding_dim: None,
-            allow_loopback: false,
-            network_policy: NetworkPolicy::default(),
-        };
+        let mut provider = test_provider("openai");
+        provider.display_name = "OpenAI".into();
+        provider.base_url = url::Url::parse("https://new.host/v1").expect("url");
+        provider.model = Some("text-embedding-3-small".into());
 
         let err = write_provider(&path, &provider)
             .expect_err("credentials must never cross to another endpoint");
@@ -1173,8 +1195,7 @@ network_policy = { mode = \"allowlist\", allow_cidrs = [\"10.0.0.0/8\"], allow_h
     /// `# comment`). The merge must carry both onto the refreshed value.
     #[test]
     fn write_provider_preserves_comments_inside_the_merged_provider_block() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
+        let (_dir, path) = temp_config();
         let seeded = "\
 [[providers]]
 id = \"connect-a1b2\"
@@ -1188,20 +1209,10 @@ capabilities = [\"embedding\"]
 # modelo aprobado por Ticket WEB-482
 model = \"nomic-embed-text\"
 ";
-        std::fs::write(&path, seeded).expect("seed config");
+        seed_config(&path, seeded);
 
-        let provider = ProviderConfig {
-            id: "connect-a1b2".into(),
-            display_name: "Connect A1b2".into(),
-            kind: ProviderKind::OpenAiCompatible,
-            base_url: url::Url::parse("https://api.example.test/v1").expect("url"),
-            auth: AuthSource::None,
-            capabilities: vec![Capability::Embedding],
-            model: Some("nomic-embed-text-v2".into()),
-            embedding_dim: None,
-            allow_loopback: false,
-            network_policy: NetworkPolicy::default(),
-        };
+        let mut provider = test_provider("connect-a1b2");
+        provider.model = Some("nomic-embed-text-v2".into());
         write_provider(&path, &provider).expect("merge record");
 
         let written = std::fs::read_to_string(&path).expect("read back");
@@ -1225,8 +1236,7 @@ model = \"nomic-embed-text\"
     /// the documented fallback. A loud refusal is the only honest outcome.
     #[test]
     fn write_provider_refuses_a_config_whose_providers_are_type_invalid() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
+        let (_dir, path) = temp_config();
         let seeded = "\
 [[providers]]
 id = \"connect-a1b2\"
@@ -1246,21 +1256,10 @@ auth = { source = \"none\" }
 capabilities = [\"embedding\"]
 model = \"nomic-embed-text\"
 ";
-        std::fs::write(&path, seeded).expect("seed config");
+        seed_config(&path, seeded);
         let before = std::fs::read(&path).expect("read seed");
 
-        let provider = ProviderConfig {
-            id: "connect-a1b2".into(),
-            display_name: "Connect A1b2".into(),
-            kind: ProviderKind::OpenAiCompatible,
-            base_url: url::Url::parse("https://api.example.test/v1").expect("url"),
-            auth: AuthSource::None,
-            capabilities: vec![Capability::Embedding],
-            model: Some("nomic-embed-text".into()),
-            embedding_dim: None,
-            allow_loopback: false,
-            network_policy: NetworkPolicy::default(),
-        };
+        let provider = test_provider("connect-a1b2");
 
         let err = write_provider(&path, &provider)
             .expect_err("a type-invalid config must not be written through");
@@ -1287,8 +1286,7 @@ model = \"nomic-embed-text\"
     #[tokio::test]
     async fn connect_refuses_a_config_with_a_mistyped_unrelated_top_level_key() {
         let server = serve_embeddings().await;
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
+        let (_dir, path) = temp_config();
         let seeded = "\
 format = 42
 
@@ -1301,21 +1299,10 @@ auth = { source = \"none\" }
 capabilities = [\"embedding\"]
 model = \"nomic-embed-text\"
 ";
-        std::fs::write(&path, seeded).expect("seed config");
+        seed_config(&path, seeded);
         let before = std::fs::read(&path).expect("read seed");
 
-        let provider = ProviderConfig {
-            id: "connect-a1b2".into(),
-            display_name: "Connect A1b2".into(),
-            kind: ProviderKind::OpenAiCompatible,
-            base_url: server.uri().parse().expect("mock uri"),
-            auth: AuthSource::None,
-            capabilities: vec![Capability::Embedding],
-            model: Some("nomic-embed-text".into()),
-            embedding_dim: None,
-            allow_loopback: true,
-            network_policy: NetworkPolicy::default(),
-        };
+        let provider = loopback_provider(&server, "connect-a1b2");
 
         // The probe answers; only the pre-write gate can refuse. The incoming
         // id differs from the seeded one on purpose: the merge /
@@ -1350,8 +1337,7 @@ model = \"nomic-embed-text\"
     #[tokio::test]
     async fn connect_refuses_a_config_with_an_invalid_model_profiles_override() {
         let server = serve_embeddings().await;
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
+        let (_dir, path) = temp_config();
         let seeded = "\
 [[providers]]
 id = \"existing\"
@@ -1366,21 +1352,10 @@ model = \"nomic-embed-text\"
 id = \"granite-97m\"
 dim = \"no-numérico\"
 ";
-        std::fs::write(&path, seeded).expect("seed config");
+        seed_config(&path, seeded);
         let before = std::fs::read(&path).expect("read seed");
 
-        let provider = ProviderConfig {
-            id: "connect-a1b2".into(),
-            display_name: "Connect A1b2".into(),
-            kind: ProviderKind::OpenAiCompatible,
-            base_url: server.uri().parse().expect("mock uri"),
-            auth: AuthSource::None,
-            capabilities: vec![Capability::Embedding],
-            model: Some("nomic-embed-text".into()),
-            embedding_dim: None,
-            allow_loopback: true,
-            network_policy: NetworkPolicy::default(),
-        };
+        let provider = loopback_provider(&server, "connect-a1b2");
 
         // The incoming id differs from the seeded one on purpose: the merge /
         // cross-endpoint guards would refuse on their own and mask the gate.
@@ -1405,8 +1380,7 @@ dim = \"no-numérico\"
     /// not a table) is not. Both must survive the write.
     #[test]
     fn write_provider_accepts_well_typed_keys_the_config_does_not_model() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
+        let (_dir, path) = temp_config();
         let seeded = "\
 format = \"json\"
 
@@ -1423,20 +1397,9 @@ auth = { source = \"none\" }
 capabilities = [\"embedding\"]
 model = \"nomic-embed-text\"
 ";
-        std::fs::write(&path, seeded).expect("seed config");
+        seed_config(&path, seeded);
 
-        let provider = ProviderConfig {
-            id: "connect-a1b2".into(),
-            display_name: "Connect A1b2".into(),
-            kind: ProviderKind::OpenAiCompatible,
-            base_url: url::Url::parse("https://api.example.test/v1").expect("url"),
-            auth: AuthSource::None,
-            capabilities: vec![Capability::Embedding],
-            model: Some("nomic-embed-text".into()),
-            embedding_dim: None,
-            allow_loopback: false,
-            network_policy: NetworkPolicy::default(),
-        };
+        let provider = test_provider("connect-a1b2");
         write_provider(&path, &provider).expect("well-typed unmodeled keys must pass the gate");
 
         let written = std::fs::read_to_string(&path).expect("read back");
@@ -1464,8 +1427,7 @@ model = \"nomic-embed-text\"
     /// converted.
     #[test]
     fn write_provider_edits_an_inline_providers_array() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
+        let (_dir, path) = temp_config();
         let seeded = "\
 format = \"markdown\"
 # declarados en línea; connect los reescribe como [[providers]]
@@ -1473,20 +1435,9 @@ providers = [ { id = \"old\", display_name = \"Old\", kind = \"open_ai_compatibl
 base_url = \"https://old.example.test/v1\", auth = { source = \"none\" }, \
 model = \"m\", capabilities = [\"embedding\"] } ]
 ";
-        std::fs::write(&path, seeded).expect("seed config");
+        seed_config(&path, seeded);
 
-        let provider = ProviderConfig {
-            id: "connect-a1b2".into(),
-            display_name: "Connect A1b2".into(),
-            kind: ProviderKind::OpenAiCompatible,
-            base_url: url::Url::parse("https://api.example.test/v1").expect("url"),
-            auth: AuthSource::None,
-            capabilities: vec![Capability::Embedding],
-            model: Some("nomic-embed-text".into()),
-            embedding_dim: None,
-            allow_loopback: false,
-            network_policy: NetworkPolicy::default(),
-        };
+        let provider = test_provider("connect-a1b2");
         write_provider(&path, &provider).expect("an inline array is editable");
 
         let written = std::fs::read_to_string(&path).expect("read back");
@@ -1518,31 +1469,15 @@ model = \"m\", capabilities = [\"embedding\"] } ]
     fn write_provider_preserves_the_existing_config_file_mode() {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
-        let provider = ProviderConfig {
-            id: "connect-a1b2".into(),
-            display_name: "Connect A1b2".into(),
-            kind: ProviderKind::OpenAiCompatible,
-            base_url: url::Url::parse("https://api.example.test/v1").expect("url"),
-            auth: AuthSource::None,
-            capabilities: vec![Capability::Embedding],
-            model: Some("nomic-embed-text".into()),
-            embedding_dim: None,
-            allow_loopback: false,
-            network_policy: NetworkPolicy::default(),
-        };
-        write_provider(&path, &provider).expect("first write");
+        let (_dir, path, provider) = first_write_canonical();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))
             .expect("restrict the config like an operator would");
 
-        write_provider(&path, &provider).expect("second write");
-
-        let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
-        assert_eq!(
-            mode & 0o777,
+        assert_second_write_keeps_mode(
+            &path,
+            &provider,
             0o600,
-            "the atomic rewrite downgraded the operator's 0600 config"
+            "the atomic rewrite downgraded the operator's 0600 config",
         );
     }
 
@@ -1556,31 +1491,15 @@ model = \"m\", capabilities = [\"embedding\"] } ]
     fn write_provider_preserves_a_config_mode_wider_than_the_temp_default() {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
-        let provider = ProviderConfig {
-            id: "connect-a1b2".into(),
-            display_name: "Connect A1b2".into(),
-            kind: ProviderKind::OpenAiCompatible,
-            base_url: url::Url::parse("https://api.example.test/v1").expect("url"),
-            auth: AuthSource::None,
-            capabilities: vec![Capability::Embedding],
-            model: Some("nomic-embed-text".into()),
-            embedding_dim: None,
-            allow_loopback: false,
-            network_policy: NetworkPolicy::default(),
-        };
-        write_provider(&path, &provider).expect("first write");
+        let (_dir, path, provider) = first_write_canonical();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640))
             .expect("widen the config the way a group-shared setup would");
 
-        write_provider(&path, &provider).expect("second write");
-
-        let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
-        assert_eq!(
-            mode & 0o777,
+        assert_second_write_keeps_mode(
+            &path,
+            &provider,
             0o640,
-            "the atomic rewrite narrowed an operator's 0640 config to the 0600 temp default"
+            "the atomic rewrite narrowed an operator's 0640 config to the 0600 temp default",
         );
     }
 
@@ -1592,22 +1511,7 @@ model = \"m\", capabilities = [\"embedding\"] } ]
     fn write_provider_creates_a_new_config_with_mode_0600() {
         use std::os::unix::fs::PermissionsExt;
 
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
-        let provider = ProviderConfig {
-            id: "connect-a1b2".into(),
-            display_name: "Connect A1b2".into(),
-            kind: ProviderKind::OpenAiCompatible,
-            base_url: url::Url::parse("https://api.example.test/v1").expect("url"),
-            auth: AuthSource::None,
-            capabilities: vec![Capability::Embedding],
-            model: Some("nomic-embed-text".into()),
-            embedding_dim: None,
-            allow_loopback: false,
-            network_policy: NetworkPolicy::default(),
-        };
-
-        write_provider(&path, &provider).expect("first write");
+        let (_dir, path, _provider) = first_write_canonical();
 
         let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
         assert_eq!(
@@ -1630,18 +1534,7 @@ model = \"m\", capabilities = [\"embedding\"] } ]
         let link = dir.path().join("config.toml");
         std::os::unix::fs::symlink(&managed, &link).expect("symlink the config");
 
-        let provider = ProviderConfig {
-            id: "connect-a1b2".into(),
-            display_name: "Connect A1b2".into(),
-            kind: ProviderKind::OpenAiCompatible,
-            base_url: url::Url::parse("https://api.example.test/v1").expect("url"),
-            auth: AuthSource::None,
-            capabilities: vec![Capability::Embedding],
-            model: Some("nomic-embed-text".into()),
-            embedding_dim: None,
-            allow_loopback: false,
-            network_policy: NetworkPolicy::default(),
-        };
+        let provider = test_provider("connect-a1b2");
         write_provider(&link, &provider).expect("write through the symlink");
 
         assert!(
@@ -1667,22 +1560,18 @@ model = \"m\", capabilities = [\"embedding\"] } ]
     /// and the rename failure removes it.
     #[test]
     fn write_atomically_leaves_no_temp_file_when_the_rename_fails() {
-        let dir = tempfile::tempdir().expect("temp dir");
+        let (dir, target) = temp_config();
         // A non-empty directory at the destination makes rename(2) fail only
         // after the temp has already been written.
-        let target = dir.path().join("config.toml");
         std::fs::create_dir(&target).expect("make a directory where a file is expected");
         std::fs::write(target.join("occupied"), b"x").expect("make it non-empty");
 
         write_atomically(&target, "id = \"connect-a1b2\"\n")
             .expect_err("renaming a file over a non-empty directory must fail");
 
-        let leftovers: Vec<String> = std::fs::read_dir(dir.path())
-            .expect("list the parent directory")
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .filter(|name| name.starts_with(".config.toml") && name.ends_with(".tmp"))
-            .collect();
+        let leftovers: Vec<String> = dir_file_names_matching(dir.path(), |name| {
+            name.starts_with(".config.toml") && name.ends_with(".tmp")
+        });
         assert!(
             leftovers.is_empty(),
             "a failed atomic write left its temp file behind: {leftovers:?}"
@@ -1694,29 +1583,16 @@ model = \"m\", capabilities = [\"embedding\"] } ]
     /// hand-extended, and replacing the list would drop the extra capability.
     #[test]
     fn write_provider_unions_capabilities_instead_of_replacing_them() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
-        std::fs::write(
+        let (_dir, path) = temp_config();
+        seed_config(
             &path,
             "[[providers]]\nid = \"connect-a1b2\"\ndisplay_name = \"Wide\"\n\
              kind = \"open_ai_compatible\"\nbase_url = \"https://api.example.test/v1\"\n\
              auth = { source = \"none\" }\ncapabilities = [\"embedding\", \"completion\"]\n\
              model = \"nomic-embed-text\"\nallow_loopback = false\n",
-        )
-        .expect("seed config");
+        );
 
-        let provider = ProviderConfig {
-            id: "connect-a1b2".into(),
-            display_name: "Connect A1b2".into(),
-            kind: ProviderKind::OpenAiCompatible,
-            base_url: url::Url::parse("https://api.example.test/v1").expect("url"),
-            auth: AuthSource::None,
-            capabilities: vec![Capability::Embedding],
-            model: Some("nomic-embed-text".into()),
-            embedding_dim: None,
-            allow_loopback: false,
-            network_policy: NetworkPolicy::default(),
-        };
+        let provider = test_provider("connect-a1b2");
         write_provider(&path, &provider).expect("merge record");
 
         let loaded =
@@ -1735,24 +1611,12 @@ model = \"m\", capabilities = [\"embedding\"] } ]
     #[tokio::test]
     async fn connect_registers_a_provider_that_answers_the_probe() {
         let server = serve_embeddings().await;
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
+        let (_dir, path) = temp_config();
 
         // The guarded production client rejects loopback, so this exercises the
         // same validation/write path with `allow_loopback` set — the operator's
         // own provider would carry `false` and dial a public host.
-        let provider = ProviderConfig {
-            id: "connect-a1b2".into(),
-            display_name: "Connect A1b2".into(),
-            kind: ProviderKind::OpenAiCompatible,
-            base_url: server.uri().parse().expect("mock uri"),
-            auth: AuthSource::None,
-            capabilities: vec![Capability::Embedding],
-            model: Some("nomic-embed-text".into()),
-            embedding_dim: None,
-            allow_loopback: true,
-            network_policy: NetworkPolicy::default(),
-        };
+        let provider = loopback_provider(&server, "connect-a1b2");
 
         let exit = register(&provider, &path).await;
         assert!(matches!(exit, CliExit::Success), "got {exit:?}");
@@ -1766,8 +1630,7 @@ model = \"m\", capabilities = [\"embedding\"] } ]
     #[tokio::test]
     async fn connect_rejects_a_dead_endpoint_and_writes_nothing() {
         // RFC 5737 TEST-NET-1, port 1: nothing listens there.
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
+        let (_dir, path) = temp_config();
 
         let exit = run(
             &url::Url::parse("http://192.0.2.1:1/").expect("url"),
@@ -1789,8 +1652,7 @@ model = \"m\", capabilities = [\"embedding\"] } ]
 
     #[tokio::test]
     async fn connect_rejects_an_illegal_provider_id_before_touching_the_network() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
+        let (_dir, path) = temp_config();
 
         let exit = run(
             &url::Url::parse("http://192.0.2.1:1/").expect("url"),
@@ -1818,8 +1680,7 @@ model = \"m\", capabilities = [\"embedding\"] } ]
     #[cfg(unix)]
     #[test]
     fn write_temp_refuses_a_preplanted_symlink_without_touching_the_victim() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let target = dir.path().join("config.toml");
+        let (dir, target) = temp_config();
         let temp = dir.path().join(".config.toml.connect-1-0.tmp");
         let victim = dir.path().join("victim.txt");
         std::fs::write(&victim, b"VICTIM\n").expect("seed the victim");
@@ -1872,10 +1733,7 @@ model = \"m\", capabilities = [\"embedding\"] } ]
     /// bytes — unlinking it would only race its owner).
     #[test]
     fn create_temp_retries_with_a_fresh_name_when_the_candidate_is_planted() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let target = dir.path().join("config.toml");
-        let planted = dir.path().join(".config.toml.connect-planted.tmp");
-        std::fs::write(&planted, b"PLANT\n").expect("seed the plant");
+        let (dir, target, planted) = planted_temp();
 
         let mut served = 0_usize;
         let used = create_temp(
@@ -1909,10 +1767,7 @@ model = \"m\", capabilities = [\"embedding\"] } ]
     /// old truncating open.
     #[test]
     fn create_temp_fails_loud_when_every_candidate_is_planted() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let target = dir.path().join("config.toml");
-        let planted = dir.path().join(".config.toml.connect-planted.tmp");
-        std::fs::write(&planted, b"PLANT\n").expect("seed the plant");
+        let (_dir, target, planted) = planted_temp();
 
         let mut attempts = 0_usize;
         let err = create_temp(
@@ -1943,32 +1798,16 @@ model = \"m\", capabilities = [\"embedding\"] } ]
     /// survives the write.
     #[test]
     fn a_successful_write_sweeps_stale_connect_temps() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
+        let (dir, path) = temp_config();
         let stale = dir.path().join(".config.toml.connect-999-abc.tmp");
         std::fs::write(&stale, b"leftover config copy\n").expect("seed a stale temp");
-        let provider = ProviderConfig {
-            id: "connect-a1b2".into(),
-            display_name: "Connect A1b2".into(),
-            kind: ProviderKind::OpenAiCompatible,
-            base_url: url::Url::parse("https://api.example.test/v1").expect("url"),
-            auth: AuthSource::None,
-            capabilities: vec![Capability::Embedding],
-            model: Some("nomic-embed-text".into()),
-            embedding_dim: None,
-            allow_loopback: false,
-            network_policy: NetworkPolicy::default(),
-        };
+        let provider = test_provider("connect-a1b2");
 
         write_provider(&path, &provider).expect("write");
 
         assert!(!stale.exists(), "a stale sibling temp must be swept");
-        let leftovers: Vec<String> = std::fs::read_dir(dir.path())
-            .expect("list the parent directory")
-            .filter_map(|entry| entry.ok())
-            .map(|entry| entry.file_name().to_string_lossy().into_owned())
-            .filter(|name| name.starts_with(".config.toml.connect-"))
-            .collect();
+        let leftovers: Vec<String> =
+            dir_file_names_matching(dir.path(), |name| name.starts_with(".config.toml.connect-"));
         assert!(
             leftovers.is_empty(),
             "no connect temp may survive a successful write: {leftovers:?}"
@@ -2006,9 +1845,8 @@ model = \"m\", capabilities = [\"embedding\"] } ]
 
     #[test]
     fn ensure_config_unchanged_accepts_unchanged_bytes() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
-        std::fs::write(&path, "format = \"markdown\"\n").expect("seed the config");
+        let (_dir, path) = temp_config();
+        seed_config(&path, "format = \"markdown\"\n");
         let original = std::fs::read_to_string(&path).expect("read the snapshot");
 
         ensure_config_unchanged(&path, Some(&original))
@@ -2021,9 +1859,8 @@ model = \"m\", capabilities = [\"embedding\"] } ]
     /// record while both printed success.
     #[test]
     fn ensure_config_unchanged_refuses_a_config_that_changed_on_disk() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
-        std::fs::write(&path, "format = \"markdown\"\n").expect("seed the config");
+        let (_dir, path) = temp_config();
+        seed_config(&path, "format = \"markdown\"\n");
         let original = std::fs::read_to_string(&path).expect("read the snapshot");
         std::fs::write(&path, "format = \"json\"\n# el otro connect\n")
             .expect("the other writer lands");
@@ -2052,9 +1889,8 @@ model = \"m\", capabilities = [\"embedding\"] } ]
     /// clobber that record.
     #[test]
     fn ensure_config_unchanged_refuses_a_config_that_appeared_concurrently() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
-        std::fs::write(&path, "format = \"markdown\"\n").expect("the other connect lands");
+        let (_dir, path) = temp_config();
+        seed_config(&path, "format = \"markdown\"\n");
 
         let err = ensure_config_unchanged(&path, None)
             .expect_err("a config that appeared concurrently must refuse the write");
@@ -2063,8 +1899,7 @@ model = \"m\", capabilities = [\"embedding\"] } ]
 
     #[test]
     fn ensure_config_unchanged_accepts_an_absent_config_that_stays_absent() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
+        let (_dir, path) = temp_config();
 
         ensure_config_unchanged(&path, None)
             .expect("absent when read and absent now is a fresh first connect");
@@ -2075,9 +1910,8 @@ model = \"m\", capabilities = [\"embedding\"] } ]
     /// there by then.
     #[test]
     fn ensure_config_unchanged_refuses_a_config_that_disappeared() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
-        std::fs::write(&path, "format = \"markdown\"\n").expect("seed the config");
+        let (_dir, path) = temp_config();
+        seed_config(&path, "format = \"markdown\"\n");
         let original = std::fs::read_to_string(&path).expect("read the snapshot");
         std::fs::remove_file(&path).expect("the other writer deletes it");
 
@@ -2094,10 +1928,8 @@ model = \"m\", capabilities = [\"embedding\"] } ]
     /// byte-for-byte, and no record of ours may be appended over them.
     #[test]
     fn commit_splice_refuses_to_rename_over_a_config_that_drifted() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
-        std::fs::write(&path, "format = \"json\"\n# el otro connect gano\n")
-            .expect("the other writer lands first");
+        let (_dir, path) = temp_config();
+        seed_config(&path, "format = \"json\"\n# el otro connect gano\n");
         let stale_snapshot = "format = \"markdown\"\n".to_string();
         let spliced = stale_snapshot
             .parse::<toml_edit::DocumentMut>()
@@ -2121,10 +1953,9 @@ model = \"m\", capabilities = [\"embedding\"] } ]
     /// refusal above cannot be satisfied by a commit path that always fails.
     #[test]
     fn commit_splice_writes_an_unchanged_config() {
-        let dir = tempfile::tempdir().expect("temp dir");
-        let path = dir.path().join("config.toml");
+        let (_dir, path) = temp_config();
         let original = "format = \"markdown\"\n";
-        std::fs::write(&path, original).expect("seed the config");
+        seed_config(&path, original);
         let spliced = original
             .parse::<toml_edit::DocumentMut>()
             .expect("a snapshot parses");
