@@ -33,6 +33,7 @@ use webfang_core::application::adaptive_engine::{AdaptiveSelectorEngine, Adaptiv
 use webfang_core::application::crawl_options::CrawlOptions;
 use webfang_core::cli::config::{load_config_defaults, resolve_config_path, ConfigDefaults};
 use webfang_core::cli::error::{CliError, CliExit};
+use webfang_core::cli::parse::subcommand_args;
 use webfang_core::cli::preflight;
 use webfang_core::cli::preflight::ArgSources;
 #[cfg(feature = "ai")]
@@ -75,6 +76,19 @@ pub async fn main() -> CliExit {
     __main().await
 }
 
+/// Dispatch a parsed subcommand. Split out of `__main` so the top-level
+/// function stays under the cognitive-complexity / length ratchet.
+async fn dispatch_subcommand(args: &Args) -> CliExit {
+    match args.subcommand.as_ref() {
+        Some(Commands::Completions { shell }) => orchestrator::handle_completions(*shell),
+        Some(Commands::Connect { .. }) => handle_connect(args).await,
+        Some(Commands::Doctor) => handle_doctor(args).await,
+        Some(Commands::Show) => handle_show(args),
+        // Callers only reach here when a subcommand is present.
+        None => CliExit::Success,
+    }
+}
+
 async fn __main() -> CliExit {
     // 1. Parse CLI arguments (single pass, provenance captured)
     let (mut args, arg_sources) = match parse_args() {
@@ -87,12 +101,14 @@ async fn __main() -> CliExit {
         args.crawler.url = Some(pos_url);
     }
 
-    // 2. Handle subcommands (completions)
-    if let Some(Commands::Completions { shell }) = args.subcommand {
-        return orchestrator::handle_completions(shell);
+    // 2. Handle subcommands. `connect` / `doctor` / `show` (issue #1933,
+    //    ADR-0004 step 4) run BEFORE URL resolution: they do not touch the
+    //    scrape path, and `connect`/`doctor` legitimately run with no URL.
+    if args.subcommand.is_some() {
+        return dispatch_subcommand(&args).await;
     }
 
-    // 4. URL handling with interactive wizard
+    // 3. URL handling with interactive wizard
     if let Err(exit) = resolve_url(&mut args).await {
         return exit;
     }
@@ -283,6 +299,59 @@ async fn __main() -> CliExit {
     build_and_run(opts).await
 }
 
+/// Handle the `connect` subcommand (issue #1933, ADR-0004 step 4).
+///
+/// The variant carries the endpoint, the required model, and an optional
+/// provider id. With no id, a `connect-<hex>` name is generated from the URL
+/// so repeated runs against the same endpoint are idempotent-ish and readable.
+async fn handle_connect(args: &Args) -> CliExit {
+    let Some(Commands::Connect { url, model, id }) = args.subcommand.as_ref() else {
+        return CliExit::UsageError("connect invocado sin sus argumentos".into());
+    };
+    let id = id
+        .clone()
+        .unwrap_or_else(|| generated_provider_id(url.as_str()));
+    let config_path = resolve_config_path();
+    webfang_core::cli::commands::connect::run(url.as_url(), &id, model, &config_path).await
+}
+
+/// Handle the `doctor` subcommand: diagnose the embedding path from config.
+async fn handle_doctor(args: &Args) -> CliExit {
+    let config_path = resolve_config_path();
+    let sub = subcommand_args(args);
+    webfang_core::cli::commands::doctor::run(&config_path, &sub).await
+}
+
+/// Handle the `show` subcommand: print the effective profile + budget.
+fn handle_show(args: &Args) -> CliExit {
+    let config_path = resolve_config_path();
+    let sub = subcommand_args(args);
+    webfang_core::cli::commands::show::run(&sub, &config_path)
+}
+
+/// A stable, readable provider id derived from the endpoint URL.
+///
+/// FNV-1a over the URL, formatted as 64 bits: deterministic across runs and
+/// toolchain versions (unlike `DefaultHasher`, which std documents as not
+/// stable across Rust releases), and wide enough that two endpoints do not
+/// collide in any realistic config. Not a cryptographic choice — a naming
+/// convenience the operator can override with `--id`. Because the id is
+/// derived from the URL, a repeat `connect` of the same URL names the same
+/// record; `write_provider` then MERGES into it field by field (refreshing the
+/// probe-owned keys, preserving the operator-owned ones) instead of replacing
+/// it or appending a duplicate.
+fn generated_provider_id(url: &str) -> String {
+    // FNV-1a, 64-bit.
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = OFFSET;
+    for byte in url.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(PRIME);
+    }
+    format!("connect-{hash:016x}")
+}
+
 /// Parse CLI arguments, translating clap's help/version/error cases into exits.
 ///
 /// Single parse pass per design D1: `ArgMatches` built once, `Args` derived
@@ -394,6 +463,47 @@ mod log_level_tests {
         assert_eq!(resolve_log_level_with_config(0, Some("")), "warn");
         assert_eq!(resolve_log_level_with_config(0, Some("   ")), "warn");
         assert_eq!(resolve_log_level_with_config(0, Some("loud")), "warn");
+    }
+}
+
+/// `generated_provider_id` is the fallback identity `webfang connect` writes
+/// when the operator gave no `--id`: the SAME endpoint must always resolve to
+/// the SAME provider id, or a reconnect would append a second record for one
+/// endpoint instead of updating the existing one.
+#[cfg(test)]
+mod generated_provider_id_tests {
+    use super::generated_provider_id;
+
+    #[test]
+    fn the_same_url_always_yields_the_same_id() {
+        let url = "https://api.example.test/v1";
+        assert_eq!(
+            generated_provider_id(url),
+            generated_provider_id(url),
+            "the FNV-1a hash must be deterministic across calls"
+        );
+    }
+
+    #[test]
+    fn the_id_is_connect_prefixed_with_16_lowercase_hex_digits() {
+        let id = generated_provider_id("https://api.example.test/v1");
+        let hash = id
+            .strip_prefix("connect-")
+            .unwrap_or_else(|| panic!("the id must carry the connect- prefix, got: {id}"));
+        assert_eq!(hash.len(), 16, "a 64-bit hash is 16 hex digits, got: {id}");
+        assert!(
+            hash.chars().all(|c| matches!(c, '0'..='9' | 'a'..='f')),
+            "the hash must be lowercase hex, got: {id}"
+        );
+    }
+
+    #[test]
+    fn different_urls_yield_different_ids() {
+        assert_ne!(
+            generated_provider_id("https://api.example.test/v1"),
+            generated_provider_id("https://other.example.test/v1"),
+            "two distinct endpoints must not collide on one provider id"
+        );
     }
 }
 

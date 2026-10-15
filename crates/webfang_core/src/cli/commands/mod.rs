@@ -1,7 +1,17 @@
-//! CLI command handlers
+//! CLI command handlers.
 //!
-//! Extracted from orchestrator.rs to reduce monolithism and improve testability.
-//! Each command handler is isolated and can be tested independently.
+//! Extracted from `orchestrator.rs` to reduce monolithism and improve
+//! testability. Each command handler is isolated and can be tested
+//! independently.
+//!
+//! The `connect` / `doctor` / `show` subcommands (issue #1933, ADR-0004 step 4)
+//! live in their own files under this module; the shared preflight helper below
+//! stays here because it is used by the main dispatch path, not by a
+//! subcommand.
+
+pub mod connect;
+pub mod doctor;
+pub mod show;
 
 use crate::application::crawl_options::CrawlOptions;
 use crate::cli::error::CliExit;

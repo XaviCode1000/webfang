@@ -37,6 +37,25 @@ chromium = ["dep:chromiumoxide"]
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
 toml = "0.8"
+# Format-preserving TOML editing for `webfang connect`: a provider is spliced
+# into the on-disk document in place, so unrelated top-level keys, `[[...]]`
+# tables and comments survive a write. A parse-to-typed-struct-and-reserialize
+# round-trip silently DROPS every key the typed shape does not model —
+# `ProvidersConfig` models exactly one field — so this is a correctness
+# requirement, not a nicety. Version pinned to the `toml_edit` that `toml
+# 0.8.23` already resolves (0.22.27 in Cargo.lock): this edge REUSES the copy
+# `toml` already brings, so it does not add a second one to the graph. (A
+# second copy does exist independently of this edge — 0.25.15, pulled in via
+# `proc-macro-crate` from the keyring/secret-service stack — but that one
+# predates and does not depend on this dependency.)
+#
+# `serde` is declared explicitly because the code uses `toml_edit::ser::
+# to_document` to render a `ProviderConfig` for the splice, and `pub mod ser`
+# is `#[cfg(feature = "serde")]` — NOT a default feature. It is currently only
+# compiled because `toml 0.8.23` happens to request it and Cargo unifies
+# features; relying on that makes this crate's compilation depend on a
+# dependency nobody here declares.
+toml_edit = { version = "0.22", features = ["serde"] }
 pathdiff = "0.2"
 
 # Async runtime
