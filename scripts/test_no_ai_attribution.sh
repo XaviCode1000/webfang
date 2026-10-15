@@ -73,6 +73,11 @@ expect ok "renovate bot co-author (short actor, NAME-prefix match)" \
 
 Co-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>"
 
+expect ok "dependabot bot co-author" \
+"chore(deps): bump the wreq group
+
+Co-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>"
+
 expect ok "trailer-like text in the BODY, not a trailer line" \
 "docs: explain why the trailer ban is not blanket
 
