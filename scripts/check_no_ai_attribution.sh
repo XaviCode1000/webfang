@@ -35,8 +35,10 @@
 #       scan NUL-separated messages read from <file> (used by the test harness)
 set -euo pipefail
 
-# Co-authors accepted by name, matched case-insensitively against the whole
-# trailer value. Short and explicit on purpose.
+# Co-authors accepted by NAME PREFIX, matched case-insensitively. The co-author
+# NAME is the part before any `<email>`; it must START with one of these, never
+# merely contain it (A1: `Codebuff, reviewed by renovate` used to pass because
+# it contained `renovate`). Short and explicit on purpose.
 ALLOWED_CO_AUTHORS=(
   "release-plz"
   "github-actions[bot]"
@@ -75,18 +77,26 @@ scan_message() {
     return 0
   fi
 
-  # 2. Co-author trailers: accepted only for a known automation actor.
-  # `grep -F` is load-bearing: `github-actions[bot]` is a literal bracket pair,
-  # and under `-E`/`-G` `[bot]` would be a character class matching
-  # `github-actionsb` while MISSING the real string.
-  local line value actor allowed
+  # 2. Co-author trailers: accepted only when the co-author NAME starts with a
+  # known automation actor. Anchored at the START, never a substring: a plain
+  # `contains` match accepted `Co-Authored-By: Codebuff, reviewed by renovate`,
+  # because it merely contained an allowlisted token (A1).
+  #
+  # `[[ "$name" == "$actor"* ]]` is load-bearing: `"$actor"` is quoted, so the
+  # literal bracket pair in `github-actions[bot]` is not read as a character
+  # class, while the unquoted `*` is the only wildcard. (Under `grep -E`/`-G`,
+  # `[bot]` would match `github-actionsb` and MISS the real string.)
+  local line value name_lc allowed actor actor_lc
   while IFS= read -r line; do
     [ -n "$line" ] || continue
     value="${line#*:}"
     value="$(printf '%s' "$value" | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+    # The co-author NAME: everything before the angle-bracketed email.
+    name_lc="$(printf '%s' "$value" | sed -E 's/[[:space:]]*<.*$//' | tr '[:upper:]' '[:lower:]')"
     allowed=false
     for actor in "${ALLOWED_CO_AUTHORS[@]}"; do
-      if printf '%s' "$value" | grep -qiF -- "$actor"; then
+      actor_lc="$(printf '%s' "$actor" | tr '[:upper:]' '[:lower:]')"
+      if [[ "$name_lc" == "$actor_lc"* ]]; then
         allowed=true
         break
       fi

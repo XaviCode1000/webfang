@@ -68,6 +68,11 @@ expect ok "github-actions bot co-author" \
 
 Co-authored-by: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
 
+expect ok "renovate bot co-author (short actor, NAME-prefix match)" \
+"chore(deps): bump the wreq group
+
+Co-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>"
+
 expect ok "trailer-like text in the BODY, not a trailer line" \
 "docs: explain why the trailer ban is not blanket
 
@@ -120,6 +125,16 @@ expect reject "indented trailer still counts" \
 "feat(crawler): add polite crawl delay
 
     Co-Authored-By: Codebuff <noreply@codebuff.com>"
+
+expect reject "allowlisted token merely CONTAINED in the name (A1)" \
+"fix(cli): the co-author is not an automation actor
+
+Co-Authored-By: Codebuff, reviewed by renovate <bot@example.com>"
+
+expect reject "allowlisted token at the END of the name, not the start (A1)" \
+"fix(cli): the co-author is not an automation actor
+
+Co-Authored-By: Ada, with help from renovate <ada@example.com>"
 
 expect reject "second of two commits is the offender" \
 "refactor(ai): slice 1
