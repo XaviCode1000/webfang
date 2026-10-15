@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.11.0] - 2026-10-15
+
+
+### 🎉 Added
+
+- Connect/doctor/show, flujo de configuracion facil (ADR-0004 paso 4) ([#1990](https://github.com/XaviCode1000/webfang/pull/1990))
+
+### 📦 Dependencies
+
+- Update Cargo.lock dependencies
 ## [2.10.1] - 2026-10-13
 
 
