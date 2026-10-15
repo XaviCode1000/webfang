@@ -11,7 +11,12 @@
 //! - **Write**: splice a `[[providers]]` record into the user's config so the
 //!   registry resolves it on the next run. The on-disk document is edited in
 //!   place: an existing record with the same id is MERGED field by field (never
-//!   replaced wholesale, never duplicated), and a new one is appended.
+//!   replaced wholesale, never duplicated), and a new one is appended. The
+//!   write is also safe against the two ways the config around it is
+//!   destroyed: the temp file is created O_EXCL under a unique per-write name
+//!   (a pre-planted symlink is refused, never truncated through), and the
+//!   bytes are re-read after the splice so a config a concurrent `connect`
+//!   rewrote meanwhile is refused instead of renamed over.
 //! - **Never write config when the endpoint did not respond** — the error names
 //!   what was missing (URL, model, DNS / connection / status / parse). A
 //!   refusal for any other reason (a type-invalid config, an operator-owned
@@ -197,7 +202,10 @@ fn display_for_id(id: &str) -> String {
 /// rendered from the parsed tree, which preserves every untouched key, table
 /// and comment — including the comments attached to the merged entry's own
 /// refreshed keys. The write is atomic (temp file + rename), preserves the
-/// file's permissions, and follows a symlinked config to its target.
+/// file's permissions, and follows a symlinked config to its target. It is
+/// also exclusive in effect: the bytes on disk are re-read after the splice,
+/// so a config another `connect` rewrote meanwhile is refused instead of
+/// renamed over (see [`ensure_config_unchanged`]).
 ///
 /// # Errors
 ///
@@ -207,7 +215,10 @@ fn display_for_id(id: &str) -> String {
 /// that is neither an array of tables nor a convertible inline array, or holds
 /// a record whose operator-owned fields belong to a different endpoint. Every
 /// one of these is checked before the atomic write, so the file is left
-/// byte-for-byte identical. [`std::io::Error`] otherwise — I/O failure creating
+/// byte-for-byte identical. The same [`std::io::ErrorKind::InvalidData`] is
+/// returned when the config changed on disk while this write held it — a
+/// concurrent `connect` landed first, nothing is written, and the message
+/// names the retry. [`std::io::Error`] otherwise — I/O failure creating
 /// the parent directory, the temp file, or performing the rename.
 fn write_provider(path: &Path, provider: &ProviderConfig) -> Result<(), std::io::Error> {
     // The `webfang/` parent directory does not exist on a first run — exactly
@@ -217,6 +228,9 @@ fn write_provider(path: &Path, provider: &ProviderConfig) -> Result<(), std::io:
         std::fs::create_dir_all(parent)?;
     }
 
+    // The snapshot the splice is computed from, kept for the optimistic
+    // concurrency check after the merge (`ensure_config_unchanged`).
+    let mut original: Option<String> = None;
     let mut document = if path.exists() {
         let existing = std::fs::read_to_string(path)?;
         // The `DocumentMut` parse below only proves the file is WELL-FORMED
@@ -242,7 +256,7 @@ fn write_provider(path: &Path, provider: &ProviderConfig) -> Result<(), std::io:
                 ),
             )
         })?;
-        existing.parse::<toml_edit::DocumentMut>().map_err(|e| {
+        let document = existing.parse::<toml_edit::DocumentMut>().map_err(|e| {
             std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!(
@@ -250,14 +264,90 @@ fn write_provider(path: &Path, provider: &ProviderConfig) -> Result<(), std::io:
                     path.display()
                 ),
             )
-        })?
+        })?;
+        original = Some(existing);
+        document
     } else {
         toml_edit::DocumentMut::new()
     };
 
     upsert_provider(&mut document, provider)?;
 
+    // Optimistic concurrency: the whole splice is a read-modify-write with no
+    // lock on the config, so the bytes are re-read AFTER the merge and must
+    // still be the ones the merge started from. A difference means a
+    // concurrent `connect` landed first: renaming now would drop its record
+    // while both printed success, so the write refuses and names the retry.
+    commit_splice(path, &document, original.as_deref())
+}
+
+/// Persist the spliced document: refuse first if the file drifted, then write
+/// atomically.
+///
+/// Extracted from [`write_provider`] so the wiring itself is testable: the
+/// drift check and the write are two calls that must happen IN ORDER, and a
+/// test that removes one while keeping the other green is exactly the
+/// unfalsifiable coverage this function exists to prevent.
+fn commit_splice(
+    path: &Path,
+    document: &toml_edit::DocumentMut,
+    original: Option<&str>,
+) -> Result<(), std::io::Error> {
+    ensure_config_unchanged(path, original)?;
     write_atomically(path, &document.to_string())
+}
+
+/// Whether the bytes on disk no longer match the snapshot the splice was
+/// computed from.
+///
+/// Byte-exact on purpose: a whitespace-only difference still means another
+/// writer touched the document, and merging into a snapshot that is no
+/// longer what is on disk is exactly the lost update this guards.
+fn config_drifted(original: &str, current_on_disk: &str) -> bool {
+    original != current_on_disk
+}
+
+/// Fail closed when the config changed on disk since `original` was read.
+///
+/// `write_provider` is a read-modify-write with no portable advisory lock
+/// on the config: two concurrent `connect` runs carrying different
+/// providers would both splice into the same snapshot and race to rename,
+/// and the loser's provider would vanish while BOTH printed "conectado y
+/// registrado". The conflict is therefore detected optimistically — the
+/// bytes are re-read after the splice and must still be the ones the
+/// splice started from. A difference (including a file that appeared or
+/// disappeared between the read and the write) means another writer landed
+/// first: this run refuses, writes nothing, and names the retry.
+///
+/// The check narrows the window to the microseconds between the re-read
+/// and the rename; closing it completely needs a lock on the config, which
+/// this write does not take.
+///
+/// # Errors
+///
+/// [`std::io::ErrorKind::InvalidData`] when the bytes drifted, the file
+/// vanished, or it became unreadable.
+fn ensure_config_unchanged(path: &Path, original: Option<&str>) -> Result<(), std::io::Error> {
+    let current = std::fs::read_to_string(path).ok();
+    match (original, current) {
+        (Some(original), Some(current)) if !config_drifted(original, &current) => Ok(()),
+        // Absent when read, absent now: a fresh first connect.
+        (None, None) => Ok(()),
+        _ => Err(config_drift_error(path)),
+    }
+}
+
+/// The refusal for "another writer changed the config while connect held it".
+fn config_drift_error(path: &Path) -> std::io::Error {
+    std::io::Error::new(
+        std::io::ErrorKind::InvalidData,
+        format!(
+            "la configuración '{}' cambió en disco mientras connect la escribía: \
+             no se toca el archivo para no perder el registro del otro connect; \
+             ejecutá connect de nuevo",
+            path.display()
+        ),
+    )
 }
 
 /// Splice `provider` into the `providers` array of `document`, in place.
@@ -543,12 +633,116 @@ fn merge_capabilities(existing: &mut toml_edit::Table, incoming: &toml_edit::Ite
     }
 }
 
-/// Write `contents` to `path` atomically: temp file in the same directory,
-/// then rename over the target. A same-filesystem rename is atomic, so a
-/// PROCESS crash (panic, kill, failed write) leaves either the old file or
-/// the new one — never a truncated config. A POWER crash is NOT covered:
-/// neither the temp file nor the parent directory is fsynced, so after power
-/// loss the rename may be durable while the new contents are not.
+/// Monotonic counter backing the connect temp-name suffix.
+///
+/// `pid` alone is not unique inside a multi-threaded process, and two
+/// writers a nanosecond apart can derive the same name from a clock. A
+/// per-process monotonic counter makes every temp name unique for the
+/// lifetime of the process; the pid keeps concurrent PROCESSES disjoint.
+static TMP_NONCE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Attempts to mint a temp name before failing loud on a persistent
+/// pre-plant (see [`create_temp`]).
+const TEMP_CREATE_ATTEMPTS: usize = 3;
+
+/// Mint the temp path for one write: `.{file_name}.connect-{pid}-{nonce}.tmp`
+/// next to the target.
+///
+/// The dot prefix keeps the temp out of a plain listing, and the pid +
+/// monotonic nonce make the name unguessable to a would-be planter while
+/// still obvious to the GC sweep (the strict `.{file_name}.connect-`
+/// prefix). The nonce is what makes the name UNIQUE: pid alone collides
+/// between two writes in one multi-threaded process, and the collision is
+/// silent — one write renames the temp away and the other's rename fails
+/// with ENOENT.
+fn temp_path(dir: &Path, file_name: &str) -> std::path::PathBuf {
+    let nonce = TMP_NONCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    dir.join(format!(
+        ".{file_name}.connect-{}-{nonce}.tmp",
+        std::process::id()
+    ))
+}
+
+/// Create the temp file, retrying with a fresh name when the candidate was
+/// pre-planted. Returns the temp path actually used.
+///
+/// `next_temp` mints the candidate name; production passes [`temp_path`],
+/// tests pass a deterministic sequence so the retry arm is exercised
+/// without predicting the process counter.
+///
+/// O_EXCL rejection (`create_new`, see [`write_temp`]) is the pre-plant
+/// signal: someone with write access to the config directory left a file —
+/// typically a symlink — at the exact name this write was about to use,
+/// hoping the writer would truncate through it (CWE-377). That never
+/// happens here: the candidate is abandoned, `next_temp` mints the next
+/// name, and the write lands there. The retry is bounded by
+/// [`TEMP_CREATE_ATTEMPTS`]; a collision that survives every attempt is
+/// reported loud rather than downgraded to a truncating open.
+///
+/// A pre-planted candidate is NOT removed on the way out: the path belongs
+/// to whoever created it, and unlinking it would only race that writer.
+/// Only a temp this call actually created is cleaned up.
+fn create_temp(
+    mut next_temp: impl FnMut() -> std::path::PathBuf,
+    target: &Path,
+    contents: &str,
+) -> Result<std::path::PathBuf, std::io::Error> {
+    let mut temp = next_temp();
+    let mut attempts_left = TEMP_CREATE_ATTEMPTS;
+    loop {
+        match write_temp(&temp, target, contents) {
+            Ok(()) => return Ok(temp),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && attempts_left > 1 => {
+                attempts_left -= 1;
+                temp = next_temp();
+            },
+            Err(e) => {
+                if e.kind() != std::io::ErrorKind::AlreadyExists {
+                    let _ = std::fs::remove_file(&temp);
+                }
+                return Err(e);
+            },
+        }
+    }
+}
+
+/// Best-effort sweep of stale connect temps beside the freshly written
+/// config.
+///
+/// A connect killed between create and rename leaves its temp behind — a
+/// full copy of the operator's config. The next successful write reclaims
+/// every sibling sharing the strict `.{file_name}.connect-` prefix,
+/// whatever pid or nonce left it (the pre-fix `.{file}.connect-{pid}.tmp`
+/// names included). Sweeping NEVER fails the operation it follows: the
+/// config is already renamed into place, a temp is never read as config,
+/// and the subcommands run without a subscriber, so a GC problem must not
+/// turn a successful connect into an error. A live sibling's temp may lose
+/// the race; that writer's rename then fails loud — the loss is never
+/// silent.
+fn gc_connect_temps(parent: &Path, prefix: &str, current: &Path) {
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with(prefix) || entry.path().as_path() == current {
+            continue;
+        }
+        tracing::debug!(file = %name, "GC stale connect temp file");
+        let _ = std::fs::remove_file(entry.path());
+    }
+}
+
+/// Write `contents` to `path` atomically: O_EXCL temp file in the same
+/// directory, then rename over the target. A same-filesystem rename is
+/// atomic, so a PROCESS crash (panic, kill, failed write) leaves either the
+/// old file or the new one — never a truncated config. A POWER crash is
+/// NOT covered: neither the temp file nor the parent directory is fsynced,
+/// so after power loss the rename may be durable while the new contents
+/// are not.
 ///
 /// The rename replaces the destination INODE and does not follow symlinks, so
 /// two things are corrected before the rename: a symlinked config is resolved
@@ -556,6 +750,14 @@ fn merge_capabilities(existing: &mut toml_edit::Table, incoming: &toml_edit::Ite
 /// regular file and later hand-edits stop landing in the dotfiles tree), and
 /// the temp file inherits the target's permissions (otherwise an operator who
 /// restricted `config.toml` to `0600` silently gets `0644`).
+///
+/// The temp name is unique per process AND per write (pid + monotonic
+/// nonce, see [`temp_path`]) and is created with O_EXCL: a pre-planted
+/// name — a symlink left by someone with write access to the config
+/// directory — is refused, never truncated into, and the write retries
+/// [`TEMP_CREATE_ATTEMPTS`] times on a fresh name before failing loud (see
+/// [`create_temp`]). After a successful rename the stale `.connect-` temps
+/// left by killed runs are swept best-effort (see [`gc_connect_temps`]).
 fn write_atomically(path: &Path, contents: &str) -> Result<(), std::io::Error> {
     let target = match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.file_type().is_symlink() => std::fs::canonicalize(path)?,
@@ -567,16 +769,17 @@ fn write_atomically(path: &Path, contents: &str) -> Result<(), std::io::Error> {
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("config.toml");
-    let temp = parent.join(format!(".{file_name}.connect-{}.tmp", std::process::id()));
 
     // The temp is cleaned up on BOTH error arms: leaving it behind turns a
-    // failed connect into a stray file full of the operator's config.
-    if let Err(e) = write_temp(&temp, &target, contents) {
-        let _ = std::fs::remove_file(&temp);
-        return Err(e);
-    }
+    // failed connect into a stray file full of the operator's config. A
+    // pre-planted candidate is the exception — it is not ours to remove
+    // (see `create_temp`).
+    let temp = create_temp(|| temp_path(parent, file_name), &target, contents)?;
     match std::fs::rename(&temp, &target) {
-        Ok(()) => Ok(()),
+        Ok(()) => {
+            gc_connect_temps(parent, &format!(".{file_name}.connect-"), &temp);
+            Ok(())
+        },
         Err(e) => {
             let _ = std::fs::remove_file(&temp);
             Err(e)
@@ -587,6 +790,16 @@ fn write_atomically(path: &Path, contents: &str) -> Result<(), std::io::Error> {
 /// Create `temp` carrying the permissions the finished config must have, then
 /// write `contents` into it.
 ///
+/// The temp is created with `create_new` (O_EXCL): if anything already
+/// exists at `temp` — a pre-planted file or symlink — the open fails with
+/// [`std::io::ErrorKind::AlreadyExists`] and NOTHING is written, so a
+/// symlink plant cannot redirect this write at an arbitrary victim file
+/// (CWE-377). `truncate` is deliberately absent: O_EXCL guarantees a
+/// brand-new file, so there is never anything to truncate, and keeping the
+/// flag would suggest the code truncates a file it refuses to touch.
+/// `write` is required alongside `create_new` — O_EXCL without an access
+/// mode is EINVAL.
+///
 /// A NEW config is created `0600` from the start: even though `AuthSource` has
 /// no inline-secret variant today, the file carries keyring account names and
 /// LAN allowlists, and the repo already treats `0600` as the convention for
@@ -594,7 +807,7 @@ fn write_atomically(path: &Path, contents: &str) -> Result<(), std::io::Error> {
 /// operator chose, copied onto the temp before the rename.
 fn write_temp(temp: &Path, target: &Path, contents: &str) -> Result<(), std::io::Error> {
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -1447,8 +1660,11 @@ model = \"m\", capabilities = [\"embedding\"] } ]
 
     /// A failed write must not leave its temp file behind: the temp holds the
     /// full config text, so a stale `.config.toml.connect-<pid>.tmp` is a copy
-    /// of the operator's configuration sitting next to it — and a second write
-    /// to the same pid would overwrite it, since the name is pid-derived.
+    /// of the operator's configuration sitting next to it. The name is now
+    /// unique per write (pid + nonce), so a later write cannot even overwrite
+    /// it — only the failure cleanup below reclaims it. The retry arm never
+    /// fires here: nothing pre-planted the name, so the first candidate wins
+    /// and the rename failure removes it.
     #[test]
     fn write_atomically_leaves_no_temp_file_when_the_rename_fails() {
         let dir = tempfile::tempdir().expect("temp dir");
@@ -1586,5 +1802,338 @@ model = \"m\", capabilities = [\"embedding\"] } ]
 
         assert!(matches!(exit, CliExit::UsageError(_)), "got {exit:?}");
         assert!(!path.exists(), "an illegal id must not write anything");
+    }
+
+    // ---------------------------------------------------------------------
+    // R1-1: the temp file of the atomic write must not be plantable through
+    // a symlink (CWE-377). Old shape: `.{file}.connect-{pid}.tmp`, opened
+    // `write + create + truncate` — a local writer in the config directory
+    // pre-planted that exact name with a symlink and connect truncated the
+    // victim through it.
+    // ---------------------------------------------------------------------
+
+    /// THE CWE-377 regression: a symlink planted at the temp path is never
+    /// followed or truncated through. The open fails with `AlreadyExists`
+    /// (O_EXCL) and the victim file is left byte-for-byte intact.
+    #[cfg(unix)]
+    #[test]
+    fn write_temp_refuses_a_preplanted_symlink_without_touching_the_victim() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let target = dir.path().join("config.toml");
+        let temp = dir.path().join(".config.toml.connect-1-0.tmp");
+        let victim = dir.path().join("victim.txt");
+        std::fs::write(&victim, b"VICTIM\n").expect("seed the victim");
+        std::os::unix::fs::symlink(&victim, &temp).expect("plant the symlink");
+
+        let err = write_temp(&temp, &target, "id = \"connect-a1b2\"\n")
+            .expect_err("a pre-planted temp must be refused, never truncated into");
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            std::fs::read_to_string(&victim).expect("the victim must still be readable"),
+            "VICTIM\n",
+            "the write followed the planted symlink and destroyed the victim"
+        );
+        assert!(!target.exists(), "nothing may be written through the plant");
+    }
+
+    /// The name carries pid + monotonic nonce, so two writes in the SAME
+    /// process (same pid) can never collide on one temp — the old pid-only
+    /// name let one write rename the temp away under the other, whose
+    /// rename then failed ENOENT.
+    #[test]
+    fn temp_path_is_unique_per_write_within_one_process() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let first = temp_path(dir.path(), "config.toml");
+        let second = temp_path(dir.path(), "config.toml");
+
+        assert_ne!(first, second, "two writes must never share a temp name");
+        let expected_prefix = format!(".config.toml.connect-{}-", std::process::id());
+        for name in [&first, &second] {
+            let name = name
+                .file_name()
+                .expect("a temp path has a file name")
+                .to_string_lossy()
+                .into_owned();
+            assert!(
+                name.starts_with(&expected_prefix),
+                "the temp must name the process and a nonce: {name}"
+            );
+            assert!(name.ends_with(".tmp"), "the temp keeps its suffix: {name}");
+        }
+        assert_eq!(
+            first.parent(),
+            second.parent(),
+            "the temp must stay beside its target for the rename to be atomic"
+        );
+    }
+
+    /// A pre-planted candidate is abandoned for the NEXT name: the write
+    /// lands in a different temp (never through the plant, which keeps its
+    /// bytes — unlinking it would only race its owner).
+    #[test]
+    fn create_temp_retries_with_a_fresh_name_when_the_candidate_is_planted() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let target = dir.path().join("config.toml");
+        let planted = dir.path().join(".config.toml.connect-planted.tmp");
+        std::fs::write(&planted, b"PLANT\n").expect("seed the plant");
+
+        let mut served = 0_usize;
+        let used = create_temp(
+            || {
+                served += 1;
+                if served == 1 {
+                    planted.clone()
+                } else {
+                    dir.path().join(format!(".fresh-{served}.tmp"))
+                }
+            },
+            &target,
+            "id = \"connect-a1b2\"\n",
+        )
+        .expect("the retry must land on a fresh name");
+
+        assert_ne!(used, planted, "the write must not use the planted temp");
+        assert_eq!(
+            std::fs::read_to_string(&used).expect("the fresh temp is written"),
+            "id = \"connect-a1b2\"\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&planted).expect("the plant survives"),
+            "PLANT\n",
+            "a pre-planted candidate is neither truncated into nor removed"
+        );
+    }
+
+    /// The retry is BOUNDED: a name planted under every candidate fails
+    /// loud with `AlreadyExists` instead of silently downgrading to the
+    /// old truncating open.
+    #[test]
+    fn create_temp_fails_loud_when_every_candidate_is_planted() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let target = dir.path().join("config.toml");
+        let planted = dir.path().join(".config.toml.connect-planted.tmp");
+        std::fs::write(&planted, b"PLANT\n").expect("seed the plant");
+
+        let mut attempts = 0_usize;
+        let err = create_temp(
+            || {
+                attempts += 1;
+                planted.clone()
+            },
+            &target,
+            "id = \"connect-a1b2\"\n",
+        )
+        .expect_err("a plant under every candidate must fail loud");
+
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            attempts, TEMP_CREATE_ATTEMPTS,
+            "the retry must be bounded, not unbounded"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&planted).expect("the plant survives"),
+            "PLANT\n",
+            "even the loud failure must not remove or truncate the plant"
+        );
+    }
+
+    /// A temp left by a killed run (here a foreign pid, in the pre-fix
+    /// name shape) is a full copy of the operator's config: the next
+    /// successful write sweeps it best-effort, and no connect temp
+    /// survives the write.
+    #[test]
+    fn a_successful_write_sweeps_stale_connect_temps() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        let stale = dir.path().join(".config.toml.connect-999-abc.tmp");
+        std::fs::write(&stale, b"leftover config copy\n").expect("seed a stale temp");
+        let provider = ProviderConfig {
+            id: "connect-a1b2".into(),
+            display_name: "Connect A1b2".into(),
+            kind: ProviderKind::OpenAiCompatible,
+            base_url: url::Url::parse("https://api.example.test/v1").expect("url"),
+            auth: AuthSource::None,
+            capabilities: vec![Capability::Embedding],
+            model: Some("nomic-embed-text".into()),
+            embedding_dim: None,
+            allow_loopback: false,
+            network_policy: NetworkPolicy::default(),
+        };
+
+        write_provider(&path, &provider).expect("write");
+
+        assert!(!stale.exists(), "a stale sibling temp must be swept");
+        let leftovers: Vec<String> = std::fs::read_dir(dir.path())
+            .expect("list the parent directory")
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.starts_with(".config.toml.connect-"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "no connect temp may survive a successful write: {leftovers:?}"
+        );
+        assert!(
+            std::fs::read_to_string(&path)
+                .expect("read the written config")
+                .contains("id = \"connect-a1b2\""),
+            "the sweep must not have eaten the config itself"
+        );
+    }
+
+    // ---------------------------------------------------------------------
+    // R4-1: two concurrent connects must never lose the loser's record
+    // (read-modify-write with no lock). The bytes are re-read after the
+    // splice and a drift refuses the write instead of renaming over the
+    // other writer's record.
+    // ---------------------------------------------------------------------
+
+    #[test]
+    fn config_drifted_is_a_byte_exact_comparison() {
+        assert!(
+            !config_drifted("a = 1\n", "a = 1\n"),
+            "identical bytes never drift"
+        );
+        assert!(
+            config_drifted("a = 1\n", "a = 2\n"),
+            "different content is drift"
+        );
+        assert!(
+            config_drifted("a = 1\n", "a = 1\n# otro escritor añadió una nota\n"),
+            "a whitespace-only difference still means another writer landed"
+        );
+    }
+
+    #[test]
+    fn ensure_config_unchanged_accepts_unchanged_bytes() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "format = \"markdown\"\n").expect("seed the config");
+        let original = std::fs::read_to_string(&path).expect("read the snapshot");
+
+        ensure_config_unchanged(&path, Some(&original))
+            .expect("identical bytes must never block the write");
+    }
+
+    /// THE lost-update regression: while connect holds its snapshot, another
+    /// writer lands. The re-read differs, so the write refuses loud — the
+    /// alternative is renaming a stale splice over the other writer's
+    /// record while both printed success.
+    #[test]
+    fn ensure_config_unchanged_refuses_a_config_that_changed_on_disk() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "format = \"markdown\"\n").expect("seed the config");
+        let original = std::fs::read_to_string(&path).expect("read the snapshot");
+        std::fs::write(&path, "format = \"json\"\n# el otro connect\n")
+            .expect("the other writer lands");
+
+        let err = ensure_config_unchanged(&path, Some(&original))
+            .expect_err("a config that changed on disk must refuse the write");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        let message = err.to_string();
+        assert!(
+            message.contains("cambió en disco"),
+            "the refusal must name the drift: {message}"
+        );
+        assert!(
+            message.contains("connect de nuevo"),
+            "the refusal must name the retry: {message}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            "format = \"json\"\n# el otro connect\n",
+            "the refusal must leave the other writer's bytes untouched"
+        );
+    }
+
+    /// The first-run race: the config was absent when connect read it and a
+    /// concurrent connect created it before the rename — renaming now would
+    /// clobber that record.
+    #[test]
+    fn ensure_config_unchanged_refuses_a_config_that_appeared_concurrently() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "format = \"markdown\"\n").expect("the other connect lands");
+
+        let err = ensure_config_unchanged(&path, None)
+            .expect_err("a config that appeared concurrently must refuse the write");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn ensure_config_unchanged_accepts_an_absent_config_that_stays_absent() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.toml");
+
+        ensure_config_unchanged(&path, None)
+            .expect("absent when read and absent now is a fresh first connect");
+    }
+
+    /// A config deleted between the read and the rename is drift too:
+    /// renaming into its place would silently replace whatever landed
+    /// there by then.
+    #[test]
+    fn ensure_config_unchanged_refuses_a_config_that_disappeared() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "format = \"markdown\"\n").expect("seed the config");
+        let original = std::fs::read_to_string(&path).expect("read the snapshot");
+        std::fs::remove_file(&path).expect("the other writer deletes it");
+
+        let err = ensure_config_unchanged(&path, Some(&original))
+            .expect_err("a config that disappeared must refuse the write");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+    }
+
+    /// THE wiring regression: `write_provider` must REFUSE when the document
+    /// drifted, not merely own a drift-checker. Removing the
+    /// `ensure_config_unchanged` call from the commit path leaves every other
+    /// test green while the lost update ships — this test pins the ordering
+    /// itself. The drifted bytes are the OTHER writer's: they must survive
+    /// byte-for-byte, and no record of ours may be appended over them.
+    #[test]
+    fn commit_splice_refuses_to_rename_over_a_config_that_drifted() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "format = \"json\"\n# el otro connect gano\n")
+            .expect("the other writer lands first");
+        let stale_snapshot = "format = \"markdown\"\n".to_string();
+        let spliced = stale_snapshot
+            .parse::<toml_edit::DocumentMut>()
+            .expect("a snapshot parses");
+
+        let err = commit_splice(&path, &spliced, Some(&stale_snapshot))
+            .expect_err("a drifted config must never be renamed over");
+        assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+        assert!(
+            err.to_string().contains("connect de nuevo"),
+            "the refusal must name the retry: {err}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            "format = \"json\"\n# el otro connect gano\n",
+            "the other writer's config must survive the refusal untouched"
+        );
+    }
+
+    /// The positive half of the wiring: an unchanged config commits, so the
+    /// refusal above cannot be satisfied by a commit path that always fails.
+    #[test]
+    fn commit_splice_writes_an_unchanged_config() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let path = dir.path().join("config.toml");
+        let original = "format = \"markdown\"\n";
+        std::fs::write(&path, original).expect("seed the config");
+        let spliced = original
+            .parse::<toml_edit::DocumentMut>()
+            .expect("a snapshot parses");
+
+        commit_splice(&path, &spliced, Some(original)).expect("an unchanged config commits");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read back"),
+            "format = \"markdown\"\n",
+            "a no-drift commit writes exactly the spliced document"
+        );
     }
 }
