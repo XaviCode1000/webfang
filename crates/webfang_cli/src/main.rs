@@ -133,6 +133,12 @@ async fn __main() -> CliExit {
         Ok(n) => n,
         Err(e) => return e,
     };
+    // ADR-0004 step 5: capture the deprecation verdict BEFORE `args` is
+    // consumed by the projection below. The trigger is a parse-time fact (two
+    // env vars clap never sees, plus a `value_source` distinction that does
+    // not survive into `AiConfig`), while the emission needs a live subscriber
+    // that does not exist yet — so the answer is carried, not the text.
+    let pending_notices = args.ai.pending_notices;
     // Project contested fields; copy non-contested from Args via From
     let base = CrawlOptions::from(args);
     // CLI-explicit budget knobs live ONLY in `base` (--concurrency /
@@ -197,9 +203,20 @@ async fn __main() -> CliExit {
     // existed (e.g. the --rate-limit-burst substitution notice). The note
     // text already names the offending value; it travels once more as a
     // structured field so trace queries can select it without parsing.
+    //
+    // Suited to SHORT substitution notices only: the compact formatter prints
+    // the note as the message and again as the field value, which is invisible
+    // at ~40 characters and unreadable at the ~600 a deprecation needs. The two
+    // ADR-0004 notices below are therefore NOT routed through this buffer.
     for note in webfang_core::cli::preflight_notes::take() {
         tracing::warn!(preflight_note = %note, "{note}");
     }
+
+    // ADR-0004 step 5, deprecation announcements (spec T4 + T5). Split out of
+    // `__main` for the same reason `dispatch_subcommand` is: the complexity and
+    // length ratchets (#516) apply per function, and two `if` blocks plus their
+    // comment belong in a function named after what they do.
+    emit_adr0004_deprecation_notices(pending_notices);
 
     // The `--max-tokens` deprecation warning lives HERE, not where the value is
     // resolved, for the same #796 reason the notes above are replayed: argv
@@ -297,6 +314,55 @@ async fn __main() -> CliExit {
 
     // 8. Build optional engines and delegate to orchestrator
     build_and_run(opts).await
+}
+
+/// Render ADR-0004 step 5's in-execution deprecation announcements (spec T4 +
+/// T5) as `WARN` events, if this run owes any.
+///
+/// MUST be called after `init_logging_dual`: argv resolution runs before the
+/// subscriber exists, so a `warn!` emitted at parse time would be silently
+/// dropped (#796). Which notices are owed was decided at parse time —
+/// `webfang_core::cli::args::ai::PendingNotices` — because the trigger needs a
+/// `value_source` distinction and two env vars that do not survive into
+/// `CrawlOptions`.
+///
+/// Shape follows the `--max-tokens` deprecation: English structured fields
+/// carrying the facts, the Spanish prose as the event message. The prose
+/// appears EXACTLY once. The earlier cut of this feature routed the notices
+/// through `preflight_notes`, whose replay is `warn!(preflight_note = %note,
+/// "{note}")` — the compact formatter then printed the same ~600 characters
+/// twice per line (message plus field value), which is invisible for the short
+/// substitution notices that buffer was built for and unreadable here. The
+/// fields below carry only what is meant to be QUERIED: which notice, what
+/// disappears, where to migrate, where to object, when. Never a second copy
+/// of the sentence.
+fn emit_adr0004_deprecation_notices(pending: webfang_core::cli::args::ai::PendingNotices) {
+    if pending.onnx_deprecation {
+        tracing::warn!(
+            notice = "onnx_deprecation",
+            removed_feature = "ai",
+            removed_capability = "onnx_local",
+            replacement = "webfang connect|webfang doctor|webfang show",
+            objection_channel = webfang_core::cli::args::ai::ONNX_OBJECTION_CHANNEL,
+            removal_in_minor_releases = 2,
+            "{}",
+            webfang_core::cli::args::ai::ONNX_DEPRECATION_NOTICE,
+        );
+    }
+    if let Some(threshold) = pending.orphan_threshold {
+        tracing::warn!(
+            notice = "orphan_relevance_threshold",
+            // `display`, not the raw f32: tracing's `Value` impl for `f32`
+            // prints the IEEE-754 round-trip form (`0.30000001192092896`), which
+            // is a second thing to explain to an operator. The field stays a
+            // string in the JSONL — still queryable, and it reads `0.3`.
+            threshold_used = tracing::field::display(format_args!("{threshold}")),
+            calibrated_for = "granite",
+            replacement = "--threshold|WEBFANG_THRESHOLD",
+            "{}",
+            webfang_core::cli::args::ai::orphan_threshold_notice(threshold),
+        );
+    }
 }
 
 /// Handle the `connect` subcommand (issue #1933, ADR-0004 step 4).
