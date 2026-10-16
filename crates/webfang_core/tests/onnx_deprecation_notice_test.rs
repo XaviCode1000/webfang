@@ -134,6 +134,43 @@ async fn scrape(t: &BehavioralTest, extra: &[&str]) -> std::process::Output {
         .expect("spawn webfang")
 }
 
+/// One AI-surface scrape, hermetic in BOTH feature sets.
+///
+/// `--clean-ai` reached the real ONNX loader, and the loader is cache-first
+/// ONLINE: pointed at an empty `HF_HOME` it would pull ~397 MB from
+/// huggingface.co and then run a genuine embedding pass. That is the one thing
+/// a behavioral test must not do — it puts a live network call and a
+/// third-party service inside a suite whose whole premise is that it dials
+/// nothing but its own wiremock. It also silently made `test-full` download the
+/// model, contradicting that lane's documented "zero AI inference" design
+/// (`ci.yml`, the note above its `Pre-build test binary` step).
+///
+/// The fix is the vector `ai_error_propagation.rs` already established and
+/// documented: `--clean-ai --offline` against an EMPTY hf_hub cache. Offline
+/// resolution then fails fast before any download, deterministically, on both
+/// a default-features build (which stops earlier still, at the capability gate)
+/// and an ai-enabled one. `--offline` permits loopback, so the wiremock page
+/// itself stays reachable — what fails is the model resolution, which is the
+/// only part that needed the network.
+///
+/// The empty cache must outlive the child process, hence the `TempDir` scoped
+/// to this function rather than a shared fixture.
+async fn scrape_ai_surface(t: &BehavioralTest, extra: &[&str]) -> std::process::Output {
+    let empty_hf_cache = tempfile::TempDir::new().expect("create empty hf_hub cache");
+    let mut cmd = t.scraper_cmd();
+    cmd.arg("--single-page")
+        .arg("--ignore-robots")
+        .arg("--clean-ai")
+        .arg("--offline")
+        .env("HF_HOME", empty_hf_cache.path());
+    for arg in extra {
+        cmd.arg(arg);
+    }
+    cmd.timeout(Duration::from_secs(RUN_TIMEOUT_SECS))
+        .output()
+        .expect("spawn webfang")
+}
+
 /// The main announcement: a run that asks for AI semantic cleaning hears what
 /// is going away, what survives, which shims are still supported, where to
 /// migrate and where to object — EXACTLY once.
@@ -148,7 +185,7 @@ async fn onnx_deprecation_notice_fires_once_when_clean_ai_is_used() {
     let t = BehavioralTest::new().await;
     mount_single_page_site(&t).await;
 
-    let output = scrape(&t, &["--clean-ai"]).await;
+    let output = scrape_ai_surface(&t, &[]).await;
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert_eq!(
@@ -254,7 +291,7 @@ async fn orphan_threshold_warning_fires_once_with_the_default_threshold() {
     let t = BehavioralTest::new().await;
     mount_single_page_site(&t).await;
 
-    let output = scrape(&t, &["--clean-ai"]).await;
+    let output = scrape_ai_surface(&t, &[]).await;
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert_eq!(
@@ -282,7 +319,7 @@ async fn orphan_threshold_warning_does_not_fire_with_an_explicit_threshold() {
     let t = BehavioralTest::new().await;
     mount_single_page_site(&t).await;
 
-    let output = scrape(&t, &["--clean-ai", "--threshold", EXPLICIT_THRESHOLD]).await;
+    let output = scrape_ai_surface(&t, &["--threshold", EXPLICIT_THRESHOLD]).await;
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert_eq!(
