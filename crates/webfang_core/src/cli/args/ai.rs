@@ -258,8 +258,8 @@ pub const ONNX_OBJECTION_CHANNEL: &str = "https://github.com/XaviCode1000/webfan
 pub const ONNX_DEPRECATION_NOTICE: &str = concat!(
     "ONNX local se retira: la feature Cargo `ai` y la inferencia ONNX desaparecerán, ",
     "y `cargo build --features ai` fallará en resolución de features. ",
-    "Sobreviven sin gate: `--clean-ai` (resuelve su endpoint por ",
-    "`--embedding-provider` / `WEBFANG_EMBEDDING_PROVIDER`) y `--offline` ",
+    "Sobreviven sin gate: `--clean-ai` (hoy sigue con ONNX local; tras el corte ",
+    "resuelve su endpoint por `--embedding-provider` / `WEBFANG_EMBEDDING_PROVIDER`) y `--offline` ",
     "(misma semántica: loopback permitido, remoto público -> exit 78). ",
     "Siguen funcionando al menos 2 releases minor más, como shims: ",
     "`--ai-model`, `--max-tokens`, `WEBFANG_MAX_TOKENS`, ",

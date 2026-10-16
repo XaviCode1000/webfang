@@ -20,7 +20,7 @@ deja un shim detrás. Un shim detrás de la feature que se borra no existe, en n
 | Tu setup | Qué te pasa |
 | :--- | :--- |
 | `--clean-ai` con el modelo local (Granite 97M / 311M) | **Te afecta.** El cleaner pasará a resolver su endpoint por `--embedding-provider`. Perdés el offline sin red |
-| `--clean-ai` + `--embedding-provider` ya configurado | No te afecta: es el camino de destino |
+| `--clean-ai` + `--embedding-provider` ya configurado | Hoy el flag **no** toca el cleaner: sólo mueve el slot de vault search. Sirve cuando el des-gating llegue (ver el paso 2) |
 | `--ai-model`, `AI_MODEL_ID`, `WEBFANG_AI_MODEL_ID`, `WEBFANG_AI_ENGINE` | Shims. Siguen funcionando ≥2 minors, luego desaparecen |
 | `--max-tokens`, `WEBFANG_MAX_TOKENS` | Shim de un shim: ya renombrado a `--max-chars`. Migralo ahora |
 | Vaults con vectores de Granite | Hay que **re-indexar**: el modelo nuevo no produce vectores comparables. El coste (y el BYO-key) lo pagas vos |
@@ -41,10 +41,19 @@ deja un shim detrás. Un shim detrás de la feature que se borra no existe, en n
    webfang show
    ```
 
-2. **Pasá `--clean-ai` al endpoint remoto.** El cleaner resuelve su `EmbeddingPort` por
-   `--embedding-provider` (o su env `WEBFANG_EMBEDDING_PROVIDER`; el flag gana al env):
+2. **Pasá `--clean-ai` al endpoint remoto — cuando este camino esté disponible.**
+
+   > ⚠️ **Hoy este paso no funciona.** `build_ai_cleaner` arma siempre el stack ONNX local
+   > (`crates/webfang_cli/src/main.rs`, la llamada a `build_onnx_embedding_port`). El
+   > `--embedding-provider` de hoy resuelve el slot de vault search y Tier 2, no el cleaner.
+   > El cableado es trabajo del **paso 6** del ADR-0004. El comando de abajo es el destino,
+   > no el presente.
+
+   Cuando exista, el cleaner resolverá su `EmbeddingPort` por `--embedding-provider`
+   (o su env `WEBFANG_EMBEDDING_PROVIDER`; el flag gana al env):
 
    ```bash
+   # no disponible todavía — no lo pruebes esperando que el cleaner cambie
    webfang --url https://example.com --clean-ai --embedding-provider ollama
    ```
 
@@ -70,9 +79,10 @@ El `0.3` por defecto está calibrado para Granite. Retirado el único modelo cal
 remoto retiene distinto con el mismo número, así que la corrida avisa una vez mientras el umbral sea
 el default. El aviso no es decoración: es la señal de que el número ya no significa lo que decía.
 
-Elegí un umbral según tu modelo:
+Elegí un umbral según tu modelo (mismo camino aún no disponible del paso 2):
 
 ```bash
+# no disponible todavía — no lo pruebes esperando que el cleaner cambie
 webfang --url https://example.com --clean-ai --embedding-provider ollama --threshold 0.45
 ```
 
