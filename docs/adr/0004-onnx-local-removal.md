@@ -1,11 +1,11 @@
 # ADR 0004: Retirada de ONNX local; embeddings remotos como única vía AI
 
 - **Status:** Accepted
-- **Date:** 2026-10-08 (revisado 2026-10-09: mecanismo de arbitraje del paso 6 y resolución de Q6 — precisión de mecanismo, la decisión (a) con refugio (c) no cambia; revisado 2026-10-11: corrección factual — el 0.75 de Tier 2 son dos números con roles opuestos — y registro de la condición 2 resuelta como migrar, #1975)
+- **Date:** 2026-10-08 (revisado 2026-10-09: mecanismo de arbitraje del paso 6 y resolución de Q6 — precisión de mecanismo, la decisión (a) con refugio (c) no cambia; revisado 2026-10-11: corrección factual — el 0.75 de Tier 2 son dos números con roles opuestos — y registro de la condición 2 resuelta como migrar, #1975; revisado 2026-10-16: el marker de ruptura se mueve del paso 5 al paso 6 — leer *Enmienda 2026-10-16* en *Compatibilidad* —, la etiqueta de recuperación y el canal de objeción pasan a ser concretas, #1998)
 - **Deciders:** Project owner
 - **Supersedes:** ADR 0003 §5 ("Local ONNX goes dormant, not deleted")
 - **Alcance de la supersesión:** el §5, más las afirmaciones del §Context de 0003 que quedaron obsoletas: "Port defined, never injected" es falso desde que `--extract-with-llm` inyecta un `dyn LlmPort` real en el Container (`webfang_cli/src/main.rs:721-759`, cableado en #1493). No es `resolve_remote_embedding` (`:687`): esa fn devuelve el `RemoteEmbeddingAdapter` del slot de embeddings, no un `LlmPort`. El resto (§1–4, 6, 7, trade-offs, alternativas) sigue vigente.
-- **Related issues:** #1915 (decisión), #1917 (primera revisión, cerrada por #1918), #1919 (re-scope), #1930 (revisión del mecanismo de arbitraje + Q6), #1975 (corrección 0.75 Tier 2 + condición 2 resuelta)
+- **Related issues:** #1915 (decisión), #1917 (primera revisión, cerrada por #1918), #1919 (re-scope), #1930 (revisión del mecanismo de arbitraje + Q6), #1975 (corrección 0.75 Tier 2 + condición 2 resuelta), #1997 (canal de objeción del paso 5, abierto), #1998 (enmienda del marker de ruptura), #1999 (aviso en ejecución + aviso de umbral + guía de migración)
 - **Working papers:** auditoría AI-inference fuera del repo (5 pasadas, HEAD `3ac5599`, 47 hallazgos FIN); los números clave van inline abajo para que este ADR se sostenga solo.
 
 ## Context
@@ -22,7 +22,7 @@ ADR 0003 dejó ONNX dormido tras `--features ai` como fallback offline. La dormi
 2. **Tramo D**: reescribir `SemanticCleanerImpl` sobre el `EmbeddingPort` existente (el seam existe; lo pendiente es el cleaner, aún genérico sobre `InferenceEngine` en `:215`) + traslado + batch/bisección + caché + relativo opt-in. Los `chars_per_token`/`matryoshka` de los perfiles los consumen los pasos 2–3, así que la versión de schema de perfiles queda fijada aquí.
 3. Tier 2 con destino explícito (verificado: reimplementable sobre endpoint, solo consume texto→vectores; umbral 0.75 a recalibrar por modelo).
 4. Tramo propio **configuración fácil**: perfiles auto + `connect`/`doctor`/`show` + ajuste manual (o ADR hermano si crece).
-5. **Release de deprecación** (ver Compatibilidad): anuncia, no retira capacidad —los shims siguen funcionando—; con la etiqueta git de recuperación creada antes de publicarlo. Este paso no mejora `main`, la prepara: se declara así explícitamente.
+5. **Release de deprecación** (ver Compatibilidad): anuncia, no retira capacidad —los shims siguen funcionando—; con la etiqueta git de recuperación creada antes de publicarlo, ya hecha: **`onnx-tree/pre-step5`** (commit `38ab6a31`, ver *Reversibilidad*). Es un **minor sin marker de ruptura**: el anuncio lo hacen el aviso en ejecución y las release notes, no el semver (*Enmienda 2026-10-16*). El canal de objeción que el aviso nombra es **#1997**. Este paso no mejora `main`, la prepara: se declara así explícitamente.
 6. Desenlace según la *Condición de revisión* (abajo), con criterios distintos por rama: **6a borrado total** (si se cumplen el criterio técnico y la señal de objeción no registra dependencia activa) o **6b crate externo** (si hay reclamos o demanda real: con dueño nombrado, CI mínima y criterio de abandono —sin actividad ni releases en 6 meses se archiva—).
 
 ## Condiciones del owner (bloqueantes del paso 6)
@@ -42,7 +42,15 @@ Superficie, toda verificada bajo gate `ai` hoy (`options_spec/ai.rs:77,102,127`)
 - **Shims** (error útil de migración, ≥2 releases minor, también des-gateados): `--ai-model`, `--max-tokens` —que además se renombra a `--max-chars`, condición 4—, y las env `WEBFANG_MAX_TOKENS`, `AI_MODEL_ID`/`WEBFANG_AI_MODEL_ID`, `WEBFANG_AI_ENGINE`.
 - **Precedencia que los shims reemplazan**, para que el mensaje de migración sea exacto: `WEBFANG_AI_MODEL_ID` > `AI_MODEL_ID` legacy (`webfang_ai/.../compat.rs:34-38`); el flag de CLI gana al env (`webfang_cli/src/main.rs:602`).
 
-`--offline` conserva su semántica (loopback permitido, remoto público → exit 78). Un release previo anuncia todo esto (aviso en ejecución + trailer `BREAKING CHANGE:` en el commit —los work PRs no tocan `CHANGELOG.md`, lo escribe release-plz—); el borrado llega en el siguiente. Nunca `ConfigError` genérico ni silencio.
+`--offline` conserva su semántica (loopback permitido, remoto público → exit 78). Un release **minor** previo anuncia todo esto (aviso en ejecución + release notes —los work PRs no tocan `CHANGELOG.md`, lo escribe release-plz—); el borrado llega dos minors más adelante, y es **ese** commit el que lleva el marker de ruptura. Nunca `ConfigError` genérico ni silencio.
+
+### Enmienda 2026-10-16 — el marker de ruptura pertenece al paso 6 (#1998)
+
+La redacción anterior de esta sección pedía el trailer `BREAKING CHANGE:` en el commit del release previo, "para que both el version bump y la sección ⚠️ se generen". En este repo el marker de ruptura —título `!` o footer `BREAKING CHANGE:`— **dispara el bump**, así que leído al pie de la letra el paso 5 salía como MAJOR (3.0.0) y no como minor. Eso contradecía la condición 5 del owner ("el release del paso 5 salió al menos una minor antes del borrado") y la *Reversibilidad*, que asume shims con ventana de ≥2 releases minor.
+
+**Decisión:** el paso 5 es un minor **sin** marker; el marker viaja en el commit del paso 6, que es donde el cambio es real y donde corresponde la sección ⚠️. El costo es que la sección ⚠️ del CHANGELOG aparece un release después de la primera mención, no en él.
+
+**Salvedad, y no es cosmética:** la regla del bump viene de la política documentada en `AGENTS.md`, no de una medición en este repo — desde `v2.0.0` no existe ningún commit de ruptura en el historial (`git log v2.0.0..HEAD --grep='!:' -E` no devuelve nada), así que la regla nunca se ejecutó acá. Verificarla es un paso del release de deprecación: si al cortar el minor resultara un MAJOR, esta enmienda cae y el aviso se reescribe como announcement de 3.0.0.
 
 ## Umbral por defecto huérfano
 
@@ -65,7 +73,7 @@ Si ambos se cumplen, el paso 6 puede proceder, sujeto a la señal 2. Si alguno f
 
 **2. Señal de objeción (entre el paso 5 y el 6).** Es pasiva: no recolecta datos ni abre egress alguno.
 
-- El release de deprecación publica el aviso (en ejecución y en el CHANGELOG, ver Compatibilidad) apuntando a un issue o discusión fija (p. ej. "Migración desde ONNX local").
+- El release de deprecación publica el aviso (en ejecución y en el CHANGELOG, ver Compatibilidad) apuntando a un issue o discusión fija. **Fijado 2026-10-16: #1997** (`chore: canal de objeción — migración desde ONNX local`). Es una issue y no una discusión porque el repo tiene Discussions deshabilitadas (`has_discussions: false`), y **no** puede ser la issue que cierre el PR del aviso: `pr-validation.yml` exige que todo PR cierre una issue, y GitHub cerraría también el canal de objeción al mergear. El PR del aviso referencia #1997 con `Refs`, y cierra su propia issue de trabajo (#1999).
 - Tras **2 releases minor**: si ningún usuario reclama dependencia de ONNX, el paso 6 procede como borrado total; si hay reclamos, el crate pasa a refugio (c) "sin soporte" y los casos se registran aquí.
 - **Limitación aceptada:** la ausencia de reclamos **no prueba** ausencia de uso —hay usuarios que no leen avisos—. Por eso el borrado es reversible desde la etiqueta git del paso 5 (ver *Reversibilidad*), y esa asimetría es un riesgo que este ADR declara, no oculta.
 
@@ -111,7 +119,7 @@ Confirmado: no hay `model_id` en schema ni DTOs (0 hits en infraestructura+aplic
 
 ## Reversibilidad
 
-Si el borrado falla, el árbol ONNX se recupera desde la etiqueta git del último release que lo contiene (creada antes del paso 5). Qualifier: no es drop-in —si los pasos 1–4 tocaron `webfang_ai`, el tag devuelve código viejo que puede no calzar con el árbol; la etiqueta es punto de referencia para recuperación manual, no restore automático.
+Si el borrado falla, el árbol ONNX se recupera desde `onnx-tree/pre-step5` — etiqueta **no-`v*`**, creada el 2026-10-16 antes de publicar el release de deprecación, apuntando al commit `38ab6a31` (un commit después de `v2.11.0`), que es el último estado de `main` con la implementación ONNX completa. El nombre no-`v*` es deliberado: `release.yml:34-35` dispara con `tags: v*` y `RELEASE_TAG_NAME_RE` (`scripts/release-tag-trust.sh:50`) es `^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$`, así que esa etiqueta es inerte para el pipeline de release. El paso 5 no toca código ONNX, así que apuntar al commit previo al release no pierde nada. Qualifier: no es drop-in —si los pasos 1–4 tocaron `webfang_ai`, el tag devuelve código viejo que puede no calzar con el árbol; la etiqueta es punto de referencia para recuperación manual, no restore automático.
 
 ## Alternatives rejected
 
