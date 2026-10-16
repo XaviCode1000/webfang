@@ -48,7 +48,7 @@ mitadas (suite wiremock verde, registro reproducible archivado en #1961).
 | T2 — la trampa | `pr-validation.yml` exige que todo PR cierre una issue. Si el PR del aviso cerrara #1997, GitHub cerraría también el canal de objeción al mergear y la señal 2 perdería su destino. El PR referencia #1997 con `Refs` y cierra #1999 |
 | T4 — vehículo | `preflight_notes::record()` (`crates/webfang_core/src/cli/preflight_notes.rs:68`), replayado en `crates/webfang_cli/src/main.rs:200-202` — el mismo sitio del aviso de `--max-tokens`, por el motivo #796: argv se resuelve antes de que exista el subscriber |
 | T4 — honestidad del texto | Hoy `--clean-ai` **sin** la feature `ai` es error de configuración (`check_clean_ai_feature`, `crates/webfang_core/src/cli/preflight.rs:1404-1419`, exit 78). El des-gating es trabajo del paso 6; el aviso anuncia el estado futuro |
-| D1 — abierto | El cleaner hoy no tiene camino remoto: `build_ai_cleaner` (`main.rs:873-978`) vive bajo `#[cfg(feature = "ai")]` y resuelve solo el puerto ONNX local. El ADR no fija qué knob consume `--clean-ai` tras el borrado. Recomendación: `--embedding-provider` (ya resuelve sin `ai`, `main.rs:980-987`). Bloquea el texto del aviso hasta que el owner lo cierre |
+| D1 — cerrado | El cleaner resuelve su `EmbeddingPort` por **`--embedding-provider`** (env `WEBFANG_EMBEDDING_PROVIDER`, flag > env) tras el borrado. Decidido por el owner 2026-10-16. Descartado `--tier2-embedding-provider`: el §Egress de Tier 2 prohíbe que un slot herede la resolución de otro. Descartado un flag nuevo: sería un shim más dentro de la misma ventana |
 
 ## Fuera de alcance (lo hace el paso 6)
 
@@ -88,6 +88,9 @@ Snapshot del texto del aviso con `redact_nondeterministic()` (patrón de
 - **L3 (owner, 2026-10-16):** "ok vamos a por (recomendado)" → D2 resuelto: minor sin marker +
   enmienda del ADR. Ejecutado: T1 (tag `onnx-tree/pre-step5` → `38ab6a31`, pusheada), T2 (#1997 canal,
   #1998 enmienda, #1999 trabajo), T3 en curso en este PR.
-- **L4 (owner, 2026-10-16):** D1 sigue **abierto** — qué knob de provider consume `--clean-ai` tras el
-  borrado. No se registró en el ADR porque es decisión de diseño del paso 6, no del paso 5; bloquea el
-  texto del aviso (T4).
+- **L4 (owner, 2026-10-16):** D1 **cerrado**: `--embedding-provider`. Queda escrito en el ADR como
+  especificación del paso 6, con el gap de hoy declarado (`build_ai_cleaner` solo resuelve ONNX local).
+  Con esto el texto del aviso ya se puede escribir y T4-T6 dejan de estar bloqueados.
+- **L5 (2026-10-16):** PR-A abierto (#2000, cierra #1998), CI Gate en verde; el commit de D1 se suma
+  encima porque el ADR es la fuente normativa y dejar el knob sin fijar obligaría al aviso del paso 5
+  a nombrarlo por su cuenta.
