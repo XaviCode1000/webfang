@@ -252,6 +252,14 @@ jobs:
       # file+test-name survive line drift. Runs the guard against fixtures only.
       - name: Ignored-test guard semantics harness
         run: bash scripts/test_ignored_guard.sh
+      # Semantics harness for the AI-attribution trailer check wired into
+      # pr-validation.yml. Proves on fixtures that the release-plz co-author
+      # PASSES (a blanket ban would break the release flow), that the Claude
+      # and Codebuff co-authors FAIL, and that `[bot]` is matched literally —
+      # the allowlist uses `grep -F` because `[bot]` is a character class under
+      # `-E`. Runs against fixtures only, no API.
+      - name: AI-attribution trailer check semantics harness
+        run: bash scripts/test_no_ai_attribution.sh
       # Exit-code taxonomy must be typed-error based, never message-string
       # coupled. This forbids re-introducing the removed string match on the
       # "no URLs found" parser message (stabilization-sitemap-regression,
