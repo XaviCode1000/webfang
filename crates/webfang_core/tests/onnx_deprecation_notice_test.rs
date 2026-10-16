@@ -64,6 +64,35 @@ fn assert_snapshot_redacted(name: &str, dir: &Path, value: impl Into<String>) {
     });
 }
 
+/// Snapshot name suffix for a run that went through `--clean-ai`.
+///
+/// `--clean-ai` is FEATURE-GATED: without the `ai` feature the flag is a
+/// configuration error (exit 78, "recompilá con --features ai"), and the run
+/// stops before scraping. With the feature on, the same invocation resolves an
+/// endpoint and the scrape proceeds to completion. The two WARN lines this file
+/// exists to pin are byte-identical either way; only the trailing result block
+/// differs.
+///
+/// An insta snapshot is feature-BLIND — it cannot express "this under `ai`,
+/// that without it". One committed file could therefore only ever describe one
+/// of the two builds, and `test-full` (`cargo nextest run --all-features`) and
+/// `test-core` (`cargo nextest run --test '*'`) would disagree on which. So the
+/// NAME carries the discriminator, and both configurations get pinned.
+///
+/// The feature set is an exact proxy for the binary's behavior, not a guess:
+/// `common::cli_harness::webfang_path()` derives the child `cargo build`'s
+/// `--features` from this very crate's `cfg!(feature = "ai")`, so the binary
+/// under test always carries the feature the test was compiled with. See
+/// `cli_harness.rs`, the `active_features` block.
+fn clean_ai_snapshot_name(base: &str) -> String {
+    let suffix = if cfg!(feature = "ai") {
+        "ai_feature_on"
+    } else {
+        "ai_feature_off"
+    };
+    format!("{base}_{suffix}")
+}
+
 /// Mount a single catch-all page so a run that reaches the scrape path has a
 /// hermetic, instant target instead of the real network.
 async fn mount_single_page_site(t: &BehavioralTest) {
@@ -153,7 +182,7 @@ async fn onnx_deprecation_notice_fires_once_when_clean_ai_is_used() {
         );
     }
     assert_snapshot_redacted(
-        "onnx_deprecation_notice_clean_ai_stderr",
+        &clean_ai_snapshot_name("onnx_deprecation_notice_clean_ai_stderr"),
         t.out.path(),
         stderr.into_owned(),
     );
@@ -240,7 +269,7 @@ async fn orphan_threshold_warning_fires_once_with_the_default_threshold() {
          stderr:\n{stderr}"
     );
     assert_snapshot_redacted(
-        "orphan_threshold_warning_default_stderr",
+        &clean_ai_snapshot_name("orphan_threshold_warning_default_stderr"),
         t.out.path(),
         stderr.into_owned(),
     );
