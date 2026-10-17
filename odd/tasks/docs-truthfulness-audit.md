@@ -261,10 +261,13 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
 - [x] **T8** — Links externos vivos como reporte scheduled. **Slice lychee-keyless**
       (decisión del usuario): `.github/workflows/external-link-report.yml` corre
       `lychee` semanal + manual sobre `README.md`, `CHANGELOG.md`, `docs/src/**/*.md`,
-      **report-only** (`fail: false` + `--exit-zero`, fuera de cualquier required status,
-      nunca gate). Excluye links internos del repo y `localhost`.
-      Diferidos (requieren `JINA_API_KEY`): drift semántico `jina embed` y claims de
-      deps contra Context7. Justificación de no-gate: red + quota + versions = flaky.
+      **report-only** (`fail: false`, fuera de cualquier required status, nunca gate) más un
+      step que verifica que lychee realmente chequeó. El flag `--exit-zero` que esta sección
+      citaba **no existe** en el release pineado (ver L11). Excluye links internos del repo y
+      `localhost`.
+      Descartado el 2026-10-17 (ver L12): ni drift semántico con `jina embed` ni claims de
+      deps contra Context7 son planes del repo — son herramientas de investigación del
+      agente. La justificación técnica sigue en pie: red + quota + versions = flaky.
 
 ## Log
 
@@ -336,7 +339,9 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
   workflow scheduled (cron semanal + `workflow_dispatch`) que corre `lychee` sobre
   `README.md`, `CHANGELOG.md`, `docs/src/**/*.md`, **report-only** (`fail: false` +
   `--exit-zero`, fuera de branch protection). Issue #2015 con `status:approved`,
-  PR #2016. Diferidos los slices jina/Context7 (requieren `JINA_API_KEY`).
+  PR #2016. **Corrección (ver L12)**: los slices jina/Context7 que esta entrada daba por
+  diferidos no son un plan del repo — Jina y Context7 son herramientas de investigación
+  del agente, no dependencias de webfang.
 
 - **L11 (2026-10-17)** — Cierre del slice lychee (defecto del step report-only). El
   `--exit-zero` que L10 lista como mecanismo **no existe** en el release pineado: lychee salía
@@ -353,14 +358,23 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
   `:86-87`, anclaje de los terminadores `awk`, clusters de flags cortos (`-qv`) y fragilidad por
   dependencia del `-e` contextual.
 
+- **L12 (2026-10-17)** — Aclaración de alcance del usuario: **Jina y Context7 son herramientas
+  de investigación del agente, no dependencias ni checks de webfang** ("no vamos a utilizar ni
+  Jina ni context7 en webfang"). Se corrigen las tres afirmaciones que las daban por plan
+  diferido del repo (Fase 3, L10 y `## Next steps`); no había nada que desarmar: cero
+  referencias en cualquier `Cargo.toml`, `.github/**` o `mise.toml`, y `JINA_API_KEY` nunca se
+  cableó en un workflow. El uso como herramientas de research (L2) queda intacto. En el mismo
+  pase se corrigió una cuarta afirmación falsa de la misma sección: Fase 3 seguía describiendo
+  `--exit-zero` como el mecanismo vigente, cuando L11 documenta que ese flag no existe en el
+  release pineado — el logbook se contradecía a tres párrafos de distancia.
+
 ## Next steps
 
 1. T9: corregir `check_docs_version_pins.sh` (advisories 2/3/4) + añadir caso prerelease al
    harness; cablear el gate en CI (advisory 1) tras issue con `status:approved` + ask-first.
 2. T6: migrar samples de `docs/src/` a `{{#include}}` (deferred).
 3. T7: mover el guard MCP version-marker a CI (deferred, toca `.github/`).
-4. T8 jina/Context7 slices diferidos: requieren `JINA_API_KEY` en secrets.
-5. `cargo fmt --all -- --check`, clippy strict y rustdoc verdes antes de cada commit.
-6. T8 residual (issue #2020, `status:approved`): comentario del harness `:86-87`, anclaje de
+4. `cargo fmt --all -- --check`, clippy strict y rustdoc verdes antes de cada commit.
+5. T8 residual (issue #2020, `status:approved`): comentario del harness `:86-87`, anclaje de
    los terminadores `awk`, clusters de flags cortos (`-qv`) y la fragilidad por dependencia del
    `-e` contextual en los call sites.
