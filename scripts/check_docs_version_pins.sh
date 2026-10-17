@@ -41,7 +41,22 @@ VERSION="$(sed -n '/^\[workspace\.package\]/,/^\[/p' "$MANIFEST" \
   | sed -n 's/^version[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)"
 
 [[ -n $VERSION ]] || err "no se pudo leer [workspace.package] version de $MANIFEST."
-[[ $VERSION =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || err "versión del workspace con formato inesperado: '$VERSION' (se espera X.Y.Z)."
+
+# The version grammar is defined ONCE and used by both sides of the comparison.
+# It used to apply to the workspace only: the doc literal was extracted with a
+# narrower pattern that dropped the suffix, so `v2.11.0-rc.1` was compared as
+# `v2.11.0`, matched a stable workspace, and passed — while a workspace ON
+# `2.11.0-rc.1` aborted here before checking anything. Both directions matter:
+# release.yml's preflight requires the tag to equal this version, so an RC
+# window puts `-rc.N` in the manifest by construction, and the tree went
+# unguarded for exactly that window.
+# The suffix is matched as a whole, and its identifiers cannot end in a dot, or
+# a pin at the end of a sentence ("... shipped in v2.11.0-rc.1.") would be read
+# as a different version and fail.
+VER_ERE='[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)?'
+PIN_ERE="v${VER_ERE}"
+
+[[ $VERSION =~ ^${VER_ERE}$ ]] || err "versión del workspace con formato inesperado: '$VERSION' (se espera X.Y.Z o X.Y.Z-rc.N)."
 
 ALLOW_MARKER='<!-- version-stale:allow -->'
 
@@ -55,7 +70,7 @@ mapfile -t FILES < <(
 [[ ${#FILES[@]} -gt 0 ]] || err "no se encontró ningún documento que revisar (README.md / docs/src/*.md)."
 
 offenders=()
-checked=0
+checked=0   # lines carrying at least one version literal, reported on success
 
 for f in "${FILES[@]}"; do
   while IFS= read -r hit; do
@@ -71,8 +86,8 @@ for f in "${FILES[@]}"; do
       [[ -n $literal ]] || continue
       [[ $literal == "v$VERSION" ]] && continue
       offenders+=("$f:$lineno  $literal  (workspace: v$VERSION)")
-    done < <(printf '%s\n' "$text" | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' || true)
-  done < <(grep -nE 'v[0-9]+\.[0-9]+\.[0-9]+' "$f" || true)
+    done < <(printf '%s\n' "$text" | grep -oE "$PIN_ERE" || true)
+  done < <(grep -nE "$PIN_ERE" "$f" || true)
 done
 
 if [[ ${#offenders[@]} -gt 0 ]]; then
@@ -84,4 +99,5 @@ if [[ ${#offenders[@]} -gt 0 ]]; then
   exit 1
 fi
 
-printf 'OK: los %d documentos declaran sólo v%s (o historia marcada).\n' "${#FILES[@]}" "$VERSION"
+printf 'OK: %d líneas con pines de versión en %d documentos; todas declaran v%s o están marcadas como historia.\n' \
+  "$checked" "${#FILES[@]}" "$VERSION"
