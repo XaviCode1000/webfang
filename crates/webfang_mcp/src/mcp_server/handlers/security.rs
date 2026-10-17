@@ -179,7 +179,7 @@ pub fn build_router() -> ToolRouter<McpHandler> {
 /// Inspect a body in degraded mode for the MCP `detect_waf` tool (REQ-WAF-09).
 ///
 /// Returns the first evidence's provider when the degraded verdict blocks.
-/// Without HTTP context only [`WafTier::Challenge`](WafInspector) markers block;
+/// Without HTTP context only [`WafTier::Challenge`](webfang_core::domain::waf::WafTier::Challenge) markers block;
 /// fingerprint evidence is collected but never blocks here — this is the
 /// false-positive fix (#346).
 fn detect_waf_provider(html: &str) -> Option<&'static str> {

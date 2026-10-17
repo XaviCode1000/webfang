@@ -605,7 +605,7 @@ fn checkpoint_scoped_path(mode: &PersistenceMode, seed: &str) -> Option<PathBuf>
     }
 }
 
-/// Transitional shim: [`TransportPolicy`] from [`EngineOptions`].
+/// Transitional shim: [`TransportPolicy`] from [`EngineOptions`](crate::application::crawler::engine::EngineOptions).
 ///
 /// Lets callers migrate one knob bag at a time; `EngineOptions` deprecation —
 /// a separate `type:breaking-change` act per the signed design (#1288) —

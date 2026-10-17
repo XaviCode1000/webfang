@@ -3,7 +3,7 @@
 //! Extracted from `engine.rs` (strangler fig Corte C, issue #440). Encapsulates
 //! the *scheduling decisions* that were previously inlined in `Engine::run()`:
 //! which URL to crawl next, deduplication of visited URLs, the pending-work
-//! buffer drained from the shared [`UrlQueue`], and the autoscale-aware
+//! buffer drained from the shared [`UrlQueue`](crate::infrastructure::crawler::UrlQueue), and the autoscale-aware
 //! concurrency limit.
 //!
 //! The `Engine` remains the *orchestration mechanism*: it owns the `JoinSet`,
@@ -55,7 +55,7 @@ use crate::domain::DiscoveredUrl;
 ///
 /// Owns the canonical `Arc`s for the visited set ([`UrlDeduplicator`]), the
 /// checkpoint string mirror (`visited_urls`), and the shared discovery queue
-/// ([`UrlQueue`]). These are `Arc`-shared with the per-page tasks, which push
+/// ([`UrlQueue`](crate::infrastructure::crawler::UrlQueue)). These are `Arc`-shared with the per-page tasks, which push
 /// discovered links onto `queue`; the scheduler drains that queue into a local
 /// `pending` buffer and hands out the next URL to crawl.
 pub(crate) struct CrawlScheduler {

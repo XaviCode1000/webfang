@@ -71,14 +71,24 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
 
 ### Fase 1 — Determinístico, fail-closed (el 90% del valor)
 
-- [ ] **T1 (S1)** — Cerrar los 39 warnings en dos pasadas: **33 links reales** (resolver
+- [x] **T1 (S1)** — Cerrar los 39 warnings en dos pasadas: **33 links reales** (resolver
       a un path válido o reescribir la prosa) y **6 a escapar** (`src`, `srcset` ×2,
       `href`, `100,599`, `REASON_*` — son brackets literales, no items). No son code
       spans: rustdoc los cuenta como links justamente porque usa la misma sintaxis.
-      Ruta: delegated (writer, 6+ archivos no triviales). Riesgo: item 3 (contrato
-      público consumido).
+      Ruta: delegated (writer). Riesgo: item 3 (contrato público consumido).
       Verificación: `RUSTDOCFLAGS="--document-private-items" cargo doc --workspace
       --all-features --no-deps 2>&1 | grep -c 'unresolved link'` → **0**.
+
+      **Implementado.** 24 archivos, 39 líneas (una por warning), 32 links resueltos
+      a su path real, 1 reescrito como code span (`jsonrpc_panic_response` es un `fn`
+      module-private en `server.rs`: rustdoc no lo linkea desde un módulo hermano ni
+      con `--document-private-items`, y ampliar su visibilidad sería un cambio de
+      código), 6 brackets escapados. Dos patrones dominaron: el path bare se resuelve
+      sólo contra el módulo actual (faltaba el prefijo), y un método de trait no se
+      puede linkear como `Type::method` sin el trait en scope.
+      Verificado: `--document-private-items` → 0 · `-D warnings` exit 0 ·
+      doctests 77 passed / 7 ignored (baseline intacto) · `ci_fast_gate.sh` GREEN
+      (PASS=26, FAIL=0) · diff 100% doc comments, 0 `allow()` agregados.
 - [ ] **T2 (S2)** — Parametrizar las 8 ocurrencias de `v2.4.0`. Preferencia:
       preprocessor mdBook que inyecte la versión desde `Cargo.toml` (mata la clase, no
       la detecta); fallback documentado: marker `<!-- version-stale:allow -->` para
@@ -197,13 +207,18 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
   a `(enforcing)` y header reescrito. Verificado: `actionlint` 0 · caso verde exit 0 ·
   `latest` roto → `::error::` + exit 1 (worktree aislado). **Bloqueado para PR:** no
   existe issue con `status:approved` y el agente no puede aplicar ese label.
+  **Mergeado** después como `f6a14063` (PR #2008); la issue fue #2007.
+- **L7 (2026-10-17)** — T1 ejecutado en worktree aislado
+  (`webfang-worktrees/docs-truthfulness-audit`, rama `docs/truthfulness-audit`) según
+  `AGENTS.md`: bootstrap per-tree, CodeGraph/CodeDB indexados con path absoluto, writer
+  delegado con superficies de edición acotadas, verificación del parent antes de
+  commitear. La lista de 11 archivos del inventario original era parcial: los 39
+  warnings viven en **24 archivos**.
 
 ## Next steps
 
-1. **T4b:** abrir la issue de CI con `status:approved` (owner) y el PR desde
-   `ci/support-drift-required`. Sin ese label, `Validate PR metadata` rechaza el PR —
-   el mismo gate que estamos tocando.
-2. T1: los 33 links reales + 6 escapes. Es el único hallazgo con superficie de código.
-3. T2 y T3 en el mismo PR de docs (tocan `docs/src/` y `book.toml`, sin conflicto con T1).
-4. `cargo fmt --all -- --check`, clippy strict y rustdoc verdes antes de cada commit.
-5. T8 queda deferred hasta que Fase 1 esté verde.
+1. T2 y T3 en el mismo PR de docs siguiente (tocan `docs/src/` y `book.toml`, sin
+   conflicto con T1, que ya cerró).
+2. T5: declarar los 3 lints en las 4 crates publicadas.
+3. `cargo fmt --all -- --check`, clippy strict y rustdoc verdes antes de cada commit.
+4. T8 queda deferred hasta que Fase 1 esté verde.

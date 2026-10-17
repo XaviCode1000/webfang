@@ -946,7 +946,7 @@ fn percent_decode_utf8(input: &str) -> String {
 /// [`crate::domain::crawler_port::filename::sanitize_filename_component`]
 /// — the single source of truth for filename sanitization. Returns an
 /// empty string when nothing safe remains (fully hostile input such as
-/// `.` / `..`), so callers like [`Self::generate_filename`] fall back to
+/// `.` / `..`), so callers like [`Downloader::generate_filename`] fall back to
 /// hash-based naming.
 fn sanitize_filename(name: &str) -> String {
     crate::domain::crawler_port::filename::sanitize_filename_component(name).unwrap_or_default()

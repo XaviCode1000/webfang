@@ -328,7 +328,7 @@ fn build_ai_slot(slot: &AiSlot, headings: Headings) -> clap::Arg {
 /// Ungated by decision (ADR-0004, slice C). Every flag here describes
 /// behavior a build without the `ai` cargo feature can still honor — the
 /// cleaner runs over whatever
-/// [`EmbeddingPort`](webfang_core::domain::embedding_port::EmbeddingPort) the
+/// [`EmbeddingPort`](crate::domain::embedding_port::EmbeddingPort) the
 /// run built, remote included — so hiding any of them from one build trades a
 /// named, actionable exit 78 from
 /// [`check_clean_ai_feature`](crate::cli::preflight::check_clean_ai_feature)

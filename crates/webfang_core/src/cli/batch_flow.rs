@@ -230,7 +230,7 @@ fn warn_batch_crawl_flags_ignored(opts: &CrawlOptions) {
 /// URL instead of crawling it, those flags are inert here and the operator
 /// must hear about it rather than assume a crawl happened.
 ///
-/// `root_correlation` (#1439) travels onto the [`BatchProcessor`] so every
+/// `root_correlation` (#1439) travels onto the [`BatchProcessor`](crate::application::batch::BatchProcessor) so every
 /// per-URL crawl engine of this run shares the one announced identity.
 async fn prepare_batch_manager(
     opts: &CrawlOptions,
@@ -504,12 +504,12 @@ async fn run_batch_elastic(
     Ok(())
 }
 
-/// Convert the batch-captured pages into [`ScrapedContent`] and collect
+/// Convert the batch-captured pages into [`ScrapedContent`](crate::domain::ScrapedContent) and collect
 /// per-page extraction failures.
 ///
 /// Pages are streamed one at a time from the sink's spool (#653) — the raw
 /// bodies are never all resident at once. Each body goes through the same
-/// [`extract_content`] path as single-page mode: Readability → text fallback →
+/// [`extract_content`](crate::application::extraction::extract_content) path as single-page mode: Readability → text fallback →
 /// binary detection. Pages that fail extraction are logged and reported; the
 /// `exit_code` decision is made afterwards by `report_phase`.
 ///
@@ -611,7 +611,7 @@ fn resolve_batch_tls_emulation(opts: &CrawlOptions) -> Result<wreq_util::Profile
 /// so every seed is scraped exactly once and `--max-pages 1` can no longer
 /// starve seeds.
 ///
-/// The concurrency bound comes from the run's [`BudgetModel`] Operation.crawl
+/// The concurrency bound comes from the run's [`BudgetModel`](crate::domain::budget::BudgetModel) Operation.crawl
 /// tier (task 2.5b).
 fn build_batch_crawler_config(
     opts: &CrawlOptions,

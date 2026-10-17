@@ -8,7 +8,7 @@
 use crate::application::http_client::HttpError;
 use crate::error::ScraperError;
 
-/// Convert an [`HttpError`] into a domain [`CrawlError`] with the URL context.
+/// Convert an [`HttpError`] into a domain [`CrawlError`](crate::domain::error::CrawlError) with the URL context.
 ///
 /// This is the application-layer half of the `HttpError` → `CrawlError`
 /// mapping; the domain half lives in `domain/error/crawl_error.rs`

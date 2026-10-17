@@ -142,7 +142,7 @@ fn export_formats() -> &'static [&'static str] {
 /// THE single enforcement point for the MCP `max_pages` parameter, shared
 /// by `crawl_site` and `scrape_with_options` (#940): bounds come from the
 /// OptionsSpec SSOT (`crawler::MAX_PAGES`) via its `check_bound` policy.
-/// `check_bound` returns a typed [`BoundError`] (issue #948 F7) — no
+/// `check_bound` returns a typed [`BoundError`](webfang_core::domain::options_spec::BoundError) (issue #948 F7) — no
 /// re-comparison of the value, no policy re-access, the MCP-stable wording
 /// renders directly from the variant.
 ///
@@ -164,7 +164,7 @@ pub(crate) fn validate_max_pages(value: u32) -> Result<(), McpError> {
 /// THE single enforcement point for the MCP `max_depth` parameter of
 /// `crawl_site` (#940 F3, #948 F7): bounds come exclusively from the
 /// OptionsSpec SSOT (`crawler::MAX_DEPTH`) via its `check_bound` policy.
-/// The typed [`BoundError`] carries the bound as data so the
+/// The typed [`BoundError`](webfang_core::domain::options_spec::BoundError) carries the bound as data so the
 /// MCP-stable wording renders without re-comparing the value or
 /// re-reading the policy.
 ///
@@ -1178,7 +1178,7 @@ impl VerifyWafIntegrityParams {
     /// # Errors
     /// Returns `McpError::invalid_params` if `html` (when present) exceeds the
     /// maximum blob size or `status` (when present) is not a valid HTTP status
-    /// code in the inclusive range [100,599].
+    /// code in the inclusive range \[100,599].
     pub fn validate(&self) -> Result<(), McpError> {
         if let Some(h) = &self.html {
             require_max_len("html", h, MAX_BLOB_LEN)?;

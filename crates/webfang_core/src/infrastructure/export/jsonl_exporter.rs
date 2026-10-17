@@ -217,7 +217,7 @@ impl JsonlExporter {
 
     /// Append a whole batch, returning how many payload bytes were queued.
     ///
-    /// The write loop of [`Exporter::export_batch`], split out so the
+    /// The write loop of [`Exporter::export_batch`](crate::domain::exporter::Exporter::export_batch), split out so the
     /// instrumented wrapper can report the outcome AND the byte volume on its
     /// span (#1610, OBS-H6) without touching this loop's control flow. The
     /// returned count is the sum of every appended line INCLUDING its

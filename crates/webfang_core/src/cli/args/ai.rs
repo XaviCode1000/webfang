@@ -81,7 +81,7 @@ pub(crate) fn parse_max_chars(s: &str) -> Result<usize, String> {
 ///
 /// The returned value is a TOKEN budget. Translating it to the character
 /// budget the cleaner actually enforces is
-/// [`options_spec::ai::max_tokens_to_max_chars`], and the precedence between
+/// [`options_spec::ai::max_tokens_to_max_chars`](crate::domain::options_spec::ai::max_tokens_to_max_chars), and the precedence between
 /// the two flags lives in [`build_ai_config`](crate::cli::args).
 ///
 /// # Why `0` is still rejected (unchanged)

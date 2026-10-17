@@ -492,7 +492,7 @@ impl McpState {
 /// operator-facing signal for the same inconsistency.
 ///
 /// A relative `output_dir` (the `ScraperConfig::default()` `"output"`) is
-/// skipped: like [`validate_export_dir`], it resolves against the server's
+/// skipped: like [`McpState::validate_export_dir`], it resolves against the server's
 /// CWD and the server's own boundary does not apply. The shape decision goes
 /// through [`path_gate::classify`](crate::mcp_server::path_gate::classify)
 /// instead of the old platform-blind `Path::is_absolute()` (G-8, issue

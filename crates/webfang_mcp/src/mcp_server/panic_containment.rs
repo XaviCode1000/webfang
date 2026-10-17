@@ -126,7 +126,7 @@ pub(crate) struct RecoveredRequestId {
 
 impl RecoveredRequestId {
     /// The id nobody could recover — always `null`, always with a stated
-    /// reason. This is the constructor [`jsonrpc_panic_response`] uses for a
+    /// reason. This is the constructor `jsonrpc_panic_response` uses for a
     /// panic raised above the body-reading layer.
     pub(crate) fn unrecoverable(source: IdSource) -> Self {
         Self {

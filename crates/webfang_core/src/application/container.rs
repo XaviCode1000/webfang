@@ -234,7 +234,7 @@ pub(crate) fn build_sitemap_parser(
     ))
 }
 
-/// Build the crawl robots.txt fetcher as the domain [`RobotsPort`] seam.
+/// Build the crawl robots.txt fetcher as the domain [`RobotsPort`](crate::domain::crawler_port::RobotsPort) seam.
 ///
 /// Composition-root helper (ADR-0012-B post-narrow robots slice, mirroring
 /// [`build_crawl_session_pool`]): the concrete
@@ -298,7 +298,7 @@ pub(crate) fn build_vector_exporter(config: ExporterConfig) -> Box<dyn Exporter>
     Box::new(VectorExporter::new(config))
 }
 
-/// Build the HTML link extractor as the domain [`LinkExtractor`] seam.
+/// Build the HTML link extractor as the domain [`LinkExtractor`](crate::domain::link_extractor::LinkExtractor) seam.
 ///
 /// Composition-root helper (ADR-0012-B unit 6, mirroring
 /// [`build_binary_writer`]): the concrete
@@ -310,7 +310,7 @@ pub(crate) fn build_link_extractor(
     std::sync::Arc::new(crate::infrastructure::crawler::link_extractor::HtmlLinkExtractor)
 }
 
-/// Build the static (non-JS) HTTP fetcher as the [`StaticFetchPort`] seam.
+/// Build the static (non-JS) HTTP fetcher as the [`StaticFetchPort`](crate::domain::crawler_port::StaticFetchPort) seam.
 ///
 /// Composition-root helper (ADR-0012-B unit 7, mirroring
 /// [`build_link_extractor`]): the wreq-backed concrete is named only here.
@@ -319,7 +319,7 @@ pub(crate) fn build_static_fetcher(
     std::sync::Arc::new(crate::infrastructure::crawler::http_client::StaticHttpFetcher)
 }
 
-/// Build the discovery queue as the [`UrlQueuePort`] seam.
+/// Build the discovery queue as the [`UrlQueuePort`](crate::domain::crawler_port::UrlQueuePort) seam.
 ///
 /// Composition-root helper (ADR-0012-B unit 8, mirroring
 /// [`build_static_fetcher`]): the dedup+priority concrete is named only
@@ -328,7 +328,7 @@ pub(crate) fn build_url_queue() -> std::sync::Arc<dyn crate::domain::crawler_por
     std::sync::Arc::new(crate::infrastructure::crawler::url_queue::UrlQueue::new())
 }
 
-/// Build the default filesystem binary writer as the [`BinaryWriterPort`]
+/// Build the default filesystem binary writer as the [`BinaryWriterPort`](crate::domain::ports::BinaryWriterPort)
 /// fallback seam.
 ///
 /// Composition-root helper (ADR-0012-B unit 4, mirroring
@@ -954,7 +954,7 @@ impl Container {
     }
 
     /// Build an [`ElasticIngestion`] and attach the AI semantic cleaner when
-    /// present under the `ai` feature. Shared by [`with_elastic_ingestion`]
+    /// present under the `ai` feature. Shared by [`Self::with_elastic_ingestion`]
     /// so the injection logic lives in exactly one place.
     fn build_ingestion(
         repository: DynVectorRepository,

@@ -32,7 +32,7 @@ impl OutputError {
     /// Classify this output error per the Error Classification Matrix
     /// (`docs/error-classification-matrix.md`, #865).
     ///
-    /// Io errors mirror [`CrawlError::classify`] rows 21/22 (transient for
+    /// Io errors mirror [`CrawlError::classify`](crate::domain::error::CrawlError::classify) rows 21/22 (transient for
     /// `Interrupted`/`WouldBlock`/`TimedOut`, permanent otherwise).
     /// Serialization failures are single-item data issues: the pipeline is
     /// healthy, so the class is domain-recoverable. Backend failures are
