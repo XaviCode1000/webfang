@@ -289,6 +289,24 @@ fn hermetic_empty_config_file() -> std::path::PathBuf {
     path
 }
 
+/// Mount a single catch-all page on the test's mock server.
+///
+/// One mount serves both directions, which is why it is a shared helper: a run
+/// that PASSES validation gets a hermetic, instant success target instead of
+/// the real network, AND a run that should have been rejected still resolves
+/// its mock if the rejection regresses — observed as exit 0 rather than as a
+/// network error, which is the failure mode that hides.
+pub(crate) async fn mount_single_page_site(t: &BehavioralTest) {
+    Mock::given(method("GET"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            "<html><body><article><h1>Page</h1>\
+             <p>Substantive content long enough to clear the fifty character \
+             minimum content guard comfortably.</p></article></body></html>",
+        ))
+        .mount(&t.server)
+        .await;
+}
+
 /// Shared test harness: one mock server + one temp output directory.
 pub(crate) struct BehavioralTest {
     pub server: wiremock::MockServer,
@@ -469,10 +487,22 @@ pub(crate) async fn mock_robots(server: &wiremock::MockServer, robots_body: &str
 /// is built on it; `redact_nondeterministic` is the one every consumer uses.
 pub(crate) use webfang_test_utils::{redact_nondeterministic, redact_temp_path};
 
+/// Snapshot a stderr blob with the harness temp dir and other
+/// non-deterministic output redacted.
+///
+/// BOTH redaction filters live here, and that is the point. This function had
+/// a per-test-file copy in at least two behavioral tests whose only difference
+/// was the filter set — one carried the `date:` rule, the other the
+/// `Parsed using` rule. Same drift #1649 recorded for `redact_nondeterministic`,
+/// one level up: the same output sanitized differently depending on which copy
+/// recorded it, which makes a snapshot diff mean two different things.
+/// Unifying here means a test cannot silently change what gets redacted by
+/// moving.
 pub(crate) fn assert_snapshot_redacted(name: &str, dir: &Path, value: impl Into<String>) {
     let redacted = redact_nondeterministic(dir, &value.into());
     let mut settings = insta::Settings::clone_current();
     settings.add_filter(r"date: \d{4}-\d{2}-\d{2}", "date: [DATE]");
+    settings.add_filter(r"(?m)^Parsed using .+$", "Parsed using [REDACTED]");
     settings.bind(|| {
         assert_snapshot!(name, redacted);
     });

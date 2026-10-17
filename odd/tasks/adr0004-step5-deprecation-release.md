@@ -33,9 +33,9 @@ mitadas (suite wiremock verde, registro reproducible archivado en #1961).
 | T1 | Etiqueta de recuperación `onnx-tree/pre-step5` | S2 | inline (git) | ✅ `38ab6a31`, pusheada |
 | T2 | Issue de objeción #1997 + issues de trabajo #1998/#1999 | S6 | inline (gh) | ✅ creadas, abiertas |
 | T3 | Enmienda del ADR: minor sin marker, tag y canal concretos | S1, S2, S6 | inline (docs) | ✅ en este PR |
-| T4 | Aviso en ejecución + snapshot | S3 | delegado | 🔲 #1999, bloqueado por `status:approved` |
-| T5 | Aviso del umbral huérfano + test | S4 | delegado | 🔲 #1999 |
-| T6 | Guía de migración + README | S5 | delegado | 🔲 #1999 |
+| T4 | Aviso en ejecución + snapshot | S3 | delegado | ✅ en este PR |
+| T5 | Aviso del umbral huérfano + test | S4 | delegado | ✅ en este PR |
+| T6 | Guía de migración + README | S5 | delegado | ✅ en este PR |
 | T7 | Verificar que el minor sale minor | S1 |inline (release) | 🔲 al cortar el release |
 
 ## Details
@@ -73,10 +73,10 @@ Snapshot del texto del aviso con `redact_nondeterministic()` (patrón de
 - [x] `git tag` de recuperación creado y pusheado, nombre no-`v`
 - [x] Issue de objeción creada, abierta, `type:chore`
 - [x] Ningún PR cierra el issue de objeción
-- [ ] Aviso sale una vez por corrida y nombra canal + schedule + shims
-- [ ] Aviso del umbral: una vez por corrida, solo con umbral default
-- [ ] Guía de migración enlazada desde el aviso; README declara la pérdida de offline-total
-- [ ] `status:approved` en #1998 y #1999 (label protegida: la pone el maintainer)
+- [x] Aviso sale una vez por corrida y nombra canal + schedule + shims
+- [x] Aviso del umbral: una vez por corrida, solo con umbral default
+- [x] Guía de migración enlazada desde el aviso; README declara la pérdida de offline-total
+- [x] `status:approved` en #1999 (la pone el maintainer); en #1998 moot — se autocerró al mergear PR-A
 - [ ] Al cortar el release: verificar que salió minor y no major
 
 ## Log
@@ -94,3 +94,9 @@ Snapshot del texto del aviso con `redact_nondeterministic()` (patrón de
 - **L5 (2026-10-16):** PR-A abierto (#2000, cierra #1998), CI Gate en verde; el commit de D1 se suma
   encima porque el ADR es la fuente normativa y dejar el knob sin fijar obligaría al aviso del paso 5
   a nombrarlo por su cuenta.
+- **L6 (2026-10-16):** PR-A mergeado como `4286d921` (squash), #1998 cerrado por autocierre; #1997
+  sigue abierta a propósito porque es el reloj de la señal 2. T4-T6 quedan hechas en este PR (segundo del par,
+  sobre `main` ya avanzado): la rama nunca se pusheó, así que `git rebase origin/main` es seguro y no
+  obliga a force-push — y no comparte ni un archivo con PR-A, que fue lane docs puro, así que el
+  rebase fue limpio. El checklist de `status:approved` se parte en dos: #1999 lo tiene, #1998 quedó
+  moot al auto cerrarse.
