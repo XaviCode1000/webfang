@@ -338,6 +338,21 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
   `--exit-zero`, fuera de branch protection). Issue #2015 con `status:approved`,
   PR #2016. Diferidos los slices jina/Context7 (requieren `JINA_API_KEY`).
 
+- **L11 (2026-10-17)** — Cierre del slice lychee (defecto del step report-only). El
+  `--exit-zero` que L10 lista como mecanismo **no existe** en el release pineado: lychee salía
+  con exit 2 (`unexpected argument '--exit-zero' found`) y, con `fail: false`, el job quedaba
+  verde — **nunca chequeó un link**. Fix en `1f1deec0`: pin `lycheeVersion: v0.24.2`, flags
+  reales y step `Assert lychee actually checked something` (el reporte nunca queda en 0 bytes,
+  pero exit 2 es ambiguo entre error de clap y hallazgos, así que el contenido es la única
+  evidencia). Harness de regresión nuevo `scripts/test_external_link_workflow.sh` (`df5dcc74`,
+  9 casos, offline, sin red) cableado en el job `repo-guards` de `ci.yml`. Review RDD aprobada y
+  quemada sobre `df5dcc74` (lineage `review-7f94efc535b19b59`); 3 advisories triados: R3-001 /
+  R4-001 **falsos positivos** (probes A/B: `set -e` no aplica en el cuerpo de una función
+  invocada como condición `if`) y R3-002 **confirmado** y diferido. Issue #2020 con
+  `status:approved`, PR #2021, merge `5fba8567`. Pendientes en #2020: comentario del harness
+  `:86-87`, anclaje de los terminadores `awk`, clusters de flags cortos (`-qv`) y fragilidad por
+  dependencia del `-e` contextual.
+
 ## Next steps
 
 1. T9: corregir `check_docs_version_pins.sh` (advisories 2/3/4) + añadir caso prerelease al
@@ -346,3 +361,6 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
 3. T7: mover el guard MCP version-marker a CI (deferred, toca `.github/`).
 4. T8 jina/Context7 slices diferidos: requieren `JINA_API_KEY` en secrets.
 5. `cargo fmt --all -- --check`, clippy strict y rustdoc verdes antes de cada commit.
+6. T8 residual (issue #2020, `status:approved`): comentario del harness `:86-87`, anclaje de
+   los terminadores `awk`, clusters de flags cortos (`-qv`) y la fragilidad por dependencia del
+   `-e` contextual en los call sites.
