@@ -385,6 +385,30 @@ jobs:
       # no cargo, no network, no build.
       - name: Compatibility harness semantics harness
         run: bash scripts/tests/test_check_compatibility.sh
+      # Docs version pins (#2017): README.md and docs/src/*.md carry literal
+      # `vX.Y.Z` install recipes, and a pin is a claim about which release
+      # exists — it goes stale silently. Nine of them sat four minors behind
+      # when the guard was written. This step has to run on EVERY PR, not only
+      # on markdown changes: the drift starts on the Cargo.toml side, so a
+      # version bump that touches no markdown still leaves a stale recipe
+      # behind. `repo-guards` is the only job with neither `paths:` nor `if:`,
+      # and `gate` already lists it as always-applicable in both scopes, so
+      # drift reds the required `CI Gate` even for a docs-only PR. The
+      # path-filtered alternative cannot work: a workflow behind `paths:` can
+      # never be a required context, because PRs outside the filter would
+      # never report it and would sit "pending" forever. Pure bash over the
+      # checked-out tree: no cargo, no network, no git history (the default
+      # depth-1 checkout is sufficient).
+      - name: Docs version pins gate
+        run: bash scripts/check_docs_version_pins.sh
+      # Semantics harness for the gate above. A drift check that has silently
+      # stopped recognising drift is indistinguishable from no check at all,
+      # and the RC window was exactly that class of defect (#2017): a
+      # `v2.11.0-rc.1` doc pin passed against a stable workspace while a
+      # `2.11.0-rc.1` workspace aborted the guard before it compared anything.
+      # Offline, mktemp fixtures only, no cargo and no network.
+      - name: Docs version pins semantics harness
+        run: bash scripts/test_docs_version_pins.sh
       # Regression guard for #836: block-scalar nesting bugs in workflow YAML
       # (steps swallowed into a `run: |` block) stay valid YAML and only fail
       # at runtime post-merge (#833→#835). actionlint + shellcheck catch them
