@@ -260,6 +260,18 @@ jobs:
       # `-E`. Runs against fixtures only, no API.
       - name: AI-attribution trailer check semantics harness
         run: bash scripts/test_no_ai_attribution.sh
+      # Semantics harness for the lychee step of external-link-report.yml. That
+      # job runs on a schedule only, so a broken step gets no PR-time signal at
+      # all, and it is report-only by construction: `fail: false` swallows every
+      # lychee failure and exit code 2 is ambiguous (clap usage error and link
+      # findings share it), so the report content is the only evidence links
+      # were checked. Proves offline that every flag in `args:` exists in the
+      # pinned lychee release — a nonexistent flag made the job green with
+      # nothing checked, from the day it merged — that the pin fails closed when
+      # missing or unverified, and that the committed assertion behaves
+      # correctly on real empty, footer-only and populated reports.
+      - name: External-link report workflow semantics harness
+        run: bash scripts/test_external_link_workflow.sh
       # Exit-code taxonomy must be typed-error based, never message-string
       # coupled. This forbids re-introducing the removed string match on the
       # "no URLs found" parser message (stabilization-sitemap-regression,
