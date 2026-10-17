@@ -273,7 +273,7 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
       review de #2026. El harness de semántica fija lo que el gate DECIDE; nada fijaba sus
       BORDES, y la primera versión del gate estuvo inerte una release entera porque ningún
       workflow lo invocaba (el mismo defecto que T9.1 arregló a mano). Nuevo
-      `scripts/test_docs_version_pins_wiring.sh` (11 casos, offline, texto sobre el árbol):
+      `scripts/test_docs_version_pins_wiring.sh` (11 casos, 12 desde el follow-up de L15; offline, texto sobre el árbol):
       `repo-guards` sin `paths:`/`if:`, su step presente, `gate` dependiéndolo en `needs:` y
       en la lista narrow-scope always-applicable, el gate espejado en `lane_docs` +
       `lane_fmt_and_guards`, los dos harnesses en `lane_ci`, y el trigger de `lane_ci` casando
@@ -292,11 +292,14 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
       anti-vacuidad, los 8 controles negativos con su razón nombrada, las guardas `cmp -s`, el
       regex anclado (casa exactamente 3 rutas y rechaza `_extra.sh`, `.bak`, `sub/scripts/…`),
       que el step no es skipeable y que ningún step preexistente cambió su salida (sólo el texto
-      de un `SKIP`, sin consumidores). Dejó 3 advisories: (1) la comprobación de lane usaba
-      `grep -qF` sobre la ruta, así que un **comentario** que la nombrara satisfacía el check —
-      **corregido en este mismo candidato** (los lanes ahora tienen que *ejecutar* el gate) y
-      fijado con el caso 11, un control negativo que sustituye las dos líneas de ejecución por un
-      comentario; (2) una ruta inexistente como argumento aborta temprano con `sed` rc=2 (nunca
+       de un `SKIP`, sin consumidores). Dejó 3 advisories: (1) la comprobación de lane usaba
+       `grep -qF` sobre la ruta, así que un **comentario** que la nombrara satisfacía el check.
+       **Corregido sólo a medias aquí, y el límite se dice**: el caso 11 (control negativo que
+       sustituye las líneas de ejecución por un comentario) fija la regla en `lane_docs` y
+       `lane_fmt_and_guards`, pero el bucle de `lane_ci` siguió comparando la ruta **sola** — un
+       comentario seguía satisfaciéndolo. La review de este mismo PR lo re-emitió como
+       `R2-lane-ci-comment-gap` (readability) y `R3-002` (reliability), y se cierra en el
+       follow-up de L15 con el caso 12; (2) una ruta inexistente como argumento aborta temprano con `sed` rc=2 (nunca
       falso verde); (3) el mensaje de commit decía `RED 4/10` — precisado a `3/11` contra el
       baseline medido con el harness final.
       Advisory **R2-001** de la review de #2026 (readability) cerrado aquí: la línea 241 de
@@ -491,13 +494,43 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
   "arreglar" cinco hallazgos adivinados, se dejan a la review de este candidato: ve las mismas
   regiones y los re-emite con texto propio.
 
+- **L15 (2026-10-17)** — Follow-up del hueco de `lane_ci`, pedido textual del usuario: **"el hueco
+  de lane_ci"**. Es el advisory que la review de #2027 re-emitió con texto propio
+  (`R2-lane-ci-comment-gap` + `R3-002`, ambos en el bucle de `lane_ci` de
+  `check_fast_gate_wiring`), y su causa raíz es una divergencia interna al harness: el bucle de
+  `lane_docs`/`lane_fmt_and_guards` filtra comentarios (`grep -vE '^[[:space:]]*#'`) antes de
+  exigir una línea de ejecución, y el bucle de `lane_ci` — escrito antes de esa corrección —
+  comparaba la ruta **sola**. Al endurecer sólo el primero con el caso 11, el segundo quedó como
+  la superficie más débil justo en la lane que un cambio `scripts/**` siempre ejecuta.
+
+  Rama `fix/lane-ci-comment-stripping` desde `main @ d55b40b1` (post-merge de #2027). **RED
+  primero, y medido**: el caso 12 (control negativo que sustituye el `run_step` del harness de
+  cableado por un comentario que nombra su ruta) se añadió **antes** de tocar el check, y contra
+  el check viejo dio `FAIL: case 12` con `lane_ci that only MENTIONS the harness in a comment
+  passed` → `FAILED: 1/12`. Eso es la prueba de que el hueco existía, no una inferencia desde el
+  advisory. Luego el edit: el bucle de `lane_ci` pasa a filtrar comentarios y a exigir una línea de
+  **ejecución** (`run_guard … <script>` o `bash <script>`), la misma regla y la misma alternancia
+  que ya usaban las otras dos lanes → `OK: 12/12`. Evidencia: `bash -n` limpio; harness de
+  semántica `11 ok, 0 fail`; `ci_fast_gate.sh` GREEN (`PASS=4 FAIL=0 SKIP=5`) con
+  `PASS: docs version pins wiring (offline)`; shellcheck 0.11.0 limpio con el vocabulario de
+  ignores de `repo-guards`. Diff: 43 inserciones / 3 deleciones, un solo archivo de código.
+
+  De paso se corrigió el **overclaim** que este doc había dejado en T9.2: decía que el hueco del
+  comentario estaba "corregido en este mismo candidato" y fijado con el caso 11, cuando ese caso
+  cubría sólo dos de las tres lanes. Ahora el texto nombra la corrección parcial, el residual y
+  su cierre aquí. El PR se cuelga de #2017 como `Closes part of` — mismo criterio que #2027 y
+  misma salvedad: el harness no es un AC de ese issue, así que cerrar el tracker sigue siendo
+  decisión del maintainer.
+
 ## Next steps
 
 1. Advisories de la review de #2026 sobre el cableado (R3-1, R3-2, R3-3, R4-1, R4-2): sin
    texto recuperable (ver L14) → los re-deriva la review de T9.2. Advisories de la review de
    #2025 sobre `check_docs_version_pins.sh` (R2-version-grammar-message,
    R2-counter-semantics/R3-3, R3-2, R3-1): reportables como trabajo aparte, ninguno está en el
-   AC de #2017. T9, T9.1 y T9.2 cerrados.
+   AC de #2017. Los dos advisories de la review de #2027 sobre el harness
+   (`R2-lane-ci-comment-gap`, `R3-002`, ambos en el bucle de `lane_ci`): cerrados en el follow-up
+   de L15 con el caso 12. T9, T9.1 y T9.2 cerrados.
 2. T6: migrar samples de `docs/src/` a `{{#include}}` (deferred).
 3. T7: mover el guard MCP version-marker a CI (deferred, toca `.github/`).
 4. `cargo fmt --all -- --check`, clippy strict y rustdoc verdes antes de cada commit.
