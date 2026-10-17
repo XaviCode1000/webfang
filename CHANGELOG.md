@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.12.0] - 2026-10-17
+
+
+### 🎉 Added
+
+- Aviso de deprecacion de ONNX local, aviso de umbral huerfano y guia de migracion (ADR-0004 paso 5) ([#2001](https://github.com/XaviCode1000/webfang/pull/2001))
+
+### 📖 Documentation
+
+- Cerrar los 39 links privados rotos ([#2010](https://github.com/XaviCode1000/webfang/pull/2010))
+- Pines de versión y atestaciones veraces, capítulos huérfanos reclasificados ([#2012](https://github.com/XaviCode1000/webfang/pull/2012))
+
+### 🔧 Other
+
+- Declare rustdoc allow-by-default lints and deny missing_docs in benchmark ([#2014](https://github.com/XaviCode1000/webfang/pull/2014))
 ## [2.11.0] - 2026-10-15
 
 
