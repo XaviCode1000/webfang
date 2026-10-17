@@ -46,9 +46,11 @@ EOF
   printf '%s\n' "$dir"
 }
 
+# stdout is captured too: the success line is the only place the gate reports
+# WHAT it checked, and case 11 asserts on it.
 run_gate() {
   local dir="$1"
-  ( cd "$dir" && bash scripts/check_docs_version_pins.sh >/dev/null 2>"$WORK/stderr" )
+  ( cd "$dir" && bash scripts/check_docs_version_pins.sh >"$WORK/stdout" 2>"$WORK/stderr" )
 }
 
 # ─── 1. consistent tree passes ───────────────────────────────────────────────
@@ -143,6 +145,50 @@ if run_gate "$D"; then
   fail "versión con formato inesperado falla cerrado"
 else
   pass "versión con formato inesperado falla cerrado"
+fi
+
+# ─── 9. a prerelease pin does not pass against a stable workspace ───────────
+# The doc literal used to be extracted with a pattern that peeled the suffix,
+# so `v2.11.0-rc.1` was compared as `v2.11.0` and matched a stable workspace.
+# That is a false negative in the exact comparison this gate exists to make:
+# the recipe would install a release candidate while claiming to be current.
+D="$(new_fixture rc-pin-stable 2.11.0)"
+printf 'ok\n' > "$D/README.md"
+printf '# Chapter\n\nPin: v2.11.0-rc.1\n' > "$D/docs/src/a.md"
+if run_gate "$D"; then
+  fail "pin prerelease contra workspace stable falla"
+else
+  pass "pin prerelease contra workspace stable falla"
+fi
+
+# ─── 10. a workspace on a prerelease is checkable at all ────────────────────
+# During a stabilization window the manifest carries `-rc.N`: release.yml's
+# preflight requires the tag to equal the root Cargo.toml version, so an RC tag
+# cannot exist without one. The gate used to abort with "formato inesperado"
+# and left the whole tree unchecked for the window it is most needed in.
+D="$(new_fixture rc-workspace 2.11.0-rc.1)"
+printf 'ok\n' > "$D/README.md"
+printf '# Chapter\n\nPin: v2.11.0-rc.1\n' > "$D/docs/src/a.md"
+if run_gate "$D"; then
+  pass "workspace prerelease es chequeable"
+else
+  fail "workspace prerelease es chequeable ($(cat "$WORK/stderr"))"
+fi
+
+# ─── 11. the success line reports the pins it read, not the file count ──────
+# It printed the number of documents while asserting what they declare, and the
+# counter that actually counted the pins was never read.
+D="$(new_fixture success-count 2.11.0)"
+printf 'VERSION=v2.11.0\n' > "$D/README.md"
+printf '# Chapter\n\nPin: v2.11.0\nOtro pin: v2.11.0\n' > "$D/docs/src/a.md"
+if run_gate "$D"; then
+  if grep -q '^OK: 3 líneas' "$WORK/stdout"; then
+    pass "la línea de éxito cuenta líneas con pines (3), no documentos (2)"
+  else
+    fail "la línea de éxito cuenta líneas con pines ($(cat "$WORK/stdout"))"
+  fi
+else
+  fail "árbol consistente con tres pines pasa"
 fi
 
 printf '\nharness: %d ok, %d fail\n' "$PASSED" "$FAILED"
