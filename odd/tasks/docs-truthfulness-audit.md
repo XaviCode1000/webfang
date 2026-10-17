@@ -20,8 +20,9 @@ verificado, no de una hipótesis.
   que `--document-private-items` revela se cierran en dos clases distintas: **33 links
   reales** (resolver) y **6 falsos positivos** (escapar), no "39 links".
 - **S2** — Ningún pin de versión en narrativa contradice la fuente de verdad (workspace
-  version / git tags). Las **8** ocurrencias de `v2.4.0` deben regenerarse o
-  parametrizarse — no 5: el conteo original sólo miraba asignaciones `VERSION=`.
+  version / git tags). Las **9** ocurrencias de `v2.4.0` deben regenerarse o
+  parametrizarse — no 8: el conteo anterior tenía un error aritmético (8 en
+  `installation.md` + 1 en `README.md`), corregido al implementar T2.
 - **S3** — Todo capítulo bajo `docs/src/` está enlazado desde `SUMMARY.md`. Los 3
   huérfanos (`budget-source-audit.md`, `bounded-memory-decisions.md`,
   `ai-providers-design.md`) se enlazan o se reclasifican.
@@ -35,6 +36,9 @@ verificado, no de una hipótesis.
   `{{#include}}`. Ningún sample de `docs/src/` es copiado a mano si puede extraerse.
 - **S7** — `SUPPORT.md` y `support.json` reflejan la línea publicada vigente (2.11 al
   momento de esta auditoría).
+- **S8** — Ninguna afirmación de seguridad en la narrativa contradice lo que el release
+  publica. Medido: `installation.md` afirmaba "checksums, not GitHub attestations"
+  mientras cada asset de `v2.11.0` trae una atestación SLSA verificable.
 
 ## Contexto verificado
 
@@ -46,11 +50,12 @@ Superficie pública **verde**: `cargo test --doc --workspace --all-features` →
 | # | Hallazgo | Conteo | Ruta |
 | --: | --- | --- | --- |
 | 1 | Links intra-doc rotos, solo en superficie privada | **39** | `container.rs:237,301,313,322,331,957`; `cli/args/crawler.rs:173`; `cli/args/mod.rs:627,682`; `mcp_server/handlers/scraping.rs:1154`; `mcp_server/params.rs:1181` |
-| 2 | Pins `v2.4.0` contra workspace `2.11.0` | **8** | `README.md:37`; `docs/src/installation.md:57,64,67,120,121,137,174,220` |
+| 2 | Pins `v2.4.0` contra workspace `2.11.0` | **9** | `README.md:37`; `docs/src/installation.md:57,64,67,120,121,137,174,220` |
 | 3 | Capítulos huérfanos de `SUMMARY.md` | **3** | `budget-source-audit.md`, `bounded-memory-decisions.md`, `ai-providers-design.md` |
 | 4 | `support.json` STABLE=2.1 con publicado 2.11 | ~~1~~ **0** | `.github/support.json` — cerrado en #2003 |
 | 5 | Lints rustdoc `allow-by-default` no declarados | 0/4 crates | `crates/*/src/lib.rs` |
 | 6 | Cero `{{#include}}` / `{{#rustdoc_include}}` en `docs/src` | 0 | `docs/book.toml` sin preprocessors |
+| 7 | `installation.md` afirma que no hay atestaciones; **sí las hay** | **1** | `docs/src/installation.md:128-132` |
 
 Notes de método: los 3 auditores `gentle-ai-explore` no tienen shell; mapean con
 read/grep/codegraph y el parent ejecuta los comandos. La medición #1 y #2 fue
@@ -89,23 +94,63 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
       Verificado: `--document-private-items` → 0 · `-D warnings` exit 0 ·
       doctests 77 passed / 7 ignored (baseline intacto) · `ci_fast_gate.sh` GREEN
       (PASS=26, FAIL=0) · diff 100% doc comments, 0 `allow()` agregados.
-- [ ] **T2 (S2)** — Parametrizar las 8 ocurrencias de `v2.4.0`. Preferencia:
-      preprocessor mdBook que inyecte la versión desde `Cargo.toml` (mata la clase, no
-      la detecta); fallback documentado: marker `<!-- version-stale:allow -->` para
-      historia intencional.
+- [x] **T2 (S2, S8)** — Cerrar las 9 ocurrencias de `v2.4.0` y la afirmación de
+      seguridad que las acompañaba.
       Ruta: inline. Riesgo: bajo, no nulo — toca `docs/book.toml` y el build del libro.
       Verificación: `grep -rn 'v2\.4\.0' README.md docs/src/` → sólo historia marcada;
       `mdbook build docs` verde. Ojo: el regex del plan original
       (`VERSION=v[0-9.]+|\$Version =`) **no ve** `installation.md:64,67,120,121`, que
       también están pinneadas — la verificación tiene que ser sobre `v2\.4\.0` a secas,
       no sobre la forma de asignación.
-- [ ] **T3 (S3)** — Enlazar los 3 huérfanos en `SUMMARY.md` o reclasificarlos fuera de
-      `docs/src/`. Nota: `ai-providers-design.md` contiene los **9 únicos fences rust**
-      de `docs/src/` — si se mueve, esos ejemplos salen del alcance de `mdbook test`.
-      Ruta: inline. Riesgo: bajo, no "ninguno" — mover `ai-providers-design.md` saca
-      esos 9 fences del alcance de `mdbook test`, que es una pérdida de cobertura real.
-      Verificación: `comm -23 <(ls docs/src/*.md | xargs -n1 basename | sort)
-      <(grep -oE '\([a-z0-9-]+\.md\)' docs/src/SUMMARY.md | tr -d '()' | sort)` → vacío.
+
+      **Implementado, con dos desvíos del plan, ambos por una razón medida.**
+      (1) **No hay preprocessor.** `README.md` lo renderiza GitHub, no mdBook: un token
+      `{{…}}` se le mostraría crudo al lector. Y sustituir la versión dentro de un bloque
+      "Observed output" fabricaría una observación que nadie hizo. Se implementó en su
+      lugar `scripts/check_docs_version_pins.sh` (gate fail-closed contra
+      `[workspace.package] version`, con marker `<!-- version-stale:allow -->` para
+      historia intencional, alcance de línea) + `scripts/test_docs_version_pins.sh`
+      (8 casos, incluidos los fail-closed). El gate **no está cableado en CI todavía**:
+      tocar `.github/` requiere autorización aparte según AGENTS.md.
+      (2) **S8 se destapó al medir.** `installation.md` decía "The releases publish
+      **checksums, not GitHub attestations**" y que `gh release verify-asset v2.4.0`
+      fallaba con `no attestations found`. Falso para la línea vigente: cada asset de
+      `v2.11.0` publica un `.sigstore.json` y
+      `gh attestation verify webfang-x86_64-unknown-linux-gnu.tar.gz --repo
+      XaviCode1000/webfang` **verifica** (exit 0, 1 atestación, firmante
+      `release.yml@refs/tags/v2.11.0`). Control negativo con un archivo cualquiera →
+      exit 1 / HTTP 404, así que el 0 no es un falso positivo. La nota se reescribió
+      para decir la verdad y el bloque "Observed output" se reemplazó por la salida
+      real de 14 assets (tenía 5).
+      Verificado: `check_docs_version_pins.sh` exit 0 · harness 8 ok / 0 fail ·
+      `mdbook build` 0 · `mdbook test` 0 · `mdbook-linkcheck` 0 · `-D warnings` 0.
+- [x] **T3 (S3)** — Los 3 huérfanos, **reclasificados** en vez de enlazados.
+      La nota del plan era incorrecta: los 9 fences de `ai-providers-design.md` **no
+      estaban** en el alcance de `mdbook test` — un capítulo huérfano no se construye,
+      así que nunca se testearon. Y no compilan sueltos: son excerpts ilustrativos
+      (`pub enum AuthSource` sin imports). Por eso reclasificar era correcto.
+      **Pero el doc seguía mintiendo**: declaraba "Implementación a desarrollar en el
+      worktree `feat/ai-providers`" cuando `infrastructure/llm/` ya existe. El rename
+      puro (0 inserciones) no corrigió la mentira — la mudó de path.
+      Cerrado con una reescritura de las regiones de estado contra el árbol verificado:
+      8 ítems de "pendiente" volteados a hechos con paths reales, 3 firmas inventadas
+      (`resolve_embedding` / `resolve_completion` / `resolve_capabilities`) sustituidas
+      por la real `resolve(provider_id, Capability) -> &ProviderConfig`
+      (`domain/providers.rs:251`), 2 bloques de estado por sesión eliminados
+      (`codedb`/`codegraph`/`direnv`/SHA obsoleto), `TenantAiContext` marcado como no
+      implementado con tracker (#2018), y los fixtures preservados por decisión del owner.
+      6 afirmaciones nuevas introducidas por el rewrite, las 6 verificadas contra el árbol.
+      Quedan 5 mentiras en §1–§5, fuera de alcance aquí → follow-up (#2019).
+      Ruta: delegada (writer acotado) sobre investigación previa (read-only explorer).
+      Riesgo: item 3 (el doc es spec normativa citada por 13 archivos de código) —
+      mitigado por no tocar §1–§4 ni §8.
+      Destinos: `ai-providers-design.md` → `docs/architecture/` (7 referencias
+      `docs/src/…` en comentarios de código actualizadas, 15 en total mencionan el doc);
+      Destinos: `ai-providers-design.md` → `docs/architecture/` (7 referencias
+      `docs/src/…` en comentarios de código actualizadas, 15 en total mencionan el doc);
+      `budget-source-audit.md` y `bounded-memory-decisions.md` → `docs/research/`.
+      Verificación: `comm -23` de capítulos contra `SUMMARY.md` → vacío;
+      `mdbook build` / `test` / `linkcheck` verdes.
 - [x] **T4a (S4, S7)** — Backfill de `support.json` a la minor publicada (Opción A,
       aprobada por el owner). **MERGED** en `main` como `03b3a620` (PR #2003).
       Estado declarado: 2.11 STABLE / 2.10 MAINTENANCE / 2.2-2.9 y 2.1 EOL con
@@ -176,6 +221,28 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
       Verificación: `actionlint` verde; el step aparece en el run de un PR que **no**
       toca el fixture ni el marker (prueba de que no hay filtro que lo saltee).
 
+- [ ] **T9** — Advisories de la revisión de #2012 sobre `scripts/check_docs_version_pins.sh`
+      (hallados por la revisión delegada; verificados por el parent el 2026-10-18):
+      1. **Gate no cableado** — ningún workflow en `.github/` invoca el script: es un
+         guard inerte. Requiere tocar `.github/` → issue con `status:approved` + ask-first
+         (mismo trap de path-filter que T4b/T7).
+      2. **Asimetría RC (confirmada empíricamente)** — un pin de doc `v2.11.0-rc.1`
+         PASA contra workspace `2.11.0` stable (el grep pela el prerelease → falso
+         negativo, línea 74), pero un workspace `2.11.0-rc.1` ABORTA el script
+         ("formato inesperado", línea 44). El gate no corre durante la ventana de un RC.
+      3. **Harness no cubre prerelease (la advisory original es imprecisa)** — el harness
+         SÍ prueba mismatch bien-formado plano: tests 2 y 3 usan `v2.4.0` vs `2.11.0` y
+         fallan correctamente. La brecha real es que no hay caso con pin prerelease, que
+         es justo el que dispara el bug (2).
+      4. **Línea de éxito miente / `$checked` muerto** — la variable `checked` (línea 58,
+         65) se incrementa pero nunca se imprime; el OK (línea 87) usa `${#FILES[@]}`
+         (cantidad de archivos) y afirma que el doc "declara sólo v2.11.0" cuando en el
+         caso RC declara `v2.11.0-rc.1`.
+      Ruta: inline para (2)/(3)/(4) — sólo el script + harness, sin `.github/`; (1)
+      delegated tras issue `status:approved`. Riesgo: bajo.
+      Verificación hoy: harness 8 ok / 0 fail; caso RC A pasa (mal), caso RC B aborta.
+      Tracking issue: #2017 (type:bug; falta `status:approved` para cablear en CI).
+
 ### Fase 3 — Reporte externo (warn-only, nunca gate)
 
 - [ ] **T8** — Links externos vivos (`lychee` sin API key, o `jina read` con
@@ -213,12 +280,36 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
   `AGENTS.md`: bootstrap per-tree, CodeGraph/CodeDB indexados con path absoluto, writer
   delegado con superficies de edición acotadas, verificación del parent antes de
   commitear. La lista de 11 archivos del inventario original era parcial: los 39
-  warnings viven en **24 archivos**.
+  warnings viven en **24 archivos**. Mergeado como `15de3130` (PR #2010, issue #2009).
+- **L8 (2026-10-17)** — T2 + T3 en `docs/truthfulness-audit`, sobre `main @ 15de3130`.
+  Dos correcciones al plan y un hallazgo nuevo: el conteo de pins era **9**, no 8
+  (error aritmético propio); los 9 fences de `ai-providers-design.md` nunca estuvieron
+  en `mdbook test` porque un huérfano no se construye, así que moverlo no pierde
+  cobertura; y `installation.md` afirmaba que el release no publica atestaciones cuando
+  cada asset de `v2.11.0` trae una verificable. Ese último es el hallazgo más grave de
+  toda la auditoría y no estaba en el inventario.
+- **L9 (2026-10-18)** — Revisión delegada de #2012 encontró un blocker en T3: mover
+  `ai-providers-design.md` NO corrigió la mentira de la línea 4 ("Implementación a
+  desarrollar en el worktree `feat/ai-providers`") pese a que `infrastructure/llm/` ya
+  existe. El rename fue puro. Corregido en esta rama: línea 4 y la nota de estado
+  (línea 308) ahora dicen que la implementación vive en
+  `crates/webfang_core/src/infrastructure/llm/`. T3 se des-chequea hasta que el fix de
+  prosa se mergee y confirme. La revisión también dejó 4 advisories sobre
+  `check_docs_version_pins.sh` (gate no cableado, asimetría RC, harness no testea
+  versiones bien-formadas desparejadas, `$checked` muerto / línea de éxito miente) →
+  falta tarea que los rastree.
+- **L10 (2026-10-18)** — El parent verificó las 4 advisories de T9 contra el código y el
+  harness (no se tomaron por fe: se leyó `check_docs_version_pins.sh`,
+  `test_docs_version_pins.sh`, y se corrió el harness + 2 fixtures RC). Confirmadas (1)
+  gate no cableado (0 refs en `.github/`), (2) asimetría RC (doc `v2.11.0-rc.1` pasa,
+  workspace `2.11.0-rc.1` aborta), (4) `$checked` muerto / éxito miente. La (3) es
+  imprecisa: el harness SÍ prueba mismatch bien-formado plano (v2.4.0 vs 2.11.0). La
+  brecha real es falta de caso prerelease. Creada T9 para rastrearlas.
 
 ## Next steps
 
-1. T2 y T3 en el mismo PR de docs siguiente (tocan `docs/src/` y `book.toml`, sin
-   conflicto con T1, que ya cerró).
-2. T5: declarar los 3 lints en las 4 crates publicadas.
-3. `cargo fmt --all -- --check`, clippy strict y rustdoc verdes antes de cada commit.
-4. T8 queda deferred hasta que Fase 1 esté verde.
+1. T9: corregir `check_docs_version_pins.sh` (advisories 2/3/4) + añadir caso prerelease al
+   harness; cablear el gate en CI (advisory 1) tras issue con `status:approved` + ask-first.
+2. T6: migrar samples de `docs/src/` a `{{#include}}` (deferred).
+3. T7: mover el guard MCP version-marker a CI (deferred, toca `.github/`).
+4. T8: reporte de links externos (hecho en `ci/external-link-report`, pendiente de merge).

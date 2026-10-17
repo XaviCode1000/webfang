@@ -54,24 +54,33 @@ Set the version once and reuse it. Copy the tag from
 [the latest release](https://github.com/XaviCode1000/webfang/releases/latest):
 
 ```bash
-VERSION=v2.4.0   # ← the tag you just looked up
+VERSION=v2.11.0   # ← the tag you just looked up
 ```
 
 <details>
 <summary>Verify these names yourself (any release, any version)</summary>
 
 ```bash
-gh release view v2.4.0 --json assets --jq '.assets[].name'
+gh release view v2.11.0 --json assets --jq '.assets[].name'
 ```
 
-Observed output for `v2.4.0`:
+Observed output for `v2.11.0`:
 
 ```text
 SHA256SUMS.txt
+SHA256SUMS.txt.sigstore.json
+THIRD_PARTY_NOTICES.txt
+THIRD_PARTY_NOTICES.txt.sigstore.json
 webfang-aarch64-apple-darwin.tar.gz
+webfang-aarch64-apple-darwin.tar.gz.sigstore.json
 webfang-aarch64-unknown-linux-gnu.tar.gz
+webfang-aarch64-unknown-linux-gnu.tar.gz.sigstore.json
+webfang.spdx.json
+webfang.spdx.json.sigstore.json
 webfang-x86_64-pc-windows-msvc.zip
+webfang-x86_64-pc-windows-msvc.zip.sigstore.json
 webfang-x86_64-unknown-linux-gnu.tar.gz
+webfang-x86_64-unknown-linux-gnu.tar.gz.sigstore.json
 ```
 
 </details>
@@ -116,11 +125,19 @@ gh release download "${VERSION}" --pattern 'SHA256SUMS.txt'
 gh release download "${VERSION}" --pattern 'webfang-x86_64-unknown-linux-gnu.tar.gz'
 ```
 
-> The releases publish **checksums, not GitHub attestations**.
-> `gh release verify-asset v2.4.0 <file>` currently fails with
-> `no attestations found for tag v2.4.0` — the provenance block in the release
-> body is WebFang's own L1 gate, not a Sigstore attestation. `SHA256SUMS.txt`
-> is the authoritative check.
+> Every published asset carries a **real SLSA provenance attestation**, minted
+> keyless by the release workflow, plus a `.sigstore.json` bundle next to it in
+> the release. Verify a downloaded file against the digest you actually have:
+>
+> ```bash
+> gh attestation verify webfang-x86_64-unknown-linux-gnu.tar.gz \
+>   --repo XaviCode1000/webfang
+> ```
+>
+> `SHA256SUMS.txt` is the offline check and stays authoritative for integrity.
+> The provenance table in the release body is WebFang's own L1 gate — a summary
+> written by the workflow, not the attestation itself; verify against the API
+> or the `.sigstore.json` bundle, never against that table.
 
 ---
 
@@ -134,7 +151,7 @@ only the differing part is repeated per platform.
 
 ```bash
 # 1. Download (x86_64; use aarch64-unknown-linux-gnu on ARM64)
-VERSION=v2.4.0
+VERSION=v2.11.0
 curl -fLO "https://github.com/XaviCode1000/webfang/releases/download/${VERSION}/webfang-x86_64-unknown-linux-gnu.tar.gz"
 curl -fLO "https://github.com/XaviCode1000/webfang/releases/download/${VERSION}/SHA256SUMS.txt"
 
@@ -171,7 +188,7 @@ Notes:
 
 ```bash
 # 1. Download
-VERSION=v2.4.0
+VERSION=v2.11.0
 curl -fLO "https://github.com/XaviCode1000/webfang/releases/download/${VERSION}/webfang-aarch64-apple-darwin.tar.gz"
 curl -fLO "https://github.com/XaviCode1000/webfang/releases/download/${VERSION}/SHA256SUMS.txt"
 
@@ -217,7 +234,7 @@ non-AI export format work normally. Build without `ai`
 
 ```powershell
 # 1. Download (PowerShell 5.1+)
-$Version = "v2.4.0"
+$Version = "v2.11.0"
 $Asset   = "webfang-x86_64-pc-windows-msvc.zip"
 Invoke-WebRequest "https://github.com/XaviCode1000/webfang/releases/download/$Version/$Asset" -OutFile $Asset
 Invoke-WebRequest "https://github.com/XaviCode1000/webfang/releases/download/$Version/SHA256SUMS.txt" -OutFile SHA256SUMS.txt

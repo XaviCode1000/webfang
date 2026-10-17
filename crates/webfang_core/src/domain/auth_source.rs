@@ -1,6 +1,6 @@
 //! AuthSource — fuente de una credencial de proveedor AI.
 //!
-//! Especificación: `docs/src/ai-providers-design.md` §1–§3.
+//! Especificación: `docs/architecture/ai-providers-design.md` §1–§3.
 //!
 //! Decisiones de diseño (cerradas, no re-discutir):
 //! - Sin variante `Inline` en v1 (secrets en config = riesgo sin mitigación real).
@@ -15,7 +15,7 @@ use std::path::PathBuf;
 
 use crate::domain::credentials::ApiKey;
 
-/// Errores de resolución de credencial (`docs/src/ai-providers-design.md` §2).
+/// Errores de resolución de credencial (`docs/architecture/ai-providers-design.md` §2).
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
     /// El backend de keyring no está disponible en este sistema.

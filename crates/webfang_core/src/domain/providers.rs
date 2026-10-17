@@ -1,5 +1,5 @@
 //! Provider configuration and registry for multi-provider AI
-//! (`docs/src/ai-providers-design.md` §4-5).
+//! (`docs/architecture/ai-providers-design.md` §4-5).
 //!
 //! Domain-only: no I/O, no HTTP, no credential resolution. The config is
 //! declarative (serde) and the registry is a concrete lookup struct — the
