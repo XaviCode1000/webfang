@@ -32,7 +32,9 @@ jobs:
           persist-credentials: false
 
       - name: Lychee external link check (report only)
-        uses: lychee-action@v2
+        # SHA, not `v2` — every action in this repo is pinned by commit SHA, and
+        # v2 is a moving tag. This SHA is the current v2.
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8
         with:
           # Never fail the build. Dead links are reported, not blocking.
           fail: false
