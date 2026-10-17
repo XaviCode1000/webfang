@@ -38,7 +38,9 @@ pub enum PageKind {
 /// One entry of the corpus manifest: a relative path and its kind.
 #[derive(Debug, Clone)]
 pub struct CorpusPage {
+    /// Relative URL path served for this page (no host component).
     pub path: String,
+    /// What kind of page this entry is (static, SPA shell, or WAF-guarded).
     pub kind: PageKind,
 }
 
@@ -46,6 +48,7 @@ pub struct CorpusPage {
 /// manifest never references an external host (AC-1.2).
 #[derive(Debug, Clone)]
 pub struct CorpusManifest {
+    /// All declared pages served by the corpus.
     pub pages: Vec<CorpusPage>,
     /// Convenience accessor target: the WAF-guarded path.
     pub waf_guarded_path: String,
@@ -56,6 +59,7 @@ pub struct CorpusManifest {
 pub struct CorpusHandle {
     /// Loopback base URL (`http://127.0.0.1:<ephemeral port>`).
     pub base_url: String,
+    /// Declarative description of the pages this handle serves.
     pub manifest: CorpusManifest,
     /// Held only to keep the wiremock server alive for the handle's lifetime;
     /// never read (mock mounting in wiremock 0.6 is infallible, so no shutdown

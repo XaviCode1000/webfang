@@ -105,7 +105,7 @@ pub struct CrawlOptions {
     /// Run structured extraction through the configured remote LLM provider
     /// (`--extract-with-llm`). The binary validates the container's
     /// `llm_port()` at startup whenever this is `true`
-    /// (`docs/src/ai-providers-design.md` §8b).
+    /// (`docs/architecture/ai-providers-design.md` §8b).
     pub extract_with_llm: bool,
     /// Provider id selected for [`Self::extract_with_llm`]. `None` picks the
     /// first provider declaring the `completion` capability.

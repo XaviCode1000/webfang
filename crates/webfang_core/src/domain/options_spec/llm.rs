@@ -7,7 +7,7 @@
 //! them on builds that can still talk to a remote provider.
 //!
 //! The `--extract-with-llm` flag is the trigger for the Container contract in
-//! `docs/src/ai-providers-design.md` §8b: the Container stays permissive
+//! `docs/architecture/ai-providers-design.md` §8b: the Container stays permissive
 //! (`llm_port()` is `None` without a provider), and the **binary** validates
 //! `llm_port().is_some()` at startup whenever this flag is set. That
 //! validation is the expiry of the §8b DEBE — it ships with this flag, never

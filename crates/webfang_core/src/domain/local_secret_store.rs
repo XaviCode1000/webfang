@@ -1,6 +1,6 @@
 //! LocalSecretStore — helper de setup, NO un runtime resolver.
 //!
-//! Especificación: `docs/src/ai-providers-design.md` §7. Durante la ejecución
+//! Especificación: `docs/architecture/ai-providers-design.md` §7. Durante la ejecución
 //! normal, `AuthSource::resolve()` obtiene las credenciales. Este módulo solo
 //! se usa en el wizard de configuración inicial para informar qué fuentes de
 //! credenciales están disponibles en el sistema del usuario.
