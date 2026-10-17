@@ -767,10 +767,10 @@ If you detect you operated outside your assigned worktree, or `git stash pop` ap
 
 ### Validity status (read first — this section phases in)
 
-- **ACTIVE today:** `main` as the only development line; tags `v*` from `main`; `release.yml` preflight (RC vs stable channel + `tag == Cargo.toml` fail-fast); `support.json` + `SUPPORT.md` (**declared 2.1 STABLE / 2.0 EOL, and drifted — v2.2.0 through v2.4.1 are published and undeclared; see "DRIFTED today" below**); process labels (`release:cut`, `support:create`, `support:extended`, `breaking:*`, `migration:*`); the agent routing below.
+- **ACTIVE today:** `main` as the only development line; tags `v*` from `main`; `release.yml` preflight (RC vs stable channel + `tag == Cargo.toml` fail-fast); `support.json` + `SUPPORT.md` (**declared 2.11 STABLE / 2.10 MAINTENANCE, matching the published tags — backfilled in #2003**); process labels (`release:cut`, `support:create`, `support:extended`, `breaking:*`, `migration:*`); the agent routing below.
 - **ENFORCING today:** the branch-topology check is a **required gate**, not a warning. `scripts/check-topology.sh` runs as the step `Validate branch topology (enforcing)` inside the job `Validate PR metadata` in `pr-validation.yml`, with **no `continue-on-error`** — enforcement landed in #1502 (`d4f8fa79`, 2026-09-21), which also extended the conventional-branch regex to admit `hotfix/*`, `release/*` and `support/*` so no enforced arm is dead on arrival. `Validate PR metadata` is in the required status-check list for `main`, so a misrouted PR fails a required check within seconds and is unmergeable. Plan the base branch **before** opening the PR; never retarget an open PR onto another working branch (see "No stacked PRs in this repo" below).
-- **WARN-ONLY today:** the `--scope=published` half of `check_support_drift.sh` in `support-drift.yml` reports without failing. Read its output; do not rely on it as a gate yet.
-- **DRIFTED today (#1676, open):** `support.json` was never rotated after 2.1. Four releases (v2.2.0, v2.3.0, v2.3.1, v2.4.0/v2.4.1) shipped with it declaring a line three minors back. `check_support_drift.sh` now reports this on every PR; its `published` scope is advisory **until the maintainer backfills the undeclared minors**, at which point it becomes enforcing in that same commit. Nothing an agent runs creates, extends, or EOLs a line: that is a governance decision with an approved issue behind it.
+- **ENFORCING today:** `--scope=published` blocks merges. It runs as the step `Support drift vs published tags (enforcing)` inside the required job `Validate PR metadata` in `pr-validation.yml` — **not** in `support-drift.yml`, because that workflow is path-filtered on the support surface, and a path-filtered workflow can never be a required context: PRs outside the filter would never report it and would sit "pending" forever. `support-drift.yml` keeps the same check on push to `main`, where a release tag pushed by `release-plz` can stale the file with no PR to catch it.
+- **Resolved (#1676 → #2003):** `support.json` was never rotated after 2.1, so four releases shipped declaring a line three minors back. The backfill (#2003) declared 2.2-2.11, EOL'd the undeclared history with an `eol_reason`, and made the `published` scope green — which is what let it become enforcing. Nothing an agent runs creates, extends, or EOLs a line: that is a governance decision with an approved issue behind it.
 - **NOT YET:** no `release/*` or `support/*` branch exists. Do not create one speculatively — support lines are materialized on demand (see below), never "just in case".
 
 ### Mental model: version first, branch second
@@ -842,7 +842,7 @@ Silence, a bare "what should I do?", and deciding governance matters alone are a
 
 Support window (structural, no calendar): at most 2 live lines. Publishing `vX.(Y+1).0` demotes the previous STABLE to MAINTENANCE (security-only) and EOLs the previous MAINTENANCE automatically (`rotate-stable.sh`). Exceptions via approved issue, traced as `extended_by` / `support:extended` — an EOL line never silently revives.
 
-**The declaration is derived, and it is checked.** `support.json` is a function of the published `v*` tags, so it drifts by construction unless something reads it. `scripts/check_support_drift.sh` is that reader (`support-drift.yml`, every PR):
+**The declaration is derived, and it is checked.** `support.json` is a function of the published `v*` tags, so it drifts by construction unless something reads it. `scripts/check_support_drift.sh` is that reader (merge gate inside `Validate PR metadata`, every PR; post-merge run in `support-drift.yml`):
 
 | Scope | Asserts | Fail-closed on |
 | :--- | :--- | :--- |
@@ -879,8 +879,8 @@ Run inside a `chore/support-*` branch (base `main`); mutations travel by normal 
 | `rotate-stable.sh X.Y` | On publishing `vX.(Y+1).0`: demote + auto-EOL, new STABLE at the head of the list (idempotent per argument). **Fails closed** when `vX.Y.0` has no tag, when there is no STABLE to demote, or when published-but-undeclared minors sit between the current STABLE and `X.Y` — that is a governance gap, not something to rotate over silently |
 | `eol-line.sh X.Y` | Declare EOL (deletes branch remote+local, marks entry) |
 | `render-support-md.sh [--check]` | Regenerate `SUPPORT.md`, or verify it against a fresh render writing nothing (`--check` is the CI gate; the generator stays the single writer) |
-| `check_support_drift.sh [--scope=…]` | Read-only, fail-closed: `support.json` vs its tags and vs its own semantics (`--scope=published\|declared\|both`); run by `support-drift.yml` on every PR |
-| `test_support_drift.sh` | Semantics harness for the two scripts above (25 cases: drift fails, consistency passes, blind spots fail closed) |
+| `check_support_drift.sh [--scope=…]` | Read-only, fail-closed: `support.json` vs its tags and vs its own semantics (`--scope=published\|declared\|both`); `--scope=published` is a required merge gate inside `Validate PR metadata`, run post-merge by `support-drift.yml` |
+| `test_support_drift.sh` | Semantics harness for the two scripts above (26 cases: drift fails, consistency passes, blind spots fail closed) |
 | `bump-support-patch.sh X.Y.Z [pr#]` | Manual patch bump with release-contract checks (see above) |
 | `check-topology.sh` | Head-prefix → base validation. **Required gate** — invoked as step `Validate branch topology (enforcing)` by `pr-validation.yml`; the script itself is policy-agnostic, so the enforcement lives entirely in that step |
 

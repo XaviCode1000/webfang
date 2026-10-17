@@ -2,27 +2,33 @@
 
 **Issue:** TBD (crear al implementar; requiere `status:approved` del owner)
 **Labels:** `type:chore`
-**Branch:** `docs/truthfulness-audit` (rama base: `main`; `check-topology.sh` admite `docs/*` → `main`)
-**Base:** `main` @ `v2.11.0` (`67dc2335`)
+**Branch:** `docs/truthfulness-audit` (T1/T2/T3/T5/T6) y `ci/support-drift-required`
+(T4b); rama base `main`; `check-topology.sh` admite `docs/*` y `ci/*` → `main`
+**Base:** `main @ v2.11.0` (`67dc2335`); mediciones re-validadas sobre `main @ 979f73bb`
 **Ruta de entrega:** `single-pr` por fase (≤400 líneas por PR; este repo no admite stacked PRs — ver AGENTS.md "No stacked PRs")
 
 ## Objetivo
 
-Cerrar las 4 clases de mentira documental que la auditoría delegada **midió** como
-presentes, y convertir los detectores que ya existen pero no gates (linter en warn-only)
-en gates fail-closed. Cada tarea nace de un conteo verificado, no de una hipótesis.
+Cerrar las clases de mentira documental que la auditoría delegada **midió** como
+presentes (6 hallazgos, 7 specs), y convertir los detectores que ya existen pero no
+gates (linter en warn-only) en gates fail-closed. Cada tarea nace de un conteo
+verificado, no de una hipótesis.
 
 ## Specs
 
-- **S1** — Ningún link intra-doc roto permanece en superficie privada. Los 39 links que
-  `--document-private-items` revela deben resolverse o documentarse como tal.
+- **S1** — Ningún link intra-doc roto permanece en superficie privada. Los 39 warnings
+  que `--document-private-items` revela se cierran en dos clases distintas: **33 links
+  reales** (resolver) y **6 falsos positivos** (escapar), no "39 links".
 - **S2** — Ningún pin de versión en narrativa contradice la fuente de verdad (workspace
-  version / git tags). Los 5 pins `v2.4.0` deben regenerarse o parametrizarse.
+  version / git tags). Las **8** ocurrencias de `v2.4.0` deben regenerarse o
+  parametrizarse — no 5: el conteo original sólo miraba asignaciones `VERSION=`.
 - **S3** — Todo capítulo bajo `docs/src/` está enlazado desde `SUMMARY.md`. Los 3
   huérfanos (`budget-source-audit.md`, `bounded-memory-decisions.md`,
   `ai-providers-design.md`) se enlazan o se reclasifican.
-- **S4** — Un detector de drift que reporta `::error::` no puede mergear verde. Hoy
-  `check_support_drift.sh` sale exit 1 gritando y CI lo deja pasar (warn-only).
+- **S4** — Un detector de drift que reporta `::error::` no puede mergear verde. Antes
+  `check_support_drift.sh` salía exit 1 gritando y CI lo dejaba pasar (warn-only).
+  Cerrado en T4b: el scope `published` corre dentro de `Validate PR metadata`, que ya
+  es required y no está path-filtered.
 - **S5** — Los 3 lints rustdoc `allow-by-default` quedan explícitos en el código, no
   implícitos en el `-D warnings` de CI.
 - **S6** — Un sample de código narrativo tiene una fuente única: el archivo real o el
@@ -40,53 +46,109 @@ Superficie pública **verde**: `cargo test --doc --workspace --all-features` →
 | # | Hallazgo | Conteo | Ruta |
 | --: | --- | --- | --- |
 | 1 | Links intra-doc rotos, solo en superficie privada | **39** | `container.rs:237,301,313,322,331,957`; `cli/args/crawler.rs:173`; `cli/args/mod.rs:627,682`; `mcp_server/handlers/scraping.rs:1154`; `mcp_server/params.rs:1181` |
-| 2 | Pins `VERSION=v2.4.0` contra workspace `2.11.0` | **5** | `README.md:37`; `docs/src/installation.md:57,137,174,220` |
+| 2 | Pins `v2.4.0` contra workspace `2.11.0` | **8** | `README.md:37`; `docs/src/installation.md:57,64,67,120,121,137,174,220` |
 | 3 | Capítulos huérfanos de `SUMMARY.md` | **3** | `budget-source-audit.md`, `bounded-memory-decisions.md`, `ai-providers-design.md` |
-| 4 | `support.json` STABLE=2.1 con publicado 2.11 | **1** | `.github/support.json:4-11` |
+| 4 | `support.json` STABLE=2.1 con publicado 2.11 | ~~1~~ **0** | `.github/support.json` — cerrado en #2003 |
 | 5 | Lints rustdoc `allow-by-default` no declarados | 0/4 crates | `crates/*/src/lib.rs` |
 | 6 | Cero `{{#include}}` / `{{#rustdoc_include}}` en `docs/src` | 0 | `docs/book.toml` sin preprocessors |
 
 Notes de método: los 3 auditores `gentle-ai-explore` no tienen shell; mapean con
-read/grep/codegraph y el parent ejecuta los comandos. Lauu medición #1 y #2 fue
-re-ejecutada por el parent.
+read/grep/codegraph y el parent ejecuta los comandos. La medición #1 y #2 fue
+re-ejecutada por el parent el 2026-10-17 sobre `main @ 979f73bb`:
+`--document-private-items` → exactamente **39** `unresolved link`; `grep -c` sobre
+`v2.4.0` → **8**.
+
+De los 39, **6 no son links**: `src`, `srcset` ×2 y `href` son atributos en prosa
+(`/// Selector for img[srcset]`, `crates/webfang_core/src/extractor/mod.rs:17`) y
+`[100,599]` / `` [`REASON_*`] `` son brackets literales
+(`crates/webfang_mcp/src/mcp_server/params.rs:1181`,
+`crates/webfang_mcp/src/mcp_server/validation.rs:65`). rustdoc los parsea como
+sintaxis de link, así que **aparecen en el conteo aunque no haya nada que resolver**:
+se escapan con `\[` o backticks. El conteo es correcto; la descripción original
+("code spans, no links") no lo era.
 
 ## Tasks
 
 ### Fase 1 — Determinístico, fail-closed (el 90% del valor)
 
-- [ ] **T1 (S1)** — Resolver o marcar los 39 links privados. Ojo: `[[`100,599`]]` y
-      `REASON_*` son code spans, no links — distinguir antes de editar.
+- [ ] **T1 (S1)** — Cerrar los 39 warnings en dos pasadas: **33 links reales** (resolver
+      a un path válido o reescribir la prosa) y **6 a escapar** (`src`, `srcset` ×2,
+      `href`, `100,599`, `REASON_*` — son brackets literales, no items). No son code
+      spans: rustdoc los cuenta como links justamente porque usa la misma sintaxis.
       Ruta: delegated (writer, 6+ archivos no triviales). Riesgo: item 3 (contrato
       público consumido).
       Verificación: `RUSTDOCFLAGS="--document-private-items" cargo doc --workspace
-      --all-features --no-deps` → 0 `unresolved link`.
-- [ ] **T2 (S2)** — Parametrizar los 5 pins de versión. Preferencia: preprocessor mdBook
-      que inyecte la versión desde `Cargo.toml` (mata la clase, no la detecta); fallback
-      documentado: marker `<!-- version-stale:allow -->` para historia intencional.
-      Ruta: inline. Riesgo: ninguno.
-      Verificación: `rg -n 'VERSION=v[0-9.]+|\$Version =' docs/ README.md` → solo
-      el valor vigente; `mdbook build docs` verde.
+      --all-features --no-deps 2>&1 | grep -c 'unresolved link'` → **0**.
+- [ ] **T2 (S2)** — Parametrizar las 8 ocurrencias de `v2.4.0`. Preferencia:
+      preprocessor mdBook que inyecte la versión desde `Cargo.toml` (mata la clase, no
+      la detecta); fallback documentado: marker `<!-- version-stale:allow -->` para
+      historia intencional.
+      Ruta: inline. Riesgo: bajo, no nulo — toca `docs/book.toml` y el build del libro.
+      Verificación: `grep -rn 'v2\.4\.0' README.md docs/src/` → sólo historia marcada;
+      `mdbook build docs` verde. Ojo: el regex del plan original
+      (`VERSION=v[0-9.]+|\$Version =`) **no ve** `installation.md:64,67,120,121`, que
+      también están pinneadas — la verificación tiene que ser sobre `v2\.4\.0` a secas,
+      no sobre la forma de asignación.
 - [ ] **T3 (S3)** — Enlazar los 3 huérfanos en `SUMMARY.md` o reclasificarlos fuera de
       `docs/src/`. Nota: `ai-providers-design.md` contiene los **9 únicos fences rust**
       de `docs/src/` — si se mueve, esos ejemplos salen del alcance de `mdbook test`.
-      Ruta: inline. Riesgo: ninguno.
-      Verificación: todo `.md` de `docs/src/` listado en `SUMMARY.md`.
+      Ruta: inline. Riesgo: bajo, no "ninguno" — mover `ai-providers-design.md` saca
+      esos 9 fences del alcance de `mdbook test`, que es una pérdida de cobertura real.
+      Verificación: `comm -23 <(ls docs/src/*.md | xargs -n1 basename | sort)
+      <(grep -oE '\([a-z0-9-]+\.md\)' docs/src/SUMMARY.md | tr -d '()' | sort)` → vacío.
 - [x] **T4a (S4, S7)** — Backfill de `support.json` a la minor publicada (Opción A,
-      aprobada por el owner). Commit `f404dc7c` en `chore/support-window-backfill`.
+      aprobada por el owner). **MERGED** en `main` como `03b3a620` (PR #2003).
       Estado declarado: 2.11 STABLE / 2.10 MAINTENANCE / 2.2-2.9 y 2.1 EOL con
       `eol_reason` de backfill; `2.1 latest` corregido a 2.1.1 (tag existente).
       `rotate-stable.sh` se negó a cruzar el gap por diseño (`:51-66`) — cierre de
       gobernanza, no script run.
-      Verificado: `--scope=both` exit 0 · `test_support_drift.sh` 26 ok, 0 fail ·
-      `render-support-md.sh --check` exit 0. **Pendiente:** issue con
-      `status:approved` + PR (el agente no auto-aprueba).
-- [ ] **T4b (S4)** — Wiring: pasar `--scope=published` de warn-only a required gate.
-      Va DESPUÉS del merge de T4a; hacerlo antes deja todo PR en rojo.
-      Riesgo: item 3 (contrato de CI) + item 5 (delivery).
-- [ ] **T5 (S5)** — Declarar los 3 lints en `crates/*/src/lib.rs`; añadir
-      `deny(missing_docs)` + `[lints] workspace=true` a `webfang_benchmark`.
-      Ruta: inline. Riesgo: ninguno (0 warnings hoy).
-      Verificación: los 3 lints explícitos presentes; cargo doc sigue exit 0.
+      Verificado post-merge sobre `979f73bb`: `--scope=declared` exit 0 ·
+      `--scope=published` exit 0 · `test_support_drift.sh` 26 ok, 0 fail.
+      Artefactos locales gitignoreados aparte en `979f73bb` (PR #2006).
+- [x] **T4b (S4)** — Wiring: `--scope=published` de advisory a gate de merge.
+      **El plan original era incorrecto y no se puede ejecutar tal cual.** Tres
+      correcciones, medidas sobre `main @ 979f73bb`:
+
+      1. **Path filter = deadlock.** El bloque `paths:` de `support-drift.yml`
+         (entonces `:40-51`, hoy `:45-56`) filtra `pull_request` a 9 rutas. Agregar
+         ese job a branch protection sin tocar el filtro deja "pending" para siempre a
+         todo PR que no toque esas rutas → repo inmergeable. Un workflow
+         path-filtered **no puede** ser required context.
+      2. **No renombrar `Validate PR metadata`.** Es un required context
+         (`docs/research/ci-test-playbook.md:21`). Renombrarlo deja el contexto
+         requerido sin reportar y traba todos los PRs sin error visible.
+      3. **El header de `support-drift.yml` era falso** (`:12-35` antes del cambio):
+         documentaba "main is drifted RIGHT NOW … 2.1 STABLE" y pedía quitar
+         `continue-on-error` "en ese mismo commit" — que fue #2003. Reescrito acá.
+
+      **Diseño elegido:** meter el step en `Validate PR metadata`
+      (`pr-validation.yml`), que ya es required y corre en todo PR y en `merge_group`,
+      sin path filter. Requiere `fetch-depth: 0` en ese checkout (el script rechaza
+      shallow clone a propósito, `check_support_drift.sh:120-122`). `support-drift.yml`
+      conserva el job para `push: main` (release-plz crea tags y nada más valida ese
+      drift post-merge) y pierde `continue-on-error`.
+      Riesgo: item 3 (contrato de CI). Verificación: `actionlint` verde; en un PR de
+      prueba con `support.json` alterado, `Validate PR metadata` falla; con el archivo
+      correcto, pasa. El gate queda activo **sin tocar branch protection** — la razón
+      principal de esta opción sobre un contexto nuevo (`docs/ci-slo.md:60`).
+
+      **Implementado.** `pr-validation.yml`: `fetch-depth: 0` + step
+      `Support drift vs published tags (enforcing)`. `support-drift.yml`: fuera
+      `continue-on-error`, job renombrado, header reescrito (la sección "WHY ADVISORY"
+      contradecía el estado real y se reemplazó por "WHY THE MERGE GATE IS NOT THIS
+      JOB"). Verificado en worktree aislado: caso verde → exit 0; `latest` cambiado a
+      `2.11.9` → `::error::` + exit 1. `actionlint` verde en ambos workflows.
+      **No se renombró `Validate PR metadata`** (required context) ni se tocó branch
+      protection.
+- [ ] **T5 (S5)** — Declarar los 3 lints en los `lib.rs` de las **4 crates publicadas**
+      (`webfang_core`, `webfang_cli`, `webfang_ai`, `webfang_mcp`); `webfang_benchmark`
+      y `webfang_test_utils` son `publish = false` y no cuentan para el "0/4".
+      Añadir `deny(missing_docs)` + `[lints] workspace = true` a `webfang_benchmark`
+      (hoy es la única sin bloque `[lints]`).
+      Ruta: inline. Riesgo: bajo (0 warnings hoy, pero el lint nuevo puede destapar
+      items sin doc en `webfang_benchmark`).
+      Verificación: `grep -c` de los 3 lints por `lib.rs` → 3 en cada publicada;
+      `cargo doc` sigue exit 0.
 
 ### Fase 2 — Estructural (evita la recurrencia)
 
@@ -94,11 +156,15 @@ re-ejecutada por el parent.
       Empezar por los que importan: `installation.md` (47 bash fences) y
       `debugging.md` (17). Los 6 powershell son un caso aparte (nada los ejecuta).
       Ruta: delegated (writer, editor de superficie amplia).
-      Verificación: `rg -c '{{#include' docs/src/` > 0; `mdbook build docs` verde;
+      Verificación: `grep -rF '{{#include' docs/src/ | wc -l` → > 0 (no `rg -c`, que
+      imprime `archivo:conteo` y no es comparable); `mdbook build docs` verde;
       `scripts/gen-cli-reference.sh --check` sigue verde.
 - [ ] **T7 (S1)** — Mover el guard MCP version-marker de local-only a CI
       (`scripts/check_mcp_public_surface.sh --base`).
-      Ruta: delegated (toca `.github/`). Verificación: marker check en job de CI.
+      Ruta: delegated (toca `.github/`). Riesgo: mismo path-filter trap que T4b —
+      verificar que el job que lo hospeda corra en todo PR antes de hacerlo required.
+      Verificación: `actionlint` verde; el step aparece en el run de un PR que **no**
+      toca el fixture ni el marker (prueba de que no hay filtro que lo saltee).
 
 ### Fase 3 — Reporte externo (warn-only, nunca gate)
 
@@ -120,10 +186,24 @@ re-ejecutada por el parent.
   disjuntas) + mediciones shell del parent. Inventario de 6 hallazgos medidos arriba.
 - **L4 (2026-10-17)** — Este plan. Orden Fase→Fase por valor/riesgo; sin stacked PRs
   (este repo las rechaza en `check-topology.sh`).
+- **L5 (2026-10-17)** — Revisión del plan contra `main @ 979f73bb`. Cuatro
+  correcciones: T4a ya está mergeada (#2003, #2006); S2 son 8 pins y no 5; los 39
+  warnings incluyen 6 escapes que no son links; y T4b tal como estaba escrito
+  deadlockeaba los PRs por el path filter de `support-drift.yml`. T4b rediseñado
+  sobre `Validate PR metadata` (ya required, sin filtro).
+- **L6 (2026-10-17)** — T4b implementado en `ci/support-drift-required`:
+  `fetch-depth: 0` + step `check_support_drift.sh --scope=published` en
+  `Validate PR metadata`; `support-drift.yml` sin `continue-on-error`, job renombrado
+  a `(enforcing)` y header reescrito. Verificado: `actionlint` 0 · caso verde exit 0 ·
+  `latest` roto → `::error::` + exit 1 (worktree aislado). **Bloqueado para PR:** no
+  existe issue con `status:approved` y el agente no puede aplicar ese label.
 
 ## Next steps
 
-1. Owner decide T4: rotar `support.json` a 2.11 (gobernanza, no agente) y si el
-   gate pasa a required.
-2. T1 primero: es el único hallazgo con superficie de código real.
-3. `cargo fmt --all -- --check`, clippy strict y rustdoc verdes antes de cada commit.
+1. **T4b:** abrir la issue de CI con `status:approved` (owner) y el PR desde
+   `ci/support-drift-required`. Sin ese label, `Validate PR metadata` rechaza el PR —
+   el mismo gate que estamos tocando.
+2. T1: los 33 links reales + 6 escapes. Es el único hallazgo con superficie de código.
+3. T2 y T3 en el mismo PR de docs (tocan `docs/src/` y `book.toml`, sin conflicto con T1).
+4. `cargo fmt --all -- --check`, clippy strict y rustdoc verdes antes de cada commit.
+5. T8 queda deferred hasta que Fase 1 esté verde.
