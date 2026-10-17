@@ -1,0 +1,73 @@
+# External link liveness report (T8, docs-truthfulness audit).
+#
+# Scheduled, REPORT-ONLY check of external (non-repo) links across the
+# narrative docs. It NEVER gates CI: the step is configured to pass even when
+# dead links are found (`fail: false` + `--exit-zero`), and this workflow is
+# not referenced by any branch-protection required status. Network and quota
+# make link checking inherently flaky, so it reports instead of blocking
+# (per the audit's "warn-only, never gate" justification).
+#
+# This file only takes effect once merged to the default branch; until then the
+# schedule does nothing (same dormant-ship convention as stale.yml).
+
+name: External Link Report
+
+on:
+  schedule:
+    # Weekly, Monday 07:00 UTC — low-traffic window, easy to spot in history.
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  link-report:
+    name: External link liveness (report only)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Lychee external link check (report only)
+        # SHA, not `v2` — every action in this repo is pinned by commit SHA, and
+        # v2 is a moving tag. This SHA is the current v2.
+        uses: lycheeverse/lychee-action@e7477775783ea5526144ba13e8db5eec57747ce8
+        with:
+          # Never fail the build. Dead links are reported, not blocking.
+          fail: false
+          format: markdown
+          output: lychee-report.md
+          # --exit-zero: lychee itself also exits 0 regardless of findings.
+          # --exclude-mail: skip mailto: links (not network-checkable).
+          # Internal repo links are valid by construction; focus on externals.
+          args: >-
+            --no-progress
+            --exit-zero
+            --exclude-mail
+            --exclude "http://localhost"
+            --exclude "http://127.0.0.1"
+            --exclude "https://github.com/XaviCode1000/webfang"
+            "README.md"
+            "CHANGELOG.md"
+            "docs/src/**/*.md"
+
+      - name: Show report in job summary
+        if: always()
+        run: |
+          if [ -f lychee-report.md ]; then
+            cat lychee-report.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "lychee produced no report file." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload lychee report artifact
+        if: always()
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+        with:
+          name: lychee-external-link-report
+          path: lychee-report.md
+          if-no-files-found: ignore
+          retention-days: 30

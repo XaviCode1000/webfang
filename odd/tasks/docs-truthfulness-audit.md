@@ -258,11 +258,13 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
 
 ### Fase 3 — Reporte externo (warn-only, nunca gate)
 
-- [ ] **T8** — Links externos vivos (`lychee` sin API key, o `jina read` con
-      `JINA_API_KEY` en secrets) y drift semántico (`jina embed` doc-vs-código) como
-      reporte scheduled. Claims de deps contra Context7 con versión fijada.
-      Ruta: deferred — sólo tras Fase 1 verde.
-      Justificación de no-gate: red + quota + versions = flaky por diseño.
+- [x] **T8** — Links externos vivos como reporte scheduled. **Slice lychee-keyless**
+      (decisión del usuario): `.github/workflows/external-link-report.yml` corre
+      `lychee` semanal + manual sobre `README.md`, `CHANGELOG.md`, `docs/src/**/*.md`,
+      **report-only** (`fail: false` + `--exit-zero`, fuera de cualquier required status,
+      nunca gate). Excluye links internos del repo y `localhost`.
+      Diferidos (requieren `JINA_API_KEY`): drift semántico `jina embed` y claims de
+      deps contra Context7. Justificación de no-gate: red + quota + versions = flaky.
 
 ## Log
 
@@ -330,12 +332,17 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
   corpus.rs, cost/config.rs, runner.rs) que se documentaron con comentarios precisos.
   `cargo doc -D warnings` exit 0, fmt/clippy limpios, `ci_fast_gate.sh` verde.
 
+- **L10 (2026-10-17)** — T8 (slice lychee-keyless) en `ci/external-link-report`:
+  workflow scheduled (cron semanal + `workflow_dispatch`) que corre `lychee` sobre
+  `README.md`, `CHANGELOG.md`, `docs/src/**/*.md`, **report-only** (`fail: false` +
+  `--exit-zero`, fuera de branch protection). Issue #2015 con `status:approved`,
+  PR #2016. Diferidos los slices jina/Context7 (requieren `JINA_API_KEY`).
+
 ## Next steps
 
-1. T5: PR en `chore/lint-declaration` (verificar `ci_fast_gate.sh` verde antes de abrir).
-2. T9: corregir `check_docs_version_pins.sh` (advisories 2/3/4) + añadir caso prerelease al
+1. T9: corregir `check_docs_version_pins.sh` (advisories 2/3/4) + añadir caso prerelease al
    harness; cablear el gate en CI (advisory 1) tras issue con `status:approved` + ask-first.
-3. T6: migrar samples de `docs/src/` a `{{#include}}` (deferred).
-4. T7: mover el guard MCP version-marker a CI (deferred, toca `.github/`).
-5. T8: reporte de links externos (hecho en `ci/external-link-report`, pendiente de merge).
-6. `cargo fmt --all -- --check`, clippy strict y rustdoc verdes antes de cada commit.
+2. T6: migrar samples de `docs/src/` a `{{#include}}` (deferred).
+3. T7: mover el guard MCP version-marker a CI (deferred, toca `.github/`).
+4. T8 jina/Context7 slices diferidos: requieren `JINA_API_KEY` en secrets.
+5. `cargo fmt --all -- --check`, clippy strict y rustdoc verdes antes de cada commit.
