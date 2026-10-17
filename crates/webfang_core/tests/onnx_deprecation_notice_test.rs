@@ -38,13 +38,9 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use common::cli_harness::{redact_nondeterministic, BehavioralTest};
-use insta::assert_snapshot;
-use std::path::Path;
+use common::cli_harness::{assert_snapshot_redacted, mount_single_page_site, BehavioralTest};
 use std::time::Duration;
 use webfang_core::cli::args::ai::{ONNX_DEPRECATION_NOTICE_MARKER, ORPHAN_THRESHOLD_NOTICE_MARKER};
-use wiremock::matchers::method;
-use wiremock::{Mock, ResponseTemplate};
 
 const RUN_TIMEOUT_SECS: u64 = 60;
 
@@ -52,17 +48,6 @@ const RUN_TIMEOUT_SECS: u64 = 60;
 /// own precondition ("the user did not pass one") is genuinely exercised
 /// rather than satisfied by an identical value.
 const EXPLICIT_THRESHOLD: &str = "0.55";
-
-/// Snapshot a stderr blob with the harness temp dir and other
-/// non-deterministic output redacted.
-fn assert_snapshot_redacted(name: &str, dir: &Path, value: impl Into<String>) {
-    let redacted = redact_nondeterministic(dir, &value.into());
-    let mut settings = insta::Settings::clone_current();
-    settings.add_filter(r"(?m)^Parsed using .+$", "Parsed using [REDACTED]");
-    settings.bind(|| {
-        assert_snapshot!(name, redacted);
-    });
-}
 
 /// Snapshot name suffix for a run that went through `--clean-ai`.
 ///
@@ -94,16 +79,18 @@ fn clean_ai_snapshot_name(base: &str) -> String {
 }
 
 /// Mount a single catch-all page so a run that reaches the scrape path has a
-/// hermetic, instant target instead of the real network.
-async fn mount_single_page_site(t: &BehavioralTest) {
-    Mock::given(method("GET"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(
-            "<html><body><article><h1>Page</h1>\
-             <p>Substantive content long enough to clear the fifty character \
-             minimum content guard comfortably.</p></article></body></html>",
-        ))
-        .mount(&t.server)
-        .await;
+/// Spin up the harness, mount the catch-all page, run the hermetic AI-surface
+/// scrape, and hand back the harness plus the captured stderr.
+///
+/// The harness is returned because the snapshot assertions redact against its
+/// temp dir, so it has to outlive the stderr string it produced. Every
+/// AI-surface case in this file goes through here: repeating the four-line
+/// preamble per test is what the duplication ratchet charges for.
+async fn ai_surface_stderr(extra: &[&str]) -> (BehavioralTest, String) {
+    let t = BehavioralTest::new().await;
+    mount_single_page_site(&t).await;
+    let output = scrape_ai_surface(&t, extra).await;
+    (t, String::from_utf8_lossy(&output.stderr).into_owned())
 }
 
 /// How many times `marker` appears in the captured stderr.
@@ -182,11 +169,7 @@ async fn scrape_ai_surface(t: &BehavioralTest, extra: &[&str]) -> std::process::
 /// going away.
 #[tokio::test]
 async fn onnx_deprecation_notice_fires_once_when_clean_ai_is_used() {
-    let t = BehavioralTest::new().await;
-    mount_single_page_site(&t).await;
-
-    let output = scrape_ai_surface(&t, &[]).await;
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let (t, stderr) = ai_surface_stderr(&[]).await;
 
     assert_eq!(
         notice_events(&stderr, ONNX_DEPRECATION_NOTICE_MARKER),
@@ -221,7 +204,7 @@ async fn onnx_deprecation_notice_fires_once_when_clean_ai_is_used() {
     assert_snapshot_redacted(
         &clean_ai_snapshot_name("onnx_deprecation_notice_clean_ai_stderr"),
         t.out.path(),
-        stderr.into_owned(),
+        stderr,
     );
 }
 
@@ -288,11 +271,7 @@ async fn ai_engine_env_alone_reaches_the_deprecation_notice() {
 /// is calibrated, the number means something different than it says.
 #[tokio::test]
 async fn orphan_threshold_warning_fires_once_with_the_default_threshold() {
-    let t = BehavioralTest::new().await;
-    mount_single_page_site(&t).await;
-
-    let output = scrape_ai_surface(&t, &[]).await;
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let (t, stderr) = ai_surface_stderr(&[]).await;
 
     assert_eq!(
         notice_events(&stderr, ORPHAN_THRESHOLD_NOTICE_MARKER),
@@ -308,7 +287,7 @@ async fn orphan_threshold_warning_fires_once_with_the_default_threshold() {
     assert_snapshot_redacted(
         &clean_ai_snapshot_name("orphan_threshold_warning_default_stderr"),
         t.out.path(),
-        stderr.into_owned(),
+        stderr,
     );
 }
 
@@ -316,11 +295,7 @@ async fn orphan_threshold_warning_fires_once_with_the_default_threshold() {
 /// hands; the orphan warning would be noise about a decision they already made.
 #[tokio::test]
 async fn orphan_threshold_warning_does_not_fire_with_an_explicit_threshold() {
-    let t = BehavioralTest::new().await;
-    mount_single_page_site(&t).await;
-
-    let output = scrape_ai_surface(&t, &["--threshold", EXPLICIT_THRESHOLD]).await;
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let (_t, stderr) = ai_surface_stderr(&["--threshold", EXPLICIT_THRESHOLD]).await;
 
     assert_eq!(
         notice_events(&stderr, ORPHAN_THRESHOLD_NOTICE_MARKER),
