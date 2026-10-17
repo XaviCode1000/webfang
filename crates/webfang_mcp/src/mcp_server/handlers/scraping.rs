@@ -1151,7 +1151,7 @@ impl McpHandler {
     /// # Budget (#1611, F7)
     ///
     /// A run whose records do not fit
-    /// [`McpState::session_result_budget_bytes`] is refused as a whole
+    /// [`McpState::session_result_budget_bytes`](crate::mcp_server::McpState::session_result_budget_bytes) is refused as a whole
     /// ([`within_session_budget`]) and the buffer is EMPTIED rather than left
     /// holding the previous run: a stale buffer would make the next export
     /// serve a different crawl than the tool chain the client just ran, which

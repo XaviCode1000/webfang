@@ -62,7 +62,7 @@ pub const REASON_OUT_OF_RANGE: &str = "out_of_range";
 pub const REASON_NOT_IN_ALLOWED_SET: &str = "not_in_allowed_set";
 
 /// Build the standard `McpError::invalid_params` envelope used by every
-/// handler in this crate, WITH a stable [`REASON_*`] slug. `data` is
+/// handler in this crate, WITH a stable `REASON_*` slug. `data` is
 /// `{"field": "<field>", "reason": "<slug>"}`.
 ///
 /// Every rejection branch in the crate funnels through here, which is what

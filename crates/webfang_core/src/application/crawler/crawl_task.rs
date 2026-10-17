@@ -397,7 +397,7 @@ async fn run_pipeline(ctx: &CrawlTaskCtx, url_str: &str, response: &str, status_
 /// Write a processed item to every configured output stage.
 ///
 /// An output-stage failure must not crash the task (#865): it becomes an
-/// ERROR event carrying the classified [`ErrorClass`] as a structured
+/// ERROR event carrying the classified [`ErrorClass`](crate::domain::error::ErrorClass) as a structured
 /// field so sink failures are observable without retry wiring (deferred
 /// to Sprint 7-8 per the error classification matrix).
 async fn write_to_output_stages(ctx: &CrawlTaskCtx, item: &ScrapedItem) {

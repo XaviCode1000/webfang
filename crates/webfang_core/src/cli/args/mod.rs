@@ -624,7 +624,7 @@ impl From<Args> for crate::application::crawl_options::CrawlOptions {
 /// Take the already-hardened seed URL from the args.
 ///
 /// #1239: parsing and hardening happen at the argv boundary
-/// ([`parse_seed_url`], wired as the clap value parser for both `--url` and
+/// ([`parse_seed_url`](crate::cli::args::crawler::parse_seed_url), wired as the clap value parser for both `--url` and
 /// the positional URL), so by the time `From<Args>` runs there is nothing
 /// left to parse — the value IS a [`ValidUrl`]. The static fallback only
 /// covers `From<Args>` callers that bypass clap in tests; it is a
@@ -679,7 +679,7 @@ fn resolve_max_chars(args: &Args) -> (usize, Option<usize>) {
     }
 }
 
-/// Build the ungated [`AiConfig`] — ONE reader for every cargo configuration
+/// Build the ungated [`AiConfig`](crate::application::crawl_options::AiConfig) — ONE reader for every cargo configuration
 /// (ADR-0004, slice C).
 ///
 /// This used to be two `cfg`-gated copies: one that read `threshold`,

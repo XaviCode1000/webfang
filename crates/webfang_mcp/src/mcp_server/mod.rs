@@ -311,7 +311,7 @@ const PANIC_CONTAINED_TOOL_ERROR: &str =
 /// default stderr hook prints and nothing more. Do not make a location-bearing
 /// diagnosis depend on this function, and do not "upgrade" it to carry one.
 ///
-/// [`start_mcp_server`]: super::server::start_mcp_server
+/// [`start_mcp_server`]: crate::mcp_server::server::start_mcp_server
 pub(crate) fn render_panic_payload(payload: &(dyn Any + Send)) -> String {
     const MAX_CHARS: usize = 200;
     let raw = payload

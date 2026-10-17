@@ -111,7 +111,7 @@ pub struct Engine {
     ///
     /// Built through the injected [`DownloaderFactory`] — never constructed
     /// here. `None` means "no factory was injected", which is a fully
-    /// supported state: [`ports::ProductionPageFetcher`] then falls back to
+    /// supported state: [`ports::ProductionPageFetcher`](crate::application::crawler::ports::ProductionPageFetcher) then falls back to
     /// the composition-root-injected [`StaticFetchPort`](crate::domain::crawler_port::StaticFetchPort),
     /// whose infrastructure implementation delegates to the static `fetch_url`
     /// free fn.

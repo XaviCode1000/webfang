@@ -170,7 +170,7 @@ pub(crate) fn parse_seed_url(s: &str) -> Result<ValidUrl, String> {
 }
 
 /// Parse `--js-wait` (F-52-b, #1277): `idle` | `none` | `<ms 1..=30000>`
-/// via [`PostLoadWait::from_str`]. Invalid input surfaces as a Spanish
+/// via [`PostLoadWait`](crate::domain::post_load_wait::PostLoadWait)::from_str. Invalid input surfaces as a Spanish
 /// clap usage error (exit 64) naming the value and the valid forms.
 pub(crate) fn parse_js_wait(s: &str) -> Result<PostLoadWait, String> {
     s.parse::<PostLoadWait>()

@@ -42,7 +42,7 @@ use super::DownloadError;
 
 /// RAM usage percentage that triggers a warning and reduces capacity by half.
 ///
-/// Derived from the budget model's [`RamThresholds`] so the governor and the
+/// Derived from the budget model's [`RamThresholds`](crate::domain::budget::derivation::RamThresholds) so the governor and the
 /// pure derivation share ONE threshold source of truth (#897 item 4). Infra
 /// → domain is the allowed dependency direction.
 const WARNING_THRESHOLD: u8 =

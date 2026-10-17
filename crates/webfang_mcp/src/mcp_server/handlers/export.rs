@@ -210,7 +210,7 @@ fn resolve_export_path(
 /// operational failure to an honest `CallToolResult::error` (isError:true,
 /// Spanish).
 ///
-/// The session buffer lives in [`McpState::session_results`]: `crawl_site`
+/// The session buffer lives in [`McpState::session_results`](crate::mcp_server::McpState::session_results): `crawl_site`
 /// replaces it with the enriched DTOs of its just-finished run (pages
 /// converted through the single shared `extract_page_content` path, exactly
 /// what the CLI batch/export phases use), so an export after a crawl serves
