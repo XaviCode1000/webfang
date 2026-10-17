@@ -231,6 +231,7 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
       Ruta: inline para (2)/(3)/(4) — sólo el script + harness, sin `.github/`; (1)
       delegated tras issue `status:approved`. Riesgo: bajo.
       Verificación hoy: harness 8 ok / 0 fail; caso RC A pasa (mal), caso RC B aborta.
+      Tracking issue: #2017 (type:bug; falta `status:approved` para cablear en CI).
 
 ### Fase 3 — Reporte externo (warn-only, nunca gate)
 
