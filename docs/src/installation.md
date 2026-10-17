@@ -54,17 +54,17 @@ Set the version once and reuse it. Copy the tag from
 [the latest release](https://github.com/XaviCode1000/webfang/releases/latest):
 
 ```bash
-VERSION=v2.11.0   # ← the tag you just looked up
+VERSION=v2.12.0   # ← the tag you just looked up
 ```
 
 <details>
 <summary>Verify these names yourself (any release, any version)</summary>
 
 ```bash
-gh release view v2.11.0 --json assets --jq '.assets[].name'
+gh release view v2.12.0 --json assets --jq '.assets[].name'
 ```
 
-Observed output for `v2.11.0`:
+Observed output for `v2.11.0`: <!-- version-stale:allow -->
 
 ```text
 SHA256SUMS.txt
@@ -151,7 +151,7 @@ only the differing part is repeated per platform.
 
 ```bash
 # 1. Download (x86_64; use aarch64-unknown-linux-gnu on ARM64)
-VERSION=v2.11.0
+VERSION=v2.12.0
 curl -fLO "https://github.com/XaviCode1000/webfang/releases/download/${VERSION}/webfang-x86_64-unknown-linux-gnu.tar.gz"
 curl -fLO "https://github.com/XaviCode1000/webfang/releases/download/${VERSION}/SHA256SUMS.txt"
 
@@ -188,7 +188,7 @@ Notes:
 
 ```bash
 # 1. Download
-VERSION=v2.11.0
+VERSION=v2.12.0
 curl -fLO "https://github.com/XaviCode1000/webfang/releases/download/${VERSION}/webfang-aarch64-apple-darwin.tar.gz"
 curl -fLO "https://github.com/XaviCode1000/webfang/releases/download/${VERSION}/SHA256SUMS.txt"
 
@@ -234,7 +234,7 @@ non-AI export format work normally. Build without `ai`
 
 ```powershell
 # 1. Download (PowerShell 5.1+)
-$Version = "v2.11.0"
+$Version = "v2.12.0"
 $Asset   = "webfang-x86_64-pc-windows-msvc.zip"
 Invoke-WebRequest "https://github.com/XaviCode1000/webfang/releases/download/$Version/$Asset" -OutFile $Asset
 Invoke-WebRequest "https://github.com/XaviCode1000/webfang/releases/download/$Version/SHA256SUMS.txt" -OutFile SHA256SUMS.txt
