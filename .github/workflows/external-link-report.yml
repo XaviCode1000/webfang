@@ -2,10 +2,11 @@
 #
 # Scheduled, REPORT-ONLY check of external (non-repo) links across the
 # narrative docs. It NEVER gates CI: the step is configured to pass even when
-# dead links are found (`fail: false` + `--exit-zero`), and this workflow is
-# not referenced by any branch-protection required status. Network and quota
-# make link checking inherently flaky, so it reports instead of blocking
-# (per the audit's "warn-only, never gate" justification).
+# dead links are found (`fail: false`), and this workflow is not referenced by
+# any branch-protection required status. Network and quota make link checking
+# inherently flaky, so it reports instead of blocking (per the audit's
+# "warn-only, never gate" justification). "Report-only" is about DEAD LINKS,
+# not about a broken checker: a run that cannot produce a report does fail.
 #
 # This file only takes effect once merged to the default branch; until then the
 # schedule does nothing (same dormant-ship convention as stale.yml).
@@ -38,21 +39,46 @@ jobs:
         with:
           # Never fail the build. Dead links are reported, not blocking.
           fail: false
+          # Pinned explicitly: the SHA above freezes the action, but a future
+          # bump of it could change the lychee binary underneath. v0.24.2 is the
+          # release whose flags are verified here.
+          lycheeVersion: v0.24.2
           format: markdown
           output: lychee-report.md
-          # --exit-zero: lychee itself also exits 0 regardless of findings.
-          # --exclude-mail: skip mailto: links (not network-checkable).
+          # Only flags that exist in the pinned lychee release belong here: an
+          # unknown flag makes lychee exit 2 before checking anything, and
+          # `fail: false` turns that into a green run whose report carries no
+          # summary table.
+          # Mailto links are not checked unless --include-mail is passed, so
+          # `--exclude-mail` was both non-existent and unnecessary.
           # Internal repo links are valid by construction; focus on externals.
           args: >-
             --no-progress
-            --exit-zero
-            --exclude-mail
             --exclude "http://localhost"
             --exclude "http://127.0.0.1"
             --exclude "https://github.com/XaviCode1000/webfang"
             "README.md"
             "CHANGELOG.md"
             "docs/src/**/*.md"
+
+      - name: Assert lychee actually checked something
+        # Report-only means "never gate on dead links", not "accept a broken
+        # checker". `fail: false` swallows every lychee failure, and exit code 2
+        # is ambiguous (clap usage error and link findings both use it), so the
+        # report content is the only evidence that links were really checked.
+        # A broken run still leaves a file behind — the action always cats its
+        # temp output — so the missing summary table, not an empty file, is the
+        # real signal; the size check below only covers the residual case.
+        # Zero links found is already handled by the action's failIfEmpty default.
+        run: |
+          if [ ! -s lychee-report.md ]; then
+            echo "::error::lychee produced an empty report — the checker did not run (see the step above)."
+            exit 1
+          fi
+          if ! grep -qE 'Total *\| *[0-9]' lychee-report.md; then
+            echo "::error::lychee report has no summary table — this is not a link report."
+            exit 1
+          fi
 
       - name: Show report in job summary
         if: always()
