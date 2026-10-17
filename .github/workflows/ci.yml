@@ -409,6 +409,16 @@ jobs:
       # Offline, mktemp fixtures only, no cargo and no network.
       - name: Docs version pins semantics harness
         run: bash scripts/test_docs_version_pins.sh
+      # Wiring regression guard for the two steps above. The semantics harness
+      # pins what the guard decides; nothing pinned the EDGES, and the first
+      # version of this gate was inert for a whole release because no workflow
+      # invoked it. A deleted step is valid YAML, and a green run with no guard
+      # is indistinguishable from a green run with one. This harness asserts the
+      # edges themselves: `repo-guards` stays unfiltered and unconditional,
+      # `gate` waits on it in both scopes, and the local fast gate mirrors it.
+      # Offline, pure text over the checked-out tree: no cargo, no network.
+      - name: Docs version pins wiring harness
+        run: bash scripts/test_docs_version_pins_wiring.sh
       # Regression guard for #836: block-scalar nesting bugs in workflow YAML
       # (steps swallowed into a `run: |` block) stay valid YAML and only fail
       # at runtime post-merge (#833→#835). actionlint + shellcheck catch them

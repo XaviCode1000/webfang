@@ -238,8 +238,8 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
       (hallados por la revisión delegada; verificados por el parent el 2026-10-17):
       1. **Gate no cableado** — ningún workflow en `.github/` invocaba el script: era un
          guard inerte. **Resuelto en T9.1**: el gate y su harness corren en el job
-         `repo-guards` de `ci.yml`, el único sin `paths:` ni `if:` y ya listado por `gate`
-         como always-applicable en ambos scopes, así que el drift roja el `CI Gate`
+         `repo-guards` de `ci.yml`, que no declara `paths:` ni `if:` y ya está listado por
+         `gate` como always-applicable en ambos scopes, así que el drift roja el `CI Gate`
          requerido incluso en un PR docs-only. La vía filtrada es imposible por el mismo
          motivo que T4b/T7 documentan: un workflow detrás de `paths:` nunca puede ser
          contexto requerido.
@@ -266,7 +266,50 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
       shellcheck 0.11.0 limpios con el wiring nuevo; `ci_fast_gate.sh` GREEN; review RDD
       aprobada y quemada sobre `a1f14d87` (lineage `review-38315f8f5b874640`).
       Tracking issue: #2017 (`status:approved`, `type:bug`). T9 (2)(3)(4) mergeado como
-      `455215d2` (PR #2025); T9.1 en PR propio (commit `dc3af78e`).
+      `455215d2` (PR #2025); T9.1 en PR propio (commit `dc3af78e`, mergeado como `8395ccf3`,
+      PR #2026).
+
+- [x] **T9.2** — Harness de cableado del gate de pines + cierre de los advisories de la
+      review de #2026. El harness de semántica fija lo que el gate DECIDE; nada fijaba sus
+      BORDES, y la primera versión del gate estuvo inerte una release entera porque ningún
+      workflow lo invocaba (el mismo defecto que T9.1 arregló a mano). Nuevo
+      `scripts/test_docs_version_pins_wiring.sh` (11 casos, offline, texto sobre el árbol):
+      `repo-guards` sin `paths:`/`if:`, su step presente, `gate` dependiéndolo en `needs:` y
+      en la lista narrow-scope always-applicable, el gate espejado en `lane_docs` +
+      `lane_fmt_and_guards`, los dos harnesses en `lane_ci`, y el trigger de `lane_ci` casando
+      los tres scripts. Casos 2-6 y 8-11 son controles negativos con inyección por `sed`/`awk`
+      más guarda `cmp -s`. Cableado en `repo-guards` (`ci.yml`) y en `lane_ci`
+      (`ci_fast_gate.sh`, misma rama de trigger que el harness de semántica).
+      Ruta: inline. Riesgo: ítem 5 (CI/delivery) → verificación independiente + review RDD.
+      Verificación: harness `OK: 11/11`. **No vacuidad medida, no afirmada**: apuntado al
+      baseline (`8395ccf3`) el harness final da `FAILED 3/11` (casos 1, 7 y 10, justo las
+      superficies desconectadas), y la primera corrida — antes de corregir la aserción
+      demasiado específica del caso 9 — fue `4/10`. Harness de semántica `11 ok, 0 fail`;
+      `ci_fast_gate.sh` GREEN (`PASS=9 FAIL=0 SKIP=6`) con
+      `PASS: docs version pins wiring (offline)`; actionlint 1.7.12 + shellcheck 0.11.0 limpios.
+      **Verificación independiente** (agente verificador read-only sobre `fcee0348`, con probes
+      en copia temporal y paridad de hash contra `git show`): **PASS, sin bloqueantes**; confirmó
+      anti-vacuidad, los 8 controles negativos con su razón nombrada, las guardas `cmp -s`, el
+      regex anclado (casa exactamente 3 rutas y rechaza `_extra.sh`, `.bak`, `sub/scripts/…`),
+      que el step no es skipeable y que ningún step preexistente cambió su salida (sólo el texto
+      de un `SKIP`, sin consumidores). Dejó 3 advisories: (1) la comprobación de lane usaba
+      `grep -qF` sobre la ruta, así que un **comentario** que la nombrara satisfacía el check —
+      **corregido en este mismo candidato** (los lanes ahora tienen que *ejecutar* el gate) y
+      fijado con el caso 11, un control negativo que sustituye las dos líneas de ejecución por un
+      comentario; (2) una ruta inexistente como argumento aborta temprano con `sed` rc=2 (nunca
+      falso verde); (3) el mensaje de commit decía `RED 4/10` — precisado a `3/11` contra el
+      baseline medido con el harness final.
+      Advisory **R2-001** de la review de #2026 (readability) cerrado aquí: la línea 241 de
+      este doc afirmaba que `repo-guards` era "el único" job sin `paths:` ni `if:` — falso
+      (8 jobs no declaran `if:` a nivel job) y gemelo exacto de la afirmación ya corregida en
+      `ci.yml` durante #2026 (advisory A de L13). Los otros cinco advisories (`R3-1`
+      `ci.yml:394-396`, `R3-2` `ci.yml:388`, `R4-1` `ci.yml:402-403`, `R3-3`
+      `ci_fast_gate.sh:443`, `R4-2` `ci_fast_gate.sh:440-441`) **no se cerraron con texto
+      leído**: el artefacto de la review se quemó en `acknowledge-approved` y el historial
+      local de la sesión no contenía ningún mensaje posterior a las 11:56 (los outputs de los
+      reviewers de 12:4x no se persistieron; sólo sobreviven las seis citas). Se dejan a la
+      review de este candidato, que re-examina las mismas regiones y los re-emite con texto
+      fresco, en lugar de "cerrarse" a ciegas.
 
 ### Fase 3 — Reporte externo (warn-only, nunca gate)
 
@@ -422,11 +465,39 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
   `CHANGELOG.md`. Corregida de paso la fecha futura en la cabecera del bloque T9 (`2026-10-18` →
   `2026-10-17`, hoy); las otras dos fechas futuras de L9/L10 siguen pendientes.
 
+- **L14 (2026-10-17)** — T9.2: harness de cableado del gate de pines, en `ci/docs-pins-hardening`
+  sobre `main @ 8395ccf3` (post-merge de #2026). El harness se escribió primero y se corrió
+  contra el árbol sin cablear: **RED 4/10 con la primera versión del harness**, con los casos 1, 7
+  y 10 fallando exactamente en las superficies todavía desconectadas (`WIRING_SCRIPT` ausente de
+  `repo-guards`, de `lane_ci` y del trigger) y el caso 9 por una aserción propia demasiado
+  específica que se corrigió después (la rama de trigger ausente ahora reporta por script en vez
+  de cortar el bucle). Con el harness final, ese mismo baseline mide **`FAILED 3/11`** — el número
+  que cita el mensaje de commit. Luego los dos edits de cableado: step `Docs version pins wiring
+  harness` en el job `repo-guards` de `ci.yml`, y en `lane_ci` de `ci_fast_gate.sh` el trigger
+  ampliado a los tres scripts más el `run_step` del harness nuevo → **GREEN 11/11**. Evidencia:
+  harness de semántica `11 ok, 0 fail`; `ci_fast_gate.sh` GREEN (`PASS=9 FAIL=0 SKIP=6`) con
+  `PASS: docs version pins wiring (offline)` — el step nuevo corrió de verdad dentro de la lane
+  CI-only; actionlint 1.7.12 y shellcheck 0.11.0 limpios con el vocabulario de ignores de
+  `repo-guards`. La **verificación independiente** dio PASS sin bloqueantes y su advisory (1) se
+  corrigió aquí mismo: la comprobación de lane aceptaba un **comentario** que nombrara la ruta,
+  así que ahora exige una línea de ejecución, y el caso 11 fija esa regla con un control negativo. Cerrado de paso el advisory
+  **R2-001** de la review de #2026: la línea 241 de este doc afirmaba que `repo-guards` es "el
+  único" job sin `paths:` ni `if:`, y hay 8 jobs sin `if:` a nivel job (el gemelo en `ci.yml` ya
+  se había corregido dentro de #2026). **Límite honesto, y es una propiedad del entorno**: el
+  texto de los otros cinco advisories de esa review es irrecuperable — el artefacto se quemó en
+  `acknowledge-approved`, el DB de opencode no tiene ningún `part` posterior a las 11:56 (los
+  outputs de los reviewers de 12:4x nunca se persistieron) y el log global está contaminado por
+  otras sesiones, con IDs que colisionan (`R3-1` de #2026 ≠ `R3-1` de #2025). Antes que
+  "arreglar" cinco hallazgos adivinados, se dejan a la review de este candidato: ve las mismas
+  regiones y los re-emite con texto propio.
+
 ## Next steps
 
-1. Advisories no bloqueantes de la review de #2025 sobre `check_docs_version_pins.sh`
-   (R2-version-grammar-message, R2-counter-semantics/R3-3, R3-2, R3-1): reportables como
-   trabajo aparte, ninguno está en el AC de #2017. T9 ya está cerrado.
+1. Advisories de la review de #2026 sobre el cableado (R3-1, R3-2, R3-3, R4-1, R4-2): sin
+   texto recuperable (ver L14) → los re-deriva la review de T9.2. Advisories de la review de
+   #2025 sobre `check_docs_version_pins.sh` (R2-version-grammar-message,
+   R2-counter-semantics/R3-3, R3-2, R3-1): reportables como trabajo aparte, ninguno está en el
+   AC de #2017. T9, T9.1 y T9.2 cerrados.
 2. T6: migrar samples de `docs/src/` a `{{#include}}` (deferred).
 3. T7: mover el guard MCP version-marker a CI (deferred, toca `.github/`).
 4. `cargo fmt --all -- --check`, clippy strict y rustdoc verdes antes de cada commit.
