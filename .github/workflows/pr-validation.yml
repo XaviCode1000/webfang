@@ -18,9 +18,24 @@ jobs:
       pull-requests: read
       issues: read
     steps:
+      # fetch-depth: 0 is required by the support-drift step below: the
+      # published-scope check reads `git tag --list 'v*'` and refuses a
+      # shallow clone on purpose (scripts/check_support_drift.sh:120-122).
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           persist-credentials: false
+          fetch-depth: 0
+
+      # The support-drift gate lives here, not in support-drift.yml, because
+      # that workflow is path-filtered on the support surface: a path-filtered
+      # workflow never reports on PRs outside the filter, so GitHub would hold
+      # those PRs "pending" forever if it were a required context. This job is
+      # already required and runs on every PR and merge_group, so the gate is
+      # enforced without touching branch protection (docs/ci-slo.md:60).
+      # support-drift.yml keeps the same check on push to main for the
+      # post-merge drift a release tag can introduce.
+      - name: Support drift vs published tags (enforcing)
+        run: scripts/check_support_drift.sh --scope=published
 
       # Resolve the real PR for both pull_request and merge_group runs.
       # Fail closed: this is a required check — if the PR cannot be
