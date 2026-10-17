@@ -14,13 +14,27 @@
 //! because the burst was parsed TWICE per invocation (preflight staging plus
 //! the `From<Args>` projection) and had to be de-duplicated. #1813 removed
 //! both: the burst now fails closed in `parse_rate_limit_burst`, and
-//! `From<Args>` no longer parses it, so the replay path has no producer.
+//! `From<Args>` no longer parses it, so the replay path had no producer.
 //!
 //! [`record`] and the buffer are kept, not deleted, because
 //! `webfang_cli::main` still calls [`take`] on every run (removing the call
 //! site is outside #1813's edit surface) and a future parse-time
 //! warn-and-default would need this seam again. The infrastructure tests below
 //! keep the contract honest in the meantime.
+//!
+//! # NOT the home of a long user-facing notice (ADR-0004 step 5)
+//!
+//! The replay is `tracing::warn!(preflight_note = %note, "{note}")`: the note
+//! text appears once as the event message and again as the value of a
+//! structured field, and the `tracing_subscriber` compact formatter appends
+//! that field after the message. For the ~40-character substitution notices
+//! this buffer was built for, the repetition is invisible. For a multi-line
+//! deprecation announcement it doubles the line to ~1200 characters and makes
+//! stderr unreadable, so ADR-0004's two notices are NOT recorded here: they
+//! travel as dedicated `tracing::warn!` events from `webfang_cli::main`,
+//! following the `--max-tokens` deprecation shape instead (English structured
+//! fields carrying the facts, one copy of the Spanish prose as the message).
+//! What survives of the ADR-0004 work in this module is nothing.
 //!
 //! The store is a process-scoped append-only buffer behind a
 //! `OnceLock<Mutex<Vec<String>>>`: writers never block on async code, a
