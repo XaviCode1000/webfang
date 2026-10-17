@@ -27,8 +27,9 @@
 #     trigger surfaces (`lane_docs` for a markdown edit, `lane_fmt_and_guards`
 #     for a version bump) and runs this repo's version-pins harnesses in the
 #     CI-ONLY lane — the only lane a `scripts/**` change ever lands in.
-#   - "Mirrors" means EXECUTES, not mentions: a lane that only names the path in
-#     a comment is not wired, and the negative control below keeps that true.
+#   - "Mirrors" means EXECUTES, not mentions, in all three lanes: a lane that only
+#     names a path in a comment is not wired, and the negative controls below
+#     (cases 11 and 12) keep that true for the gate and for the lane_ci harnesses.
 #
 # Usage: bash scripts/test_docs_version_pins_wiring.sh [ci-yml] [fast-gate]
 # The optional paths exist so each check can be pointed at a mutated revision for
@@ -158,8 +159,17 @@ check_fast_gate_wiring() {
       bad=1
     fi
   done
+  # Same rule as the two lanes above, one lane over: a path named in a comment is
+  # not a wiring, and neither is a path on a line that does not execute it. The
+  # house form in this lane is `run_step "<name>" bash <script>` (or a `run_guard
+  # "<name>" <script>` whose wrapped command is that same `bash <script>`), so the
+  # check requires an EXECUTION line. Verified gap (#2027 advisories
+  # R2-lane-ci-comment-gap / R3-002): comparing the path alone let a comment
+  # satisfy this check while the harness never ran. Case 12 pins it.
   for script in "$SEMANTICS_SCRIPT" "$WIRING_SCRIPT"; do
-    if ! grep -qF -e "$script" "$tmp/fg-lane_ci.sh"; then
+    escaped="${script//./\\.}"
+    if ! grep -vE '^[[:space:]]*#' "$tmp/fg-lane_ci.sh" \
+      | grep -qE "run_guard .*${escaped}|bash ${escaped}"; then
       echo "lane_ci does not run $script: a scripts/** change — the only kind that can break it — would not exercise it locally"
       bad=1
     fi
@@ -385,6 +395,36 @@ else
   case_fail=1
 fi
 finish_case "negative control: gate only mentioned in a comment"
+
+# Case 12: negative control — the wiring harness survives in lane_ci only as a
+# COMMENT that names its path. Same class as case 11, one lane over: the lane_ci
+# check compared the path alone while the two lane checks above required an
+# execution line, so a comment naming the script satisfied it (review advisories
+# R2-lane-ci-comment-gap and R3-002 on #2027). A future edit that comments the
+# run_step out — or a lane rewritten around a mention — would have left the wiring
+# guard green while the harness never ran.
+awk -v script="$WIRING_SCRIPT" '
+  /^lane_ci\(\) \{/ { in_fn = 1 }
+  in_fn && /run_step "docs version pins wiring \(offline\)"/ {
+    print "    # see " script " for the wiring harness"
+    next
+  }
+  { print }
+  in_fn && /^\}/ { in_fn = 0 }
+' "$FAST_GATE" > "$tmp/fg-lane-ci-comment-only.sh"
+if cmp -s "$FAST_GATE" "$tmp/fg-lane-ci-comment-only.sh"; then
+  echo "  FAIL: fixture injection did not apply — the awk anchor missed and this case proved nothing"
+  case_fail=1
+elif check_fast_gate_wiring "$tmp/fg-lane-ci-comment-only.sh" > "$tmp/out.txt" 2>&1; then
+  echo "  FAIL: lane_ci that only MENTIONS the harness in a comment passed — that is the exact gap this case closes"
+  case_fail=1
+elif grep -qF -e "$WIRING_SCRIPT" "$tmp/out.txt"; then
+  echo "  ok: comment-only mention in lane_ci is rejected and named"
+else
+  echo "  FAIL: rejected, but the harness was not named"
+  case_fail=1
+fi
+finish_case "negative control: wiring harness only mentioned in a comment"
 
 if [[ $cases_failed -eq 0 ]]; then
   # Both sides are the count actually run: a hardcoded total is one more number
