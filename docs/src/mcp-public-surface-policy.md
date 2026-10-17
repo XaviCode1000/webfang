@@ -270,7 +270,7 @@ auditable rather than asserted.
 | Per-property `type` / nullability / `default` / `minimum` / `maximum` / `required` | `public_surface_policy_test::advertised_property_matrix_is_pinned` | yes |
 | Advertised default == applied default (bridged + MCP-only) | `options_spec_parity_test`, `mcp_advertised_defaults_test` (#1612, #1294) | yes |
 | Bridged schema byte-for-byte | `mcp_advertised_schema_snapshot_test` (#1612) | yes |
-| A shape change **moved `contract_version`** | `scripts/check_mcp_public_surface.sh` | **no** — local gate, see below |
+| A shape change **moved `contract_version`** | `scripts/check_mcp_public_surface.sh` | yes — step `MCP public-surface version marker gate` in `repo-guards` |
 | The whole surface is **feature-independent** (36 tools, 81 properties, identical under default and `--all-features`) | `public_surface_policy_test` run under both feature sets | yes |
 
 ### 8.1 `contract_version`
@@ -290,24 +290,34 @@ fixture, so it fails in CI the moment a shape moves and the fixture is not
 updated. It cannot know *whether the author bumped `contract_version`*, because
 both live in the same file.
 
-`scripts/check_mcp_public_surface.sh` closes that half. It compares the fixture against **the last commit that touched the fixture or
-the marker**, classifies every changed row per §3.1, and **exits non-zero when
-the surface moved and `contract_version` did not** — and also in the reverse
-case, a version bump with no surface change, which would silence the guard
-without a reason.
+`scripts/check_mcp_public_surface.sh` closes that half. It compares the fixture
+against a base commit, classifies every changed row per §3.1, and **exits
+non-zero when the surface moved and `contract_version` did not** — and also in
+the reverse case, a version bump with no surface change, which would silence the
+guard without a reason.
 
 The base is *not* the merge-base with `main`, and that is deliberate. On a
 feature branch that introduces the fixture mid-stack, a merge-base base makes
 every row read as "added" and the guard goes blind right after the introducing
-commit. The last-touching-commit base asks the question that actually matters:
+commit. The local fast-gate call uses the last commit that touched either file;
+the CI step uses the event's own base (the PR's base SHA, `before` on a push,
+`base_sha` on a merge queue entry). Both ask the question that actually matters:
 did *this* change move the surface without moving the marker?
 
-It is wired into `scripts/ci_fast_gate.sh` (the local pre-push gate). It is
-**not** wired into `.github/workflows/ci.yml`, which this issue is forbidden to
-edit. So the enforcement split is: *deep check in CI, version-marker check
-locally*. That is weaker than a CI-enforced gate and is stated rather than
-glossed. The follow-up is a two-line addition to `ci.yml`'s `repo-guards` job,
-which is a one-PR change once this stack merges.
+It runs in two places. Locally it is part of `scripts/ci_fast_gate.sh` (the
+pre-push gate). In CI it is the `MCP public-surface version marker gate` step of
+the `repo-guards` job in `.github/workflows/ci.yml`. `repo-guards` has no
+`paths:` filter and `CI Gate` already requires it in both scopes, so a marker
+that does not move reds the required check even on a docs-only PR; the
+path-filtered `mcp` lane cannot host it, because a job behind `paths:` never
+reports on every PR and therefore cannot be a required context.
+
+The default depth-1 checkout does not contain the event's base commit, so the
+step fetches that one commit (`--depth=1`) and fails closed if it is still
+missing. That check is load-bearing: the guard reads a missing fixture at base
+as the bootstrap commit and exits 0, so a silently failed fetch would otherwise
+turn the gate green. Schedule and `workflow_dispatch` runs have no change under
+review and skip the step with an explicit note.
 
 ---
 
