@@ -1163,7 +1163,7 @@ fn compute_consent_hash(provider_id: &str, base_url: &url::Url) -> String {
 async fn build_and_run(opts: CrawlOptions) -> CliExit {
     // Build LLM provider if --extract-with-llm is set.
     // This is NOT gated by the `ai` feature — the remote provider port lives
-    // in webfang_core unconditionally (docs/src/ai-providers-design.md §8).
+    // in webfang_core unconditionally (docs/architecture/ai-providers-design.md §8).
     let llm_port = if opts.extract_with_llm {
         let providers_cfg = ConfigDefaults::load(&resolve_config_path());
         let registry = webfang_core::domain::providers::ProviderRegistry::new(
