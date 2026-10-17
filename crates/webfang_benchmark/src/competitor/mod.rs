@@ -31,7 +31,9 @@ pub use tierb_corpus::{egress_type_from_env, CREDITS_PER_PAGE, EGRESS_TYPE_ENV_V
 /// Which live competitor target a `bench_live` invocation addresses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompetitorTarget {
+    /// Firecrawl live competitor adapter.
     Firecrawl,
+    /// Crawl4AI live competitor adapter.
     Crawl4Ai,
 }
 

@@ -1,5 +1,10 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used))]
 #![cfg_attr(not(test), deny(clippy::expect_used))]
+// Explicit per docs-truthfulness audit (S5): these rustdoc lints are
+// allow-by-default, so CI's `-D warnings` never reaches them. Declare intent.
+#![allow(rustdoc::missing_crate_level_docs)]
+#![allow(rustdoc::private_doc_tests)]
+#![allow(rustdoc::unescaped_backticks)]
 //! WebFang - Production-ready web scraper with Clean Architecture
 //!
 //! Extracts clean, structured content from web pages using readability algorithm.

@@ -44,8 +44,11 @@ verificado, no de una hipótesis.
 
 Superficie pública **verde**: `cargo test --doc --workspace --all-features` → 77 passed,
 0 failed, 7 ignored. `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features
---no-deps` → exit 0. Los 3 lints `allow-by-default` forzados
-(`missing_crate_level_docs`, `private_doc_tests`, `unescaped_backticks`) → 0 warnings.
+  --no-deps` → exit 0. Los 3 lints `allow-by-default` forzados
+  (`rustdoc::missing_crate_level_docs`, `rustdoc::private_doc_tests`,
+  `rustdoc::unescaped_backticks`) → 0 warnings. Nótese el namespace `rustdoc::`:
+  en rustc 1.88 los nombres sin namespace están renombrados y `-D warnings`
+  los convierte en error, así que la declaración debe usar el nombre nuevo.
 
 | # | Hallazgo | Conteo | Ruta |
 | --: | --- | --- | --- |
@@ -195,15 +198,25 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
       `2.11.9` → `::error::` + exit 1. `actionlint` verde en ambos workflows.
       **No se renombró `Validate PR metadata`** (required context) ni se tocó branch
       protection.
-- [ ] **T5 (S5)** — Declarar los 3 lints en los `lib.rs` de las **4 crates publicadas**
-      (`webfang_core`, `webfang_cli`, `webfang_ai`, `webfang_mcp`); `webfang_benchmark`
-      y `webfang_test_utils` son `publish = false` y no cuentan para el "0/4".
-      Añadir `deny(missing_docs)` + `[lints] workspace = true` a `webfang_benchmark`
-      (hoy es la única sin bloque `[lints]`).
-      Ruta: inline. Riesgo: bajo (0 warnings hoy, pero el lint nuevo puede destapar
-      items sin doc en `webfang_benchmark`).
-      Verificación: `grep -c` de los 3 lints por `lib.rs` → 3 en cada publicada;
-      `cargo doc` sigue exit 0.
+- [x] **T5 (S5)** — Declarar los 3 lints en las **4 crates publicadas**.
+      **Hallazgo de implementación:** en rustc 1.88 los nombres sin namespace
+      (`missing_crate_level_docs`, `private_doc_tests`, `unescaped_backticks`) están
+      renombrados a `rustdoc::*`, y `-D warnings` los convierte en error de compilación.
+      Se usó el nombre nuevo en todos lados.
+      - `webfang_core`, `webfang_ai`, `webfang_mcp`: 3 líneas `#![allow(rustdoc::…)]`
+        en `lib.rs`.
+      - `webfang_cli`: crate binario (solo `main.rs`, sin `lib.rs`) → las 3 líneas
+        fueron a `src/main.rs`. La verificación `grep -c` contempla `main.rs` también.
+      - `webfang_benchmark`: añadido `[lints] workspace = true` a `Cargo.toml` (era la
+        única sin bloque `[lints]`) y `#![deny(missing_docs)]` en `lib.rs`.
+        El deny destapó **62** items sin doc en `error.rs`, `aggregate.rs`,
+        `competitor/mod.rs`, `corpus.rs`, `cost/config.rs`, `runner.rs`; se documentaron
+        todos con comentarios precisos (inglés, coherente con la convención del crate).
+      Ruta: inline. Riesgo: bajo tras documentar.
+      Verificación: `grep -cE 'rustdoc::missing_crate_level_docs|rustdoc::private_doc_tests|rustdoc::unescaped_backticks'`
+      por `lib.rs`/`main.rs` → 3 en cada publicada; `RUSTDOCFLAGS=-D warnings cargo doc
+      --workspace --all-features --no-deps` → exit 0; `cargo fmt --check` y clippy de
+      `webfang_benchmark` limpios; `ci_fast_gate.sh` verde.
 
 ### Fase 2 — Estructural (evita la recurrencia)
 
@@ -306,10 +319,23 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
   imprecisa: el harness SÍ prueba mismatch bien-formado plano (v2.4.0 vs 2.11.0). La
   brecha real es falta de caso prerelease. Creada T9 para rastrearlas.
 
+- **L9 (2026-10-17)** — T5 implementado en `chore/lint-declaration` (rama nueva desde
+  `origin/main`, para no inflar el PR #2012 de T2+T3). Hallazgo clave: en rustc 1.88 los
+  3 lints `allow-by-default` están renombrados a namespace `rustdoc::` y `-D warnings`
+  los convierte en error, así que la declaración usa `rustdoc::missing_crate_level_docs`,
+  `rustdoc::private_doc_tests`, `rustdoc::unescaped_backticks` (3 líneas `#![allow(...)]`
+  por crate). `webfang_cli` es binario (solo `main.rs`) → las 3 líneas fueron a
+  `src/main.rs`. `webfang_benchmark`: `[lints] workspace = true` + `#![deny(missing_docs)]`
+  en `lib.rs`; el deny destapó 62 items sin doc (error.rs, aggregate.rs, competitor/mod.rs,
+  corpus.rs, cost/config.rs, runner.rs) que se documentaron con comentarios precisos.
+  `cargo doc -D warnings` exit 0, fmt/clippy limpios, `ci_fast_gate.sh` verde.
+
 ## Next steps
 
-1. T9: corregir `check_docs_version_pins.sh` (advisories 2/3/4) + añadir caso prerelease al
+1. T5: PR en `chore/lint-declaration` (verificar `ci_fast_gate.sh` verde antes de abrir).
+2. T9: corregir `check_docs_version_pins.sh` (advisories 2/3/4) + añadir caso prerelease al
    harness; cablear el gate en CI (advisory 1) tras issue con `status:approved` + ask-first.
-2. T6: migrar samples de `docs/src/` a `{{#include}}` (deferred).
-3. T7: mover el guard MCP version-marker a CI (deferred, toca `.github/`).
-4. T8: reporte de links externos (hecho en `ci/external-link-report`, pendiente de merge).
+3. T6: migrar samples de `docs/src/` a `{{#include}}` (deferred).
+4. T7: mover el guard MCP version-marker a CI (deferred, toca `.github/`).
+5. T8: reporte de links externos (hecho en `ci/external-link-report`, pendiente de merge).
+6. `cargo fmt --all -- --check`, clippy strict y rustdoc verdes antes de cada commit.

@@ -1,3 +1,4 @@
+#![deny(missing_docs)]
 //! WebFang Stage 0 benchmark harness (`webfang_benchmark`).
 //!
 //! Decision instrument, not a shipped feature: measures WebFang across cost

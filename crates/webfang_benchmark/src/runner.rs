@@ -42,7 +42,9 @@ const STRATEGIES: [JsStrategy; 3] = [JsStrategy::Static, JsStrategy::Hybrid, JsS
 /// One completed strategy run: computed metrics ready for aggregation.
 #[derive(Debug)]
 pub struct RunOutcome {
+    /// JS rendering strategy this completed run exercised.
     pub strategy: JsStrategy,
+    /// Computed metrics for the run, ready for aggregation.
     pub metrics: StrategyMetrics,
     /// Engine summary lifted from this run's own JSONL trace — its presence
     /// proves the `crawl completed` line reached the file (ADR-B2/R2 tripwire).

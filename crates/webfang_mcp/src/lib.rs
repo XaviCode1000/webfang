@@ -6,6 +6,11 @@
 #![deny(missing_docs)]
 #![deny(clippy::missing_errors_doc)]
 #![deny(clippy::missing_panics_doc)]
+// Explicit per docs-truthfulness audit (S5): these rustdoc lints are
+// allow-by-default, so CI's `-D warnings` never reaches them. Declare intent.
+#![allow(rustdoc::missing_crate_level_docs)]
+#![allow(rustdoc::private_doc_tests)]
+#![allow(rustdoc::unescaped_backticks)]
 //! WebFang MCP — Model Context Protocol server
 //!
 //! Exposes scraper tools to AI agents via MCP protocol.
