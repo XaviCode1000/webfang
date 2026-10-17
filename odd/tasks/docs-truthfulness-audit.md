@@ -211,6 +211,27 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
       Verificación: `actionlint` verde; el step aparece en el run de un PR que **no**
       toca el fixture ni el marker (prueba de que no hay filtro que lo saltee).
 
+- [ ] **T9** — Advisories de la revisión de #2012 sobre `scripts/check_docs_version_pins.sh`
+      (hallados por la revisión delegada; verificados por el parent el 2026-10-18):
+      1. **Gate no cableado** — ningún workflow en `.github/` invoca el script: es un
+         guard inerte. Requiere tocar `.github/` → issue con `status:approved` + ask-first
+         (mismo trap de path-filter que T4b/T7).
+      2. **Asimetría RC (confirmada empíricamente)** — un pin de doc `v2.11.0-rc.1`
+         PASA contra workspace `2.11.0` stable (el grep pela el prerelease → falso
+         negativo, línea 74), pero un workspace `2.11.0-rc.1` ABORTA el script
+         ("formato inesperado", línea 44). El gate no corre durante la ventana de un RC.
+      3. **Harness no cubre prerelease (la advisory original es imprecisa)** — el harness
+         SÍ prueba mismatch bien-formado plano: tests 2 y 3 usan `v2.4.0` vs `2.11.0` y
+         fallan correctamente. La brecha real es que no hay caso con pin prerelease, que
+         es justo el que dispara el bug (2).
+      4. **Línea de éxito miente / `$checked` muerto** — la variable `checked` (línea 58,
+         65) se incrementa pero nunca se imprime; el OK (línea 87) usa `${#FILES[@]}`
+         (cantidad de archivos) y afirma que el doc "declara sólo v2.11.0" cuando en el
+         caso RC declara `v2.11.0-rc.1`.
+      Ruta: inline para (2)/(3)/(4) — sólo el script + harness, sin `.github/`; (1)
+      delegated tras issue `status:approved`. Riesgo: bajo.
+      Verificación hoy: harness 8 ok / 0 fail; caso RC A pasa (mal), caso RC B aborta.
+
 ### Fase 3 — Reporte externo (warn-only, nunca gate)
 
 - [ ] **T8** — Links externos vivos (`lychee` sin API key, o `jina read` con
@@ -266,10 +287,18 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
   `check_docs_version_pins.sh` (gate no cableado, asimetría RC, harness no testea
   versiones bien-formadas desparejadas, `$checked` muerto / línea de éxito miente) →
   falta tarea que los rastree.
+- **L10 (2026-10-18)** — El parent verificó las 4 advisories de T9 contra el código y el
+  harness (no se tomaron por fe: se leyó `check_docs_version_pins.sh`,
+  `test_docs_version_pins.sh`, y se corrió el harness + 2 fixtures RC). Confirmadas (1)
+  gate no cableado (0 refs en `.github/`), (2) asimetría RC (doc `v2.11.0-rc.1` pasa,
+  workspace `2.11.0-rc.1` aborta), (4) `$checked` muerto / éxito miente. La (3) es
+  imprecisa: el harness SÍ prueba mismatch bien-formado plano (v2.4.0 vs 2.11.0). La
+  brecha real es falta de caso prerelease. Creada T9 para rastrearlas.
 
 ## Next steps
 
-1. T5: declarar los 3 lints en las 4 crates publicadas.
-2. Cablear `check_docs_version_pins.sh` en el job `Validate Docs` (requiere autorización
-   para tocar `.github/`).
-3. T8 queda deferred hasta que Fase 1 esté verde.
+1. T9: corregir `check_docs_version_pins.sh` (advisories 2/3/4) + añadir caso prerelease al
+   harness; cablear el gate en CI (advisory 1) tras issue con `status:approved` + ask-first.
+2. T6: migrar samples de `docs/src/` a `{{#include}}` (deferred).
+3. T7: mover el guard MCP version-marker a CI (deferred, toca `.github/`).
+4. T8: reporte de links externos (hecho en `ci/external-link-report`, pendiente de merge).
