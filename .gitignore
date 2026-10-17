@@ -79,6 +79,14 @@ STATE.md
 .pi/
 .zcode/
 
+# CodeBuddy (agent working directory)
+.codebuddy/
+
+# MCP client config — local server wiring, not project source.
+# Agents inject their own entries here per machine; a committed copy would
+# pin every contributor's toolchain to one machine's setup.
+.mcp.json
+
 # Engram memory cache (local server state, not project source)
 # See AGENTS.md "Engram Persistent Memory" — observations live in the
 # Engram server, not git. .engram/ is the per-project working cache.
