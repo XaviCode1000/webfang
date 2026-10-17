@@ -142,35 +142,43 @@ pub struct ProviderRegistry {
 
 No es un trait, es un struct concreto con lógica de lookup por ID.
 
-**Resolución por capabilidad:** en vez de `AnyProviderHandle` (eliminado en la ronda 3 como redundante contra el diseño por slot), el registry expone métodos que resuelven directamente por capabilidad:
+**Resolución por capabilidad:** en vez de `AnyProviderHandle` (eliminado en la ronda 3 como redundante contra el diseño por slot), el registry resuelve directamente por capabilidad, con un único método de lookup:
 
 ```rust
 impl ProviderRegistry {
-    pub fn resolve_embedding(&self, provider_id: &str) -> Result<Arc<dyn EmbeddingPort>, RegistryError>
-    pub fn resolve_completion(&self, provider_id: &str) -> Result<Arc<dyn LlmPort>, RegistryError>
-    pub fn resolve_capabilities(&self, provider_id: &str) -> Result<Vec<Capability>, RegistryError>
+    pub fn resolve(
+        &self,
+        provider_id: &str,
+        capability: Capability,
+    ) -> Result<&ProviderConfig, RegistryError>
+
+    pub fn resolve_default_completion(&self) -> Result<&ProviderConfig, RegistryError>
+
+    pub fn resolve_default_embedding(&self) -> Result<&ProviderConfig, RegistryError>
 }
 ```
+
+Verificado en `crates/webfang_core/src/domain/providers.rs:251` (companions en `:305` y `:322`), con `RegistryError::ProviderNotFound` en `:58` y `RegistryError::CapabilityMismatch` en `:64`.
+
+**El registry devuelve una referencia a la config, no un port.** La construcción del adapter —y por tanto el `Arc<dyn EmbeddingPort>` / `Arc<dyn LlmPort>`— ocurre en la capa de binario, no aquí: `build_llm_provider` / `build_embedding_provider` en `crates/webfang_core/src/cli/llm_wire.rs`. Esa separación es deliberada: el dominio no sabe qué adapter concreto implementa cada `ProviderKind`.
+
+Las capacidades no necesitan un método propio: se leen de `ProviderConfig.capabilities` (`Vec<Capability>`, `providers.rs:87`), y `resolve()` valida contra esa lista antes de devolver la config. El diseño no incluye un accessor de capacidades separado.
 
 Esto permite que un caller existente (ej. `VaultSearchService`) resuelva embeddings directamente sin pasar por un handle genérico que debe ser desechado en el uso correcto.
 
 ### 6. `TenantAiContext` — contexto multi-tenant
 
-```rust
-pub struct TenantAiContext {
-    registry: ProviderRegistry,
-    // Mapeo de (tenant_id, provider_id) → puerto resuelto
-    // Implementación deferred hasta que haya un segundo tenant real
-}
-```
+> **No implementado.** `TenantAiContext` **no existe en el código**: cero ocurrencias en `crates/`, y no hay ningún tipo ni método con ese nombre que revisar. El contrato de abajo sigue vigente por decisión explícita del owner y está trackeado en la issue **#2018**. No hay struct, ni trait, ni `resolve_for_tenant(tenant_id, provider_id)` que citar.
 
-**Interfaz ahora, implementación después:** `TenantAiContext` se define como trait o struct con la interfaz pública, pero la implementación completa (con lookup por tenant_id y mapeo de providers por tenant) se retrasa hasta que haya un segundo tenant real. El primer tenant (el del proveedor por defecto) se resuelve directamente del registry.
+El contrato que este diseño propone, y que #2018 tendrá que implementar cuando exista un segundo tenant real, es: un contexto por tenant que envuelve un `ProviderRegistry` y mapea `(tenant_id, provider_id)` al puerto ya resuelto.
 
 **Nota sobre escalabilidad de `wreq::Client`:** el diseño actual de `OpenAiLlmClient` crea su propio `wreq::Client` internamente. Para compartir un pool entre múltiples tenants con el mismo `base_url`, se usa `with_http(http, base_url, api_key)` con un `wreq::Client` construido por `build_default_http_client()`. Esto permite que el registry comparta clientes entre providers del mismo tipo sin requerir cambios en la firma de `new`.
 
-### 7. `LocalSecretStore` — setup helper, no runtime resolver
+### 7. `DetectedStore` — setup helper, no runtime resolver
 
-`LocalSecretStore::detect()` es un helper de setup que sugiere al usuario qué fuentes de credenciales están disponibles en su sistema durante la configuración inicial:
+> **Renombrado en la implementación.** Este diseño llamó `LocalSecretStore` al tipo; lo implementado es `DetectedStore`, en `crates/webfang_core/src/domain/local_secret_store.rs:16` (`detect()` en `:48`). `LocalSecretStore` quedó solo como nombre de módulo.
+
+`DetectedStore::detect()` es un helper de setup que sugiere al usuario qué fuentes de credenciales están disponibles en su sistema durante la configuración inicial:
 
 ```rust
 pub struct DetectedStore {
@@ -180,7 +188,7 @@ pub struct DetectedStore {
 }
 ```
 
-**No es un runtime resolver.** Durante la ejecución normal, `AuthSource::resolve()` es quien obtiene las credenciales. `LocalSecretStore::detect()` solo se usa en el wizard de setup inicial para guiar al usuario.
+**No es un runtime resolver.** Durante la ejecución normal, `AuthSource::resolve()` es quien obtiene las credenciales. `DetectedStore::detect()` solo se usa en el wizard de setup inicial para guiar al usuario.
 
 ### 8. Wizard — contrato UX (implementación pendiente, decisiones cerradas)
 
@@ -221,11 +229,11 @@ Las decisiones de producto del wizard, fijadas en revisión antes de escribirlo:
 ### Phase 0: Infraestructura de soporte (sin features visibles)
 
 1. **`AuthSource` + `AuthError` + `resolve()`** con tests unitarios por variante (keyring, encrypted_file, env), incluyendo casos de error.
-2. **`LocalSecretStore::detect()`** → `DetectedStore` informativo.
+2. **`DetectedStore::detect()`** → diagnóstico informativo (`domain/local_secret_store.rs:48`).
 3. **`build_default_http_client()`** extraída y reutilizable.
 4. **`OpenAiLlmClient::with_http(http, base_url, api_key)`** — aditivo, `new()` intacto.
 5. **`ProvidersConfig`** parsing + `ProviderRegistry` con resolución por ID y por capability.
-6. **`TenantAiContext`** como struct vacío con interfaz pública futura (sin lógica de tenant aún).
+6. **`TenantAiContext`** como struct vacío con interfaz pública futura (sin lógica de tenant aún). — **No implementado**, ver §6 e issue #2018.
 
 ### Phase 1: Proveedor OpenAI-compatible concreto
 
@@ -242,7 +250,7 @@ Las decisiones de producto del wizard, fijadas en revisión antes de escribirlo:
 
 ### Phase 3: Soporte multi-tenant (deferred)
 
-12. **`TenantAiContext::resolve_for_tenant(tenant_id, provider_id)`** — implementado cuando haya un segundo tenant real.
+12. **`TenantAiContext::resolve_for_tenant(tenant_id, provider_id)`** — implementado cuando haya un segundo tenant real. **No implementado**, ver §6 e issue #2018.
 13. Tests de multi-tenant integrados.
 
 ---
@@ -251,31 +259,24 @@ Las decisiones de producto del wizard, fijadas en revisión antes de escribirlo:
 
 ### Criterios de seguridad
 
-- `[ ]` `AuthSource::resolve()` no hace fallback implícito entre fuentes.
-- `[ ]` `AuthSource::Keyring` falla con `AuthError::KeyringUnavailable` si keyring no disponible, no intenta otra fuente.
-- `[ ]` `AuthSource::Env` es soportado pero documentado como "legacy/CI-only", no como default.
-- `[ ]` `Inline` no está disponible en v1 (ausente del enum).
+- `[x]` `AuthSource::resolve()` no hace fallback implícito entre fuentes — un `match` de una sola fuente por variante (`domain/auth_source.rs:118-126`), sin orchestrator.
+- `[x]` `AuthSource::Keyring` falla con `AuthError::KeyringUnavailable` si keyring no disponible, no intenta otra fuente (`resolve_keyring`, `auth_source.rs:151`).
+- `[x]` `AuthSource::Env` es soportado pero documentado como "legacy/CI-only", no como default (`auth_source.rs:72`: "Credencial en variable de entorno (legacy, solo CI o desarrollo)").
+- `[x]` `Inline` no está disponible en v1 (ausente del enum) — declarado explícitamente en `auth_source.rs:6`.
 - `[ ]` La API key nunca aparece en logs, traces, ni mensajes de error (`Debug` redactado en `ApiKey`, `SecretString`).
-- `[ ]` `LocalSecretStore::detect()` no es usado como runtime resolver de credenciales.
+- `[x]` `DetectedStore::detect()` no es usado como runtime resolver de credenciales (`domain/local_secret_store.rs:48`; el que resuelve es `AuthSource::resolve()`).
 - `[ ]` Credenciales persistidas en disco (si se implementa `EncryptedFile` en v1) usan cifrado con age, no texto plano.
 
 ### Criterios de correctitud
 
-- `[ ]` `ProvidersConfig` parsing falla con error claro si `base_url` no es válido (no un URL válido).
-- `[ ]` `ProviderRegistry::resolve_embedding(provider_id)` falla con `RegistryError::ProviderNotFound` si el ID no existe.
-- `[ ]` `ProviderRegistry::resolve_embedding(provider_id)` falla con `RegistryError::CapabilityMismatch` si el provider no tiene capacidad `Embedding`.
-- `[ ]` `ProviderRegistry::resolve_completion(provider_id)` falla con `RegistryError::CapabilityMismatch` si el provider no tiene capacidad `Completion`.
-- `[ ]` `OpenAiCompatibleProvider` envuelve `OpenAiLlmClient` correctamente y pasa las credenciales resueltas.
-- `[ ]` `build_default_http_client()` produce un cliente con la misma config canónica que `OpenAiLlmClient::new()` (Chrome145, 60s timeout, 10s connect, SSRF guard armado).
+- `[x]` `ProvidersConfig` parsing falla con error claro si `base_url` no es válido (no un URL válido) — `base_url` está tipado como `Url`, no como `String` (`domain/providers.rs:83`), así que el parseo falla antes de que exista un `ProviderConfig`.
+- `[x]` `ProviderRegistry::resolve(provider_id, Capability)` falla con `RegistryError::ProviderNotFound` si el ID no existe (`domain/providers.rs:251`, test en `:360`).
+- `[x]` `ProviderRegistry::resolve(provider_id, Capability::Embedding)` falla con `RegistryError::CapabilityMismatch` si el provider no declara `Embedding` (`providers.rs:263`, test en `:369`).
+- `[x]` `ProviderRegistry::resolve(provider_id, Capability::Completion)` falla con `RegistryError::CapabilityMismatch` si el provider no declara `Completion` (mismo camino de capacidad).
+- `[x]` `OpenAiCompatibleProvider` envuelve `OpenAiLlmClient` y resuelve la credencial una vez en startup (`infrastructure/llm/provider.rs:113`, `new()` en `:129`).
+- `[x]` `build_default_http_client()` produce la config canónica (Chrome145, 60s timeout, 10s connect, SSRF guard armado) — `infrastructure/llm/provider.rs:86-95`.
 
-### Criterios de infraestructura
-
-- `[ ]` `codedb` reindexado en este worktree y `codedb status` muestra `root: .` con los archivos correctos.
-- `[ ]` `codegraph` inicializado en este worktree.
-- `[ ]` `cargo check` verde en este worktree.
-- `[ ]` `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines` verde.
-- `[ ]` `cargo fmt` verde.
-- `[ ]` `cargo nextest run` verde en las áreas afectadas.
+> `resolve()` devuelve `&ProviderConfig`, no un port: la construcción del adapter es de la capa de binario (`crates/webfang_core/src/cli/llm_wire.rs`). Ver §5.
 
 ---
 
@@ -289,7 +290,7 @@ La única razón por la que se consideró crear nuevos traits era dar "capacidad
 
 ### Sobre `AnyProviderHandle`
 
-El documento 5 propuso `AnyProviderHandle` como enum con variantes `EmbeddingOnly`, `CompletionOnly`, `Both`. La auditoría de documento 6 señaló que esto era redundante contra el diseño por slot que el mismo documento 5 había propuesto dos rondas antes (`resolve_embedding(provider_id) -> Arc<dyn EmbeddingPort>`). El diseño final adopta la resolución por slot: no hay handle intermedio, el registry resuelve directamente por ID y por capability.
+El documento 5 propuso `AnyProviderHandle` como enum con variantes `EmbeddingOnly`, `CompletionOnly`, `Both`. La auditoría de documento 6 señaló que esto era redundante contra el diseño por slot que el mismo documento 5 había propuesto dos rondas antes (`resolve(provider_id, Capability) -> Result<&ProviderConfig, RegistryError>`). El diseño final adopta la resolución por slot: no hay handle intermedio, el registry resuelve directamente por ID y por capabilidad, y devuelve la config; el port lo construye la capa de binario.
 
 ### Sobre `wreq::Client` compartido
 
@@ -303,27 +304,20 @@ La crítica de documento 8 fue correcta: `AuthSource` es upstream de `ProvidersC
 
 ---
 
-## Estado del trabajo en este worktree
+## Pendiente de implementación
 
-- ✓ Diseño implementado en `crates/webfang_core/src/infrastructure/llm/` (`client.rs`, `provider.rs`, `remote_embedding.rs`, `mod.rs`).
-- ✓ `codedb` reindexado (790 archivos). `codedb status` reporta `root: .`, `head: a8b29748`.
-- ✓ `codegraph` inicializado (`.codegraph/` con 12.6K nodos, 41.5K edges).
-- ✓ `.envrc` y `.env` copiados desde `main`, con `CARGO_TARGET_DIR` configurado.
-- ✓ `direnv allow` ejecutado (implícito por el ambiente actual).
-- ✓ `cargo check` aprobado (el diseño es zero-code hasta ahora).
+Estado real de cada punto del diseño, verificado contra el árbol.
 
-### Pendiente de implementación
-
-1. **`AuthSource` + `AuthError` + `resolve()`** — archivo `crates/webfang_core/src/domain/auth_source.rs` (o se añade a `credentials.rs`).
-2. **`LocalSecretStore::detect()`** — archivo `crates/webfang_core/src/infrastructure/secrets/local_secret_store.rs`.
-3. **`build_default_http_client()`** extraída de `OpenAiLlmClient` — archivo `crates/webfang_core/src/infrastructure/http/build_default_client.rs` (o se añade a un módulo existente).
-4. **`OpenAiLlmClient::with_http()`** — modificación de `crates/webfang_core/src/infrastructure/llm/client.rs`.
-5. **`ProvidersConfig` + `ProviderRegistry`** — archivos `crates/webfang_core/src/application/providers/config.rs` y `registry.rs`.
-6. **`TenantAiContext`** vacío con interfaz pública — `crates/webfang_core/src/application/tenants/tenant_ai_context.rs`.
-7. **`OpenAiCompatibleProvider`** — `crates/webfang_core/src/infrastructure/providers/openai_compatible.rs`.
-8. **Fixtures de contrato** — `crates/webfang_core/tests/fixtures/{openai,openrouter,freellm,groq}.json`.
-9. **Integración con container** — modificación de `crates/webfang_core/src/application/container.rs`.
-10. **Tests de integración** — en archivos de tests existentes o nuevos.
+1. [x] **`AuthSource` + `AuthError` + `resolve()`** — `crates/webfang_core/src/domain/auth_source.rs` (`AuthError` `:20`, `AuthSource` `:58`, `resolve()` `:118`).
+2. [x] **`DetectedStore::detect()`** — `crates/webfang_core/src/domain/local_secret_store.rs` (`DetectedStore` `:16`, `detect()` `:48`). El tipo que este diseño llamaba `LocalSecretStore` se implementó como `DetectedStore`; el nombre antiguo quedó solo como nombre de módulo (ver §7).
+3. [x] **`build_default_http_client()`** extraída de `OpenAiLlmClient` — `crates/webfang_core/src/infrastructure/llm/provider.rs:86` (no en `infrastructure/http/`).
+4. [x] **`OpenAiLlmClient::with_http(http, base_url, api_key)`** — `crates/webfang_core/src/infrastructure/llm/client.rs:119`.
+5. [x] **`ProvidersConfig` + `ProviderRegistry`** — `crates/webfang_core/src/domain/providers.rs` (`ProvidersConfig` `:197`, `ProviderRegistry` `:228`); viven en `domain/`, no en `application/`.
+6. [x] **`OpenAiCompatibleProvider`** — `crates/webfang_core/src/infrastructure/llm/provider.rs:113`.
+7. [x] **Integración con container** — el wiring real está en `crates/webfang_core/src/cli/llm_wire.rs:55` (`build_llm_provider` / `build_embedding_provider`), no en `container.rs`.
+8. [x] **Tests de integración** — `crates/webfang_core/tests/auth_source_none_test.rs` (`:33`, `:452`).
+9. [ ] **`TenantAiContext`** — **no implementado**, ver §6 e issue **#2018**.
+10. [ ] **Fixtures de contrato** (`crates/webfang_core/tests/fixtures/{openai,openrouter,freellm,groq}.json`) — se mantienen por decisión del owner: la cobertura cross-proveedor sigue siendo necesaria.
 
 ---
 

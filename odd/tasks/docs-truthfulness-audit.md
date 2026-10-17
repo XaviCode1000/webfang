@@ -124,18 +124,28 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
       real de 14 assets (tenía 5).
       Verificado: `check_docs_version_pins.sh` exit 0 · harness 8 ok / 0 fail ·
       `mdbook build` 0 · `mdbook test` 0 · `mdbook-linkcheck` 0 · `-D warnings` 0.
-- [ ] **T3 (S3)** — Los 3 huérfanos, **reclasificados** en vez de enlazados.
+- [x] **T3 (S3)** — Los 3 huérfanos, **reclasificados** en vez de enlazados.
       La nota del plan era incorrecta: los 9 fences de `ai-providers-design.md` **no
       estaban** en el alcance de `mdbook test` — un capítulo huérfano no se construye,
       así que nunca se testearon. Y no compilan sueltos: son excerpts ilustrativos
       (`pub enum AuthSource` sin imports). Por eso reclasificar era correcto.
       **Pero el doc seguía mintiendo**: declaraba "Implementación a desarrollar en el
       worktree `feat/ai-providers`" cuando `infrastructure/llm/` ya existe. El rename
-      puro no corrigió la mentira. Corregido en esta rama (línea 4 y la nota de estado
-      línea 308 → la implementación vive en `crates/webfang_core/src/infrastructure/llm/`).
-      Tarea abierta hasta que el fix de prosa se mergee y confirme en PR #2012.
-      Ruta: inline (el mecanismo de delegación no estaba disponible en esa sesión).
-      Riesgo: bajo, y menor que el estimado — no se perdió cobertura de test.
+      puro (0 inserciones) no corrigió la mentira — la mudó de path.
+      Cerrado con una reescritura de las regiones de estado contra el árbol verificado:
+      8 ítems de "pendiente" volteados a hechos con paths reales, 3 firmas inventadas
+      (`resolve_embedding` / `resolve_completion` / `resolve_capabilities`) sustituidas
+      por la real `resolve(provider_id, Capability) -> &ProviderConfig`
+      (`domain/providers.rs:251`), 2 bloques de estado por sesión eliminados
+      (`codedb`/`codegraph`/`direnv`/SHA obsoleto), `TenantAiContext` marcado como no
+      implementado con tracker (#2018), y los fixtures preservados por decisión del owner.
+      6 afirmaciones nuevas introducidas por el rewrite, las 6 verificadas contra el árbol.
+      Quedan 5 mentiras en §1–§5, fuera de alcance aquí → follow-up (#2019).
+      Ruta: delegada (writer acotado) sobre investigación previa (read-only explorer).
+      Riesgo: item 3 (el doc es spec normativa citada por 13 archivos de código) —
+      mitigado por no tocar §1–§4 ni §8.
+      Destinos: `ai-providers-design.md` → `docs/architecture/` (7 referencias
+      `docs/src/…` en comentarios de código actualizadas, 15 en total mencionan el doc);
       Destinos: `ai-providers-design.md` → `docs/architecture/` (7 referencias
       `docs/src/…` en comentarios de código actualizadas, 15 en total mencionan el doc);
       `budget-source-audit.md` y `bounded-memory-decisions.md` → `docs/research/`.
