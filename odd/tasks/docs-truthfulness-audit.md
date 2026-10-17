@@ -124,13 +124,16 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
       real de 14 assets (tenía 5).
       Verificado: `check_docs_version_pins.sh` exit 0 · harness 8 ok / 0 fail ·
       `mdbook build` 0 · `mdbook test` 0 · `mdbook-linkcheck` 0 · `-D warnings` 0.
-- [x] **T3 (S3)** — Los 3 huérfanos, **reclasificados** en vez de enlazados.
+- [ ] **T3 (S3)** — Los 3 huérfanos, **reclasificados** en vez de enlazados.
       La nota del plan era incorrecta: los 9 fences de `ai-providers-design.md` **no
       estaban** en el alcance de `mdbook test` — un capítulo huérfano no se construye,
       así que nunca se testearon. Y no compilan sueltos: son excerpts ilustrativos
-      (`pub enum AuthSource` sin imports). Además el doc declara "Implementación a
-      desarrollar en el worktree `feat/ai-providers`" cuando `infrastructure/llm/` ya
-      existe: publicarlo como capítulo habría mentido al lector.
+      (`pub enum AuthSource` sin imports). Por eso reclasificar era correcto.
+      **Pero el doc seguía mintiendo**: declaraba "Implementación a desarrollar en el
+      worktree `feat/ai-providers`" cuando `infrastructure/llm/` ya existe. El rename
+      puro no corrigió la mentira. Corregido en esta rama (línea 4 y la nota de estado
+      línea 308 → la implementación vive en `crates/webfang_core/src/infrastructure/llm/`).
+      Tarea abierta hasta que el fix de prosa se mergee y confirme en PR #2012.
       Ruta: inline (el mecanismo de delegación no estaba disponible en esa sesión).
       Riesgo: bajo, y menor que el estimado — no se perdió cobertura de test.
       Destinos: `ai-providers-design.md` → `docs/architecture/` (7 referencias
@@ -253,6 +256,16 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
   cobertura; y `installation.md` afirmaba que el release no publica atestaciones cuando
   cada asset de `v2.11.0` trae una verificable. Ese último es el hallazgo más grave de
   toda la auditoría y no estaba en el inventario.
+- **L9 (2026-10-18)** — Revisión delegada de #2012 encontró un blocker en T3: mover
+  `ai-providers-design.md` NO corrigió la mentira de la línea 4 ("Implementación a
+  desarrollar en el worktree `feat/ai-providers`") pese a que `infrastructure/llm/` ya
+  existe. El rename fue puro. Corregido en esta rama: línea 4 y la nota de estado
+  (línea 308) ahora dicen que la implementación vive en
+  `crates/webfang_core/src/infrastructure/llm/`. T3 se des-chequea hasta que el fix de
+  prosa se mergee y confirme. La revisión también dejó 4 advisories sobre
+  `check_docs_version_pins.sh` (gate no cableado, asimetría RC, harness no testea
+  versiones bien-formadas desparejadas, `$checked` muerto / línea de éxito miente) →
+  falta tarea que los rastree.
 
 ## Next steps
 

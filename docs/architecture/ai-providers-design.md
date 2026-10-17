@@ -1,7 +1,7 @@
 # Proveedor de IA — Diseño Final
 
 > **Estado**: Diseño definitivo para la feature de proveedores de IA remotos (embeddings + LLM completions).
-> Implementación a desarrollar en el worktree `feat/ai-providers`.
+> Implementación en `crates/webfang_core/src/infrastructure/llm/` (`client.rs`, `provider.rs`, `remote_embedding.rs`, `mod.rs`).
 
 ---
 
@@ -305,7 +305,7 @@ La crítica de documento 8 fue correcta: `AuthSource` es upstream de `ProvidersC
 
 ## Estado del trabajo en este worktree
 
-- ✓ New worktree `feat/ai-providers` creado desde `main`.
+- ✓ Diseño implementado en `crates/webfang_core/src/infrastructure/llm/` (`client.rs`, `provider.rs`, `remote_embedding.rs`, `mod.rs`).
 - ✓ `codedb` reindexado (790 archivos). `codedb status` reporta `root: .`, `head: a8b29748`.
 - ✓ `codegraph` inicializado (`.codegraph/` con 12.6K nodos, 41.5K edges).
 - ✓ `.envrc` y `.env` copiados desde `main`, con `CARGO_TARGET_DIR` configurado.
