@@ -178,11 +178,13 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
 
 ### Fase 3 — Reporte externo (warn-only, nunca gate)
 
-- [ ] **T8** — Links externos vivos (`lychee` sin API key, o `jina read` con
-      `JINA_API_KEY` en secrets) y drift semántico (`jina embed` doc-vs-código) como
-      reporte scheduled. Claims de deps contra Context7 con versión fijada.
-      Ruta: deferred — sólo tras Fase 1 verde.
-      Justificación de no-gate: red + quota + versions = flaky por diseño.
+- [x] **T8** — Links externos vivos como reporte scheduled. **Slice lychee-keyless**
+      (decisión del usuario): `.github/workflows/external-link-report.yml` corre
+      `lychee` semanal + manual sobre `README.md`, `CHANGELOG.md`, `docs/src/**/*.md`,
+      **report-only** (`fail: false` + `--exit-zero`, fuera de cualquier required status,
+      nunca gate). Excluye links internos del repo y `localhost`.
+      Diferidos (requieren `JINA_API_KEY`): drift semántico `jina embed` y claims de
+      deps contra Context7. Justificación de no-gate: red + quota + versions = flaky.
 
 ## Log
 
@@ -215,10 +217,16 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
   commitear. La lista de 11 archivos del inventario original era parcial: los 39
   warnings viven en **24 archivos**.
 
+- **L10 (2026-10-17)** — T8 (slice lychee-keyless) en `ci/external-link-report`:
+  workflow scheduled (cron semanal + `workflow_dispatch`) que corre `lychee` sobre
+  `README.md`, `CHANGELOG.md`, `docs/src/**/*.md`, **report-only** (`fail: false` +
+  `--exit-zero`, fuera de branch protection). Issue #2015 con `status:approved`,
+  PR #2016. Diferidos los slices jina/Context7 (requieren `JINA_API_KEY`).
+
 ## Next steps
 
 1. T2 y T3 en el mismo PR de docs siguiente (tocan `docs/src/` y `book.toml`, sin
    conflicto con T1, que ya cerró).
-2. T5: declarar los 3 lints en las 4 crates publicadas.
+2. T5: declarar los 3 lints en las 4 crates publicadas (PR #2014, issue #2013).
 3. `cargo fmt --all -- --check`, clippy strict y rustdoc verdes antes de cada commit.
-4. T8 queda deferred hasta que Fase 1 esté verde.
+4. T8 jina/Context7 slices diferidos: requieren `JINA_API_KEY` en secrets.
