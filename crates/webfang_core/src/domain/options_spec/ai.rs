@@ -26,6 +26,27 @@
 //! `cli::spec_command::ai_args`'s `AiSlot::Manual` arm.
 use super::{DefaultValue, NumericPolicy, OptionSpec, ValueKind};
 
+/// The shipped default relevance threshold.
+///
+/// **Single source of truth for the NUMBER**, the same role
+/// [`DEFAULT_CHARS_PER_TOKEN`] and [`DEFAULT_MAX_CHARS`] play for the rest of
+/// this group. Two independent `0.3` literals would let the warning ADR-0004
+/// requires ("this default is calibrated for Granite and nothing else is")
+/// name a different number than the one the pipeline actually runs with — the
+/// one failure mode a qualification warning cannot survive.
+///
+/// # Why the spec entry still spells `"0.3"` as a string
+///
+/// [`THRESHOLD`].default is a [`DefaultValue::Str`] because the spec models
+/// textual defaults as `&'static str` (there is no `ValueKind::Float` yet —
+/// see the module docs), and `format!` is not available in a `const`
+/// initializer, so the rendered `default_value` cannot be derived from an
+/// `f32` constant. The two spellings are therefore pinned against each other
+/// by `the_announced_default_threshold_is_the_number_the_runtime_actually_defaults_to`
+/// (behavioral) and `threshold_default_matches_the_numeric_constant` (unit) —
+/// neither can drift alone.
+pub const DEFAULT_THRESHOLD: f32 = 0.3;
+
 /// `--threshold <THRESHOLD>` (env `WEBFANG_THRESHOLD`, f32 0.0..=1.0).
 ///
 /// HONEST DEFER (see module docs): parser + range + error messages live
@@ -38,6 +59,14 @@ use super::{DefaultValue, NumericPolicy, OptionSpec, ValueKind};
 ///
 /// UNGATED: the relevance filter it configures is the cleaner's own logic
 /// and computes over vectors from whatever `EmbeddingPort` the run built.
+///
+/// # The default is orphaned (ADR-0004, `Umbral por defecto huérfano`)
+///
+/// [`DEFAULT_THRESHOLD`] is calibrated for Granite — the local ONNX model
+/// that this ADR removes. Any remote endpoint retains differently under the
+/// same number, so the CLI warns while the threshold is still the default and
+/// no model is calibrated (see
+/// [`crate::cli::args::ai::orphan_threshold_notice`]).
 pub const THRESHOLD: OptionSpec = OptionSpec {
     id: "threshold",
     value_name: "THRESHOLD",
@@ -249,3 +278,29 @@ pub const AI_MODEL: OptionSpec = OptionSpec {
 /// ungated set equals the WHOLE group, so a future re-gating of any entry
 /// fails there rather than shipping a flag that vanishes on one build.
 pub const GROUP: &[OptionSpec] = &[THRESHOLD, MAX_CHARS, MAX_TOKENS, OFFLINE, AI_MODEL];
+
+#[cfg(test)]
+mod tests {
+    //! The two spellings of the default threshold — the numeric SSOT
+    //! ([`DEFAULT_THRESHOLD`]) and the `&'static str` the spec renders as
+    //! clap's `default_value` — cannot reference each other (`format!` is not
+    //! `const`). This test is the bridge: if either moves alone, it fails.
+
+    use super::{DEFAULT_THRESHOLD, THRESHOLD};
+
+    #[test]
+    fn threshold_default_matches_the_numeric_constant() {
+        let rendered = THRESHOLD
+            .default
+            .as_ref()
+            .map(ToString::to_string)
+            .expect("the threshold entry must declare a default");
+        assert_eq!(
+            rendered,
+            DEFAULT_THRESHOLD.to_string(),
+            "the spec's rendered default_value and DEFAULT_THRESHOLD must agree: \
+             a warning that names one number while the CLI defaults to another \
+             is a lie about the value it exists to qualify"
+        );
+    }
+}

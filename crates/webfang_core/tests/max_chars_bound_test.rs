@@ -37,12 +37,8 @@
 #[path = "common/mod.rs"]
 mod common;
 
-use common::cli_harness::{redact_nondeterministic, BehavioralTest};
-use insta::assert_snapshot;
-use std::path::Path;
+use common::cli_harness::{assert_snapshot_redacted, mount_single_page_site, BehavioralTest};
 use std::time::Duration;
-use wiremock::matchers::method;
-use wiremock::{Mock, ResponseTemplate};
 
 /// Exit code of a rejected flag VALUE: `CliExit::UsageError` (EX_USAGE).
 ///
@@ -64,32 +60,9 @@ const DEPRECATION_MARKER: &str = "--max-tokens está obsoleto";
 
 const RUN_TIMEOUT_SECS: u64 = 60;
 
-/// Snapshot a stderr blob with the harness temp dir and other
-/// non-deterministic output redacted.
-fn assert_snapshot_redacted(name: &str, dir: &Path, value: impl Into<String>) {
-    let redacted = redact_nondeterministic(dir, &value.into());
-    let mut settings = insta::Settings::clone_current();
-    settings.add_filter(r"(?m)^Parsed using .+$", "Parsed using [REDACTED]");
-    settings.bind(|| {
-        assert_snapshot!(name, redacted);
-    });
-}
-
 /// Mount a single catch-all page so a run that PASSES validation has a
 /// hermetic, instant success target instead of the real network — and so a run
 /// that should have been rejected still resolves its mock if the rejection
-/// regresses (observed as exit 0, never as a network error).
-async fn mount_single_page_site(t: &BehavioralTest) {
-    Mock::given(method("GET"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(
-            "<html><body><article><h1>Page</h1>\
-             <p>Substantive content long enough to clear the fifty character \
-             minimum content guard comfortably.</p></article></body></html>",
-        ))
-        .mount(&t.server)
-        .await;
-}
-
 /// Run one scrape of the mock with an explicit flag value.
 async fn scrape_with_flag(t: &BehavioralTest, flag: &str, value: &str) -> std::process::Output {
     t.scraper_cmd()

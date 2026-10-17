@@ -178,6 +178,15 @@ See [docs/src/debugging.md](docs/src/debugging.md) for the full query cookbook a
 webfang --url https://example.com --clean-ai --export-format jsonl
 ```
 
+> **ONNX local está en retirada.** La feature `ai` y la inferencia ONNX se eliminan dos releases
+> minor después de este aviso; `--clean-ai` y `--offline` sobreviven des-gateados, pero `--clean-ai`
+> pasará a resolver su endpoint por `--embedding-provider`, así que **el zero-config offline-total se
+> pierde**: vas a necesitar un endpoint propio (BYO-key, el coste es tuyo) y re-indexar los vaults
+> con vectores de Granite. Shims (`--ai-model`, `--max-tokens`, `AI_MODEL_ID`, `WEBFANG_AI_MODEL_ID`,
+> `WEBFANG_AI_ENGINE`) siguen funcionando ≥2 minors. Pasá por
+> [docs/src/ai-onnx-migration.md](docs/src/ai-onnx-migration.md); si dependés de ONNX local,
+> comentá en [#1997](https://github.com/XaviCode1000/webfang/issues/1997).
+
 ### Obsidian
 
 ```bash

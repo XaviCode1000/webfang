@@ -7,5 +7,6 @@
 - [Testing](testing.md)
 - [Troubleshooting](troubleshooting.md)
 - [CLI Reference](cli-reference.md)
+- [Migración desde ONNX local](ai-onnx-migration.md)
 - [MCP Error Contract](mcp-error-contract.md)
 - [MCP Public Surface Policy](mcp-public-surface-policy.md)

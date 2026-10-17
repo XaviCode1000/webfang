@@ -159,6 +159,16 @@ pub struct AiArgs {
     /// hf_hub resolver, a property of THIS build's embedding backend.
     pub offline: bool,
 
+    /// ADR-0004 step-5 announcements this run owes, decided at parse time.
+    ///
+    /// NOT a flag and not part of the OptionsSpec parity table — it is the
+    /// parse-time VERDICT of `pending_notices`, carried here because parse
+    /// time is the only place the trigger can be observed and `CrawlOptions`
+    /// (which the binary keeps past `init_logging_dual`) is not where a
+    /// diagnostic belongs. `webfang_cli::main` reads it and renders the two
+    /// `warn!` events; see [`PendingNotices`].
+    pub pending_notices: PendingNotices,
+
     // Raw string on purpose (#827): validation is deferred to the AI init
     // path (`build_ai_cleaner`) so a poisoned AI_MODEL_ID env var cannot
     // make unrelated CLI invocations fail at parse time.
@@ -178,10 +188,7 @@ pub struct AiArgs {
 /// `WEBFANG_MAX_CHARS` made the same deliberate choice as one who typed the
 /// flag. Only `DefaultValue` (or absent) means "nobody chose".
 fn max_chars_was_chosen(m: &clap::ArgMatches) -> bool {
-    matches!(
-        m.value_source("max_chars"),
-        Some(clap::parser::ValueSource::CommandLine) | Some(clap::parser::ValueSource::EnvVariable)
-    )
+    chosen_by_operator(m, "max_chars")
 }
 
 /// Whether the operator (or their `WEBFANG_*` env) chose `--threshold`, as
@@ -194,10 +201,282 @@ fn max_chars_was_chosen(m: &clap::ArgMatches) -> bool {
 /// and `CommandLine` when they typed the flag. The predicate covers both;
 /// only `DefaultValue` (or absent) means "nobody chose".
 fn threshold_was_chosen(m: &clap::ArgMatches) -> bool {
+    chosen_by_operator(m, "threshold")
+}
+
+/// Distinctive substring of [`ONNX_DEPRECATION_NOTICE`], used as the count
+/// anchor by the behavioral tests.
+///
+/// Counted, not merely searched, so "announced exactly once per run" is a real
+/// assertion. It is also a guard on THIS module: if the anchor appeared twice
+/// inside the notice itself, every count would report 2 and read as a
+/// regression that does not exist.
+pub const ONNX_DEPRECATION_NOTICE_MARKER: &str = "ONNX local se retira";
+
+/// Distinctive substring of [`orphan_threshold_notice`]. Same counting
+/// rationale as [`ONNX_DEPRECATION_NOTICE_MARKER`].
+pub const ORPHAN_THRESHOLD_NOTICE_MARKER: &str = "calibrado para Granite";
+
+/// Where a user states an objection to, or an active dependency on, the
+/// announced removal.
+///
+/// ONE definition, because ADR-0004 requires the notice to point at a FIXED
+/// channel (the *Señal de objeción* is passive and has to be checkable): the
+/// prose in [`ONNX_DEPRECATION_NOTICE`] and the `objection_channel` field on
+/// the `warn!` event carry the same URL, and two independent literals would be
+/// exactly the kind of drift that leaves the announcement pointing nowhere.
+pub const ONNX_OBJECTION_CHANNEL: &str = "https://github.com/XaviCode1000/webfang/issues/1997";
+
+/// ADR-0004 step 5: the announced break, in execution (spec T4 / S3).
+///
+/// Five facts in a fixed order, per ADR-0004 `Compatibilidad`:
+///
+/// 1. what disappears — the `ai` Cargo feature and ONNX local, and that
+///    `cargo build --features ai` will fail at RESOLUTION (Cargo features
+///    resolve at compile time, so no shim could keep the flag alive);
+/// 2. what survives un-gated — `--clean-ai` (now resolving its endpoint
+///    through `--embedding-provider` / `WEBFANG_EMBEDDING_PROVIDER`) and
+///    `--offline` (semantics unchanged: loopback allowed, public remote →
+///    exit 78);
+/// 3. the shims that keep working for at least 2 more minor releases —
+///    `--ai-model`, `--max-tokens`, `WEBFANG_MAX_TOKENS`,
+///    `AI_MODEL_ID` / `WEBFANG_AI_MODEL_ID`, `WEBFANG_AI_ENGINE`;
+/// 4. where to migrate — `webfang connect` / `webfang doctor` /
+///    `webfang show`;
+/// 5. the objection channel, and that removal lands 2 minor releases after
+///    this announcement.
+///
+/// User-facing prose is Spanish with every flag and env name left verbatim.
+/// The facts travel AGAIN as English structured fields on the `warn!` event
+/// that carries this text — but the TEXT itself goes in the message only, once:
+/// the compact formatter appends fields after the message, so a field carrying
+/// the same prose would print ~1200 characters per line and make the
+/// announcement unreadable.
+///
+/// `webfang_cli` emits this; it is not emitted from here. See
+/// [`PendingNotices`] for why the decision cannot be made at the emit site.
+pub const ONNX_DEPRECATION_NOTICE: &str = concat!(
+    "ONNX local se retira: la feature Cargo `ai` y la inferencia ONNX desaparecerán, ",
+    "y `cargo build --features ai` fallará en resolución de features. ",
+    "Sobreviven sin gate: `--clean-ai` (hoy sigue con ONNX local; tras el corte ",
+    "resuelve su endpoint por `--embedding-provider` / `WEBFANG_EMBEDDING_PROVIDER`) y `--offline` ",
+    "(misma semántica: loopback permitido, remoto público -> exit 78). ",
+    "Siguen funcionando al menos 2 releases minor más, como shims: ",
+    "`--ai-model`, `--max-tokens`, `WEBFANG_MAX_TOKENS`, ",
+    "`AI_MODEL_ID` / `WEBFANG_AI_MODEL_ID`, `WEBFANG_AI_ENGINE`. ",
+    "Migración: `webfang connect`, `webfang doctor`, `webfang show`. ",
+    "Dependencias activas u objeciones: ",
+    "https://github.com/XaviCode1000/webfang/issues/1997 ",
+    "— la eliminación llega 2 releases minor después de este aviso."
+);
+
+/// ADR-0004 step 5: the orphaned default relevance threshold (spec T5 / S4).
+///
+/// The shipped [`DEFAULT_THRESHOLD`](crate::domain::options_spec::ai::DEFAULT_THRESHOLD)
+/// was calibrated for Granite, and Granite is the local ONNX model this ADR
+/// removes: no model left in the box is calibrated for it, so a remote
+/// endpoint retains differently under the same number. ADR-0004 makes the
+/// mitigation mandatory with an exit criterion — warn while the threshold is
+/// still the default, capped at 2 minor releases.
+///
+/// `threshold` is interpolated rather than restated as a literal so the warning
+/// cannot describe a number the run is not using.
+#[must_use]
+pub fn orphan_threshold_notice(threshold: f32) -> String {
+    format!(
+        concat!(
+            "El umbral de relevancia por defecto ({threshold}) está calibrado para Granite ",
+            "(ONNX local). Sin modelo local, un endpoint remoto retiene distinto con el ",
+            "mismo número: elegí `--threshold` (o `WEBFANG_THRESHOLD`) según tu modelo. ",
+            "Referencia: ADR-0004, sección «Umbral por defecto huérfano»."
+        ),
+        threshold = threshold
+    )
+}
+
+/// Which ADR-0004 step-5 announcements THIS run owes the operator.
+///
+/// Produced at parse time by `AiArgs::from_matches` and consumed by
+/// `webfang_cli::main` AFTER `init_logging_dual`. Both halves are forced:
+///
+/// - **The decision cannot be made at the emit site.** Two of the five trigger
+///   doors (`AI_MODEL_ID`, `WEBFANG_AI_ENGINE`) are read below clap by
+///   `webfang_ai`, which `webfang_core` cannot see, and "did the operator
+///   choose `--threshold`" is a `value_source` distinction that does not
+///   survive into `AiConfig` — the value alone cannot tell an explicit `0.3`
+///   from the default. Only parse time knows.
+/// - **The emission cannot happen at parse time.** argv normalization runs
+///   before the tracing subscriber exists (#796), so a `warn!` raised there is
+///   silently dropped.
+///
+/// `webfang_cli` therefore owns the `warn!` events — the same shape as the
+/// `--max-tokens` deprecation — and this type is only the verdict. It is `Copy`
+/// and carries no allocation: the notices themselves are const text rendered on
+/// demand at emit time.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct PendingNotices {
+    /// The run touched the AI surface: emit [`ONNX_DEPRECATION_NOTICE`].
+    pub onnx_deprecation: bool,
+    /// The threshold is still the default, so emit
+    /// [`orphan_threshold_notice`] with this value. `None` when the operator
+    /// chose `--threshold` / `WEBFANG_THRESHOLD` themselves.
+    pub orphan_threshold: Option<f32>,
+}
+
+/// Whether this value came from an operator decision rather than the spec's
+/// default, for any arg id.
+///
+/// THE provenance predicate for this module: every "did somebody choose this?"
+/// question in `AiArgs` — `--max-chars`, `--threshold`, and the two args
+/// `touches_ai_surface` reads from the root matches — is answered here, so
+/// the meaning of "chosen" cannot drift between them.
+fn chosen_by_operator(m: &clap::ArgMatches, id: &str) -> bool {
     matches!(
-        m.value_source("threshold"),
+        m.value_source(id),
         Some(clap::parser::ValueSource::CommandLine) | Some(clap::parser::ValueSource::EnvVariable)
     )
+}
+
+/// Legacy (unprefixed) AI model env var.
+///
+/// NOT clap-bound: the [`AI_MODEL`](crate::domain::options_spec::ai::AI_MODEL)
+/// spec entry routes `WEBFANG_AI_MODEL_ID`, and `AI_MODEL_ID` survives only as
+/// a HIDDEN LONG ALIAS of `--ai-model` (#827/#1587). The bare env var is read
+/// further down the stack by `webfang_ai`'s
+/// `compat::read_ai_model_id_with`, which `webfang_core` cannot see — so from
+/// argv it is invisible, and an operator whose only AI input is a stale
+/// `AI_MODEL_ID` in a systemd unit still needs the deprecation notice.
+const LEGACY_AI_MODEL_ENV: &str = "AI_MODEL_ID";
+
+/// Engine-selection env var (`single` | `pool:<N>`), with no CLI flag at all.
+///
+/// Read by `webfang_ai`'s `EngineConfig::from_env` (ADR-0004 lists it among
+/// the shims that must survive the announcement), so argv cannot see it.
+const AI_ENGINE_ENV: &str = "WEBFANG_AI_ENGINE";
+
+/// Did this run actually TOUCH the AI surface?
+///
+/// The five doors, in the order ADR-0004 lists them: `--clean-ai`,
+/// `--ai-model` (with `WEBFANG_AI_MODEL_ID`), the legacy `AI_MODEL_ID`, and
+/// `WEBFANG_AI_ENGINE`. `--clean-ai` comes from the crawler group rather than
+/// this one, but `ArgMatches` is the whole command's matches, so both ids
+/// resolve here.
+///
+/// # Why the notice is CONDITIONAL and not on every run (decided, do not
+/// re-open)
+///
+/// A warning printed on every invocation is a warning nobody reads: it puts
+/// the same bytes in front of an operator scraping a single page with no AI
+/// involvement at all, and the trained response to a constant stderr line is to
+/// stop reading stderr — which would swallow the run that genuinely needs the
+/// notice. The general announcement is the release notes' job (ADR-0004
+/// `Compatibilidad`, plus the `BREAKING CHANGE:` trailer that release-plz
+/// renders from the commit); THIS notice is for the operator who actually has
+/// something to migrate.
+///
+/// The discipline is deliberately the same one the existing `--max-tokens`
+/// shim warning follows: it speaks only when the deprecated thing was used.
+/// `ai_engine_env_alone_reaches_the_deprecation_notice` and
+/// `onnx_deprecation_notice_does_not_fire_when_the_ai_surface_is_untouched`
+/// pin both directions.
+fn touches_ai_surface(m: &clap::ArgMatches) -> bool {
+    chosen_by_operator(m, "clean_ai")
+        || chosen_by_operator(m, "ai_model")
+        || std::env::var_os(LEGACY_AI_MODEL_ENV).is_some()
+        || std::env::var_os(AI_ENGINE_ENV).is_some()
+}
+
+/// Decide which ADR-0004 step-5 announcements this run owes (T4 + T5).
+///
+/// Returns the verdict; it emits nothing. `webfang_cli::main` renders it after
+/// `init_logging_dual` — see [`PendingNotices`] for why both halves must live
+/// where they do.
+///
+/// Called from `AiArgs::from_matches`, the single reader every build goes
+/// through, so the notices are feature-independent by construction: an operator
+/// on a non-`ai` binary is exactly the one who most needs to hear the feature
+/// is going away.
+fn pending_notices(
+    m: &clap::ArgMatches,
+    threshold: f32,
+    threshold_explicit: bool,
+) -> PendingNotices {
+    if !touches_ai_surface(m) {
+        return PendingNotices::default();
+    }
+    // The orphan-threshold mitigation has an exit criterion (ADR-0004: capped
+    // at 2 minor releases) and its precondition is precisely "the threshold is
+    // still the default AND no model is calibrated". Granite was the only
+    // calibrated model and it is what this ADR removes, so the default value
+    // alone carries the "uncalibrated" half. An operator who typed a threshold
+    // has taken the calibration into their own hands: warning them would be
+    // noise about a decision they already made.
+    PendingNotices {
+        onnx_deprecation: true,
+        orphan_threshold: if threshold_explicit {
+            None
+        } else {
+            Some(threshold)
+        },
+    }
+}
+
+#[cfg(test)]
+mod deprecation_notice_tests {
+    //! The two notice texts and the counting anchors the behavioral tests use.
+    //!
+    //! [`orphan_threshold_notice`]'s interpolation is otherwise UNOBSERVABLE
+    //! from the CLI: the warning only fires when the threshold is the default,
+    //! so no reachable run can ever show it quoting anything but `0.3`. A
+    //! literal pasted into the message would pass every behavioral test and
+    //! still be wrong the moment the default moves — this is its only witness.
+
+    use super::{
+        orphan_threshold_notice, ONNX_DEPRECATION_NOTICE, ONNX_DEPRECATION_NOTICE_MARKER,
+        ORPHAN_THRESHOLD_NOTICE_MARKER,
+    };
+
+    /// The behavioral tests assert a count of exactly 1. That is only
+    /// meaningful if each anchor appears once INSIDE its own text; an anchor
+    /// repeated in the prose would make every count report 2 and read as a
+    /// regression that does not exist.
+    #[test]
+    fn each_anchor_occurs_once_inside_its_own_text() {
+        assert_eq!(
+            ONNX_DEPRECATION_NOTICE
+                .matches(ONNX_DEPRECATION_NOTICE_MARKER)
+                .count(),
+            1,
+            "the ONNX notice must carry its own counting anchor exactly once"
+        );
+        assert_eq!(
+            orphan_threshold_notice(0.3)
+                .matches(ORPHAN_THRESHOLD_NOTICE_MARKER)
+                .count(),
+            1,
+            "the orphan-threshold notice must carry its own counting anchor \
+             exactly once"
+        );
+        // Neither anchor may appear in the other text: counting one must never
+        // be able to satisfy the other notice's assertion.
+        assert!(!ONNX_DEPRECATION_NOTICE.contains(ORPHAN_THRESHOLD_NOTICE_MARKER));
+        assert!(!orphan_threshold_notice(0.3).contains(ONNX_DEPRECATION_NOTICE_MARKER));
+    }
+
+    /// The message quotes the value it was HANDED, so it can never describe a
+    /// threshold the run is not using.
+    #[test]
+    fn the_orphan_notice_quotes_the_threshold_it_was_given() {
+        assert!(
+            orphan_threshold_notice(0.55).contains("(0.55)"),
+            "the notice must interpolate the value, never a hardcoded literal"
+        );
+        assert!(
+            orphan_threshold_notice(crate::domain::options_spec::ai::DEFAULT_THRESHOLD)
+                .contains("(0.3)"),
+            "the shipped default must render as `0.3`, not as an f32 artifact"
+        );
+    }
 }
 
 /// The reads that exist in EVERY build, as `(max_chars, max_chars_explicit,
@@ -227,14 +506,21 @@ impl AiArgs {
     fn from_matches(m: &clap::ArgMatches) -> Result<Self, clap::Error> {
         let (max_chars, max_chars_explicit, max_tokens) = ungated_from_matches(m)?;
         use crate::cli::spec_command::extract;
+        let threshold = extract::value::<f32>(m, "threshold")?;
+        let threshold_explicit = threshold_was_chosen(m);
+        // The AI surface is known only here — every door is either in this
+        // group or readable from the same root `ArgMatches` — so this is the
+        // one place the ADR-0004 announcements can be decided.
+        let pending_notices = pending_notices(m, threshold, threshold_explicit);
         Ok(Self {
             max_chars,
             max_chars_explicit,
             max_tokens,
-            threshold: extract::value::<f32>(m, "threshold")?,
-            threshold_explicit: threshold_was_chosen(m),
+            threshold,
+            threshold_explicit,
             offline: m.get_flag("offline"),
             ai_model: extract::opt::<String>(m, "ai_model"),
+            pending_notices,
         })
     }
 }
