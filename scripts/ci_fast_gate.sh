@@ -328,6 +328,14 @@ EOF
   # warn-only); markdownlint above stays warn-only as is.
   run_guard "orphan snapshot guard" scripts/check_orphan_snapshots.sh \
     bash scripts/check_orphan_snapshots.sh
+  # Docs version pins (#2017): a `vX.Y.Z` in an install recipe is a claim about
+  # which release exists, and it goes stale the moment the workspace version
+  # moves — the reader pastes it and gets an old binary. Blocking, like the
+  # orphan-snapshot guard above: real drift, not style. This lane is where a
+  # markdown edit lands; the Cargo.toml side of the same drift is covered by
+  # the same guard in lane_fmt_and_guards.
+  run_guard "docs version pins gate (#2017)" scripts/check_docs_version_pins.sh \
+    bash scripts/check_docs_version_pins.sh
 }
 
 # --- lane: ci-only (NO cargo) ----------------------------------------------------
@@ -415,6 +423,24 @@ EOF
     run_step "path classifier harness semantics (offline)" bash scripts/ci_path_classifier_test.sh
   else
     skip_step "path classifier harness semantics" "no path classifier files changed"
+  fi
+  # Docs version pins semantics (#2017): hermetic, cargo-free proof that the
+  # guard still recognises a stale pin, in both directions of the RC window —
+  # a prerelease pin against a stable workspace, and a stable pin against a
+  # prerelease workspace (that second direction used to abort the guard before
+  # it compared anything, leaving the tree unguarded for a whole RC window).
+  # Triggered by either the guard or its harness changing — both are
+  # `scripts/**`, so a PR touching only one of them still lands in this
+  # CI-ONLY lane. That is also why the harness lives here and NOT in lane_docs
+  # beside the gate it pins: lane_docs never runs for a `scripts/**` change, so
+  # it would never exercise the harness for the one PR that can break it.
+  # Mirrors the `repo-guards` step of the same harness in
+  # .github/workflows/ci.yml. Offline mktemp fixtures, no cargo, <1s — cheap
+  # enough that it is never skipped once triggered.
+  if grep -Eq '^(scripts/check_docs_version_pins\.sh|scripts/test_docs_version_pins\.sh)$' "$UNION_TMP" 2>/dev/null; then
+    run_step "docs version pins semantics (offline)" bash scripts/test_docs_version_pins.sh
+  else
+    skip_step "docs version pins semantics" "no docs version pins files changed"
   fi
 }
 
@@ -542,6 +568,13 @@ lane_fmt_and_guards() {
   # warn-skip only when the script itself is absent).
   run_guard "orphan snapshot guard" scripts/check_orphan_snapshots.sh \
     bash scripts/check_orphan_snapshots.sh
+  # Docs version pins (#2017): the same guard the docs lane runs, and it has to
+  # run here too — the drift starts on the Cargo.toml side, so a code PR that
+  # bumps [workspace.package] version breaks a recipe with no markdown touched
+  # at all, and the docs lane never runs for that PR. Mirrors the `repo-guards`
+  # step of ci.yml, like every other guard in this function.
+  run_guard "docs version pins gate (#2017)" scripts/check_docs_version_pins.sh \
+    bash scripts/check_docs_version_pins.sh
   # Issue #1614: the version-marker half of the MCP public-surface policy. The
   # other half (live schema vs the committed fixture) is a test and runs in the
   # cargo lanes; this one needs the base commit, which a test cannot see.

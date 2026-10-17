@@ -234,27 +234,39 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
       Verificación: `actionlint` verde; el step aparece en el run de un PR que **no**
       toca el fixture ni el marker (prueba de que no hay filtro que lo saltee).
 
-- [ ] **T9** — Advisories de la revisión de #2012 sobre `scripts/check_docs_version_pins.sh`
-      (hallados por la revisión delegada; verificados por el parent el 2026-10-18):
-      1. **Gate no cableado** — ningún workflow en `.github/` invoca el script: es un
-         guard inerte. Requiere tocar `.github/` → issue con `status:approved` + ask-first
-         (mismo trap de path-filter que T4b/T7).
+- [x] **T9** — Advisories de la revisión de #2012 sobre `scripts/check_docs_version_pins.sh`
+      (hallados por la revisión delegada; verificados por el parent el 2026-10-17):
+      1. **Gate no cableado** — ningún workflow en `.github/` invocaba el script: era un
+         guard inerte. **Resuelto en T9.1**: el gate y su harness corren en el job
+         `repo-guards` de `ci.yml`, el único sin `paths:` ni `if:` y ya listado por `gate`
+         como always-applicable en ambos scopes, así que el drift roja el `CI Gate`
+         requerido incluso en un PR docs-only. La vía filtrada es imposible por el mismo
+         motivo que T4b/T7 documentan: un workflow detrás de `paths:` nunca puede ser
+         contexto requerido.
       2. **Asimetría RC (confirmada empíricamente)** — un pin de doc `v2.11.0-rc.1`
-         PASA contra workspace `2.11.0` stable (el grep pela el prerelease → falso
-         negativo, línea 74), pero un workspace `2.11.0-rc.1` ABORTA el script
-         ("formato inesperado", línea 44). El gate no corre durante la ventana de un RC.
-      3. **Harness no cubre prerelease (la advisory original es imprecisa)** — el harness
+         PASABA contra workspace `2.11.0` stable (el grep pelaba el prerelease → falso
+         negativo), pero un workspace `2.11.0-rc.1` ABORTABA el script
+         ("formato inesperado"). El gate no corría durante la ventana de un RC.
+         **Resuelto** (`a1f14d87`, PR #2025): una gramática única `VER_ERE`/`PIN_ERE` para
+         ambos lados del compare; el workspace acepta sufijo y el pin se compara entero.
+      3. **Harness no cubría prerelease (la advisory original es imprecisa)** — el harness
          SÍ prueba mismatch bien-formado plano: tests 2 y 3 usan `v2.4.0` vs `2.11.0` y
-         fallan correctamente. La brecha real es que no hay caso con pin prerelease, que
-         es justo el que dispara el bug (2).
-      4. **Línea de éxito miente / `$checked` muerto** — la variable `checked` (línea 58,
-         65) se incrementa pero nunca se imprime; el OK (línea 87) usa `${#FILES[@]}`
-         (cantidad de archivos) y afirma que el doc "declara sólo v2.11.0" cuando en el
-         caso RC declara `v2.11.0-rc.1`.
-      Ruta: inline para (2)/(3)/(4) — sólo el script + harness, sin `.github/`; (1)
-      delegated tras issue `status:approved`. Riesgo: bajo.
-      Verificación hoy: harness 8 ok / 0 fail; caso RC A pasa (mal), caso RC B aborta.
-      Tracking issue: #2017 (type:bug; falta `status:approved` para cablear en CI).
+         fallan correctamente. La brecha real era que no había caso con pin prerelease, que
+         es justo el que dispara el bug (2). **Resuelto** (#2025): casos 9/10/11, incluida
+         la dirección estable→RC que antes pasaba en silencio.
+      4. **Línea de éxito mentía / `$checked` muerto** — la variable `checked` se
+         incrementaba pero nunca se imprimía; el OK de éxito usaba `${#FILES[@]}`
+         (cantidad de archivos) y afirmaba que el doc "declara sólo v2.11.0" cuando en el
+         caso RC declara `v2.11.0-rc.1`. **Resuelto** (#2025): la línea de éxito reporta
+         `$checked` (líneas con pines, no documentos).
+      Ruta: inline para (2)/(3)/(4) — sólo el script + harness, sin `.github/`; T9.1 (1)
+      delegated tras issue `status:approved` + ask-first. Riesgo: bajo.
+      Verificación: harness `11 ok, 0 fail`; gate exit 0 sobre `main`
+      (`OK: 7 líneas con pines de versión en 11 documentos`); actionlint 1.7.12 +
+      shellcheck 0.11.0 limpios con el wiring nuevo; `ci_fast_gate.sh` GREEN; review RDD
+      aprobada y quemada sobre `a1f14d87` (lineage `review-38315f8f5b874640`).
+      Tracking issue: #2017 (`status:approved`, `type:bug`). T9 (2)(3)(4) mergeado como
+      `455215d2` (PR #2025); T9.1 en PR propio (commit `dc3af78e`).
 
 ### Fase 3 — Reporte externo (warn-only, nunca gate)
 
@@ -368,10 +380,53 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
   `--exit-zero` como el mecanismo vigente, cuando L11 documenta que ese flag no existe en el
   release pineado — el logbook se contradecía a tres párrafos de distancia.
 
+- **L13 (2026-10-17)** — T9.1: cableado del gate de pines de versión. Rama
+  `ci/docs-version-pins-gate`, commit `dc3af78e`
+  (`ci(repo-guards): cablear el gate de pines de versión en CI`): el gate y su harness corren
+  ahora en el job `repo-guards` de `ci.yml`. **Decisión de destino**: `repo-guards` es el único
+  job sin `paths:` ni `if:`, y `gate` ya lo lista entre los productores always-applicable de
+  ambos scopes — así el drift roja el `CI Gate` requerido incluso en un PR docs-only. Las vías
+  filtradas (`docs.yml`, `support-drift.yml`) quedan descartadas por la razón que T4b documenta:
+  un workflow detrás de `paths:` nunca puede ser contexto requerido, porque los PR fuera del
+  filtro no lo reportarían y quedarían "pending" para siempre. **Desviación respecto del plan
+  inicial**: el harness no fue a `lane_docs`/`lane_fmt_and_guards` sino a `lane_ci` con trigger
+  por archivo cambiado — `scripts/**` se clasifica CI-only, así que un PR que edita el guard o su
+  harness cae en `lane_ci` y nunca en `lane_docs`; cablearlo junto al gate lo habría dejado muerto
+  para el único PR que puede romperlo (el mismo trap que comenta el step del compatibility harness
+  en `ci.yml`). El gate sí va en `lane_docs` (edición de docs) y en `lane_fmt_and_guards` (bump de
+  `[workspace.package] version`), las dos superficies reales del drift; las lanes son mutuamente
+  exclusivas, así que no hay doble corrida, y `ci_fast_gate.sh` termina GREEN.
+  **Evidencia observada**: actionlint 1.7.12 (idéntico al pineado de CI) y shellcheck 0.11.0 con el
+  vocabulario de ignores de `repo-guards`, ambos limpios; gate exit 0
+  (`OK: 7 líneas con pines de versión en 11 documentos`); harness `11 ok, 0 fail`; la lane `docs`
+  ejerció de verdad la línea nueva (`PASS: docs version pins gate (#2017)` — `odd/tasks/*.md` cuenta
+  como docs, así que este PR cae en el branch docs+CI y corre `lane_docs` + `lane_ci`); y el trigger
+  de `lane_ci` probado extremo a extremo con una sonda temporal sobre el guard
+  (`PASS: docs version pins semantics (offline)`), restaurada byte-idéntica.
+  **Verificación independiente** (agente verificador read-only sobre el rango commiteado): **PASS,
+  sin bloqueantes**. Confirmó las cinco afirmaciones del cambio y **refutó el gap** que este log
+  declaraba: ejercitó `lane_fmt_and_guards` de verdad (bump de `Cargo.toml` a 2.12.0 → el step corre
+  y falla, `::error::FAIL: docs version pins gate (#2017)`, exit 1, nombrando
+  `docs/src/installation.md:57,64,67,154,191,237` y `README.md:37`), con lo que el gate queda probado
+  fail-closed y no decorativo. Verificó además con fixtures propias la dirección del guard (marcador
+  en la misma línea vs en otra, RC en ambas direcciones, manifest malformado/ausente, sin docs) y la
+  invariancia de hash del árbol, y comparó contra el baseline: ningún **step** preexistente cambió su
+  salida. Tres advisories, ninguna bloqueante: **(A)** el comentario de `ci.yml` decía que
+  `repo-guards` es "el único job sin `paths:` ni `if:`", y hay 8 jobs sin `if:` a nivel job —
+  corregido en un commit aparte de este PR; **(B)** `lane_ci` emite una línea `SKIP` extra en PRs
+  CI-only ajenos, inherente al `skip_step` y sin cambio de exit; **(C)** pre-existente y fuera de este
+  candidato: el scan del guard cubre sólo `README.md` + `docs/src/*.md`, así que `AGENTS.md`,
+  `docs/adr/**`, `docs/release-tag-ruleset.md` y `odd/tasks/**` llevan literales de versión sin
+  gatear. No se tocó
+  `AGENTS.md` (precedente consistente: ningún step de `repo-guards` se documenta ahí) ni
+  `CHANGELOG.md`. Corregida de paso la fecha futura en la cabecera del bloque T9 (`2026-10-18` →
+  `2026-10-17`, hoy); las otras dos fechas futuras de L9/L10 siguen pendientes.
+
 ## Next steps
 
-1. T9: corregir `check_docs_version_pins.sh` (advisories 2/3/4) + añadir caso prerelease al
-   harness; cablear el gate en CI (advisory 1) tras issue con `status:approved` + ask-first.
+1. Advisories no bloqueantes de la review de #2025 sobre `check_docs_version_pins.sh`
+   (R2-version-grammar-message, R2-counter-semantics/R3-3, R3-2, R3-1): reportables como
+   trabajo aparte, ninguno está en el AC de #2017. T9 ya está cerrado.
 2. T6: migrar samples de `docs/src/` a `{{#include}}` (deferred).
 3. T7: mover el guard MCP version-marker a CI (deferred, toca `.github/`).
 4. `cargo fmt --all -- --check`, clippy strict y rustdoc verdes antes de cada commit.
