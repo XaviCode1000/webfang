@@ -434,11 +434,18 @@ EOF
   # CI-ONLY lane. That is also why the harness lives here and NOT in lane_docs
   # beside the gate it pins: lane_docs never runs for a `scripts/**` change, so
   # it would never exercise the harness for the one PR that can break it.
-  # Mirrors the `repo-guards` step of the same harness in
+  # Mirrors the `repo-guards` steps of both harnesses in
   # .github/workflows/ci.yml. Offline mktemp fixtures, no cargo, <1s — cheap
-  # enough that it is never skipped once triggered.
-  if grep -Eq '^(scripts/check_docs_version_pins\.sh|scripts/test_docs_version_pins\.sh)$' "$UNION_TMP" 2>/dev/null; then
+  # enough that they are never skipped once triggered.
+  #
+  # The wiring harness (#2017) rides the same trigger for the same reason: it
+  # pins the EDGES of this gate rather than its decisions, and those edges are
+  # exactly what a `scripts/**`-only change can break. It asserts that
+  # `repo-guards` stays unfiltered and unconditional, that `gate` waits on it in
+  # both scopes, and that both steps below are still wired into this block.
+  if grep -Eq '^(scripts/check_docs_version_pins\.sh|scripts/test_docs_version_pins\.sh|scripts/test_docs_version_pins_wiring\.sh)$' "$UNION_TMP" 2>/dev/null; then
     run_step "docs version pins semantics (offline)" bash scripts/test_docs_version_pins.sh
+    run_step "docs version pins wiring (offline)" bash scripts/test_docs_version_pins_wiring.sh
   else
     skip_step "docs version pins semantics" "no docs version pins files changed"
   fi
