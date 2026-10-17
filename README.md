@@ -34,7 +34,7 @@ checksum, then `chmod +x` and put it on your `PATH`.
 <summary>Linux, end to end</summary>
 
 ```bash
-VERSION=v2.11.0   # ← the tag from the releases page
+VERSION=v2.12.0   # ← the tag from the releases page
 curl -fLO "https://github.com/XaviCode1000/webfang/releases/download/${VERSION}/webfang-x86_64-unknown-linux-gnu.tar.gz"
 curl -fLO "https://github.com/XaviCode1000/webfang/releases/download/${VERSION}/SHA256SUMS.txt"
 sha256sum -c SHA256SUMS.txt --ignore-missing   # verify BEFORE extracting
