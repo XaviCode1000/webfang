@@ -2,7 +2,7 @@
 
 ONNX local se retira del producto. Esta página dice **qué cambia, a quién le afecta y qué hacer**,
 con el orden de los pasos. La decisión y su secuencia están en
-[ADR 0004](../adr/0004-onnx-local-removal.md).
+[ADR 0004](https://github.com/XaviCode1000/webfang/blob/main/docs/adr/0004-onnx-local-removal.md).
 
 ## Qué cambia y cuándo
 
@@ -107,4 +107,4 @@ versión: por eso la corrida que usa `--clean-ai` sin la feature ve primero el a
 error.
 
 Referencias: [CLI reference](cli-reference.md) ·
-[ADR 0004](../adr/0004-onnx-local-removal.md)
+[ADR 0004](https://github.com/XaviCode1000/webfang/blob/main/docs/adr/0004-onnx-local-removal.md)
