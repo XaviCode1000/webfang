@@ -30,3 +30,6 @@ path = "src/bin/bench_live.rs"
 tokio = { version = "1", features = ["macros", "rt"] }
 url = { workspace = true }
 webfang_test_utils = { workspace = true }
+
+[lints]
+workspace = true

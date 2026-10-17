@@ -12,38 +12,64 @@
 /// Errors produced anywhere in the harness pipeline.
 #[derive(Debug, thiserror::Error)]
 pub enum BenchmarkError {
+    /// Underlying I/O failure while reading or writing the trace JSONL file.
     #[error("trace jsonl io error: {0}")]
     Io(#[from] std::io::Error),
 
+    /// A trace line failed to parse as JSON; records the 1-based line and the
+    /// underlying `serde_json` error.
     #[error("line {line}: invalid json ({source})")]
     Jsonl {
+        /// 1-based line number in the trace file where parsing failed.
         line: usize,
+        /// Underlying JSON deserialization error.
         source: serde_json::Error,
     },
 
+    /// A trace record had an unexpected shape (schema drift in engine output);
+    /// records the offending line and a human-readable detail.
     #[error("line {line}: unexpected record shape: {detail}")]
-    Shape { line: usize, detail: String },
+    Shape {
+        /// 1-based line number of the malformed record.
+        line: usize,
+        /// Human-readable description of what was unexpected.
+        detail: String,
+    },
 
+    /// The engine never emitted its expected end-of-crawl summary line.
     #[error("missing engine summary line ('crawl completed') in {path}")]
-    MissingSummary { path: String },
+    MissingSummary {
+        /// Path to the trace file that lacked the summary marker.
+        path: String,
+    },
 
+    /// The engine reported a completed crawl with zero attempted pages.
     #[error("summary reports zero attempted pages")]
     EmptyCrawl,
 
     /// Summary claims crawled pages but no `span_close` samples exist —
     /// inconsistent trace (e.g. off-thread span emission swallowed spans).
     #[error("summary reports {total_pages} crawled pages but no span_close samples in {path}")]
-    MissingSpans { total_pages: u64, path: String },
+    MissingSpans {
+        /// Number of crawled pages claimed by the summary.
+        total_pages: u64,
+        /// Path to the trace file that lacked span_close samples.
+        path: String,
+    },
 
+    /// The local corpus mock server failed to start or respond.
     #[error("corpus server failed: {0}")]
     Corpus(String),
 
+    /// The target engine or its fetch router returned a failure.
     #[error("engine or fetch-router failure: {0}")]
     Engine(String),
 
+    /// A cost-model configuration value was invalid.
     #[error("cost config invalid: {0}")]
     CostConfig(String),
 
+    /// The final Markdown/HTML report could not be rendered.
     #[error("report render failed: {0}")]
     Render(String),
 
@@ -54,7 +80,9 @@ pub enum BenchmarkError {
     "live competitor run not enabled in this build/session; provide {env_var} and pass --i-understand-costs to explicitly opt in ({provider})"
         )]
     LiveDisabled {
+        /// Human-readable name of the live provider that was refused.
         provider: &'static str,
+        /// Environment variable that must carry the provider API key.
         env_var: &'static str,
     },
 
@@ -66,8 +94,11 @@ pub enum BenchmarkError {
              refused before any request was prepared or sent"
         )]
     BudgetExceeded {
+        /// Human-readable name of the provider whose budget was exceeded.
         provider: &'static str,
+        /// Projected credit spend at planning time.
         projected_credits: f64,
+        /// Configured credit budget that was exceeded.
         budget: u32,
     },
 }

@@ -15,6 +15,7 @@ pub struct InfraAssumptions {
     /// Where the price came from (printed verbatim in report headers).
     pub source_url: &'static str,
     /// ISO retrieval date for `source_url` (printed verbatim).
+    /// ISO retrieval date for `source_url`, rendered verbatim into report headers.
     pub retrieved: &'static str,
 }
 
@@ -31,6 +32,7 @@ pub struct FirecrawlPricing {
     pub credits_per_page_assumption: f64,
     /// Source URL + retrieval date (verbatim into report headers).
     pub source_url: &'static str,
+    /// ISO retrieval date for `source_url`, rendered verbatim into report headers.
     pub retrieved: &'static str,
 }
 
@@ -46,6 +48,7 @@ pub struct Crawl4AiSizing {
     pub sizing_note: &'static str,
     /// Source URL + retrieval date (verbatim into report headers).
     pub source_url: &'static str,
+    /// ISO retrieval date for `source_url`, rendered verbatim into report headers.
     pub retrieved: &'static str,
 }
 
@@ -78,6 +81,7 @@ pub struct FreeTierPlan {
     pub shadow_tier_credits: f64,
     /// Source URL + retrieval date (verbatim into report headers).
     pub source_url: &'static str,
+    /// ISO retrieval date for `source_url`, rendered verbatim into report headers.
     pub retrieved: &'static str,
 }
 

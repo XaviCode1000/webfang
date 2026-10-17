@@ -4,6 +4,11 @@
 // Raw process-env mutations must go through webfang_test_utils (#1126,
 // #1349). Ungated on purpose: cfg(test) mods in this crate are covered too.
 #![deny(clippy::disallowed_methods)]
+// Explicit per docs-truthfulness audit (S5): these rustdoc lints are
+// allow-by-default, so CI's `-D warnings` never reaches them. Declare intent.
+#![allow(rustdoc::missing_crate_level_docs)]
+#![allow(rustdoc::private_doc_tests)]
+#![allow(rustdoc::unescaped_backticks)]
 //! WebFang Core — Core scraping library
 //!
 //! Contains domain, application, and infrastructure layers for web scraping.

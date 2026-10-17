@@ -18,12 +18,16 @@ use webfang_core::domain::JsStrategy;
 /// Lenient stage-1 model: every FileTraceLayer line deserializes into this.
 #[derive(Debug, Deserialize)]
 pub struct TraceLine {
+    /// Raw `timestamp` field from the trace line, if present.
     #[serde(default)]
     pub timestamp: Option<String>,
+    /// Raw `level` field from the trace line (e.g. `INFO`), if present.
     #[serde(default)]
     pub level: Option<String>,
+    /// Raw `target` field from the trace line (module path), if present.
     #[serde(default)]
     pub target: Option<String>,
+    /// Raw `message` field from the trace line, if present.
     #[serde(default)]
     pub message: Option<String>,
     /// `"span_close"` on span-close records (top-level, per FileTraceLayer).
@@ -43,10 +47,16 @@ pub enum TraceRecord {
     /// Engine summary line (`message == "crawl completed"`), fields lifted.
     Summary(CrawlSummary),
     /// Span close with its wall-clock duration in milliseconds.
-    SpanClose { duration_ms: f64 },
+    SpanClose {
+        /// Wall-clock duration of the span, in milliseconds.
+        duration_ms: f64,
+    },
     /// ERROR event naming a failed URL (`fields.url`, per analyze-trace.sh
     /// urls-failed query).
-    UrlsFailed { count: u64 },
+    UrlsFailed {
+        /// Number of failed URLs reported by the event.
+        count: u64,
+    },
     /// WAF challenge / banned-domain event (analyze-trace.sh waf query).
     WafEvent,
     /// Any benign line that carries no metric we consume.
@@ -57,19 +67,33 @@ pub enum TraceRecord {
 /// throughput + optional trace id). Exact-equality pinned by goldens.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CrawlSummary {
+    /// Total pages the engine attempted to crawl.
     pub total_pages: u64,
+    /// Pages that completed successfully.
     pub succeeded: u64,
+    /// Total error count across all buckets.
     pub errors: u64,
+    /// Errors attributed to WAF challenges / banned domains.
     pub errors_waf: u64,
+    /// Errors attributed to HTTP-level failures.
     pub errors_http: u64,
+    /// Errors attributed to request timeouts.
     pub errors_timeout: u64,
+    /// Errors attributed to network-level failures.
     pub errors_network: u64,
+    /// Errors attributed to rate-limiting (429) responses.
     pub errors_rate_limit: u64,
+    /// Errors attributed to content extraction failures.
     pub errors_extraction: u64,
+    /// Errors attributed to internal engine faults.
     pub errors_internal: u64,
+    /// Errors attributed to engine panics.
     pub errors_panic: u64,
+    /// Total wall-clock crawl duration, in seconds.
     pub duration_secs: f64,
+    /// Throughput of the crawl, in pages per second.
     pub pages_per_sec: f64,
+    /// Optional correlation id for the crawl trace, if emitted.
     #[serde(default)]
     pub trace_id: Option<String>,
 }
@@ -237,13 +261,21 @@ fn lift_summary(
 /// The 8-bucket error breakdown, passed through from the summary (design §3).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct ErrorBuckets {
+    /// Errors attributed to WAF challenges / banned domains.
     pub waf: u64,
+    /// Errors attributed to HTTP-level failures.
     pub http: u64,
+    /// Errors attributed to request timeouts.
     pub timeout: u64,
+    /// Errors attributed to network-level failures.
     pub network: u64,
+    /// Errors attributed to rate-limiting (429) responses.
     pub rate_limit: u64,
+    /// Errors attributed to content extraction failures.
     pub extraction: u64,
+    /// Errors attributed to internal engine faults.
     pub internal: u64,
+    /// Errors attributed to engine panics.
     pub panic: u64,
 }
 
@@ -255,6 +287,7 @@ pub struct ErrorBuckets {
 /// the byte-compared Block A.
 #[derive(Debug, Clone)]
 pub struct StrategyMetrics {
+    /// JS rendering strategy this run exercised.
     pub strategy: JsStrategy,
     /// succeeded / total attempted.
     pub success_rate: f64,
@@ -266,6 +299,7 @@ pub struct StrategyMetrics {
     pub pages_per_sec: f64,
     /// From the engine summary duration_secs (volatile).
     pub wall_clock_secs: f64,
+    /// Per-bucket error breakdown lifted from the engine summary.
     pub error_buckets: ErrorBuckets,
     /// `Downloader::memory_cost()` captured by the runner.
     pub ram_cost_bytes: usize,
