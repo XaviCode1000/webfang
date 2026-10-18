@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.13.0] - 2026-10-18
+
+
+### 🎉 Added
+
+- Tramo D del ADR-0004 — cleaner sobre EmbeddingPort ([#2041](https://github.com/XaviCode1000/webfang/pull/2041))
 ## [2.12.0] - 2026-10-17
 
 
