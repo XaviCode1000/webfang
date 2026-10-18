@@ -535,6 +535,16 @@ jobs:
           "$DIR/zizmor" --version
           "$DIR/zizmor" --config .github/zizmor.yml --min-severity high .github/workflows
 
+      # Semantics harness for the duplicate-crate ratchet in
+      # scripts/check_advisory_policy.sh (#2057, S3). The producer used to run
+      # as `cargo deny check bans ... || true` and then `return 0`, so a failed
+      # tool and a clean tree produced the same empty set and the ratchet at the
+      # call site was dead code. A fake `cargo` on PATH proves the three shapes:
+      # a failed producer fails the guard and says why, a duplicate missing from
+      # the baseline fails and is named, and a baselined duplicate still passes.
+      # Offline: no cargo, no network, no repo state touched.
+      - name: Advisory policy semantics harness
+        run: bash scripts/test_advisory_policy.sh
       # Meta-guard for the whole guard layer (#2056). The audit
       # AUDIT-SCRIPTS-FAIL-OPEN-20261018-222141 found 12 CRITICAL defects and
       # every one of them lived in a branch no test exercised: a `|| true` over

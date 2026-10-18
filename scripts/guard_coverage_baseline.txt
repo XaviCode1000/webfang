@@ -23,7 +23,6 @@
 #   - test_check_target_isolation.sh is the #1707 shape: only
 #     scripts/ci_fast_gate.sh runs it, and no workflow step runs the fast gate.
 
-no-harness check_advisory_policy.sh            T3 (#2057) adds scripts/test_advisory_policy.sh for S3
 no-harness check_archive_reproducibility.sh    no harness and no ODD task yet — needs its own issue
 no-harness check_dead_tests.sh                 no harness and no ODD task yet — needs its own issue
 no-harness check_duplication.sh                no harness and no ODD task yet — needs its own issue

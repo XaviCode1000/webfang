@@ -365,6 +365,30 @@ expect_files 0 "an empty diff reports 0 files"
 expect_kv all true "an empty diff fails closed to all=true"
 expect_kv run_code_jobs true "an empty diff runs the code lanes"
 
+# ---------------------------------------------------------------------------
+# 10. An unresolvable base WIDENS the check; it never narrows to HEAD~1 (#2058).
+#     HEAD~1 is not the PR base. The old fallback chain was
+#     "<base> -> main -> HEAD~1", so a base that did not resolve silently
+#     classified the last commit instead of the branch: a PR whose tip was a
+#     docs edit read as docs-only and skipped cargo while the branch also
+#     touched Rust. The fixture renames its branch away from main on purpose,
+#     so `main` cannot resolve either and HEAD~1 is the only thing left to
+#     fall back to.
+# ---------------------------------------------------------------------------
+R="$(new_repo unresolvable-base)"
+git -C "$R" branch -m trunk
+printf 'v1\n' >"$R/README.md"
+commit_all "$R" "docs one"
+printf 'fn main() {}\n' >"$R/main.rs"
+commit_all "$R" "code"
+printf 'v2\n' >"$R/README.md"
+commit_all "$R" "docs two"
+
+classify "$R" "no-such-ref-xyz" HEAD
+expect_kv all true "an unresolvable base widens to all=true"
+expect_kv run_code_jobs true "an unresolvable base runs the code lanes"
+expect_kv docs_only false "an unresolvable base does not classify as docs-only"
+
 echo
 if [ "$fail" = "0" ]; then
   echo "All ci_path_classifier changed-path checks passed ($PASSED checks)."
