@@ -24,6 +24,11 @@
 #     why the committed guard cannot rely on the report simply being empty.
 #   - extracting that snippet cannot pass vacuously: an extraction that yields
 #     nothing, or that lost the guard's own anchors, fails the harness.
+#   - both extractions are anchored to their YAML block (the next step's `- name:`
+#     or a dedent), not to the blank line that follows the block, and a short-flag
+#     cluster (`-qv`) fails closed instead of being dropped unread. Same class as
+#     the rest of the file: a shape the extractor cannot read must fail loudly,
+#     never pass quietly.
 #
 # Usage: bash scripts/test_external_link_workflow.sh [workflow-path]
 # The optional path exists so the harness can be pointed at another revision of
@@ -83,13 +88,50 @@ check_flags() {
     echo "unverified lychee release '$version': run 'lychee $version --help' and add its flags to flags_for()"
     return 1
   fi
-  # The pipeline's status is sort's, not grep's, so an args block with no flags
-  # falls through to the emptiness check below instead of aborting under -e.
-  # Domain: a whitespace-separated flag token, long or short. An attached value
-  # (`--format=markdown`, `-m=markdown`) is a different token shape and is not
-  # read here, so keep `args:` in the `--flag value` form this workflow uses.
-  used="$(awk '/args: >-/{f=1;next} f{if ($0 !~ /^[[:space:]]+[^[:space:]]/) exit; sub(/^[[:space:]]+/,""); print}' "$file" \
-    | tr ' ' '\n' | grep -oE -e '^--[a-z][a-z0-9-]*$' -e '^-[A-Za-z]$' | sort -u)"
+  # One pure-awk pass does the extraction AND the anchoring, so the assignment
+  # below cannot fail. The previous `tr | grep | sort` pipeline returned grep's
+  # nonzero status on an empty match, and the emptiness check was reached only
+  # because bash suspends `-e` inside a function called as an `if` condition —
+  # which made this diagnostic depend on every caller using `if`, a property this
+  # file does not control. With awk that dependency is gone: the guard is reached
+  # by construction.
+  #
+  # Anchoring: the block ends at the first non-blank line indented at or above
+  # the `args:` key, so removing the blank line before the next step no longer
+  # makes the block swallow that step.
+  #
+  # Domain: a whitespace-separated token. `--long` is a long flag, `-x` a short
+  # one. A short-flag CLUSTER (`-qv`) is emitted separately and fails closed just
+  # below instead of being dropped: this extractor cannot attribute a cluster to
+  # individual flags, and silently ignoring that form is the same blindness the
+  # rest of this file exists to prevent. Everything else — values, quoted paths,
+  # attached values such as `--format=markdown` — is not a flag token.
+  used="$(awk '
+    /^[[:space:]]*args: >-/ { match($0, /^[[:space:]]*/); base = RLENGTH; in_args = 1; next }
+    in_args {
+      if ($0 ~ /^[[:space:]]*$/) next
+      match($0, /^[[:space:]]*/)
+      if (RLENGTH <= base) exit
+      line = $0; sub(/^[[:space:]]+/, "", line)
+      n = split(line, tok, /[[:space:]]+/)
+      for (i = 1; i <= n; i++) {
+        t = tok[i]
+        if (t ~ /^--[a-z][a-z0-9-]*$/) flags[t] = 1
+        else if (t ~ /^-[A-Za-z]$/) flags[t] = 1
+        else if (t ~ /^-[A-Za-z]{2,}$/) clusters[t] = 1
+      }
+    }
+    END {
+      for (c in clusters) print "!cluster " c
+      for (f in flags) print f
+    }
+  ' "$file")"
+  if [[ "$used" == '!cluster '* ]]; then
+    local cluster="${used#!cluster }"
+    cluster="${cluster%%$'\n'*}"
+    echo "short-flag cluster in the args block, which this extractor cannot attribute to flags: $cluster"
+    return 1
+  fi
   if [[ -z "$used" ]]; then
     echo "no flags found in the args block: the YAML shape changed and this check went blind"
     return 1
@@ -104,13 +146,20 @@ check_flags() {
 }
 
 # assert_snippet <workflow-path> — echoes the run block of the committed
-# "Assert lychee actually checked something" step, de-indented.
+# "Assert lychee actually checked something" step, de-indented. Anchored to the
+# step's own indentation (like the args extraction above), so a missing blank line
+# after the block cannot make it swallow the next step; blank lines inside the
+# run script survive.
 assert_snippet() {
   awk '
-    /- name: Assert lychee actually checked something/ { in_step = 1; next }
-    in_step && /^[[:space:]]+run: \|/ { in_run = 1; next }
+    /^[[:space:]]*- name: Assert lychee actually checked something/ {
+      match($0, /^[[:space:]]*/); base = RLENGTH; in_step = 1; next
+    }
+    in_step && /^[[:space:]]*run: \|/ { in_run = 1; next }
     in_run {
-      if ($0 !~ /^[[:space:]]+[^[:space:]]/) exit
+      if ($0 ~ /^[[:space:]]*$/) { print ""; next }
+      match($0, /^[[:space:]]*/)
+      if (RLENGTH <= base) exit
       sub(/^[[:space:]]+/, ""); print
     }
   ' "$1"
@@ -165,6 +214,55 @@ cat > "$tmp/report-footer-only.md" <<'EOF'
 EOF
 
 : > "$tmp/report-empty.md"
+
+# Minimal workflows for the extraction-boundary cases. Their whole point is to
+# have an `args:` (or `run:`) block with NO blank line before the next step, plus
+# a flag-shaped token in that next step: absorbing the next step then shows up as
+# a falsely rejected flag (args) or as a marker leaking into the snippet.
+cat > "$tmp/wf-args-noblank.yml" <<'EOF'
+jobs:
+  j:
+    steps:
+      - name: Lychee external link check
+        with:
+          lycheeVersion: v0.24.2
+          args: >-
+            --no-progress
+            --verbose
+      - name: Decoy step
+        run: |
+          lychee --exit-zero .
+EOF
+
+cat > "$tmp/wf-snippet-noblank.yml" <<'EOF'
+jobs:
+  j:
+    steps:
+      - name: Assert lychee actually checked something
+        run: |
+          grep -qE 'Total *\| *[0-9]' lychee-report.md || exit 1
+      - name: Show report in job summary
+        run: |
+          echo NEXT-STEP-MARKER
+EOF
+
+# A short-flag cluster, with the blank line present so the anchoring is not the
+# variable under test here.
+cat > "$tmp/wf-cluster.yml" <<'EOF'
+jobs:
+  j:
+    steps:
+      - name: Lychee external link check
+        with:
+          lycheeVersion: v0.24.2
+          args: >-
+            --no-progress
+            -qv
+
+      - name: Decoy step
+        run: |
+          echo decoy
+EOF
 
 # --- cases ------------------------------------------------------------------
 
@@ -280,6 +378,119 @@ else
   case_fail=1
 fi
 finish_case "guard accepts a real report (report-only preserved)"
+
+# Case 10: the args extraction is anchored to the args block, not to the blank
+# line that happens to follow it. Without that blank line the old extractor
+# absorbed the next step, so a flag-shaped token there was read as an arg. The
+# decoy step carries `--exit-zero`, absent from the pinned release, so absorbing
+# it shows up as a falsely rejected flag instead of passing quietly.
+if check_flags "$tmp/wf-args-noblank.yml" > "$tmp/out.txt" 2>&1; then
+  echo "  ok: args extraction stopped at the block boundary (no trailing blank line)"
+else
+  echo "  FAIL: without the trailing blank line the extraction absorbed the next step"
+  sed 's/^/        /' "$tmp/out.txt"
+  case_fail=1
+fi
+finish_case "args extraction anchored to the block, not the blank line"
+
+# Case 11: the same anchoring for the snippet extraction. The decoy line lives in
+# the step AFTER the assert step, so absorbing it leaks a marker into the snippet.
+SNIPPET_NOBLANK="$(assert_snippet "$tmp/wf-snippet-noblank.yml")"
+if [[ "$SNIPPET_NOBLANK" != *lychee-report.md* ]]; then
+  echo "  FAIL: extraction went blind on the no-blank-line fixture"
+  case_fail=1
+elif [[ "$SNIPPET_NOBLANK" == *NEXT-STEP-MARKER* ]]; then
+  echo "  FAIL: without the trailing blank line the snippet extraction absorbed the next step"
+  case_fail=1
+else
+  echo "  ok: snippet extraction stopped at the step boundary (no trailing blank line)"
+fi
+finish_case "snippet extraction anchored to the step, not the blank line"
+
+# Case 12: a short-flag cluster (`-qv`) is a shape this harness does not parse.
+# Dropping it silently is the same blindness the whole file exists to prevent, so
+# it fails closed and names the token instead.
+if check_flags "$tmp/wf-cluster.yml" > "$tmp/out.txt" 2>&1; then
+  echo "  FAIL: a short-flag cluster (-qv) in args was accepted silently"
+  case_fail=1
+elif grep -qF -- '-qv' "$tmp/out.txt"; then
+  echo "  ok: short-flag cluster fails closed and is named"
+else
+  echo "  FAIL: cluster rejected, but the offending token was not named"
+  case_fail=1
+fi
+finish_case "short-flag cluster fails closed and is named"
+
+# Case 13: the emptiness diagnostic has to be reachable when check_flags is
+# called from a PLAIN statement context, not only as an `if` condition. Under
+# `set -e` bash suspends `-e` inside a function used as a condition, so the old
+# `... | grep ...` pipeline returned nonzero on an empty match and reached its
+# message only by accident of the call site: moved out of an `if`, it died with
+# no output at all. Sourcing the definitions up to the cases marker and calling
+# the function plainly is that shape.
+cat > "$tmp/wf-empty-args.yml" <<'EOF'
+jobs:
+  j:
+    steps:
+      - name: Lychee external link check
+        with:
+          lycheeVersion: v0.24.2
+          args: >-
+      - name: Step after an empty args block
+        run: |
+          echo next
+EOF
+awk '/^# --- cases ---/{exit} {print}' "${BASH_SOURCE[0]}" > "$tmp/defs.sh"
+cat > "$tmp/plain-context.sh" <<'EOF'
+set -euo pipefail
+source "$1"
+check_flags "$2"
+echo "UNREACHABLE: check_flags returned 0 for an empty args block"
+EOF
+if bash "$tmp/plain-context.sh" "$tmp/defs.sh" "$tmp/wf-empty-args.yml" > "$tmp/out.txt" 2>&1; then
+  echo "  FAIL: an empty args block passed instead of failing closed"
+  case_fail=1
+elif grep -qF 'no flags found in the args block' "$tmp/out.txt"; then
+  echo "  ok: empty args block fails closed and reaches its diagnostic in a plain call context"
+else
+  echo "  FAIL: empty args block failed without reaching the diagnostic (silent death)"
+  sed 's/^/        /' "$tmp/out.txt"
+  case_fail=1
+fi
+finish_case "emptiness diagnostic no longer depends on an if/elif call site"
+
+# Case 14: blank lines INSIDE the run script are part of the snippet and survive
+# extraction; only a dedent terminates it. This is case 11 seen from the other
+# side: the old extractor stopped at the first blank line it met, so blending the
+# two boundaries (blank line vs dedent) truncated the snippet instead of
+# over-reading it.
+cat > "$tmp/wf-snippet-blank.yml" <<'EOF'
+jobs:
+  j:
+    steps:
+      - name: Assert lychee actually checked something
+        run: |
+          first=1
+
+          second=2
+      - name: Show report in job summary
+        run: |
+          echo NEXT-STEP-MARKER
+EOF
+SNIPPET_BLANK="$(assert_snippet "$tmp/wf-snippet-blank.yml")"
+if [[ "$SNIPPET_BLANK" != *first=1* || "$SNIPPET_BLANK" != *second=2* ]]; then
+  echo "  FAIL: extraction truncated the snippet at an internal blank line"
+  case_fail=1
+elif [[ "$SNIPPET_BLANK" != *$'\n\n'* ]]; then
+  echo "  FAIL: the internal blank line was dropped from the snippet"
+  case_fail=1
+elif [[ "$SNIPPET_BLANK" == *NEXT-STEP-MARKER* ]]; then
+  echo "  FAIL: the extraction absorbed the next step"
+  case_fail=1
+else
+  echo "  ok: internal blank lines preserved and the step boundary still holds"
+fi
+finish_case "blank lines inside the run snippet are preserved"
 
 if [[ $cases_failed -eq 0 ]]; then
   # Both sides are the count actually run: a hardcoded total is one more number
