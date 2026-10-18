@@ -29,6 +29,13 @@
 
 set -euo pipefail
 
+# The gate writes a CI step summary when GitHub provides GITHUB_STEP_SUMMARY,
+# and this harness runs inside a CI job (support-drift.yml) where that variable
+# IS set: every failing fixture would append its table to the caller's summary.
+# The summary is CI chrome, not part of the gate's contract, so clear it here
+# and let the two cases that assert on it set it explicitly.
+unset GITHUB_STEP_SUMMARY
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
@@ -290,6 +297,38 @@ if [[ $rc -ne 0 ]]; then
   pass "rechaza rotar sin una línea STABLE declarada que degradar"
 else
   fail "aceptó una rotación sin STABLE previa (degradaría nada)"
+fi
+
+# ─── The diagnosis must name the surface, not the job ────────────────────────
+# A required check is identified by its JOB name, so "Validate PR metadata"
+# failing says nothing about why. The annotation title and the step summary are
+# the only carriers available: assert both, and assert that a green run stays
+# silent so the summary never accumulates noise.
+echo "== en CI, el diagnóstico nombra el archivo y el tag =="
+FX_DIAG="$(new_fixture diag)"
+set_lines "$FX_DIAG" "$CONSISTENT"
+add_tags "$FX_DIAG" "${BASELINE_TAGS[@]}" v2.2.0
+SUM_FAIL="$WORK/summary-fail.md"
+rc=0
+OUT="$( ( cd "$FX_DIAG" && GITHUB_STEP_SUMMARY="$SUM_FAIL" ./scripts/check_support_drift.sh --scope=published ) 2>&1 )" || rc=$?
+if [[ $rc -ne 0 ]] && grep -qF '::error title=Support drift: .github/support.json vs tags v*' <<<"$OUT"; then
+  pass "la anotación lleva el archivo en el título, no sólo el mensaje"
+else
+  fail "la anotación no lleva título con el archivo (rc=$rc)"
+fi
+if [[ -f "$SUM_FAIL" ]] && grep -qF '.github/support.json' "$SUM_FAIL" \
+   && grep -qF 'v2.2.0' "$SUM_FAIL" && grep -qF '| Declared STABLE |' "$SUM_FAIL" \
+   && grep -qF '2.1' "$SUM_FAIL"; then
+  pass "el step summary muestra el tag más nuevo y la STABLE declarada"
+else
+  fail "el step summary no explica la deriva: $(head -n 6 "$SUM_FAIL" 2>/dev/null | tr '\n' ' ')"
+fi
+SUM_OK="$WORK/summary-ok.md"
+( cd "$FX_OK" && GITHUB_STEP_SUMMARY="$SUM_OK" ./scripts/check_support_drift.sh --scope=both ) >/dev/null 2>&1 || true
+if [[ ! -s "$SUM_OK" ]]; then
+  pass "un run verde no escribe summary"
+else
+  fail "un run verde escribió summary: $(tr '\n' ' ' < "$SUM_OK")"
 fi
 
 echo
