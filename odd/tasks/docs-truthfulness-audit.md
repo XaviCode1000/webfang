@@ -227,9 +227,8 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
       Verificación: `grep -rF '{{#include' docs/src/ | wc -l` → > 0 (no `rg -c`, que
       imprime `archivo:conteo` y no es comparable); `mdbook build docs` verde;
       `scripts/gen-cli-reference.sh --check` sigue verde.
-- [ ] **T7 (S1)** — Mover el guard MCP version-marker de local-only a CI
-      (`scripts/check_mcp_public_surface.sh --base`). **Implementado; el AC de
-      observación sigue pendiente** (ver el final de esta entrada).
+- [x] **T7 (S1)** — Mover el guard MCP version-marker de local-only a CI
+      (`scripts/check_mcp_public_surface.sh --base`).
       Ruta: delegated (toca `.github/`). Riesgo: mismo path-filter trap que T4b —
       verificar que el job que lo hospeda corra en todo PR antes de hacerlo required.
       Verificación: `actionlint` verde; el step aparece en el run de un PR que **no**
@@ -247,12 +246,12 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
       +0.9 s para `fetch-depth: 0`. Sin cambios en el script ni en el fast gate en
       este primer commit; el follow-up de L16 toca ambos.
 
-      **AC pendiente.** La verificación de esta entrada — "el step aparece en el
-      run de un PR que **no** toca el fixture ni el marker" — no se puede
-      observar hasta que exista el run del PR. Estructuralmente nada lo filtra
-      (el job no declara `paths:` ni `if:`, el step no tiene condición, y
-      `scripts/test_mcp_surface_wiring.sh` lo pinnea), pero eso es un argumento,
-      no la observación que el AC pide. La casilla queda sin marcar hasta verla.
+      **AC observado.** PR #2040 (que **no** toca el fixture ni el marker), job
+      `117602506450` de `repo-guards`: `MCP surface wiring harness`,
+      `Resolve MCP public-surface base` y `MCP public-surface version marker
+      gate` terminaron en `success`. El step aparece sin filtro que lo saltee,
+      que es exactamente lo que la verificación pedía; el argumento estructural
+      queda respaldado por la corrida, no en su lugar.
 
 - [x] **T9** — Advisories de la revisión de #2012 sobre `scripts/check_docs_version_pins.sh`
       (hallados por la revisión delegada; verificados por el parent el 2026-10-17):
@@ -604,10 +603,7 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
    (`R2-lane-ci-comment-gap`, `R3-002`, ambos en el bucle de `lane_ci`): cerrados en el follow-up
    de L15 con el caso 12. T9, T9.1 y T9.2 cerrados.
 2. T6: migrar samples de `docs/src/` a `{{#include}}` (deferred).
-3. T7: el cableado está implementado y el harness lo pinnea, pero falta la observación real del
-   AC — el step tiene que aparecer en el run de un PR que no toca el fixture ni el marker.
-   Recién entonces se marca `[x]`.
-4. `cargo fmt --all -- --check`, clippy strict y rustdoc verdes antes de cada commit.
-5. T8 residual (issue #2020, `status:approved`): comentario del harness `:86-87`, anclaje de
+3. `cargo fmt --all -- --check`, clippy strict y rustdoc verdes antes de cada commit.
+4. T8 residual (issue #2020, `status:approved`): comentario del harness `:86-87`, anclaje de
    los terminadores `awk`, clusters de flags cortos (`-qv`) y la fragilidad por dependencia del
    `-e` contextual en los call sites.
