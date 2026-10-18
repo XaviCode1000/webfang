@@ -1211,22 +1211,16 @@ mod tests {
     #[derive(Default)]
     struct AlwaysFailingBatchPort {
         batch_calls: std::sync::atomic::AtomicUsize,
-        unit_calls: std::sync::atomic::AtomicUsize,
     }
 
     impl AlwaysFailingBatchPort {
         fn batch_calls(&self) -> usize {
             self.batch_calls.load(std::sync::atomic::Ordering::Relaxed)
         }
-        fn unit_calls(&self) -> usize {
-            self.unit_calls.load(std::sync::atomic::Ordering::Relaxed)
-        }
     }
 
     impl EmbeddingPort for AlwaysFailingBatchPort {
         fn embed<'a>(&'a self, _text: &'a str) -> BoxFuture<'a, Result<Vec<f32>, SemanticError>> {
-            self.unit_calls
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Box::pin(async move { Ok(vec![1.0, 2.0, 3.0]) })
         }
 
