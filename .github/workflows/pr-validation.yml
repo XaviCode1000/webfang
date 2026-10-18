@@ -34,7 +34,10 @@ jobs:
       # enforced without touching branch protection (docs/ci-slo.md:60).
       # support-drift.yml keeps the same check on push to main for the
       # post-merge drift a release tag can introduce.
-      - name: Support drift vs published tags (enforcing)
+      # The step name carries the surface: the required context is the job name
+      # ("Validate PR metadata"), which cannot be dynamic, so this is the first
+      # line a maintainer sees above the failure.
+      - name: "Support drift: .github/support.json vs published v* tags (enforcing)"
         run: scripts/check_support_drift.sh --scope=published
 
       # Resolve the real PR for both pull_request and merge_group runs.
