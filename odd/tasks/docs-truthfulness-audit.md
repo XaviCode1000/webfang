@@ -674,7 +674,50 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
   grafting las extracciones base dentro del harness nuevo, y confirmó la invariante: extracción
   vieja y nueva del workflow real dan `{--exclude, --no-progress}`. Su probe 13 se incorporó como
   caso de regresión permanente: era el único brazo de AC1 que quedaba sin cobertura.
-  Rama `chore/external-link-harness`, PR pendiente (`Closes #2020`, `type:chore`).
+  Rama `chore/external-link-harness`, PR #2049 mergeado como `341a92cb` (`Closes #2020`,
+  `type:chore`). Issue #2020 CLOSED.
+
+- **L19 (2026-10-18)** — Follow-ups de la review de #2049 sobre el harness: issue #2050, rama
+  `fix/external-link-harness-findings`. Un archivo (`scripts/test_external_link_workflow.sh`) más
+  la corrección del estado viejo de L18. Los tres hallazgos no bloqueantes que la review dejó como
+  trabajo aparte — el A1 coincide con lo que L18 ya había registrado como advisory:
+  **A1/R1-001** (WARNING, ciego preexistente) los valores adheridos (`--flag=value`) no matcheaban
+  ninguna de las tres formas clasificadas y se descartaban en silencio, así que el bloque llegaba
+  a verde con ese flag jamás validado contra la release; **R1-002/R3-1** el `for (f in flags)` sin
+  `sort` devolvió el orden de reporte al orden no especificado de los arrays de awk; **R3-2** con
+  más de un cluster el lado bash se quedaba con la primera línea y nombraba uno solo, elegido por
+  hash, así que el token que el lector escribió podía desaparecer del mensaje.
+  **RED→GREEN**: casos 15-18 escritos primero y observados fallando (`FAILED: 4/18`): 15
+  `--exit-zero=1` aceptado en silencio, 16 un valor adherido válido (`--exclude=URL`) leído como
+  bloque vacío (`no flags found`), 17 el orden real `beta, zeta, mid, kappa, alpha, omega` contra
+  el esperado ordenado, 18 `-kz` ausente del diagnóstico. **Mecanismo**: (a) la clasificación es
+  por la CABEZA del token —lo anterior al primer `=`— así `--long=v` y `-x=v` son el mismo flag
+  que su forma suelta; (b) `LC_ALL=C sort -u` después del awk, que sólo ordena y no puede fallar,
+  así el diagnóstico sigue alcanzable por construcción desde un contexto de llamada plano (el
+  caso 13); (c) se recolectan TODOS los clusters y el marcador se busca en cualquier posición del
+  output, no sólo al principio, para no depender de dónde una colación futura ordene `!` respecto
+  de `-`.
+  **Casos 19-21** (cierre de la brecha de cobertura que detectó la verificación independiente: 15
+  y 16 sólo ejercitaban la forma LARGA del valor adherido, mientras que `-x=v` y `-qv=v` caen en
+  clasificadores distintos): 19 un `-q=1` válido se extrae por su cabeza, 20 un `-Z=1` inválido se
+  rechaza **y se nombra como `-Z`** (no como el token crudo, ni como bloque vacío), 21 un `-qv=1`
+  sigue fallando cerrado y nombrado. Revertir el head-split en una copia scratch hace caer
+  exactamente los casos 15, 16, 19, 20 y 21 (`FAILED: 5/21`), así que ninguno pasa por vacuidad.
+  **No-regresión**: el bloque `args:` del workflow real no contiene ningún `=` (0 ocurrencias),
+  así que el head-split es no-op sobre el input existente; 21/21 en verde, con los casos 1-14
+  intactos (etiquetas y ok-status idénticos contra el baseline `341a92cb`).
+  **Gates**: `bash -n` OK; `shellcheck -x --exclude=<lista compartida de CI> --format=gcc
+  scripts/*.sh` EXIT=0; `actionlint` con un `-ignore` por código EXIT=0; `scripts/ci_fast_gate.sh`
+  GREEN (lane CI-ONLY, `PASS=6 FAIL=0 SKIP=9`, sin cargo).
+  **Verificación independiente** (Risk ítem 5: el harness ES el guard de CI): veredicto PASS, 0
+  blockers, criterios (a)-(d) cumplidos con comandos observados — reprodujo el RED por su cuenta
+  sobre el baseline (incluido el pase silencioso de `--exit-zero=1`), confirmó orden idéntico bajo
+  `C`, `C.UTF-8`, `en_US.UTF-8` y `de_DE.UTF-8`, y confirmó los hechos de L18 contra `gh` (#2049
+  MERGED `341a92cb`, #2020 CLOSED). Advisories no bloqueantes que quedan: el `awk` del runner
+  (`ubuntu-latest` = mawk) no se pudo ejercitar localmente (mawk no está instalado; el escaneo
+  estático no encontró gawk-ismos y el harness pasa en CI, así que es una suposición declarada, no
+  un defecto); y un token con cabeza vacía (`--=x`) no matchea ningún clasificador y se descarta en
+  silencio, **igual que en el baseline** → follow-up, no se toca acá (fuera del alcance del issue).
 
 ## Next steps
 
@@ -689,3 +732,5 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
    PR #2044).
 3. `cargo fmt --all -- --check`, clippy strict y rustdoc verdes antes de cada commit.
 4. ~~T8 residual (issue #2020)~~ — cerrado (L18, rama `chore/external-link-harness`).
+5. Follow-ups de la review de #2049 sobre el harness (A1/R1-001, R1-002/R3-1, R3-2): tratados en
+   L19, issue #2050, rama `fix/external-link-harness-findings`.

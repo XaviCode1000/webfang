@@ -26,9 +26,14 @@
 #     nothing, or that lost the guard's own anchors, fails the harness.
 #   - both extractions are anchored to their YAML block (the next step's `- name:`
 #     or a dedent), not to the blank line that follows the block, and a short-flag
-#     cluster (`-qv`) fails closed instead of being dropped unread. Same class as
-#     the rest of the file: a shape the extractor cannot read must fail loudly,
-#     never pass quietly.
+#     cluster (`-qv`) fails closed instead of being dropped unread, with every
+#     cluster of the block named. Same class as the rest of the file: a shape the
+#     extractor cannot read must fail loudly, never pass quietly.
+#   - a flag whose value is attached with `=` (`--exclude=URL`, `-x=1`) is read as
+#     the flag it is, so that spelling gets validated against the pinned release
+#     instead of being dropped as "not a flag token"; and the offenders are
+#     reported in a sorted order under `LC_ALL=C`, so which one is named first is
+#     a property of this file and not of awk's unspecified array order.
 #
 # Usage: bash scripts/test_external_link_workflow.sh [workflow-path]
 # The optional path exists so the harness can be pointed at another revision of
@@ -78,7 +83,7 @@ flags_for() {
 # the pinned release does not have, or if the pin itself is missing, unknown, or
 # the args block is unreadable. One line per reason.
 check_flags() {
-  local file="$1" version flags used flag bad=0
+  local file="$1" version flags used flag line bad=0 clusters=""
   version="$(sed -n 's/^[[:space:]]*lycheeVersion:[[:space:]]*\(v[0-9][^[:space:]]*\).*/\1/p' "$file" | head -n1)"
   if [[ -z "$version" ]]; then
     echo "no lycheeVersion pin found: the args cannot be validated against a release"
@@ -88,24 +93,32 @@ check_flags() {
     echo "unverified lychee release '$version': run 'lychee $version --help' and add its flags to flags_for()"
     return 1
   fi
-  # One pure-awk pass does the extraction AND the anchoring, so the assignment
-  # below cannot fail. The previous `tr | grep | sort` pipeline returned grep's
-  # nonzero status on an empty match, and the emptiness check was reached only
-  # because bash suspends `-e` inside a function called as an `if` condition —
+  # One pure-awk pass does the extraction AND the anchoring, and the `sort` after
+  # it only orders the result, so the assignment below cannot fail on an input the
+  # guard is meant to describe. The previous `tr | grep | sort` pipeline returned
+  # grep's nonzero status on an empty match, and the emptiness check was reached
+  # only because bash suspends `-e` inside a function called as an `if` condition —
   # which made this diagnostic depend on every caller using `if`, a property this
-  # file does not control. With awk that dependency is gone: the guard is reached
-  # by construction.
+  # file does not control. Neither awk nor sort fails on an empty or unmatched
+  # input, so that dependency is gone: the guard is reached by construction.
+  #
+  # The `LC_ALL=C` is load-bearing, not decoration: it is what makes the reported
+  # order a property of this file instead of a property of the runner's collation.
   #
   # Anchoring: the block ends at the first non-blank line indented at or above
   # the `args:` key, so removing the blank line before the next step no longer
   # makes the block swallow that step.
   #
-  # Domain: a whitespace-separated token. `--long` is a long flag, `-x` a short
-  # one. A short-flag CLUSTER (`-qv`) is emitted separately and fails closed just
-  # below instead of being dropped: this extractor cannot attribute a cluster to
-  # individual flags, and silently ignoring that form is the same blindness the
-  # rest of this file exists to prevent. Everything else — values, quoted paths,
-  # attached values such as `--format=markdown` — is not a flag token.
+  # Domain: a whitespace-separated token, classified by its HEAD — the part before
+  # the first `=`. `--long` and `--long=value` are both the long flag `--long`;
+  # `-x` and `-x=value` both the short flag `-x`. Attaching a value with `=` is a
+  # spelling of the same flag, not a different shape, and dropping it unread would
+  # leave that flag unchecked while the block still passed — the exact blindness
+  # this file exists to prevent. A short-flag CLUSTER (`-qv`) is emitted separately
+  # and fails closed just below instead of being dropped: this extractor cannot
+  # attribute a cluster to individual flags, and silently ignoring that form is the
+  # same blindness in another shape. Everything else — bare values, quoted paths
+  # like `"README.md"` — is not a flag token.
   used="$(awk '
     /^[[:space:]]*args: >-/ { match($0, /^[[:space:]]*/); base = RLENGTH; in_args = 1; next }
     in_args {
@@ -115,21 +128,30 @@ check_flags() {
       line = $0; sub(/^[[:space:]]+/, "", line)
       n = split(line, tok, /[[:space:]]+/)
       for (i = 1; i <= n; i++) {
-        t = tok[i]
-        if (t ~ /^--[a-z][a-z0-9-]*$/) flags[t] = 1
-        else if (t ~ /^-[A-Za-z]$/) flags[t] = 1
-        else if (t ~ /^-[A-Za-z]{2,}$/) clusters[t] = 1
+        head = tok[i]; sub(/=.*$/, "", head)
+        if (head ~ /^--[a-z][a-z0-9-]*$/) flags[head] = 1
+        else if (head ~ /^-[A-Za-z]$/) flags[head] = 1
+        else if (head ~ /^-[A-Za-z]{2,}$/) clusters[head] = 1
       }
     }
     END {
       for (c in clusters) print "!cluster " c
       for (f in flags) print f
     }
-  ' "$file")"
-  if [[ "$used" == '!cluster '* ]]; then
-    local cluster="${used#!cluster }"
-    cluster="${cluster%%$'\n'*}"
-    echo "short-flag cluster in the args block, which this extractor cannot attribute to flags: $cluster"
+  ' "$file" | LC_ALL=C sort -u)"
+  # Every cluster is named, not only the first. With a single cluster in the block
+  # the difference is invisible; with two it is the difference between the reader
+  # seeing their own token and seeing someone else's, chosen by awk's hash order.
+  # The marker is matched ANYWHERE in the output rather than at its start, so this
+  # does not silently depend on where a future collation decides `!` sorts
+  # relative to `-`.
+  if [[ "$used" == *'!cluster '* ]]; then
+    while IFS= read -r line; do
+      case "$line" in
+        '!cluster '*) clusters+="${line#!cluster } " ;;
+      esac
+    done <<< "$used"
+    echo "short-flag clusters in the args block, which this extractor cannot attribute to flags: ${clusters% }"
     return 1
   fi
   if [[ -z "$used" ]]; then
@@ -491,6 +513,225 @@ else
   echo "  ok: internal blank lines preserved and the step boundary still holds"
 fi
 finish_case "blank lines inside the run snippet are preserved"
+
+# Case 15: an ATTACHED value (`--flag=value`) is classified by its head, so a flag
+# spelled that way is validated instead of dropped unread. The token matches none
+# of the three classified shapes, so before this it reached success with the flag
+# never checked against the release — the blindness this file exists to stop, in
+# a shape the extractor did not know it had. `--exit-zero` is absent from the
+# pinned release, so a head that is genuinely read has to be rejected.
+cat > "$tmp/wf-attached-bogus.yml" <<'EOF'
+jobs:
+  j:
+    steps:
+      - name: Lychee external link check
+        with:
+          lycheeVersion: v0.24.2
+          args: >-
+            --no-progress
+            --exit-zero=1
+      - name: Decoy step
+        run: |
+          echo decoy
+EOF
+if check_flags "$tmp/wf-attached-bogus.yml" > "$tmp/out.txt" 2>&1; then
+  echo "  FAIL: --exit-zero=1 passed — an attached value was dropped unread"
+  case_fail=1
+elif grep -q -e '--exit-zero' "$tmp/out.txt"; then
+  echo "  ok: attached-value flag is classified by its head and rejected"
+else
+  echo "  FAIL: rejected, but the attached-value flag was not named"
+  case_fail=1
+fi
+finish_case "attached-value flag is validated, not dropped"
+
+# Case 16: the other side of case 15. A VALID flag in the attached-value form has
+# to be EXTRACTED, not merely tolerated: dropping every attached value would also
+# satisfy case 15, through the "no flags found" diagnostic. The block here holds
+# only that one token, so a still-blind extractor reaches that diagnostic and a
+# fixed one validates the head it read.
+cat > "$tmp/wf-attached-ok.yml" <<'EOF'
+jobs:
+  j:
+    steps:
+      - name: Lychee external link check
+        with:
+          lycheeVersion: v0.24.2
+          args: >-
+            --exclude=https://example.invalid
+      - name: Decoy step
+        run: |
+          echo decoy
+EOF
+if check_flags "$tmp/wf-attached-ok.yml" > "$tmp/out.txt" 2>&1; then
+  echo "  ok: a valid attached-value flag is extracted and validated"
+else
+  echo "  FAIL: a valid attached-value flag was not extracted (block read as empty)"
+  sed 's/^/        /' "$tmp/out.txt"
+  case_fail=1
+fi
+finish_case "attached-value flag is extracted, not read as an empty block"
+
+# Case 17: the ORDER the offending flags are reported in is part of the
+# diagnostic, and a bare `for (f in flags)` handed it back to awk's unspecified
+# array order. Asserted as a property instead of against a fixed list: the
+# reported order has to already be its own sorted order, with every flag present
+# so that one dropped flag cannot fake the property by shortening the list.
+cat > "$tmp/wf-many-bogus.yml" <<'EOF'
+jobs:
+  j:
+    steps:
+      - name: Lychee external link check
+        with:
+          lycheeVersion: v0.24.2
+          args: >-
+            --zeta-bad
+            --alpha-bad
+            --no-progress
+            --omega-bad
+            --beta-bad
+            --kappa-bad
+            --mid-bad
+      - name: Decoy step
+        run: |
+          echo decoy
+EOF
+check_flags "$tmp/wf-many-bogus.yml" > "$tmp/out.txt" 2>&1 || true
+reported="$(grep -e 'flag does not exist in lychee' "$tmp/out.txt" || true)"
+reported_n="$(grep -c -e 'flag does not exist in lychee' "$tmp/out.txt" || true)"
+if [[ "$reported_n" -ne 6 ]]; then
+  echo "  FAIL: expected 6 rejected flags, got $reported_n — the ordering claim would be vacuous"
+  sed 's/^/        /' "$tmp/out.txt"
+  case_fail=1
+elif [[ "$reported" == "$(LC_ALL=C sort <<< "$reported")" ]]; then
+  echo "  ok: rejected flags are reported in a deterministic, sorted order"
+else
+  echo "  FAIL: rejected flags were reported in awk's unspecified array order"
+  sed 's/^/        /' "$tmp/out.txt"
+  case_fail=1
+fi
+finish_case "rejected flags are reported in a deterministic order"
+
+# Case 18: EVERY cluster in the block is named. Case 12 holds a single one, so it
+# cannot tell "names all of them" from "names the first line of the output", and
+# with two clusters the unnamed one used to disappear from the diagnostic — the
+# reader saw a failure naming a token that may not even be the one they wrote.
+cat > "$tmp/wf-two-clusters.yml" <<'EOF'
+jobs:
+  j:
+    steps:
+      - name: Lychee external link check
+        with:
+          lycheeVersion: v0.24.2
+          args: >-
+            --no-progress
+            -qv
+            -kz
+      - name: Decoy step
+        run: |
+          echo decoy
+EOF
+if check_flags "$tmp/wf-two-clusters.yml" > "$tmp/out.txt" 2>&1; then
+  echo "  FAIL: a block with two short-flag clusters was accepted silently"
+  case_fail=1
+elif grep -qF -- '-qv' "$tmp/out.txt" && grep -qF -- '-kz' "$tmp/out.txt"; then
+  echo "  ok: both clusters are named in the diagnostic"
+else
+  echo "  FAIL: only one of the two clusters was named"
+  sed 's/^/        /' "$tmp/out.txt"
+  case_fail=1
+fi
+finish_case "every short-flag cluster in the block is named"
+
+# Case 19: the two attached-value cases above exercise only the LONG spelling
+# (`--flag=value`). The head-split is one line for every shape, but `-x=value`
+# reaches a DIFFERENT classifier than `--long=value` does: a split that ran for the
+# long spelling alone would leave the short one dropped unread, and that silence is
+# the failure mode this file exists to stop. The block holds only that token, so an
+# extractor still blind to it reads the block as empty (the emptiness diagnostic)
+# instead of validating the head it read.
+cat > "$tmp/wf-attached-short-ok.yml" <<'EOF'
+jobs:
+  j:
+    steps:
+      - name: Lychee external link check
+        with:
+          lycheeVersion: v0.24.2
+          args: >-
+            -q=1
+      - name: Decoy step
+        run: |
+          echo decoy
+EOF
+if check_flags "$tmp/wf-attached-short-ok.yml" > "$tmp/out.txt" 2>&1; then
+  echo "  ok: a valid attached-value short flag is extracted and validated"
+else
+  echo "  FAIL: a valid attached-value short flag (-q=1) was not extracted"
+  sed 's/^/        /' "$tmp/out.txt"
+  case_fail=1
+fi
+finish_case "attached-value short flag is extracted by its head"
+
+# Case 20: the negative side of case 19, and the one that matters most. Extracting
+# the head is only half the fix: the head has to be the thing NAMED in the
+# diagnostic, or the flag is validated under a name the reader never wrote.
+# `-Z` is absent from the pinned release, so a head that is genuinely read has to
+# be rejected and echoed as `-Z` — not as the raw `-Z=1`, and not as an empty block.
+cat > "$tmp/wf-attached-short-bogus.yml" <<'EOF'
+jobs:
+  j:
+    steps:
+      - name: Lychee external link check
+        with:
+          lycheeVersion: v0.24.2
+          args: >-
+            -Z=1
+      - name: Decoy step
+        run: |
+          echo decoy
+EOF
+if check_flags "$tmp/wf-attached-short-bogus.yml" > "$tmp/out.txt" 2>&1; then
+  echo "  FAIL: -Z=1 passed — an attached-value short flag was dropped unread"
+  case_fail=1
+elif grep -qF -e ': -Z' "$tmp/out.txt"; then
+  echo "  ok: attached-value short flag is rejected by its head and named"
+else
+  echo "  FAIL: rejected, but the attached-value short flag was not named by its head"
+  sed 's/^/        /' "$tmp/out.txt"
+  case_fail=1
+fi
+finish_case "attached-value short flag is rejected by its head"
+
+# Case 21: the head-split must not turn a cluster-with-value into an accepted
+# token. `-qv=1` splits to the head `-qv`, which is the shape this extractor
+# explicitly cannot attribute to flags — so it still has to fail closed and name
+# it. Reading the attached-value form as "a flag with a value" and the cluster as
+# "not a flag token" would make their combination fall between the two classifiers
+# and pass in silence, which is case 15's blindness reintroduced one shape over.
+cat > "$tmp/wf-attached-cluster.yml" <<'EOF'
+jobs:
+  j:
+    steps:
+      - name: Lychee external link check
+        with:
+          lycheeVersion: v0.24.2
+          args: >-
+            -qv=1
+      - name: Decoy step
+        run: |
+          echo decoy
+EOF
+if check_flags "$tmp/wf-attached-cluster.yml" > "$tmp/out.txt" 2>&1; then
+  echo "  FAIL: -qv=1 passed — an attached-value cluster was accepted silently"
+  case_fail=1
+elif grep -qF -- '-qv' "$tmp/out.txt"; then
+  echo "  ok: attached-value cluster fails closed and is named"
+else
+  echo "  FAIL: rejected, but the attached-value cluster was not named"
+  sed 's/^/        /' "$tmp/out.txt"
+  case_fail=1
+fi
+finish_case "attached-value cluster fails closed and is named"
 
 if [[ $cases_failed -eq 0 ]]; then
   # Both sides are the count actually run: a hardcoded total is one more number
