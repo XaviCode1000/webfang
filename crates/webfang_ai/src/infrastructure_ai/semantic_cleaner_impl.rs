@@ -630,10 +630,9 @@ impl SemanticCleanerImpl {
         let mut embeddings: Vec<Option<Vec<f32>>> = vec![None; contents.len()];
         let mut miss_indices: Vec<usize> = Vec::new();
         {
-            let cache = self
-                .embedding_cache
-                .lock()
-                .expect("embedding cache mutex poisoned");
+            let cache = self.embedding_cache.lock().map_err(|e| {
+                SemanticError::Inference(format!("embedding cache mutex poisoned: {e}"))
+            })?;
             for (i, content) in contents.iter().enumerate() {
                 if let Some(cached) = cache.get(content) {
                     embeddings[i] = Some(cached.clone());
@@ -651,10 +650,9 @@ impl SemanticCleanerImpl {
             let batch = self.embed_batch_raw(&miss_contents).await.map_err(|e| {
                 SemanticError::Inference(format!("Batch embedding generation failed: {e}"))
             })?;
-            let mut cache = self
-                .embedding_cache
-                .lock()
-                .expect("embedding cache mutex poisoned");
+            let mut cache = self.embedding_cache.lock().map_err(|e| {
+                SemanticError::Inference(format!("embedding cache mutex poisoned: {e}"))
+            })?;
             for (miss_idx, emb) in miss_indices.iter().zip(batch) {
                 embeddings[*miss_idx] = Some(emb.clone());
                 let content = &contents[*miss_idx];
@@ -664,10 +662,16 @@ impl SemanticCleanerImpl {
             }
         }
 
-        Ok(embeddings
+        embeddings
             .into_iter()
-            .map(|opt| opt.expect("every content has an embedding after cache + batch"))
-            .collect())
+            .map(|opt| {
+                opt.ok_or_else(|| {
+                    SemanticError::Inference(
+                        "every content has an embedding after cache + batch".to_string(),
+                    )
+                })
+            })
+            .collect::<Result<Vec<Vec<f32>>, SemanticError>>()
     }
 
     /// Raw batch call through the port with bisect-on-failure degradation,
