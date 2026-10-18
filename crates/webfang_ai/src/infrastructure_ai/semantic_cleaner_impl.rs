@@ -70,9 +70,10 @@
 //! # }
 //! ```
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tracing::{debug, info, warn};
 
@@ -318,6 +319,10 @@ pub struct SemanticCleanerImpl {
     /// future backends), `Arc`-shared so concurrent `clean()` calls fan out
     /// over the same port.
     embedding: Arc<dyn EmbeddingPort>,
+    /// Read-through cache of chunk content → embedding vector. Guards are
+    /// held only around map access, never across `.await`
+    /// (`anti-lock-across-await`).
+    embedding_cache: Mutex<HashMap<String, Vec<f32>>>,
 
     // Phase 3: Chunking + scoring
     /// Semantic HTML chunker with arena allocator
@@ -431,6 +436,7 @@ impl SemanticCleanerImpl {
     pub fn from_parts(embedding: Arc<dyn EmbeddingPort>, config: ModelConfig) -> Self {
         Self {
             embedding,
+            embedding_cache: Mutex::new(HashMap::new()),
             chunker: HtmlChunker::new(),
             scorer: RelevanceScorer::new(config.relevance_threshold),
             pruner: LegibleContentPruner::standard(),
@@ -532,10 +538,61 @@ impl SemanticCleaner for SemanticCleanerImpl {
             // (`remote_embedding.rs:802`). The cleaner no longer fans out
             // `embed` calls itself — that fan-out belonged to the local-ONNX
             // engine and is not the cleaner's concern (ADR-0004 tramo D, S2).
-            let contents: Vec<String> = chunks.iter().map(|chunk| chunk.content.clone()).collect();
-            let embeddings = self.embedding.embed_batch(&contents).await.map_err(|e| {
-                SemanticError::Inference(format!("Batch embedding generation failed: {e}"))
-            })?;
+            // Embeddings: read-through cache keyed by chunk content. Cache
+            // hits never touch the port; misses go to one `embed_batch` call
+            // for everything missing. The mutex is held only around map
+            // access — never across `.await` (`anti-lock-across-await`).
+            // Growth is capped: once `EMBEDDING_CACHE_MAX_ENTRIES` is
+            // reached, misses are computed but not cached (hits still served).
+            const EMBEDDING_CACHE_MAX_ENTRIES: usize = 10_000;
+
+            let mut embeddings: Vec<Option<Vec<f32>>> = vec![None; chunks.len()];
+            let mut misses: Vec<usize> = Vec::new();
+            {
+                let cache = self
+                    .embedding_cache
+                    .lock()
+                    .expect("embedding cache mutex poisoned");
+                for (i, chunk) in chunks.iter().enumerate() {
+                    if let Some(cached) = cache.get(&chunk.content) {
+                        embeddings[i] = Some(cached.clone());
+                    } else {
+                        misses.push(i);
+                    }
+                }
+            } // mutex dropped before any .await
+
+            if !misses.is_empty() {
+                let miss_contents: Vec<String> =
+                    misses.iter().map(|&i| chunks[i].content.clone()).collect();
+                let batch = self
+                    .embedding
+                    .embed_batch(&miss_contents)
+                    .await
+                    .map_err(|e| {
+                        SemanticError::Inference(format!("Batch embedding generation failed: {e}"))
+                    })?;
+                {
+                    let mut cache = self
+                        .embedding_cache
+                        .lock()
+                        .expect("embedding cache mutex poisoned");
+                    for (miss_idx, emb) in misses.iter().zip(batch) {
+                        let chunk = &chunks[*miss_idx];
+                        embeddings[*miss_idx] = Some(emb.clone());
+                        if cache.len() < EMBEDDING_CACHE_MAX_ENTRIES
+                            || cache.contains_key(&chunk.content)
+                        {
+                            cache.insert(chunk.content.clone(), emb);
+                        }
+                    }
+                }
+            }
+
+            let embeddings: Vec<Vec<f32>> = embeddings
+                .into_iter()
+                .map(|opt| opt.expect("every chunk has an embedding after cache + batch"))
+                .collect();
 
             debug!(
                 embeddings_generated = embeddings.len(),
@@ -910,6 +967,44 @@ mod tests {
                 "every returned chunk must carry its embedding"
             );
         }
+    }
+
+    // Tramo D (ADR-0004 S3): cached chunk content is served without calling
+    // the port; new content costs exactly one `embed_batch` call.
+    #[tokio::test]
+    async fn test_clean_caches_embeddings_across_calls() {
+        let port = Arc::new(CountingEmbeddingPort::default());
+        let cleaner = SemanticCleanerImpl::from_parts(port.clone(), ModelConfig::default());
+
+        let html = "<article><p>Cache me.</p><p>Cache me too.</p></article>";
+        cleaner
+            .clean("https://example.com", html)
+            .await
+            .expect("first clean must succeed");
+        assert_eq!(port.batch_calls(), 1, "first clean calls the port once");
+
+        cleaner
+            .clean("https://example.com", html)
+            .await
+            .expect("second clean must succeed");
+        assert_eq!(
+            port.batch_calls(),
+            1,
+            "second clean must be a full cache hit"
+        );
+        assert_eq!(port.unit_calls(), 0, "unit embed never used");
+
+        let html2 = "<article><p>Different content here.</p></article>";
+        cleaner
+            .clean("https://example.com", html2)
+            .await
+            .expect("third clean must succeed");
+        assert_eq!(
+            port.batch_calls(),
+            2,
+            "new content calls the port once more"
+        );
+        assert_eq!(port.unit_calls(), 0);
     }
 
     /// Deterministic fake port: counts `embed` vs `embed_batch` calls and
