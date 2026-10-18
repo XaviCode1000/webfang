@@ -272,6 +272,63 @@ else
   fail "el rechazo mutó support.json antes de fallar"
 fi
 
+# ─── The .9/.10 boundary: where `comm` stops working ────────────────────────
+# The gap check sorted both sides with `sort -V` (version order: 2.9 before
+# 2.10) but compared them with `comm`, which requires the LOCALE's collation
+# order (2.10 before 2.9). The moment the declared lines cross that pair, comm
+# calls the input unsorted and aborts the whole rotation — the automation
+# failing exactly on the release that needs it. Both cases below are the same
+# repo, one minor past the boundary.
+echo "== la rotación sana cruza el par .9/.10 (donde comm abortaba) =="
+FX_ROT_TEN="$(new_fixture rotate_minor10)"
+set_lines "$FX_ROT_TEN" '{
+  "schema_version": 1,
+  "lines": [
+    {"minor":"2.10","state":"STABLE","branch":null,"latest":"2.10.1","released_at":"2026-09-11T16:33:39+01:00","accepts":["bugfix","security"]},
+    {"minor":"2.9","state":"EOL","branch":null,"latest":"2.9.1","released_at":"2026-09-05T18:58:40+01:00","eol_at":"2026-09-14","eol_reason":"ventana rotada"}
+  ]
+}'
+add_tags "$FX_ROT_TEN" v2.9.0 v2.9.1 v2.10.0 v2.10.1 v2.11.0
+rc=0
+( cd "$FX_ROT_TEN" && ./scripts/rotate-stable.sh 2.11 ) >/dev/null 2>&1 || rc=$?
+if [[ $rc -eq 0 ]]; then
+  pass "2.10 -> 2.11 rota sobre un set de tags cuyo orden de versión difiere del de collation"
+else
+  fail "la rotación abortó (rc=$rc): el orden de las entradas, no la gobernanza, decidió"
+fi
+state="$(jq -r '.lines[] | "\(.minor)=\(.state)"' "$FX_ROT_TEN/.github/support.json" | tr '\n' ' ')"
+if [[ "$state" == "2.11=STABLE 2.10=MAINTENANCE 2.9=EOL " ]]; then
+  pass "el estado post-rotación cruza el par .9/.10 en el orden correcto"
+else
+  fail "rotación .9/.10 incorrecta: $state"
+fi
+( cd "$FX_ROT_TEN" && ./scripts/render-support-md.sh >/dev/null )
+expect "$FX_ROT_TEN" pass "el estado post-rotación de la minor 10 pasa el gate" --scope=both
+
+echo "== el gap también se decide por versión, no por collation =="
+FX_ROT_GAP_TEN="$(new_fixture rotate_gap_minor10)"
+set_lines "$FX_ROT_GAP_TEN" '{
+  "schema_version": 1,
+  "lines": [
+    {"minor":"2.8","state":"STABLE","branch":null,"latest":"2.8.1","released_at":"2026-09-11T16:33:39+01:00","accepts":["bugfix","security"]},
+    {"minor":"2.7","state":"EOL","branch":null,"latest":"2.7.0","released_at":"2026-09-05T18:58:40+01:00","eol_at":"2026-09-14","eol_reason":"ventana rotada"}
+  ]
+}'
+add_tags "$FX_ROT_GAP_TEN" v2.7.0 v2.8.0 v2.8.1 v2.9.0 v2.10.0 v2.11.0
+before="$(cat "$FX_ROT_GAP_TEN/.github/support.json")"
+rc=0
+out="$( cd "$FX_ROT_GAP_TEN" && ./scripts/rotate-stable.sh 2.11 2>&1 )" || rc=$?
+if [[ $rc -ne 0 ]] && grep -qF 'entre 2.8 y 2.11: 2.9 2.10' <<<"$out"; then
+  pass "rechaza 2.8 -> 2.11 nombrando el gap del par .9/.10 (2.9, 2.10)"
+else
+  fail "el rechazo del gap .9/.10 no es el de gobernanza (rc=$rc): $(tr '\n' ' ' <<<"$out")"
+fi
+if [[ "$(cat "$FX_ROT_GAP_TEN/.github/support.json")" == "$before" ]]; then
+  pass "el rechazo del gap .9/.10 deja support.json byte a byte intacto"
+else
+  fail "el rechazo del gap .9/.10 mutó support.json antes de fallar"
+fi
+
 FX_ROT_UNTAGGED="$(new_fixture rotate_untagged)"
 set_lines "$FX_ROT_UNTAGGED" "$CONSISTENT"
 add_tags "$FX_ROT_UNTAGGED" "${BASELINE_TAGS[@]}"

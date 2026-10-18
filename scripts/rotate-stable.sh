@@ -46,10 +46,20 @@ CURRENT_STABLE="$(jq -r '.lines[] | select(.state=="STABLE") | .minor // empty' 
 # that support.json does not know about. Rotating here would leave the chain
 # broken exactly as it already is, but now silently and with the intermediate
 # minors still undeclared.
+#
+# Both sides are compared NUMERICALLY inside one awk pass on purpose. They used
+# to be diffed with `comm`, which demands each input be sorted in the LOCALE's
+# collation order, while the declared side was sorted in VERSION order — where
+# 2.9 precedes 2.10 and collation says the opposite. The first rotation whose
+# declared lines crossed that pair made comm call the input unsorted and abort
+# the whole script, failing precisely on the release that needed it. Bringing
+# the declared set into awk removes the ordering dependency instead of hiding it
+# behind LC_ALL.
 PUBLISHED_MINORS="$(git tag --list 'v*' | sed 's/^v//' | grep -v -- '-' \
   | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | cut -d. -f1,2 | sort -u -V)"
-GAP="$(comm -23 \
-  <(printf '%s\n' "$PUBLISHED_MINORS" | awk -v s="$CURRENT_STABLE" -v n="$NEW_MINOR" '
+GAP="$(printf '%s\n' "$PUBLISHED_MINORS" | awk \
+  -v s="$CURRENT_STABLE" -v n="$NEW_MINOR" \
+  -v declared="$(jq -r '.lines[].minor' "$SUPPORT_JSON" | tr '\n' ' ')" '
     function gt(a, b,  x, y, i, m, k) {
       m = split(a, x, "."); k = split(b, y, ".")
       for (i = 1; i <= 3; i++) {
@@ -57,8 +67,12 @@ GAP="$(comm -23 \
       }
       return 0
     }
-    gt($0, s) && gt(n, $0) { print }') \
-  <(jq -r '.lines[].minor' "$SUPPORT_JSON" | sort -V))"
+    function is_declared(v,  i) {
+      for (i = 1; i <= dn; i++) if (d[i] == v) return 1
+      return 0
+    }
+    BEGIN { dn = split(declared, d, " ") }
+    gt($0, s) && gt(n, $0) && !is_declared($0) { print }')"
 if [[ -n "$GAP" ]]; then
   echo "líneas publicadas sin declarar entre $CURRENT_STABLE y $NEW_MINOR: $(echo "$GAP" | tr '\n' ' ')" >&2
   echo "rotar por encima de ellas dejaría la cadena rota en silencio; registrarlas (o marcarlas EOL) es una decisión de gobernanza con issue aprobada detrás" >&2
