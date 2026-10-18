@@ -74,7 +74,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use futures::future::try_join_all;
 use tracing::{debug, info, warn};
 
 use crate::infrastructure_ai::cache_config::AiModel;
@@ -526,22 +525,16 @@ impl SemanticCleaner for SemanticCleanerImpl {
                 "Step 2: Chunk size guard complete"
             );
 
-            // Step 3: Generate embeddings CONCURRENTLY (async-join-parallel)
-            // Following `async-join-parallel`: use try_join_all for concurrent independent operations
-            // The port's engine dispatches to dedicated worker threads with persistent sessions
-            // Following `anti-lock-across-await`: No locks held across await points
-            //
-            // One `embed` per chunk, NOT `embed_batch`: the trait default for
-            // batch is a sequential loop, so batching here would serialize the
-            // backend instead of fanning out over it.
-            let embeddings = try_join_all(
-                chunks
-                    .iter()
-                    .map(|chunk| self.embedding.embed(&chunk.content)),
-            )
-            .await
-            .map_err(|e| {
-                SemanticError::Inference(format!("Concurrent embedding generation failed: {e}"))
+            // Step 3: Generate embeddings in ONE batch call to the port.
+            // The port decides the strategy: the trait default runs `embed`
+            // sequentially per chunk; `RemoteEmbeddingAdapter` overrides
+            // `embed_batch` with a single HTTP round-trip for all chunks
+            // (`remote_embedding.rs:802`). The cleaner no longer fans out
+            // `embed` calls itself — that fan-out belonged to the local-ONNX
+            // engine and is not the cleaner's concern (ADR-0004 tramo D, S2).
+            let contents: Vec<String> = chunks.iter().map(|chunk| chunk.content.clone()).collect();
+            let embeddings = self.embedding.embed_batch(&contents).await.map_err(|e| {
+                SemanticError::Inference(format!("Batch embedding generation failed: {e}"))
             })?;
 
             debug!(
@@ -748,6 +741,7 @@ impl SemanticCleanerImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::future::BoxFuture;
 
     #[test]
     fn test_model_config_default() {
@@ -883,5 +877,80 @@ mod tests {
         // This test would require creating a SemanticCleanerImpl instance,
         // which requires async setup. Skipping for now.
         // The method is tested indirectly through integration tests.
+    }
+
+    // Tramo D (ADR-0004 S2): `clean` issues ONE `embed_batch` call per page,
+    // not one `embed` per chunk.
+    #[tokio::test]
+    async fn test_clean_uses_single_embed_batch() {
+        let port = Arc::new(CountingEmbeddingPort::default());
+        let cleaner = SemanticCleanerImpl::from_parts(port.clone(), ModelConfig::default());
+
+        let html = "<article><p>First chunk content here.</p><p>Second chunk content here.</p><p>Third chunk content here.</p></article>";
+        let chunks = cleaner
+            .clean("https://example.com", html)
+            .await
+            .expect("clean must succeed");
+
+        assert!(!chunks.is_empty(), "cleaner must produce chunks");
+        assert_eq!(
+            port.batch_calls(),
+            1,
+            "expected exactly one embed_batch call, got {}",
+            port.batch_calls()
+        );
+        assert_eq!(
+            port.unit_calls(),
+            0,
+            "embed (unit) must not be called per chunk"
+        );
+        for chunk in &chunks {
+            assert!(
+                chunk.embeddings.is_some(),
+                "every returned chunk must carry its embedding"
+            );
+        }
+    }
+
+    /// Deterministic fake port: counts `embed` vs `embed_batch` calls and
+    /// returns fixed 3-dimensional vectors. No network, no ONNX, no clock.
+    #[derive(Default)]
+    struct CountingEmbeddingPort {
+        unit_calls: std::sync::atomic::AtomicUsize,
+        batch_calls: std::sync::atomic::AtomicUsize,
+    }
+
+    impl CountingEmbeddingPort {
+        fn unit_calls(&self) -> usize {
+            self.unit_calls.load(std::sync::atomic::Ordering::Relaxed)
+        }
+        fn batch_calls(&self) -> usize {
+            self.batch_calls.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    impl EmbeddingPort for CountingEmbeddingPort {
+        fn embed<'a>(&'a self, _text: &'a str) -> BoxFuture<'a, Result<Vec<f32>, SemanticError>> {
+            self.unit_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Box::pin(async move { Ok(vec![1.0, 2.0, 3.0]) })
+        }
+
+        fn embed_batch<'a>(
+            &'a self,
+            texts: &'a [String],
+        ) -> BoxFuture<'a, Result<Vec<Vec<f32>>, SemanticError>> {
+            self.batch_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Box::pin(async move { Ok(texts.iter().map(|_| vec![1.0, 2.0, 3.0]).collect()) })
+        }
+
+        fn embedding_dim(&self) -> usize {
+            3
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
     }
 }
