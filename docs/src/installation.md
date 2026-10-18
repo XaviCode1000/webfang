@@ -193,7 +193,7 @@ non-AI export format work normally. Build without `ai`
 
 ```powershell
 # 1. Download (PowerShell 5.1+)
-$Version = "v2.12.0"
+$Version = "v2.13.0"
 $Asset   = "webfang-x86_64-pc-windows-msvc.zip"
 Invoke-WebRequest "https://github.com/XaviCode1000/webfang/releases/download/$Version/$Asset" -OutFile $Asset
 Invoke-WebRequest "https://github.com/XaviCode1000/webfang/releases/download/$Version/SHA256SUMS.txt" -OutFile SHA256SUMS.txt
