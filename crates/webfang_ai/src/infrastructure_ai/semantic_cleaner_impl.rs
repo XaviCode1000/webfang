@@ -432,6 +432,12 @@ impl SemanticCleanerImpl {
     /// deterministic fake — without resolving or downloading a model. The
     /// caller keeps whatever else it built (engine, tokenizer) for its own
     /// ports, so the ONNX model is still loaded exactly once per process.
+    ///
+    /// After step 6 deletes the local-ONNX path, `--clean-ai` will resolve
+    /// its port through `--embedding-provider` (env `WEBFANG_EMBEDDING_PROVIDER`,
+    /// flag > env); that knob already exists and resolves without the `ai`
+    /// feature (`webfang_cli/src/main.rs:980-987`). This constructor is the
+    /// place that port gets wired into the cleaner.
     #[must_use]
     pub fn from_parts(embedding: Arc<dyn EmbeddingPort>, config: ModelConfig) -> Self {
         Self {
