@@ -449,6 +449,17 @@ EOF
   else
     skip_step "docs version pins semantics" "no docs version pins files changed"
   fi
+  # Wiring harness for the MCP version-marker gate (#2038): same class as the
+  # version-pins harness above. A `scripts/**`-only change can strip the step,
+  # add a `paths:` filter to the job, drop `repo-guards` from the narrow scope,
+  # or feed the guard a base that makes the comparison vacuous — and every one of
+  # those shapes is valid YAML that runs green. `ci.yml` is in the trigger
+  # because it is the file the harness reads.
+  if grep -Eq '^(scripts/check_mcp_public_surface\.sh|scripts/test_mcp_surface_wiring\.sh|\.github/workflows/ci\.yml)$' "$UNION_TMP" 2>/dev/null; then
+    run_step "mcp surface wiring (offline)" bash scripts/test_mcp_surface_wiring.sh
+  else
+    skip_step "mcp surface wiring" "no mcp surface guard files changed"
+  fi
 }
 
 # run_pinned_lint_changed_scope: degraded local equivalent of CI's

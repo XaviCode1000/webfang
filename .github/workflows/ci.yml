@@ -12,7 +12,8 @@
 #   changes (code=true OR all=true) keep the current required producers.
 #   toolchain (15s) → fmt (30s) → clippy (2min) → CI Gate aggregates the fast required tier
 #   repo-guards (parallel) runs dead-test detection + the other architectural
-#   guards + actionlint/shellcheck lint; gate still blocks merge on it.
+#   guards + the MCP public-surface version-marker gate + actionlint/shellcheck
+#   lint; gate still blocks merge on it.
 #   test-core runs: unit tests (--lib) then integration/behavioral tests (--test '*')
 #   test-full runs: all features enabled (full workspace compile + test, NO AI inference)
 #   test-ai (ADVISORY, path-gated on needs_ai): AI integration tests with ONNX model.
@@ -419,6 +420,69 @@ jobs:
       # Offline, pure text over the checked-out tree: no cargo, no network.
       - name: Docs version pins wiring harness
         run: bash scripts/test_docs_version_pins_wiring.sh
+      # Edges of the MCP version-marker gate below (#2038): the guard runs with
+      # the event's base, `repo-guards` stays unfiltered, and `gate` waits on it
+      # in both scopes. Offline, pure text plus one local `git` call: no cargo,
+      # no network. A deleted step or a new `paths:` filter is valid YAML and
+      # only this harness notices.
+      - name: MCP surface wiring harness
+        run: bash scripts/test_mcp_surface_wiring.sh
+      # Version-marker half of the MCP compatibility gate (#1614, wired in
+      # #2038). The manifest test pins the live surface against the committed
+      # fixture; only this guard can see whether the author MOVED
+      # contract_version when a compatibility-bearing row changed. It lives in
+      # `repo-guards`, not the path-filtered `mcp` lane: a job behind `paths:`
+      # can never be a required context, while this job is unfiltered and
+      # `gate` already requires it in both scopes.
+      #
+      # Base: the event's own comparison point — the PR base sha, NOT a
+      # merge-base with main (on a stacked branch every row would read as
+      # "added"; this repo rejects stacked PRs anyway), `before` for a push,
+      # `base_sha` for merge_group. The default depth-1 checkout does not
+      # contain that commit, so fetch just it (--depth=1: measured ~1 MiB
+      # against ~10 MiB for fetch-depth: 0) and fail closed if it is still
+      # missing. That check matters: the guard reads a missing fixture at base
+      # as the bootstrap commit and exits 0; a failed fetch now fails this
+      # step before the guard can see it. Schedule/dispatch have no change under review and
+      # skip with an explicit note.
+      - name: Resolve MCP public-surface base
+        id: mcp-surface-base
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        run: |
+          BASE="${PR_BASE_SHA:-}"
+          if [[ -z "$BASE" ]]; then BASE="${MERGE_GROUP_BASE_SHA:-}"; fi
+          if [[ -z "$BASE" ]]; then BASE="${PUSH_BEFORE_SHA:-}"; fi
+          if [[ -z "$BASE" || "$BASE" =~ ^0+$ ]]; then
+            echo "base=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ ! "$BASE" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::unexpected base commit '$BASE' for the MCP public-surface guard"
+            exit 1
+          fi
+          if ! git cat-file -e "${BASE}^{commit}" 2>/dev/null; then
+            git fetch --no-tags --depth=1 origin "$BASE" || {
+              echo "::error::no se pudo traer el commit base '$BASE' para el guard MCP"
+              exit 1
+            }
+          fi
+          if ! git cat-file -e "${BASE}^{commit}"; then
+            echo "::error::el commit base '$BASE' no está disponible tras el fetch"
+            exit 1
+          fi
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+      - name: MCP public-surface version marker gate
+        env:
+          BASE: ${{ steps.mcp-surface-base.outputs.base }}
+        run: |
+          if [[ -z "$BASE" ]]; then
+            echo "mcp-public-surface: no event base (schedule/dispatch or a newly created ref); there is no change under review to compare. The manifest test still holds the live surface."
+            exit 0
+          fi
+          bash scripts/check_mcp_public_surface.sh --base "$BASE"
       # Regression guard for #836: block-scalar nesting bugs in workflow YAML
       # (steps swallowed into a `run: |` block) stay valid YAML and only fail
       # at runtime post-merge (#833→#835). actionlint + shellcheck catch them

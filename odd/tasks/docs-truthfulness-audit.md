@@ -227,12 +227,31 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
       Verificación: `grep -rF '{{#include' docs/src/ | wc -l` → > 0 (no `rg -c`, que
       imprime `archivo:conteo` y no es comparable); `mdbook build docs` verde;
       `scripts/gen-cli-reference.sh --check` sigue verde.
-- [ ] **T7 (S1)** — Mover el guard MCP version-marker de local-only a CI
+- [x] **T7 (S1)** — Mover el guard MCP version-marker de local-only a CI
       (`scripts/check_mcp_public_surface.sh --base`).
       Ruta: delegated (toca `.github/`). Riesgo: mismo path-filter trap que T4b —
       verificar que el job que lo hospeda corra en todo PR antes de hacerlo required.
       Verificación: `actionlint` verde; el step aparece en el run de un PR que **no**
       toca el fixture ni el marker (prueba de que no hay filtro que lo saltee).
+
+      **Implementado.** Dos steps en `repo-guards`: `Resolve MCP public-surface
+      base` (id `mcp-surface-base`) y `MCP public-surface version marker gate`.
+      Base = el sha del evento (`pull_request.base.sha`, `merge_group.base_sha`,
+      `event.before` en push), no un merge-base; el checkout depth-1 no lo tiene,
+      así que se trae sólo ese commit con `git fetch --depth=1 origin <sha>` y se
+      falla cerrado con `git cat-file -e` (el guard lee un fixture ausente en la
+      base como bootstrap y saldría 0). Schedule/dispatch no tienen cambio bajo
+      revisión y se saltean con nota explícita. Costo medido contra
+      `origin/main`: +1.06 MiB / +1.9 s para el fetch puntual vs +9.76 MiB /
+      +0.9 s para `fetch-depth: 0`. Sin cambios en el script ni en el fast gate en
+      este primer commit; el follow-up de L16 toca ambos.
+
+      **AC observado.** PR #2040 (que **no** toca el fixture ni el marker), job
+      `117602506450` de `repo-guards`: `MCP surface wiring harness`,
+      `Resolve MCP public-surface base` y `MCP public-surface version marker
+      gate` terminaron en `success`. El step aparece sin filtro que lo saltee,
+      que es exactamente lo que la verificación pedía; el argumento estructural
+      queda respaldado por la corrida, no en su lugar.
 
 - [x] **T9** — Advisories de la revisión de #2012 sobre `scripts/check_docs_version_pins.sh`
       (hallados por la revisión delegada; verificados por el parent el 2026-10-17):
@@ -522,6 +541,58 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
   misma salvedad: el harness no es un AC de ese issue, así que cerrar el tracker sigue siendo
   decisión del maintainer.
 
+- **L16 (2026-10-17)** — T7: cableado del guard MCP version-marker en CI, rama
+  `chore/wire-mcp-surface-guard` sobre `main @ 6448ae2b`. Dos steps nuevos en
+  `repo-guards`: `Resolve MCP public-surface base` y `MCP public-surface version
+  marker gate` (este invoca `scripts/check_mcp_public_surface.sh --base`).
+  **Decisión de base**: se usa el sha que trae el evento (`pull_request.base.sha`,
+  `merge_group.base_sha`, `event.before` en push), no un merge-base con `main` —
+  el header del guard documenta que un merge-base vuelve "added" cada fila en la
+  rama que introduce el fixture, y la base del PR es la comparación real. En
+  schedule/dispatch no hay cambio bajo revisión: nota explícita y exit 0.
+  **Fetch**: el checkout de `repo-guards` es depth 1, así que se trae sólo ese
+  commit con `git fetch --no-tags --depth=1 origin <sha>`. Medido contra
+  `origin/main` (misma sesión, `--depth=1`): el pack pasa de 3.50 MiB a 4.56 MiB
+  (+1.06 MiB, 1.9 s) contra 13.26 MiB (+9.76 MiB, 0.9 s) de `fetch-depth: 0`; el
+  fetch puntual gana en bytes y los ~2 s no pesan en un job de 10 min con dos
+  descargas de binarios. Se verifica con `git cat-file -e "${BASE}^{commit}"` y se
+  falla cerrado si falta: el guard interpreta un fixture ausente en la base como
+  commit de bootstrap y sale 0, así que un fetch fallido se leería como verde.
+  `repo-guards` no tiene `paths:` ni `if:` y `gate` ya lo requiere en ambos
+  scopes → el step queda required sin tocar branch protection. Sin cambios en el
+  script ni en `ci_fast_gate.sh` (el default de éste, último commit que tocó
+  fixture/marker, sigue siendo el correcto en local).
+  **Evidencia observada**: `actionlint` 1.7.12 (el pineado de CI) con el
+  vocabulario de ignores de `repo-guards` sobre `ci.yml` → exit 0; el guard en el
+  worktree con `--base` = sha de `origin/main` → exit 0 (`OK: the advertised
+  surface is unchanged...`); e2e en `mktemp -d` fuera del worktree con fixture y
+  marker reales — commit A, clean vs A exit 0; mutación del fixture
+  (`build_obsidian_uri additionalProperties false→true`) sin tocar el marker
+  (commit B) vs A → exit 1 con la fila clasificada; ambos archivos movidos vs A →
+  exit 0; bump de marker sin cambio de surface → exit 1; `ci_fast_gate.sh` GREEN;
+  `git status --short` sólo los tres archivos previstos. **AC pendiente de
+  observación real**: "el step aparece en el run de un PR que no toca el fixture
+  ni el marker" no se puede ver hasta que exista el run del PR; estructuralmente
+  el job no declara `paths:`/`if:` y el step no tiene condición, así que nada lo
+  filtra (actionlint valida la forma).
+  Docs: `mcp-public-surface-policy.md` deja de decir "local gate" y nombra el
+  step; el header de `ci.yml` enumera el gate en `repo-guards`.
+  **Follow-up en la misma rama (revisión posterior)**: (1) el fail-closed del
+  step de resolución sólo cubría la existencia del commit base; el script
+  colapsaba "path ausente en la base" y "lectura fallida" en el mismo archivo
+  vacío, así que cualquier `git show` roto caía en la rama bootstrap y salía 0.
+  Ahora valida la base con `git cat-file -e "${BASE}^{commit}"` (exit 2 si no es
+  un commit) y lee cada archivo con `cat-file -e` + `show` (exit 2 si el path
+  existe y no se puede leer): el bootstrap se establece por ausencia, no por
+  archivo vacío. (2) Se agrega `scripts/test_mcp_surface_wiring.sh` (8 casos
+  offline, con controles negativos) y su step en `repo-guards`, más el disparo
+  en `lane_ci` del fast gate: pinnea que el gate use `--base "$BASE"` desde el
+  output del resolve, que `repo-guards` siga sin `paths:`/`if:`, que `gate` lo
+  exija en ambos scopes y que una base que no es commit se rechace. Evidencia:
+  harness 8/8; `shellcheck` con la lista de ignores de `repo-guards` → 0;
+  `actionlint` 1.7.12 → 0; guard con `--base` en el commit previo al fixture →
+  bootstrap exit 0 (el camino legítimo no se rompió); base `deadbeef…` → exit 2.
+
 ## Next steps
 
 1. Advisories de la review de #2026 sobre el cableado (R3-1, R3-2, R3-3, R4-1, R4-2): sin
@@ -532,8 +603,7 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
    (`R2-lane-ci-comment-gap`, `R3-002`, ambos en el bucle de `lane_ci`): cerrados en el follow-up
    de L15 con el caso 12. T9, T9.1 y T9.2 cerrados.
 2. T6: migrar samples de `docs/src/` a `{{#include}}` (deferred).
-3. T7: mover el guard MCP version-marker a CI (deferred, toca `.github/`).
-4. `cargo fmt --all -- --check`, clippy strict y rustdoc verdes antes de cada commit.
-5. T8 residual (issue #2020, `status:approved`): comentario del harness `:86-87`, anclaje de
+3. `cargo fmt --all -- --check`, clippy strict y rustdoc verdes antes de cada commit.
+4. T8 residual (issue #2020, `status:approved`): comentario del harness `:86-87`, anclaje de
    los terminadores `awk`, clusters de flags cortos (`-qv`) y la fragilidad por dependencia del
    `-e` contextual en los call sites.
