@@ -1087,6 +1087,19 @@ mod tests {
         }
     }
 
+    /// Common trait methods shared by every fake port in the tests below.
+    macro_rules! fake_port_common {
+        ($port:ident) => {
+            fn embedding_dim(&self) -> usize {
+                3
+            }
+
+            fn as_any(&self) -> &dyn std::any::Any {
+                self
+            }
+        };
+    }
+
     impl EmbeddingPort for CountingEmbeddingPort {
         fn embed<'a>(&'a self, _text: &'a str) -> BoxFuture<'a, Result<Vec<f32>, SemanticError>> {
             self.unit_calls
@@ -1103,13 +1116,7 @@ mod tests {
             Box::pin(async move { Ok(texts.iter().map(|_| vec![1.0, 2.0, 3.0]).collect()) })
         }
 
-        fn embedding_dim(&self) -> usize {
-            3
-        }
-
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
+        fake_port_common!(CountingEmbeddingPort);
     }
 
     // Tramo D (ADR-0004 S3): batch de varios chunks que falla (p.ej. HTTP 413
@@ -1202,13 +1209,7 @@ mod tests {
             })
         }
 
-        fn embedding_dim(&self) -> usize {
-            3
-        }
-
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
+        fake_port_common!(FailingBatchPort);
     }
 
     /// `embed_batch` fails unconditionally: no amount of bisection helps.
@@ -1241,12 +1242,6 @@ mod tests {
             })
         }
 
-        fn embedding_dim(&self) -> usize {
-            3
-        }
-
-        fn as_any(&self) -> &dyn std::any::Any {
-            self
-        }
+        fake_port_common!(AlwaysFailingBatchPort);
     }
 }
