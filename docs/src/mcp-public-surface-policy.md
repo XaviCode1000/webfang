@@ -314,10 +314,20 @@ reports on every PR and therefore cannot be a required context.
 
 The default depth-1 checkout does not contain the event's base commit, so the
 step fetches that one commit (`--depth=1`) and fails closed if it is still
-missing. That check is load-bearing: the guard reads a missing fixture at base
-as the bootstrap commit and exits 0, so a silently failed fetch would otherwise
-turn the gate green. Schedule and `workflow_dispatch` runs have no change under
-review and skip the step with an explicit note.
+missing. That check is load-bearing: the guard reads a fixture that is *absent*
+at base as the bootstrap commit and exits 0, so a silently failed fetch would
+otherwise turn the gate green. The guard draws that line itself too: a base that
+is not a commit, or a tracked file that exists at base and cannot be read, exits
+2 instead of being flattened into the same empty file as a genuine bootstrap.
+Schedule and `workflow_dispatch` runs have no change under review and skip the
+step with an explicit note.
+
+The edges of this wiring are pinned by `scripts/test_mcp_surface_wiring.sh`,
+which runs in `repo-guards` beside the gate and in the fast gate's CI-only lane:
+the step passes `--base` from the resolve step's output (never a literal),
+`repo-guards` stays unfiltered and unconditional, `gate` waits on it in both
+scopes, and a base that is not a commit is refused rather than read as
+bootstrap.
 
 ---
 

@@ -227,8 +227,9 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
       Verificación: `grep -rF '{{#include' docs/src/ | wc -l` → > 0 (no `rg -c`, que
       imprime `archivo:conteo` y no es comparable); `mdbook build docs` verde;
       `scripts/gen-cli-reference.sh --check` sigue verde.
-- [x] **T7 (S1)** — Mover el guard MCP version-marker de local-only a CI
-      (`scripts/check_mcp_public_surface.sh --base`).
+- [ ] **T7 (S1)** — Mover el guard MCP version-marker de local-only a CI
+      (`scripts/check_mcp_public_surface.sh --base`). **Implementado; el AC de
+      observación sigue pendiente** (ver el final de esta entrada).
       Ruta: delegated (toca `.github/`). Riesgo: mismo path-filter trap que T4b —
       verificar que el job que lo hospeda corra en todo PR antes de hacerlo required.
       Verificación: `actionlint` verde; el step aparece en el run de un PR que **no**
@@ -243,8 +244,15 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
       base como bootstrap y saldría 0). Schedule/dispatch no tienen cambio bajo
       revisión y se saltean con nota explícita. Costo medido contra
       `origin/main`: +1.06 MiB / +1.9 s para el fetch puntual vs +9.76 MiB /
-      +0.9 s para `fetch-depth: 0`. Sin cambios en el script ni en el fast gate.
-      Ver L16.
+      +0.9 s para `fetch-depth: 0`. Sin cambios en el script ni en el fast gate en
+      este primer commit; el follow-up de L16 toca ambos.
+
+      **AC pendiente.** La verificación de esta entrada — "el step aparece en el
+      run de un PR que **no** toca el fixture ni el marker" — no se puede
+      observar hasta que exista el run del PR. Estructuralmente nada lo filtra
+      (el job no declara `paths:` ni `if:`, el step no tiene condición, y
+      `scripts/test_mcp_surface_wiring.sh` lo pinnea), pero eso es un argumento,
+      no la observación que el AC pide. La casilla queda sin marcar hasta verla.
 
 - [x] **T9** — Advisories de la revisión de #2012 sobre `scripts/check_docs_version_pins.sh`
       (hallados por la revisión delegada; verificados por el parent el 2026-10-17):
@@ -570,6 +578,21 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
   filtra (actionlint valida la forma).
   Docs: `mcp-public-surface-policy.md` deja de decir "local gate" y nombra el
   step; el header de `ci.yml` enumera el gate en `repo-guards`.
+  **Follow-up en la misma rama (revisión posterior)**: (1) el fail-closed del
+  step de resolución sólo cubría la existencia del commit base; el script
+  colapsaba "path ausente en la base" y "lectura fallida" en el mismo archivo
+  vacío, así que cualquier `git show` roto caía en la rama bootstrap y salía 0.
+  Ahora valida la base con `git cat-file -e "${BASE}^{commit}"` (exit 2 si no es
+  un commit) y lee cada archivo con `cat-file -e` + `show` (exit 2 si el path
+  existe y no se puede leer): el bootstrap se establece por ausencia, no por
+  archivo vacío. (2) Se agrega `scripts/test_mcp_surface_wiring.sh` (8 casos
+  offline, con controles negativos) y su step en `repo-guards`, más el disparo
+  en `lane_ci` del fast gate: pinnea que el gate use `--base "$BASE"` desde el
+  output del resolve, que `repo-guards` siga sin `paths:`/`if:`, que `gate` lo
+  exija en ambos scopes y que una base que no es commit se rechace. Evidencia:
+  harness 8/8; `shellcheck` con la lista de ignores de `repo-guards` → 0;
+  `actionlint` 1.7.12 → 0; guard con `--base` en el commit previo al fixture →
+  bootstrap exit 0 (el camino legítimo no se rompió); base `deadbeef…` → exit 2.
 
 ## Next steps
 
@@ -581,7 +604,10 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
    (`R2-lane-ci-comment-gap`, `R3-002`, ambos en el bucle de `lane_ci`): cerrados en el follow-up
    de L15 con el caso 12. T9, T9.1 y T9.2 cerrados.
 2. T6: migrar samples de `docs/src/` a `{{#include}}` (deferred).
-3. `cargo fmt --all -- --check`, clippy strict y rustdoc verdes antes de cada commit.
-4. T8 residual (issue #2020, `status:approved`): comentario del harness `:86-87`, anclaje de
+3. T7: el cableado está implementado y el harness lo pinnea, pero falta la observación real del
+   AC — el step tiene que aparecer en el run de un PR que no toca el fixture ni el marker.
+   Recién entonces se marca `[x]`.
+4. `cargo fmt --all -- --check`, clippy strict y rustdoc verdes antes de cada commit.
+5. T8 residual (issue #2020, `status:approved`): comentario del harness `:86-87`, anclaje de
    los terminadores `awk`, clusters de flags cortos (`-qv`) y la fragilidad por dependencia del
    `-e` contextual en los call sites.

@@ -420,6 +420,13 @@ jobs:
       # Offline, pure text over the checked-out tree: no cargo, no network.
       - name: Docs version pins wiring harness
         run: bash scripts/test_docs_version_pins_wiring.sh
+      # Edges of the MCP version-marker gate below (#2038): the guard runs with
+      # the event's base, `repo-guards` stays unfiltered, and `gate` waits on it
+      # in both scopes. Offline, pure text plus one local `git` call: no cargo,
+      # no network. A deleted step or a new `paths:` filter is valid YAML and
+      # only this harness notices.
+      - name: MCP surface wiring harness
+        run: bash scripts/test_mcp_surface_wiring.sh
       # Version-marker half of the MCP compatibility gate (#1614, wired in
       # #2038). The manifest test pins the live surface against the committed
       # fixture; only this guard can see whether the author MOVED

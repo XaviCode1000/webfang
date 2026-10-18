@@ -11,8 +11,8 @@
 #
 # So the marker lives in its own one-line file
 # (`crates/webfang_mcp/tests/fixtures/mcp_public_surface.version`), and this
-# guard compares BOTH files against their committed state at the merge-base
-# with main:
+# guard compares BOTH files against a base commit (see --base; the default is
+# the last commit that touched either file):
 #
 #   surface changed + version unchanged  -> FAIL, with each changed row
 #                                          classified per policy §3.1
@@ -56,6 +56,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 fail() { echo "::error::$*"; exit 1; }
+cannot_run() { echo "::error::$*"; exit 2; }
 note() { echo "mcp-public-surface: $*"; }
 
 [[ -f "$ROOT/$FIXTURE" ]] || fail "public-surface fixture missing: $FIXTURE"
@@ -74,6 +75,14 @@ if [[ -z "$BASE" ]]; then
 fi
 [[ -n "$BASE" ]] || fail "no base commit touches $FIXTURE or $MARKER yet; pass --base <ref>"
 
+# A base that is not a commit in this repository is NOT the bootstrap case, and
+# the two used to be indistinguishable: `git show` failed, the base file came
+# out empty, and the bootstrap branch below exited 0. A base that was never
+# fetched, or was mistyped, therefore read as "nothing to compare" — a green
+# gate on a change nobody looked at.
+git -C "$ROOT" cat-file -e "${BASE}^{commit}" 2>/dev/null ||
+  cannot_run "base '$BASE' is not a commit in this repository; refusing to compare against it"
+
 # --- optional re-record -----------------------------------------------------
 if [[ "$RECORD" == "1" ]]; then
   note "recording the fixture from the live router (contract_version untouched)"
@@ -86,14 +95,28 @@ fi
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "$WORKDIR"' EXIT
 
-git -C "$ROOT" show "$BASE:$FIXTURE" >"$WORKDIR/base.tsv" 2>/dev/null || : >"$WORKDIR/base.tsv"
-git -C "$ROOT" show "$BASE:$MARKER" >"$WORKDIR/base.ver" 2>/dev/null || : >"$WORKDIR/base.ver"
+# Read the base side of both tracked files. A path that is ABSENT at BASE is the
+# bootstrap case and is legitimate. A read that fails for any other reason is
+# not, and must not be flattened into the same empty file: that is how a broken
+# read used to turn into the "bootstrap commit" note below and exit 0.
+base_side() { # base_side <path-in-repo> <destination>
+  if ! git -C "$ROOT" cat-file -e "$BASE:$1" 2>/dev/null; then
+    : >"$2"
+    return 0
+  fi
+  git -C "$ROOT" show "$BASE:$1" >"$2" 2>/dev/null ||
+    cannot_run "base $BASE has $1 but it could not be read; absence and an unreadable object are different answers, so this run cannot decide"
+}
+base_side "$FIXTURE" "$WORKDIR/base.tsv"
+base_side "$MARKER" "$WORKDIR/base.ver"
 cp "$ROOT/$FIXTURE" "$WORKDIR/cur.tsv"
 cp "$ROOT/$MARKER" "$WORKDIR/cur.ver"
 
 # Bootstrap: the base commit predates the fixture, so there is nothing to
-# compare against and "everything is new" is not a finding. Reported explicitly
-# so the first run cannot be mistaken for a green gate on a real change.
+# compare against and "everything is new" is not a finding. Absence is
+# established by `cat-file -e` above, not inferred from an empty read, so a
+# failed read cannot land here. Reported explicitly so the first run cannot be
+# mistaken for a green gate on a real change.
 if [[ ! -s "$WORKDIR/base.tsv" ]]; then
   note "OK: no fixture at $BASE — this is the bootstrap commit, nothing to compare."
   exit 0
