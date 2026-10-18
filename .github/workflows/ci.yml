@@ -535,6 +535,39 @@ jobs:
           "$DIR/zizmor" --version
           "$DIR/zizmor" --config .github/zizmor.yml --min-severity high .github/workflows
 
+      # Meta-guard for the whole guard layer (#2056). The audit
+      # AUDIT-SCRIPTS-FAIL-OPEN-20261018-222141 found 12 CRITICAL defects and
+      # every one of them lived in a branch no test exercised: a `|| true` over
+      # a producer whose output is parsed later, a regex over-escaped past
+      # recognition, a jq predicate that emitted zero outputs, a `comm` fed
+      # version-ordered input. A guard that cannot fail reports green, and green
+      # is indistinguishable from safe.
+      #
+      # This step enumerates every `check_*.sh` reachable from a workflow,
+      # `justfile` or `mise.toml` — including one level of indirection, so the
+      # guards the local fast gate invokes count — and requires four things: a
+      # harness next to the guard, a workflow step that runs that harness, a
+      # `# NEGATION:` marker, and the check that actually closes the root cause:
+      # the harness must turn RED when its guard is replaced by `exit 0`. The
+      # protocol is green-then-red, so a harness that is broken for an unrelated
+      # reason cannot pass itself off as coverage. The mutation is applied in
+      # place and restored from a byte-identical backup verified by checksum, so
+      # an interrupted run cannot leave the tree mutated.
+      #
+      # Deferred entries live in scripts/guard_coverage_baseline.txt and the
+      # list may only shrink: an entry that stops reproducing fails this step
+      # and asks to be removed.
+      - name: Guard coverage meta-guard
+        run: bash scripts/test_guard_coverage.sh
+      # Negation harness for the meta-guard above. Eight cases over throwaway
+      # mktemp repositories prove every violation fires — missing harness,
+      # unwired harness, missing marker, harness already red intact, harness
+      # green against a broken guard, stale baseline — and that a compliant
+      # fixture passes. A meta-guard that only ever prints OK would be the same
+      # defect one level up. Offline, pure bash, never touches this tree.
+      - name: Guard coverage meta-guard semantics harness
+        run: bash scripts/tests/test_guard_coverage.sh
+
   # ============================================================================
   # TIER 1: FORMAT GATE (30-60 seconds)
   # No compilation needed — instant feedback on style.
