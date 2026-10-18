@@ -367,6 +367,15 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
       deps contra Context7 son planes del repo — son herramientas de investigación del
       agente. La justificación técnica sigue en pie: red + quota + versions = flaky.
 
+- [x] **T8-residual** — Cierre de los 4 pendientes que la review de la rama del step de lychee
+      dejó fuera de alcance (issue #2020). Todo en `scripts/test_external_link_workflow.sh`, sin
+      tocar `.github/`: (a) comentario `:86-87` corregido — el diagnóstico ya no depende de la
+      supresión contextual de `-e`; (b) ambas extracciones `awk` ancladas al bloque YAML
+      (siguiente `- name:` / dedent) en vez de a la línea en blanco posterior; (c) clusters de
+      flags cortos (`-qv`) fail-closed, nombrados y documentados; (d) la dependencia de `-e` en
+      los call sites eliminada con extracción en `awk` puro. 5 casos nuevos (10-14) con RED
+      observado antes del cambio. Evidencia en L18.
+
 ## Log
 
 - **L1 (2026-10-17)** — Usuario reporta preocupación por documentación con datos falsos
@@ -634,6 +643,39 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
   verde. Rama `docs/samples-single-source`, PR #2044 (`Closes #2037`,
   `type:docs`).
 
+- **L18 (2026-10-18)** — T8-residual (issue #2020): cierre de los 4 pendientes del harness
+  `scripts/test_external_link_workflow.sh` que la review de la rama `fix/external-link-report-args`
+  dejó fuera de alcance. Un solo archivo, sin tocar `.github/`.
+  **RED→GREEN**: los 5 casos nuevos se escribieron primero y se observaron fallando
+  (`FAILED: 5/14`, uno por mecanismo): 10 y 11 el anclaje de las dos extracciones (`args:` y
+  `assert_snippet`), 12 el cluster de flags cortos, 13 la alcanzabilidad del diagnóstico de
+  `args:` vacío fuera de un `if` (donde el pipeline viejo moría sin mensaje: *silent death*),
+  14 la preservación de las líneas en blanco internas del snippet. El caso 10 imprime
+  `flag does not exist in lychee v0.24.2: --exit-zero` — el flag del step siguiente — que es la
+  prueba directa de la absorción. Tras la implementación, `OK: 14/14` con los casos 1-9 intactos.
+  **Mecanismo**: (a) el comentario `:86-87` era falso — bajo `pipefail` el status del pipeline es el
+  de `grep`, y la guarda de vacío se alcanzaba sólo porque bash suspende `-e` dentro de una función
+  invocada como condición `if`; se reemplazó `tr | grep | sort` por una única pasada de `awk` que no
+  puede fallar, así el diagnóstico deja de depender del sitio de llamada; (b) ambas extracciones
+  cierran ahora en el primer renglón no-blanco con indentación ≤ la del bloque (dedent / siguiente
+  `- name:`), no en la línea en blanco; (c) `-qv` se emite aparte y falla con el token nombrado,
+  documentado en el header y en el comentario del extractor — el silencio era la misma ceguera que
+  el archivo previene.
+  **Diferencial**: la extracción vieja y la nueva sobre el workflow real dan el mismo set
+  (`--exclude`, `--no-progress`) — sin regresión sobre el input existente.
+  **Gates**: `bash -n` OK; `shellcheck -x --exclude=<lista CI>` OK; `actionlint` (con `-ignore`
+  por cada código de la lista compartida) OK; `scripts/ci_fast_gate.sh` GREEN (lanes docs +
+  CI-ONLY, `PASS=6 FAIL=0 SKIP=9`, sin cargo).
+  **Verificación independiente** (Risk item 5, harness de CI): **PASS**, 0 blockers, 3 advisories
+  — A1 los valores adheridos (`--exit-zero=1`) no se leen como flag (ciego preexistente, ahora
+  documentado); A2 `-qv` sería un cluster clap válido y se rechaza igual (la decisión fail-closed
+  que pide el AC3); A3 la extracción del snippet devuelve una línea en blanco final de más, inerte
+  porque `$( )` descarta los newlines finales. El verificador re-derivó el RED por su cuenta,
+  grafting las extracciones base dentro del harness nuevo, y confirmó la invariante: extracción
+  vieja y nueva del workflow real dan `{--exclude, --no-progress}`. Su probe 13 se incorporó como
+  caso de regresión permanente: era el único brazo de AC1 que quedaba sin cobertura.
+  Rama `chore/external-link-harness`, PR pendiente (`Closes #2020`, `type:chore`).
+
 ## Next steps
 
 1. Advisories de la review de #2026 sobre el cableado (R3-1, R3-2, R3-3, R4-1, R4-2): sin
@@ -646,6 +688,4 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
 2. ~~T6: migrar samples de `docs/src/` a `{{#include}}`~~ — cerrado (L17,
    PR #2044).
 3. `cargo fmt --all -- --check`, clippy strict y rustdoc verdes antes de cada commit.
-4. T8 residual (issue #2020, `status:approved`): comentario del harness `:86-87`, anclaje de
-   los terminadores `awk`, clusters de flags cortos (`-qv`) y la fragilidad por dependencia del
-   `-e` contextual en los call sites.
+4. ~~T8 residual (issue #2020)~~ — cerrado (L18, rama `chore/external-link-harness`).
