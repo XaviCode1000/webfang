@@ -280,6 +280,39 @@ else
   pass "a signal mid-mutation restores the guard and terminates the run"
 fi
 
+# --- case 11: a baselined no-marker entry goes stale once the marker lands ---
+# The ratchet must work for every baselinable category. A success path that
+# records a sentinel instead of leaving the key unset makes the entry outlive
+# the defect, which is a baseline that can never shrink.
+fx="$(new_fixture stale-marker)"
+write_guard "$fx"
+write_catching_harness "$fx"
+wire_both "$fx"
+printf 'no-marker scripts/test_foo.sh marker already added\n' > "$fx/scripts/guard_coverage_baseline.txt"
+if run_guard "$fx"; then
+  fail "stale no-marker entry: expected non-zero exit, got 0"
+elif grep -qF "stale-baseline: 'no-marker scripts/test_foo.sh'" "$fx/out.log"; then
+  pass "a fixed no-marker exemption goes stale"
+else
+  fail "stale no-marker entry: wrong violation reported"
+  sed 's/^/       /' "$fx/out.log"
+fi
+
+# --- case 12: a baselined unwired-harness entry goes stale once wired -------
+fx="$(new_fixture stale-unwired)"
+write_guard "$fx"
+write_catching_harness "$fx"
+wire_both "$fx"
+printf 'unwired-harness scripts/test_foo.sh harness is wired now\n' > "$fx/scripts/guard_coverage_baseline.txt"
+if run_guard "$fx"; then
+  fail "stale unwired-harness entry: expected non-zero exit, got 0"
+elif grep -qF "stale-baseline: 'unwired-harness scripts/test_foo.sh'" "$fx/out.log"; then
+  pass "a fixed unwired-harness exemption goes stale"
+else
+  fail "stale unwired-harness entry: wrong violation reported"
+  sed 's/^/       /' "$fx/out.log"
+fi
+
 # --- summary ----------------------------------------------------------------
 
 echo ""

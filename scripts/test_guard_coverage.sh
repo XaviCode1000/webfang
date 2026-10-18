@@ -291,7 +291,10 @@ for guard in "${GUARDS[@]}"; do
     expect_baselined "unwired-harness" "$harness" \
       "unwired-harness: $harness exists but no workflow step runs it (#1707 shape)" || true
   else
-    BASELINE_HIT["unwired-harness $harness"]=0
+    # Deliberately records NOTHING. The ratchet fires on a baseline entry that
+    # was never consumed as an exemption, so a fixed condition leaves its key
+    # unset and the stale entry is reported. Writing a sentinel here would make
+    # the ratchet blind for this category — the entry would outlive the defect.
     note "$harness is wired"
   fi
 
@@ -299,7 +302,6 @@ for guard in "${GUARDS[@]}"; do
     expect_baselined "no-marker" "$harness" \
       "no-marker: $harness carries no '# NEGATION:' case marker" || true
   else
-    BASELINE_HIT["no-marker $harness"]=0
     note "$harness carries a negation marker"
   fi
 
@@ -308,7 +310,6 @@ for guard in "${GUARDS[@]}"; do
       expect_baselined "broken-harness" "$harness" \
         "broken-harness: $harness fails on an intact tree, so its red proves nothing" || true
     elif mutation_caught "scripts/$guard" "$harness"; then
-      BASELINE_HIT["no-mutation $harness"]=0
       note "$harness is green intact and red on a broken $guard"
     else
       expect_baselined "no-mutation" "$harness" \
