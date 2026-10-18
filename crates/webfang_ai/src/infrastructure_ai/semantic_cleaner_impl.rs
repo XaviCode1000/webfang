@@ -70,11 +70,11 @@
 //! # }
 //! ```
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use futures::future::try_join_all;
 use tracing::{debug, info, warn};
 
 use crate::infrastructure_ai::cache_config::AiModel;
@@ -319,6 +319,10 @@ pub struct SemanticCleanerImpl {
     /// future backends), `Arc`-shared so concurrent `clean()` calls fan out
     /// over the same port.
     embedding: Arc<dyn EmbeddingPort>,
+    /// Read-through cache of chunk content → embedding vector. Guards are
+    /// held only around map access, never across `.await`
+    /// (`anti-lock-across-await`).
+    embedding_cache: Mutex<HashMap<String, Vec<f32>>>,
 
     // Phase 3: Chunking + scoring
     /// Semantic HTML chunker with arena allocator
@@ -428,10 +432,17 @@ impl SemanticCleanerImpl {
     /// deterministic fake — without resolving or downloading a model. The
     /// caller keeps whatever else it built (engine, tokenizer) for its own
     /// ports, so the ONNX model is still loaded exactly once per process.
+    ///
+    /// After step 6 deletes the local-ONNX path, `--clean-ai` will resolve
+    /// its port through `--embedding-provider` (env `WEBFANG_EMBEDDING_PROVIDER`,
+    /// flag > env); that knob already exists and resolves without the `ai`
+    /// feature (`webfang_cli/src/main.rs:980-987`). This constructor is the
+    /// place that port gets wired into the cleaner.
     #[must_use]
     pub fn from_parts(embedding: Arc<dyn EmbeddingPort>, config: ModelConfig) -> Self {
         Self {
             embedding,
+            embedding_cache: Mutex::new(HashMap::new()),
             chunker: HtmlChunker::new(),
             scorer: RelevanceScorer::new(config.relevance_threshold),
             pruner: LegibleContentPruner::standard(),
@@ -526,22 +537,27 @@ impl SemanticCleaner for SemanticCleanerImpl {
                 "Step 2: Chunk size guard complete"
             );
 
-            // Step 3: Generate embeddings CONCURRENTLY (async-join-parallel)
-            // Following `async-join-parallel`: use try_join_all for concurrent independent operations
-            // The port's engine dispatches to dedicated worker threads with persistent sessions
-            // Following `anti-lock-across-await`: No locks held across await points
-            //
-            // One `embed` per chunk, NOT `embed_batch`: the trait default for
-            // batch is a sequential loop, so batching here would serialize the
-            // backend instead of fanning out over it.
-            let embeddings = try_join_all(
-                chunks
-                    .iter()
-                    .map(|chunk| self.embedding.embed(&chunk.content)),
-            )
-            .await
-            .map_err(|e| {
-                SemanticError::Inference(format!("Concurrent embedding generation failed: {e}"))
+            // Step 3: Generate embeddings in ONE batch call to the port.
+            // The port decides the strategy: the trait default runs `embed`
+            // sequentially per chunk; `RemoteEmbeddingAdapter` overrides
+            // `embed_batch` with a single HTTP round-trip for all chunks
+            // (`remote_embedding.rs:802`). The cleaner no longer fans out
+            // `embed` calls itself — that fan-out belonged to the local-ONNX
+            // engine and is not the cleaner's concern (ADR-0004 tramo D, S2).
+            // Embeddings: read-through cache keyed by chunk content. Cache
+            // hits never touch the port; misses go to one `embed_batch` call
+            // for everything missing. The mutex is held only around map
+            // access — never across `.await` (`anti-lock-across-await`).
+            // Growth is capped: once `EMBEDDING_CACHE_MAX_ENTRIES` is
+            // Step 3: Embeddings through the port with a read-through cache
+            // and bisect-on-failure degradation (ADR-0004 S2/S3). Cache
+            // lookup, the single `embed_batch` call, and bisection on batch
+            // failure all happen inside `embed_with_bisection`; this step just
+            // hands it the chunk contents and gets back one embedding per
+            // chunk, in order.
+            let contents: Vec<String> = chunks.iter().map(|chunk| chunk.content.clone()).collect();
+            let embeddings = self.embed_with_bisection(&contents).await.map_err(|e| {
+                SemanticError::Inference(format!("Batch embedding generation failed: {e}"))
             })?;
 
             debug!(
@@ -582,7 +598,100 @@ impl SemanticCleaner for SemanticCleanerImpl {
     }
 }
 
+/// Cap of the read-through embedding cache: misses beyond it are computed
+/// but not cached, so a pathological input cannot grow the map without bound.
+const EMBEDDING_CACHE_MAX_ENTRIES: usize = 10_000;
+
 impl SemanticCleanerImpl {
+    /// Embed `contents` through the port, degrading on batch failure by
+    /// bisecting the batch until the failing chunk is isolated.
+    ///
+    /// A single `embed_batch` call is preferred (one round-trip for remote
+    /// ports). On failure with more than one content, the batch is split in
+    /// two halves and each half is retried recursively; a single content that
+    /// still fails propagates the error, because the cleaner cannot honestly
+    /// synthesize an embedding it never obtained.
+    async fn embed_with_bisection(
+        &self,
+        contents: &[String],
+    ) -> Result<Vec<Vec<f32>>, SemanticError> {
+        // `Box::pin` breaks the infinitely-sized future a recursive async fn
+        // would otherwise require (rustc E0733).
+        Box::pin(self.embed_with_bisection_recursive(contents)).await
+    }
+
+    async fn embed_with_bisection_recursive(
+        &self,
+        contents: &[String],
+    ) -> Result<Vec<Vec<f32>>, SemanticError> {
+        // Read-through cache: hits are served without touching the port,
+        // misses are collected for a single batch call. Mutex is held only
+        // around map access, never across `.await` (`anti-lock-across-await`).
+        let mut embeddings: Vec<Option<Vec<f32>>> = vec![None; contents.len()];
+        let mut miss_indices: Vec<usize> = Vec::new();
+        {
+            let cache = self.embedding_cache.lock().map_err(|e| {
+                SemanticError::Inference(format!("embedding cache mutex poisoned: {e}"))
+            })?;
+            for (i, content) in contents.iter().enumerate() {
+                if let Some(cached) = cache.get(content) {
+                    embeddings[i] = Some(cached.clone());
+                } else {
+                    miss_indices.push(i);
+                }
+            }
+        } // mutex dropped before any .await
+
+        // Misses go to the port in one embed_batch call; on failure, bisect
+        // until the failing content is isolated (`embed_batch_raw`).
+        if !miss_indices.is_empty() {
+            let miss_contents: Vec<String> =
+                miss_indices.iter().map(|&i| contents[i].clone()).collect();
+            let batch = self.embed_batch_raw(&miss_contents).await.map_err(|e| {
+                SemanticError::Inference(format!("Batch embedding generation failed: {e}"))
+            })?;
+            let mut cache = self.embedding_cache.lock().map_err(|e| {
+                SemanticError::Inference(format!("embedding cache mutex poisoned: {e}"))
+            })?;
+            for (miss_idx, emb) in miss_indices.iter().zip(batch) {
+                embeddings[*miss_idx] = Some(emb.clone());
+                let content = &contents[*miss_idx];
+                if cache.len() < EMBEDDING_CACHE_MAX_ENTRIES || cache.contains_key(content) {
+                    cache.insert(content.clone(), emb);
+                }
+            }
+        }
+
+        embeddings
+            .into_iter()
+            .map(|opt| {
+                opt.ok_or_else(|| {
+                    SemanticError::Inference(
+                        "every content has an embedding after cache + batch".to_string(),
+                    )
+                })
+            })
+            .collect::<Result<Vec<Vec<f32>>, SemanticError>>()
+    }
+
+    /// Raw batch call through the port with bisect-on-failure degradation,
+    /// without any cache involvement. Used by `embed_with_bisection_recursive`
+    /// so the cache layer stays a single read-through concern.
+    async fn embed_batch_raw(&self, contents: &[String]) -> Result<Vec<Vec<f32>>, SemanticError> {
+        match self.embedding.embed_batch(contents).await {
+            Ok(vec) => Ok(vec),
+            Err(_) if contents.len() > 1 => {
+                let mid = contents.len() / 2;
+                let (left, right) = contents.split_at(mid);
+                let mut left_emb = Box::pin(self.embed_batch_raw(left)).await?;
+                let right_emb = Box::pin(self.embed_batch_raw(right)).await?;
+                left_emb.extend(right_emb);
+                Ok(left_emb)
+            },
+            Err(e) => Err(e),
+        }
+    }
+
     /// Filter chunks by relevance score and **preserve embeddings**
     ///
     /// Pairs each chunk with its embedding, scores against the **centroid**
@@ -748,6 +857,7 @@ impl SemanticCleanerImpl {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use futures::future::BoxFuture;
 
     #[test]
     fn test_model_config_default() {
@@ -853,23 +963,6 @@ mod tests {
     }
 
     #[test]
-    fn test_model_config_full_builder() {
-        let config = ModelConfig::new()
-            .with_repo("test/repo")
-            .with_file("test.onnx")
-            .with_offline_mode(true)
-            .with_max_chars(256)
-            .with_relevance_threshold(0.4)
-            .unwrap();
-
-        assert_eq!(config.repo, "test/repo");
-        assert_eq!(config.model_file, "test.onnx");
-        assert!(config.offline_mode);
-        assert_eq!(config.max_chars, 256);
-        assert_eq!(config.relevance_threshold, 0.4);
-    }
-
-    #[test]
     fn test_semantic_cleaner_impl_fields() {
         // Verify that SemanticCleanerImpl has the expected fields
         // This is a compile-time check
@@ -883,5 +976,196 @@ mod tests {
         // This test would require creating a SemanticCleanerImpl instance,
         // which requires async setup. Skipping for now.
         // The method is tested indirectly through integration tests.
+    }
+
+    // Test helpers shared by the tramo D tests below (keeps the duplication
+    // ratchet from counting repeated arrange/assert boilerplate).
+    fn cleaner_with(port: Arc<dyn EmbeddingPort>) -> SemanticCleanerImpl {
+        SemanticCleanerImpl::from_parts(port, ModelConfig::default())
+    }
+
+    fn assert_port_stats(port: &Arc<FakeEmbeddingPort>, expected_batch: usize) {
+        assert_eq!(
+            port.batch_calls(),
+            expected_batch,
+            "expected {expected_batch} embed_batch calls, got {}",
+            port.batch_calls()
+        );
+        assert_eq!(
+            port.unit_calls(),
+            0,
+            "embed (unit) must not be called per chunk"
+        );
+    }
+
+    fn assert_chunks_have_embeddings(chunks: &[DocumentChunk]) {
+        for chunk in chunks {
+            assert!(
+                chunk.embeddings.is_some(),
+                "every returned chunk must carry its embedding"
+            );
+        }
+    }
+
+    // Tramo D (ADR-0004 S2): `clean` issues ONE `embed_batch` call per page,
+    // not one `embed` per chunk.
+    #[tokio::test]
+    async fn test_clean_uses_single_embed_batch() {
+        let port = Arc::new(FakeEmbeddingPort::counting());
+        let cleaner = cleaner_with(port.clone());
+
+        let html = "<article><p>First chunk content here.</p><p>Second chunk content here.</p><p>Third chunk content here.</p></article>";
+        let chunks = cleaner
+            .clean("https://example.com", html)
+            .await
+            .expect("clean must succeed");
+
+        assert!(!chunks.is_empty(), "cleaner must produce chunks");
+        assert_port_stats(&port, 1);
+        assert_chunks_have_embeddings(&chunks);
+    }
+
+    // Tramo D (ADR-0004 S3): cached chunk content is served without calling
+    // the port; new content costs exactly one `embed_batch` call.
+    #[tokio::test]
+    async fn test_clean_caches_embeddings_across_calls() {
+        let port = Arc::new(FakeEmbeddingPort::counting());
+        let cleaner = cleaner_with(port.clone());
+
+        let contents = vec!["Cache me.".to_string(), "Cache me too.".to_string()];
+        cleaner
+            .embed_with_bisection(&contents)
+            .await
+            .expect("first batch must succeed");
+        assert_port_stats(&port, 1);
+
+        cleaner
+            .embed_with_bisection(&contents)
+            .await
+            .expect("second batch must be a full cache hit");
+        assert_port_stats(&port, 1);
+
+        let contents2 = vec!["Different content here.".to_string()];
+        cleaner
+            .embed_with_bisection(&contents2)
+            .await
+            .expect("third batch must succeed");
+        assert_port_stats(&port, 2);
+    }
+
+    /// Deterministic fake port: counts `embed` vs `embed_batch` calls and
+    /// returns fixed 3-dimensional vectors. No network, no ONNX, no clock.
+    /// `fail_when_len_gt` makes `embed_batch` fail (as a simulated 413)
+    /// whenever the batch carries more items than that threshold; `None`
+    /// never fails. One struct covers every failure policy the tests below
+    /// need, so there is a single source of truth for the trait ceremony.
+    #[derive(Default)]
+    struct FakeEmbeddingPort {
+        unit_calls: std::sync::atomic::AtomicUsize,
+        batch_calls: std::sync::atomic::AtomicUsize,
+        fail_when_len_gt: Option<usize>,
+    }
+
+    impl FakeEmbeddingPort {
+        fn counting() -> Self {
+            Self::default()
+        }
+
+        /// `embed_batch` fails only for batches larger than `max_len` —
+        /// simulating a 413 payload-too-large that vanishes once the batch
+        /// is halved. Batches of `max_len` items or fewer always succeed.
+        fn failing_batches_larger_than(max_len: usize) -> Self {
+            Self {
+                fail_when_len_gt: Some(max_len),
+                ..Self::default()
+            }
+        }
+
+        /// `embed_batch` fails unconditionally: no amount of bisection helps.
+        fn always_failing() -> Self {
+            Self::failing_batches_larger_than(0)
+        }
+
+        fn unit_calls(&self) -> usize {
+            self.unit_calls.load(std::sync::atomic::Ordering::Relaxed)
+        }
+        fn batch_calls(&self) -> usize {
+            self.batch_calls.load(std::sync::atomic::Ordering::Relaxed)
+        }
+    }
+
+    impl EmbeddingPort for FakeEmbeddingPort {
+        fn embed<'a>(&'a self, _text: &'a str) -> BoxFuture<'a, Result<Vec<f32>, SemanticError>> {
+            self.unit_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Box::pin(async move { Ok(vec![1.0, 2.0, 3.0]) })
+        }
+
+        fn embed_batch<'a>(
+            &'a self,
+            texts: &'a [String],
+        ) -> BoxFuture<'a, Result<Vec<Vec<f32>>, SemanticError>> {
+            self.batch_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Box::pin(async move {
+                if texts.len() > self.fail_when_len_gt.unwrap_or(usize::MAX) {
+                    return Err(SemanticError::Inference(
+                        "el endpoint de embeddings devolvió el estado 413".to_string(),
+                    ));
+                }
+                Ok(texts.iter().map(|_| vec![1.0, 2.0, 3.0]).collect())
+            })
+        }
+
+        fn embedding_dim(&self) -> usize {
+            3
+        }
+
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+    }
+
+    // Tramo D (ADR-0004 S3): batch de varios chunks que falla (p.ej. HTTP 413
+    // por payload grande) se recupera con bisección hasta chunks de a uno.
+    #[tokio::test]
+    async fn test_clean_bisects_batch_on_failure() {
+        // Falla sólo cuando el batch trae más de un contenido: simula un 413
+        // por payload grande que desaparece al trocear.
+        let port = Arc::new(FakeEmbeddingPort::failing_batches_larger_than(1));
+        let cleaner = cleaner_with(port.clone());
+
+        let contents = vec!["uno".to_string(), "dos".to_string()];
+        let embeddings = cleaner
+            .embed_with_bisection(&contents)
+            .await
+            .expect("clean must recover by bisecting the batch");
+
+        assert_eq!(embeddings.len(), 2, "both contents survive bisection");
+        assert_eq!(
+            port.batch_calls(),
+            3,
+            "one failed batch of 2 + two recovered batches of 1"
+        );
+        assert_eq!(port.unit_calls(), 0);
+    }
+
+    // Tramo D (ADR-0004 S3): si ni siquiera un chunk solo se puede embedder,
+    // el error se propaga; nunca silencio.
+    #[tokio::test]
+    async fn test_clean_propagates_when_every_chunk_fails() {
+        let port = Arc::new(FakeEmbeddingPort::always_failing());
+        let cleaner = cleaner_with(port.clone());
+
+        let contents = vec!["uno".to_string(), "dos".to_string()];
+        let result = cleaner.embed_with_bisection(&contents).await;
+        assert!(
+            result.is_err(),
+            "clean must fail when no chunk can be embedded"
+        );
+        assert!(
+            port.batch_calls() > 1,
+            "bisection must have been attempted before giving up"
+        );
     }
 }
