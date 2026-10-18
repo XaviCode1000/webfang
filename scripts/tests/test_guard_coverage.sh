@@ -221,6 +221,58 @@ else
   fail "guard bytes changed after the mutation run"
 fi
 
+# --- case 9: a forbidden baseline category is rejected ----------------------
+# The baseline is an escape hatch for missing work, never for the mutation
+# check: a PR that adds `no-mutation` here would buy permanent immunity.
+fx="$(new_fixture forbidden-baseline)"
+write_guard "$fx"
+write_catching_harness "$fx"
+wire_both "$fx"
+printf 'no-mutation scripts/test_foo.sh bought immunity\n' > "$fx/scripts/guard_coverage_baseline.txt"
+if run_guard "$fx"; then
+  fail "forbidden baseline category: expected non-zero exit, got 0"
+elif grep -qF "forbidden-baseline: 'no-mutation scripts/test_foo.sh'" "$fx/out.log"; then
+  pass "forbidden baseline category fails"
+else
+  fail "forbidden baseline category: wrong violation reported"
+  sed 's/^/       /' "$fx/out.log"
+fi
+
+# --- case 10: a signal mid-mutation restores the guard ----------------------
+# The mutation is applied in place, so an interrupted run must not leave the
+# guard as an `exit 0` stub. The harness sleeps so the signal lands while the
+# guard is stubbed.
+fx="$(new_fixture restore-on-signal)"
+write_guard "$fx"
+cat > "$fx/scripts/test_foo.sh" <<'HARNESS'
+#!/usr/bin/env bash
+set -uo pipefail
+G="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/check_foo.sh"
+d="$(mktemp -d)"
+trap 'rm -rf "$d"' EXIT
+sleep 3
+touch "$d/forbidden"
+# NEGATION: a forbidden file must make the guard fail
+if ( cd "$d" && bash "$G" ) >/dev/null 2>&1; then
+  echo "guard must fail when forbidden is present" >&2
+  exit 1
+fi
+exit 0
+HARNESS
+wire_both "$fx"
+before="$(sha256sum "$fx/scripts/check_foo.sh" | cut -d' ' -f1)"
+( cd "$fx" && bash scripts/test_guard_coverage.sh ) >/dev/null 2>&1 &
+mpid=$!
+sleep 4
+kill -TERM "$mpid" 2>/dev/null
+wait "$mpid" 2>/dev/null
+after="$(sha256sum "$fx/scripts/check_foo.sh" | cut -d' ' -f1)"
+if [ "$before" = "$after" ]; then
+  pass "guard bytes are restored when the run is signalled mid-mutation"
+else
+  fail "guard bytes were left mutated after a signal"
+fi
+
 # --- summary ----------------------------------------------------------------
 
 echo ""

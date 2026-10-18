@@ -100,6 +100,14 @@ wired_guards() {
 }
 
 # --- baseline ----------------------------------------------------------------
+#
+# Only the categories below may be baselined. `no-mutation` and
+# `broken-harness` are deliberately absent: those are the checks that make this
+# guard worth running, and an escape hatch on them turns the whole file into
+# decoration. A baseline line naming a forbidden category is a violation, not a
+# silent exemption — otherwise a PR could add `no-mutation scripts/test_x.sh`
+# and buy permanent immunity from the only check that matters.
+BASELINABLE_CATEGORIES=" no-harness unwired-guard unwired-harness no-marker "
 
 baselined() { # category subject
   [ -f "$BASELINE" ] || return 1
@@ -111,8 +119,16 @@ baselined() { # category subject
   ' "$BASELINE"
 }
 
-# Records a baseline hit, or fails when the entry is absent.
+# Records a baseline hit, or fails when the entry is absent or its category is
+# not baselinable at all.
 expect_baselined() { # category subject message
+  case "$BASELINABLE_CATEGORIES" in
+    *" $1 "*) ;;
+    *)
+      violation "$3"
+      return 1
+      ;;
+  esac
   if baselined "$1" "$2"; then
     BASELINE_HIT["$1 $2"]=1
     note "$2 — baselined ($1)"
@@ -164,25 +180,58 @@ harness_passes_intact() { # harness-rel
 # Replace the guard with an always-green stub, run its harness, restore. A
 # harness that still exits 0 never proved the guard can fail.
 
+# Restore state shared with the signal trap. A cancelled CI job or a Ctrl-C
+# must not leave a guard replaced by `exit 0`, and it must not delete the only
+# copy of the original bytes before the restore has been verified — so the
+# backup is removed only after the checksum matches.
+MUTATION_GUARD=""
+MUTATION_BACKUP=""
+MUTATION_SUM=""
+
+restore_mutation() {
+  [ -n "$MUTATION_GUARD" ] || return 0
+  local ok=0
+
+  cp "$MUTATION_BACKUP" "$MUTATION_GUARD" || ok=1
+  if [ "$ok" -eq 0 ]; then
+    [ "$(sha256sum "$MUTATION_GUARD" | cut -d' ' -f1)" = "$MUTATION_SUM" ] || ok=1
+  fi
+
+  if [ "$ok" -ne 0 ]; then
+    # Keep the backup: a human can still recover the file by hand.
+    echo "FATAL: could not restore $MUTATION_GUARD; original bytes kept at $MUTATION_BACKUP" >&2
+    MUTATION_GUARD=""
+    exit 3
+  fi
+
+  rm -f "$MUTATION_BACKUP"
+  MUTATION_GUARD=""
+  MUTATION_BACKUP=""
+  MUTATION_SUM=""
+}
+
 mutation_caught() { # guard-rel harness-rel
   local guard="$ROOT/$1" harness="$2"
-  local backup sum_before sum_after rc=0
+  local backup sum_before rc=0
 
-  backup="$(mktemp)"
-  cp "$guard" "$backup" || { violation "mutation: cannot back up $1"; return 1; }
+  backup="$(mktemp)" || { violation "mutation: cannot create a backup file for $1"; return 1; }
+  cp "$guard" "$backup" || {
+    rm -f "$backup"
+    violation "mutation: cannot back up $1"
+    return 1
+  }
   sum_before="$(sha256sum "$guard" | cut -d' ' -f1)"
+
+  MUTATION_GUARD="$guard"
+  MUTATION_BACKUP="$backup"
+  MUTATION_SUM="$sum_before"
+  trap 'restore_mutation' EXIT INT TERM
 
   printf '#!/usr/bin/env bash\nexit 0\n' > "$guard"
 
   ( cd "$ROOT" && timeout "$MUTATION_TIMEOUT" bash "$harness" ) >/dev/null 2>&1 || rc=$?
 
-  cp "$backup" "$guard"
-  rm -f "$backup"
-  sum_after="$(sha256sum "$guard" | cut -d' ' -f1)"
-  if [ "$sum_before" != "$sum_after" ]; then
-    echo "FATAL: $1 was not restored to its original bytes" >&2
-    exit 3
-  fi
+  restore_mutation
 
   case "$rc" in
     0) return 1 ;;   # harness passed against a broken guard: no coverage
@@ -269,6 +318,15 @@ if [ -f "$BASELINE" ]; then
   while read -r cat subject _reason; do
     case "$cat" in ''|'#'*) continue ;; esac
     [ -n "${subject:-}" ] || continue
+    # A forbidden category is rejected even when the entry is otherwise
+    # well-formed: this is the line a PR would add to buy immunity.
+    case "$BASELINABLE_CATEGORIES" in
+      *" $cat "*) ;;
+      *)
+        violation "forbidden-baseline: '$cat $subject' — that category can never be baselined"
+        continue
+        ;;
+    esac
     key="$cat $subject"
     if [ "${BASELINE_HIT[$key]:-unset}" = "unset" ]; then
       violation "stale-baseline: '$cat $subject' no longer reproduces — remove it from scripts/guard_coverage_baseline.txt"
