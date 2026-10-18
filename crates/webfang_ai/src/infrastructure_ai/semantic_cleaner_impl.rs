@@ -995,12 +995,41 @@ mod tests {
         // The method is tested indirectly through integration tests.
     }
 
+    // Test helpers shared by the tramo D tests below (keeps the duplication
+    // ratchet from counting repeated arrange/assert boilerplate).
+    fn cleaner_with(port: Arc<dyn EmbeddingPort>) -> SemanticCleanerImpl {
+        SemanticCleanerImpl::from_parts(port, ModelConfig::default())
+    }
+
+    fn assert_port_stats(port: &Arc<CountingEmbeddingPort>, expected_batch: usize) {
+        assert_eq!(
+            port.batch_calls(),
+            expected_batch,
+            "expected {expected_batch} embed_batch calls, got {}",
+            port.batch_calls()
+        );
+        assert_eq!(
+            port.unit_calls(),
+            0,
+            "embed (unit) must not be called per chunk"
+        );
+    }
+
+    fn assert_chunks_have_embeddings(chunks: &[DocumentChunk]) {
+        for chunk in chunks {
+            assert!(
+                chunk.embeddings.is_some(),
+                "every returned chunk must carry its embedding"
+            );
+        }
+    }
+
     // Tramo D (ADR-0004 S2): `clean` issues ONE `embed_batch` call per page,
     // not one `embed` per chunk.
     #[tokio::test]
     async fn test_clean_uses_single_embed_batch() {
         let port = Arc::new(CountingEmbeddingPort::default());
-        let cleaner = SemanticCleanerImpl::from_parts(port.clone(), ModelConfig::default());
+        let cleaner = cleaner_with(port.clone());
 
         let html = "<article><p>First chunk content here.</p><p>Second chunk content here.</p><p>Third chunk content here.</p></article>";
         let chunks = cleaner
@@ -1009,23 +1038,8 @@ mod tests {
             .expect("clean must succeed");
 
         assert!(!chunks.is_empty(), "cleaner must produce chunks");
-        assert_eq!(
-            port.batch_calls(),
-            1,
-            "expected exactly one embed_batch call, got {}",
-            port.batch_calls()
-        );
-        assert_eq!(
-            port.unit_calls(),
-            0,
-            "embed (unit) must not be called per chunk"
-        );
-        for chunk in &chunks {
-            assert!(
-                chunk.embeddings.is_some(),
-                "every returned chunk must carry its embedding"
-            );
-        }
+        assert_port_stats(&port, 1);
+        assert_chunks_have_embeddings(&chunks);
     }
 
     // Tramo D (ADR-0004 S3): cached chunk content is served without calling
@@ -1033,37 +1047,27 @@ mod tests {
     #[tokio::test]
     async fn test_clean_caches_embeddings_across_calls() {
         let port = Arc::new(CountingEmbeddingPort::default());
-        let cleaner = SemanticCleanerImpl::from_parts(port.clone(), ModelConfig::default());
+        let cleaner = cleaner_with(port.clone());
 
         let contents = vec!["Cache me.".to_string(), "Cache me too.".to_string()];
         cleaner
             .embed_with_bisection(&contents)
             .await
             .expect("first batch must succeed");
-        assert_eq!(port.batch_calls(), 1, "first batch calls the port once");
+        assert_port_stats(&port, 1);
 
         cleaner
             .embed_with_bisection(&contents)
             .await
             .expect("second batch must be a full cache hit");
-        assert_eq!(
-            port.batch_calls(),
-            1,
-            "second batch must be a full cache hit"
-        );
-        assert_eq!(port.unit_calls(), 0, "unit embed never used");
+        assert_port_stats(&port, 1);
 
         let contents2 = vec!["Different content here.".to_string()];
         cleaner
             .embed_with_bisection(&contents2)
             .await
             .expect("third batch must succeed");
-        assert_eq!(
-            port.batch_calls(),
-            2,
-            "new content calls the port once more"
-        );
-        assert_eq!(port.unit_calls(), 0);
+        assert_port_stats(&port, 2);
     }
 
     /// Deterministic fake port: counts `embed` vs `embed_batch` calls and
@@ -1118,7 +1122,7 @@ mod tests {
             fail_when_len_gt: 1,
             ..Default::default()
         });
-        let cleaner = SemanticCleanerImpl::from_parts(port.clone(), ModelConfig::default());
+        let cleaner = cleaner_with(port.clone());
 
         let contents = vec!["uno".to_string(), "dos".to_string()];
         let embeddings = cleaner
@@ -1142,7 +1146,7 @@ mod tests {
         let port = Arc::new(AlwaysFailingBatchPort {
             ..Default::default()
         });
-        let cleaner = SemanticCleanerImpl::from_parts(port.clone(), ModelConfig::default());
+        let cleaner = cleaner_with(port.clone());
 
         let contents = vec!["uno".to_string(), "dos".to_string()];
         let result = cleaner.embed_with_bisection(&contents).await;
