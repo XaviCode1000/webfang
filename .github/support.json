@@ -2,25 +2,34 @@
   "schema_version": 1,
   "lines": [
     {
-      "minor": "2.11",
+      "minor": "2.12",
       "state": "STABLE",
       "branch": null,
-      "latest": "2.11.0",
-      "released_at": "2026-10-15T23:40:36+01:00",
+      "latest": "2.12.0",
+      "released_at": "2026-10-17T23:52:18+01:00",
       "accepts": [
         "bugfix",
         "security"
       ]
     },
     {
-      "minor": "2.10",
+      "minor": "2.11",
       "state": "MAINTENANCE",
       "branch": null,
-      "latest": "2.10.1",
-      "released_at": "2026-10-11T19:40:15+01:00",
+      "latest": "2.11.0",
+      "released_at": "2026-10-15T23:40:36+01:00",
       "accepts": [
         "security"
       ]
+    },
+    {
+      "minor": "2.10",
+      "state": "EOL",
+      "branch": null,
+      "latest": "2.10.1",
+      "released_at": "2026-10-11T19:40:15+01:00",
+      "eol_at": "2026-10-18T07:18:33+01:00",
+      "eol_reason": "ventana de soporte rotada a 2.12; 2.10 queda fuera de las dos líneas vivas (2026-10-18)"
     },
     {
       "minor": "2.9",
