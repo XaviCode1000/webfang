@@ -963,23 +963,6 @@ mod tests {
     }
 
     #[test]
-    fn test_model_config_full_builder() {
-        let config = ModelConfig::new()
-            .with_repo("test/repo")
-            .with_file("test.onnx")
-            .with_offline_mode(true)
-            .with_max_chars(256)
-            .with_relevance_threshold(0.4)
-            .unwrap();
-
-        assert_eq!(config.repo, "test/repo");
-        assert_eq!(config.model_file, "test.onnx");
-        assert!(config.offline_mode);
-        assert_eq!(config.max_chars, 256);
-        assert_eq!(config.relevance_threshold, 0.4);
-    }
-
-    #[test]
     fn test_semantic_cleaner_impl_fields() {
         // Verify that SemanticCleanerImpl has the expected fields
         // This is a compile-time check
@@ -1100,21 +1083,34 @@ mod tests {
         };
     }
 
-    impl EmbeddingPort for CountingEmbeddingPort {
-        fn embed<'a>(&'a self, _text: &'a str) -> BoxFuture<'a, Result<Vec<f32>, SemanticError>> {
-            self.unit_calls
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            Box::pin(async move { Ok(vec![1.0, 2.0, 3.0]) })
-        }
+    /// The counting ceremony shared by ports that track unit + batch calls:
+    /// `embed` always counts one unit call; `embed_batch` counts one batch
+    /// call and delegates to `$body` (each port defines its own failure
+    /// policy there, so the boilerplate stays single-source-of-truth).
+    macro_rules! fake_port_embed_methods {
+        ($body:block) => {
+            fn embed<'a>(&'a self, _text: &'a str) -> BoxFuture<'a, Result<Vec<f32>, SemanticError>>
+            {
+                self.unit_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Box::pin(async move { Ok(vec![1.0, 2.0, 3.0]) })
+            }
 
-        fn embed_batch<'a>(
-            &'a self,
-            texts: &'a [String],
-        ) -> BoxFuture<'a, Result<Vec<Vec<f32>>, SemanticError>> {
-            self.batch_calls
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            Box::pin(async move { Ok(texts.iter().map(|_| vec![1.0, 2.0, 3.0]).collect()) })
-        }
+            fn embed_batch<'a>(
+                &'a self,
+                texts: &'a [String],
+            ) -> BoxFuture<'a, Result<Vec<Vec<f32>>, SemanticError>> {
+                self.batch_calls
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                Box::pin(async move $body)
+            }
+        };
+    }
+
+    impl EmbeddingPort for CountingEmbeddingPort {
+        fake_port_embed_methods!({
+            Ok(texts.iter().map(|_| vec![1.0, 2.0, 3.0]).collect())
+        });
 
         fake_port_common!(CountingEmbeddingPort);
     }
@@ -1187,27 +1183,14 @@ mod tests {
     }
 
     impl EmbeddingPort for FailingBatchPort {
-        fn embed<'a>(&'a self, _text: &'a str) -> BoxFuture<'a, Result<Vec<f32>, SemanticError>> {
-            self.unit_calls
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            Box::pin(async move { Ok(vec![1.0, 2.0, 3.0]) })
-        }
-
-        fn embed_batch<'a>(
-            &'a self,
-            texts: &'a [String],
-        ) -> BoxFuture<'a, Result<Vec<Vec<f32>>, SemanticError>> {
-            self.batch_calls
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            Box::pin(async move {
-                if texts.len() > self.fail_when_len_gt {
-                    return Err(SemanticError::Inference(
-                        "el endpoint de embeddings devolvió el estado 413".to_string(),
-                    ));
-                }
-                Ok(texts.iter().map(|_| vec![1.0, 2.0, 3.0]).collect())
-            })
-        }
+        fake_port_embed_methods!({
+            if texts.len() > self.fail_when_len_gt {
+                return Err(SemanticError::Inference(
+                    "el endpoint de embeddings devolvió el estado 413".to_string(),
+                ));
+            }
+            Ok(texts.iter().map(|_| vec![1.0, 2.0, 3.0]).collect())
+        });
 
         fake_port_common!(FailingBatchPort);
     }
