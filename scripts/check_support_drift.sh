@@ -23,8 +23,20 @@
 #   --scope=published   support.json vs `git tag --list 'v*'`. Needs a clone
 #                       WITH tags (`fetch-depth: 0`).
 #
-# The script never writes anything: the SUPPORT.md half delegates to
+# The script never writes to the repository: the SUPPORT.md half delegates to
 # `render-support-md.sh --check`, so the renderer stays the single writer.
+#
+# IN CI, NAME THE SURFACE (#2042 follow-up)
+# This gate runs inside the required job `Validate PR metadata`, and a required
+# check is identified by its JOB name. That name is static YAML and the published
+# tag is not known until the job runs, so "name the file and the tag in the check
+# title" is not expressible in `name:` — renaming the job is worse still, because
+# branch protection matches the context by name and a rename leaves every PR
+# waiting on a check that never reports. The diagnosis therefore travels in the
+# two places that CAN carry it: the annotation title (rendered with the error in
+# the check's summary box) and the step summary (rendered at the top of the
+# failing run, before any log is opened). Both are emitted only when the CI
+# variables exist, so local output is byte-identical to before.
 #
 # Usage:
 #   scripts/check_support_drift.sh [--scope=declared|published|both]
@@ -43,8 +55,18 @@ SUPPORT_JSON=".github/support.json"
 RENDERER="scripts/render-support-md.sh"
 
 ERRORS=0
+
+# Captured for the CI summary, and empty until the published scope runs.
+DECLARED_STABLE=""
+NEWEST_TAG=""
+UNREGISTERED=""
+
+# The title is what the check summary shows above the message, so it names the
+# file and the source of truth instead of repeating "support drift".
+ANNOTATION_TITLE="Support drift: $SUPPORT_JSON vs tags v*"
+
 err() {
-  echo "::error::$*"
+  echo "::error title=$ANNOTATION_TITLE::$*"
   ERRORS=$((ERRORS + 1))
 }
 
@@ -136,6 +158,13 @@ check_published() {
   declared="$(jq -r '.lines[].minor' "$SUPPORT_JSON" 2>/dev/null || sort -V || true)"
   newest="$(echo "$minors" | tail -n 1)"
   stable="$(jq -r '.lines[] | select(.state == "STABLE") | .minor // empty' "$SUPPORT_JSON" 2>/dev/null || true)"
+  DECLARED_STABLE="$stable"
+  # The newest tag, not the newest minor: "2.12 is not declared" reads better
+  # next to the release that caused it. Same filter as published_minors, so a
+  # prerelease or an unparseable tag cannot become the headline number.
+  NEWEST_TAG="$(git tag --list 'v*' | sed 's/^v//' | grep -v -- '-' \
+    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
+  NEWEST_TAG="${NEWEST_TAG:+v$NEWEST_TAG}"
 
   # Support tracking has a floor: the OLDEST declared line. Everything published
   # before it predates tracking — 1.0/1.1 are exactly the case 2.0 records with
@@ -162,6 +191,7 @@ check_published() {
   # stated — the hole this whole check exists to close.
   local unregistered
   unregistered="$(comm -23 <(echo "$tracked") <(echo "$declared" | sort -V))"
+  UNREGISTERED="$unregistered"
   [[ -z "$unregistered" ]] || err "minors publicadas sin declarar en support.json: $(echo "$unregistered" | tr '\n' ' ') (registralas o marcalas EOL; crearlas es decisión del mantenedor con issue aprobada)."
 
   # A declared `latest` must exist as a tag: it is a factual claim about what
@@ -188,6 +218,37 @@ check_published() {
   fi
 }
 
+# ─── CI summary: the numbers that explain the failure, above the fold ───────
+# Only on failure, and only when GitHub provides the file: a passing check has
+# nothing to diagnose, and the harness (which runs in CI too) must not append
+# its fixtures to the caller's summary.
+write_summary() {
+  [[ -n "${GITHUB_STEP_SUMMARY:-}" ]] || return 0
+  local unregistered="${UNREGISTERED//$'\n'/, }"
+  # SC2016 is the point, not a mistake: single quotes keep the markdown code
+  # spans literal. Inside double quotes a backtick is a command substitution, so
+  # ``echo "| STABLE | `$x` |"`` runs `$x` as a command and prints nothing —
+  # which is exactly how the first draft of this summary came out empty.
+  # shellcheck disable=SC2016
+  {
+    printf '### Support drift: `%s` vs published `v*` tags\n\n' "$SUPPORT_JSON"
+    echo "| | |"
+    echo "| --- | --- |"
+    printf '| Scope | `%s` |\n' "$SCOPE"
+    if [[ "$SCOPE" != "declared" ]]; then
+      printf '| Declared STABLE | `%s` |\n' "${DECLARED_STABLE:-none}"
+      printf '| Newest published tag | `%s` |\n' "${NEWEST_TAG:-none}"
+      printf '| Published but not declared | `%s` |\n' "${unregistered:-none}"
+    fi
+    echo "| Problems | $ERRORS |"
+    echo
+    echo "The declaration is derived from the published tags, so a release that"
+    echo "is not registered here fails this required check for **every** open PR."
+    echo "Rotating the window is a maintainer decision with an approved issue:"
+    printf '`scripts/rotate-stable.sh <minor>`, then `scripts/render-support-md.sh`.\n'
+  } >> "$GITHUB_STEP_SUMMARY"
+}
+
 case "$SCOPE" in
   declared) check_declared ;;
   published) check_published ;;
@@ -195,7 +256,8 @@ case "$SCOPE" in
 esac
 
 if [[ "$ERRORS" -gt 0 ]]; then
-  echo "::error::support.json está en desuso o no verifiable ($ERRORS problema(s)). La declaración de líneas soportadas deriva de los tags publicados y debe coincidir con ellos." >&2
+  write_summary
+  echo "::error title=$ANNOTATION_TITLE::support.json está en desuso o no verifiable ($ERRORS problema(s)). La declaración de líneas soportadas deriva de los tags publicados y debe coincidir con ellos." >&2
   exit 1
 fi
 echo "OK: soporte declarado coherente (scope=$SCOPE)."

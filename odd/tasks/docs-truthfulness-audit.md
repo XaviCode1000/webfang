@@ -191,7 +191,9 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
       principal de esta opción sobre un contexto nuevo (`docs/ci-slo.md:60`).
 
       **Implementado.** `pr-validation.yml`: `fetch-depth: 0` + step
-      `Support drift vs published tags (enforcing)`. `support-drift.yml`: fuera
+      `Support drift vs published tags (enforcing)` (renombrado después a
+      `Support drift: .github/support.json vs published v* tags (enforcing)` para que
+      el nombre diga qué superficie falló). `support-drift.yml`: fuera
       `continue-on-error`, job renombrado, header reescrito (la sección "WHY ADVISORY"
       contradecía el estado real y se reemplazó por "WHY THE MERGE GATE IS NOT THIS
       JOB"). Verificado en worktree aislado: caso verde → exit 0; `latest` cambiado a
