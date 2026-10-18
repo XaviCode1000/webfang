@@ -984,7 +984,7 @@ mod tests {
         SemanticCleanerImpl::from_parts(port, ModelConfig::default())
     }
 
-    fn assert_port_stats(port: &Arc<CountingEmbeddingPort>, expected_batch: usize) {
+    fn assert_port_stats(port: &Arc<FakeEmbeddingPort>, expected_batch: usize) {
         assert_eq!(
             port.batch_calls(),
             expected_batch,
@@ -1011,7 +1011,7 @@ mod tests {
     // not one `embed` per chunk.
     #[tokio::test]
     async fn test_clean_uses_single_embed_batch() {
-        let port = Arc::new(CountingEmbeddingPort::default());
+        let port = Arc::new(FakeEmbeddingPort::counting());
         let cleaner = cleaner_with(port.clone());
 
         let html = "<article><p>First chunk content here.</p><p>Second chunk content here.</p><p>Third chunk content here.</p></article>";
@@ -1029,7 +1029,7 @@ mod tests {
     // the port; new content costs exactly one `embed_batch` call.
     #[tokio::test]
     async fn test_clean_caches_embeddings_across_calls() {
-        let port = Arc::new(CountingEmbeddingPort::default());
+        let port = Arc::new(FakeEmbeddingPort::counting());
         let cleaner = cleaner_with(port.clone());
 
         let contents = vec!["Cache me.".to_string(), "Cache me too.".to_string()];
@@ -1055,13 +1055,37 @@ mod tests {
 
     /// Deterministic fake port: counts `embed` vs `embed_batch` calls and
     /// returns fixed 3-dimensional vectors. No network, no ONNX, no clock.
+    /// `fail_when_len_gt` makes `embed_batch` fail (as a simulated 413)
+    /// whenever the batch carries more items than that threshold; `None`
+    /// never fails. One struct covers every failure policy the tests below
+    /// need, so there is a single source of truth for the trait ceremony.
     #[derive(Default)]
-    struct CountingEmbeddingPort {
+    struct FakeEmbeddingPort {
         unit_calls: std::sync::atomic::AtomicUsize,
         batch_calls: std::sync::atomic::AtomicUsize,
+        fail_when_len_gt: Option<usize>,
     }
 
-    impl CountingEmbeddingPort {
+    impl FakeEmbeddingPort {
+        fn counting() -> Self {
+            Self::default()
+        }
+
+        /// `embed_batch` fails only for batches larger than `max_len` —
+        /// simulating a 413 payload-too-large that vanishes once the batch
+        /// is halved. Batches of `max_len` items or fewer always succeed.
+        fn failing_batches_larger_than(max_len: usize) -> Self {
+            Self {
+                fail_when_len_gt: Some(max_len),
+                ..Self::default()
+            }
+        }
+
+        /// `embed_batch` fails unconditionally: no amount of bisection helps.
+        fn always_failing() -> Self {
+            Self::failing_batches_larger_than(0)
+        }
+
         fn unit_calls(&self) -> usize {
             self.unit_calls.load(std::sync::atomic::Ordering::Relaxed)
         }
@@ -1070,49 +1094,36 @@ mod tests {
         }
     }
 
-    /// Common trait methods shared by every fake port in the tests below.
-    macro_rules! fake_port_common {
-        ($port:ident) => {
-            fn embedding_dim(&self) -> usize {
-                3
-            }
+    impl EmbeddingPort for FakeEmbeddingPort {
+        fn embed<'a>(&'a self, _text: &'a str) -> BoxFuture<'a, Result<Vec<f32>, SemanticError>> {
+            self.unit_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Box::pin(async move { Ok(vec![1.0, 2.0, 3.0]) })
+        }
 
-            fn as_any(&self) -> &dyn std::any::Any {
-                self
-            }
-        };
-    }
+        fn embed_batch<'a>(
+            &'a self,
+            texts: &'a [String],
+        ) -> BoxFuture<'a, Result<Vec<Vec<f32>>, SemanticError>> {
+            self.batch_calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Box::pin(async move {
+                if texts.len() > self.fail_when_len_gt.unwrap_or(usize::MAX) {
+                    return Err(SemanticError::Inference(
+                        "el endpoint de embeddings devolvió el estado 413".to_string(),
+                    ));
+                }
+                Ok(texts.iter().map(|_| vec![1.0, 2.0, 3.0]).collect())
+            })
+        }
 
-    /// The counting ceremony shared by ports that track unit + batch calls:
-    /// `embed` always counts one unit call; `embed_batch` counts one batch
-    /// call and delegates to `$body` (each port defines its own failure
-    /// policy there, so the boilerplate stays single-source-of-truth).
-    macro_rules! fake_port_embed_methods {
-        ($body:block) => {
-            fn embed<'a>(&'a self, _text: &'a str) -> BoxFuture<'a, Result<Vec<f32>, SemanticError>>
-            {
-                self.unit_calls
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                Box::pin(async move { Ok(vec![1.0, 2.0, 3.0]) })
-            }
+        fn embedding_dim(&self) -> usize {
+            3
+        }
 
-            fn embed_batch<'a>(
-                &'a self,
-                texts: &'a [String],
-            ) -> BoxFuture<'a, Result<Vec<Vec<f32>>, SemanticError>> {
-                self.batch_calls
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                Box::pin(async move $body)
-            }
-        };
-    }
-
-    impl EmbeddingPort for CountingEmbeddingPort {
-        fake_port_embed_methods!({
-            Ok(texts.iter().map(|_| vec![1.0, 2.0, 3.0]).collect())
-        });
-
-        fake_port_common!(CountingEmbeddingPort);
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
     }
 
     // Tramo D (ADR-0004 S3): batch de varios chunks que falla (p.ej. HTTP 413
@@ -1121,10 +1132,7 @@ mod tests {
     async fn test_clean_bisects_batch_on_failure() {
         // Falla sólo cuando el batch trae más de un contenido: simula un 413
         // por payload grande que desaparece al trocear.
-        let port = Arc::new(FailingBatchPort {
-            fail_when_len_gt: 1,
-            ..Default::default()
-        });
+        let port = Arc::new(FakeEmbeddingPort::failing_batches_larger_than(1));
         let cleaner = cleaner_with(port.clone());
 
         let contents = vec!["uno".to_string(), "dos".to_string()];
@@ -1146,9 +1154,7 @@ mod tests {
     // el error se propaga; nunca silencio.
     #[tokio::test]
     async fn test_clean_propagates_when_every_chunk_fails() {
-        let port = Arc::new(AlwaysFailingBatchPort {
-            ..Default::default()
-        });
+        let port = Arc::new(FakeEmbeddingPort::always_failing());
         let cleaner = cleaner_with(port.clone());
 
         let contents = vec!["uno".to_string(), "dos".to_string()];
@@ -1161,70 +1167,5 @@ mod tests {
             port.batch_calls() > 1,
             "bisection must have been attempted before giving up"
         );
-    }
-
-    /// `embed_batch` fails only when the batch carries more than `N`
-    /// contents — simulating a 413 payload-too-large that vanishes once the
-    /// batch is halved. Batches of one always succeed.
-    #[derive(Default)]
-    struct FailingBatchPort {
-        fail_when_len_gt: usize,
-        batch_calls: std::sync::atomic::AtomicUsize,
-        unit_calls: std::sync::atomic::AtomicUsize,
-    }
-
-    impl FailingBatchPort {
-        fn batch_calls(&self) -> usize {
-            self.batch_calls.load(std::sync::atomic::Ordering::Relaxed)
-        }
-        fn unit_calls(&self) -> usize {
-            self.unit_calls.load(std::sync::atomic::Ordering::Relaxed)
-        }
-    }
-
-    impl EmbeddingPort for FailingBatchPort {
-        fake_port_embed_methods!({
-            if texts.len() > self.fail_when_len_gt {
-                return Err(SemanticError::Inference(
-                    "el endpoint de embeddings devolvió el estado 413".to_string(),
-                ));
-            }
-            Ok(texts.iter().map(|_| vec![1.0, 2.0, 3.0]).collect())
-        });
-
-        fake_port_common!(FailingBatchPort);
-    }
-
-    /// `embed_batch` fails unconditionally: no amount of bisection helps.
-    #[derive(Default)]
-    struct AlwaysFailingBatchPort {
-        batch_calls: std::sync::atomic::AtomicUsize,
-    }
-
-    impl AlwaysFailingBatchPort {
-        fn batch_calls(&self) -> usize {
-            self.batch_calls.load(std::sync::atomic::Ordering::Relaxed)
-        }
-    }
-
-    impl EmbeddingPort for AlwaysFailingBatchPort {
-        fn embed<'a>(&'a self, _text: &'a str) -> BoxFuture<'a, Result<Vec<f32>, SemanticError>> {
-            Box::pin(async move { Ok(vec![1.0, 2.0, 3.0]) })
-        }
-
-        fn embed_batch<'a>(
-            &'a self,
-            _texts: &'a [String],
-        ) -> BoxFuture<'a, Result<Vec<Vec<f32>>, SemanticError>> {
-            self.batch_calls
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            Box::pin(async move {
-                Err(SemanticError::Inference(
-                    "el endpoint de embeddings devolvió el estado 413".to_string(),
-                ))
-            })
-        }
-
-        fake_port_common!(AlwaysFailingBatchPort);
     }
 }
