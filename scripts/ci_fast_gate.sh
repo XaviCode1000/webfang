@@ -339,7 +339,7 @@ lane_docs() {
     # Re-assert the docs-only claim against the live worktree: a stray .rs or
     # manifest edit must flip the lane, not slip through.
     run_step "assert no code files in worktree diff" bash -c "
-      ! grep -Eq '\\\\.rs$|Cargo\\\\.toml|Cargo\\\\.lock|^crates/|^tests/|^benches/|^examples/|^fuzz/|\\\\.github/|scripts/' '$UNION_TMP'
+      ! grep -Eq '\\.rs$|Cargo\\.toml|Cargo\\.lock|^crates/|^tests/|^benches/|^examples/|^fuzz/|\\.github/|scripts/' '$UNION_TMP'
     "
   else
     skip_step "assert docs-only" "mixed known non-code scope"

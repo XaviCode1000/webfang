@@ -112,7 +112,7 @@ check_declared() {
     | select(
         (.state == "STABLE"      and (.accepts // []) != ["bugfix", "security"])
         or (.state == "MAINTENANCE" and (.accepts // []) != ["security"])
-        or (.state == "EOL"       and (.accepts // empty) != empty)
+        or (.state == "EOL"       and ((.accepts // []) | length) > 0)
       )
     | "\(.minor)[\(.state)]=\((.accepts // null) | tostring)"' "$SUPPORT_JSON")"
   [[ -z "$bad_accepts" ]] || err "accepts incoherente con el estado (STABLE=bugfix+security, MAINTENANCE=security, EOL=sin accepts): $(echo "$bad_accepts" | tr '\n' ' ')."

@@ -204,6 +204,22 @@ set_lines "$FX_ACCEPTS" '{
 add_tags "$FX_ACCEPTS" v2.0.0 v2.1.0 v2.1.1
 expect "$FX_ACCEPTS" fail "MAINTENANCE que acepta bugfix (security-only)" --scope=declared
 
+# An EOL line is not allowed to carry `accepts` at all: the audit (A4) found the
+# branch checked with `(.accepts // empty) != empty`, which produces zero outputs
+# in jq and can never be true, so an "accepts" dangling on an EOL line sailed
+# through. A falsifiable EOL case: if the branch stays dead, this passes and the
+# harness fails.
+FX_EOL_ACCEPTS="$(new_fixture eol_accepts)"
+set_lines "$FX_EOL_ACCEPTS" '{
+  "schema_version": 1,
+  "lines": [
+    {"minor":"2.1","state":"STABLE","branch":null,"latest":"2.1.1","accepts":["bugfix","security"]},
+    {"minor":"2.0","state":"EOL","branch":null,"latest":"2.0.0","released_at":"2026-09-05T18:58:40+01:00","eol_at":"2026-09-14","eol_reason":"baseline","accepts":["security"]}
+  ]
+}'
+add_tags "$FX_EOL_ACCEPTS" v2.0.0 v2.1.0 v2.1.1
+expect "$FX_EOL_ACCEPTS" fail "EOL que declara accepts (la rama muerta debe encender)" --scope=declared
+
 echo "== fail-closed: lo que el gate no puede ver no lo aprueba =="
 FX_BAD="$(new_fixture badjson)"
 printf '{ not json\n' > "$FX_BAD/.github/support.json"
