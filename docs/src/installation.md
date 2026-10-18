@@ -54,14 +54,14 @@ Set the version once and reuse it. Copy the tag from
 [the latest release](https://github.com/XaviCode1000/webfang/releases/latest):
 
 ```bash
-VERSION=v2.12.0   # ← the tag you just looked up
+{{#include ../samples/installation/01-set-release-version.sh}}
 ```
 
 <details>
 <summary>Verify these names yourself (any release, any version)</summary>
 
 ```bash
-gh release view v2.12.0 --json assets --jq '.assets[].name'
+{{#include ../samples/installation/02-list-release-assets.sh}}
 ```
 
 Observed output for `v2.11.0`: <!-- version-stale:allow -->
@@ -97,15 +97,14 @@ stock macOS, and PowerShell has neither it nor `shasum`.
 **Linux (GNU coreutils)** — checks the archive against the manifest:
 
 ```bash
-sha256sum -c SHA256SUMS.txt --ignore-missing
+{{#include ../samples/installation/03-verify-checksum-linux.sh}}
 ```
 
 **macOS (`shasum`, ships with the system)** — BSD coreutils has no
 `-c`/`--ignore-missing`; check the one file you downloaded:
 
 ```bash
-shasum -a 256 webfang-aarch64-apple-darwin.tar.gz
-grep 'aarch64-apple-darwin' SHA256SUMS.txt
+{{#include ../samples/installation/04-verify-checksum-macos.sh}}
 ```
 
 The two hashes must be identical.
@@ -121,8 +120,7 @@ If you have [GitHub CLI](https://cli.github.com) installed, it fetches both
 files for you (it does **not** verify them — do step 2 anyway):
 
 ```bash
-gh release download "${VERSION}" --pattern 'SHA256SUMS.txt'
-gh release download "${VERSION}" --pattern 'webfang-x86_64-unknown-linux-gnu.tar.gz'
+{{#include ../samples/installation/05-download-release-files.sh}}
 ```
 
 > Every published asset carries a **real SLSA provenance attestation**, minted
@@ -150,26 +148,7 @@ only the differing part is repeated per platform.
 ### Linux
 
 ```bash
-# 1. Download (x86_64; use aarch64-unknown-linux-gnu on ARM64)
-VERSION=v2.12.0
-curl -fLO "https://github.com/XaviCode1000/webfang/releases/download/${VERSION}/webfang-x86_64-unknown-linux-gnu.tar.gz"
-curl -fLO "https://github.com/XaviCode1000/webfang/releases/download/${VERSION}/SHA256SUMS.txt"
-
-# 2. Verify BEFORE extracting
-sha256sum -c SHA256SUMS.txt --ignore-missing
-
-# 3. Extract; the archive holds a single file named `webfang`
-tar xzf webfang-x86_64-unknown-linux-gnu.tar.gz
-
-# 4. Put it on PATH (system-wide)
-sudo install -m 0755 webfang /usr/local/bin/webfang
-
-#    …or per-user, no sudo:
-# mkdir -p ~/.local/bin && install -m 0755 webfang ~/.local/bin/webfang
-#   then add to PATH if needed: export PATH="$HOME/.local/bin:$PATH"
-
-# 5. Confirm
-webfang --version
+{{#include ../samples/installation/06-install-linux.sh}}
 ```
 
 Notes:
@@ -187,27 +166,7 @@ Notes:
 ### macOS (Apple Silicon)
 
 ```bash
-# 1. Download
-VERSION=v2.12.0
-curl -fLO "https://github.com/XaviCode1000/webfang/releases/download/${VERSION}/webfang-aarch64-apple-darwin.tar.gz"
-curl -fLO "https://github.com/XaviCode1000/webfang/releases/download/${VERSION}/SHA256SUMS.txt"
-
-# 2. Verify BEFORE extracting (no sha256sum on stock macOS)
-shasum -a 256 webfang-aarch64-apple-darwin.tar.gz
-grep 'aarch64-apple-darwin' SHA256SUMS.txt
-
-# 3. Extract; the archive holds a single file named `webfang`
-tar xzf webfang-aarch64-apple-darwin.tar.gz
-
-# 4. Put it on PATH (system-wide)
-sudo install -m 0755 webfang /usr/local/bin/webfang
-
-#    …or per-user:
-# mkdir -p ~/.local/bin && install -m 0755 webfang ~/.local/bin/webfang
-
-# 5. Clear the quarantine flag (see note), then confirm
-xattr -d com.apple.quarantine webfang 2>/dev/null || true
-webfang --version
+{{#include ../samples/installation/07-install-macos.sh}}
 ```
 
 > **Gatekeeper.** A binary downloaded with `curl`/`Safari` and then extracted
@@ -326,11 +285,7 @@ without `cmake` the failure surfaces deep inside a build script with an error
 that says nothing about the real cause.
 
 ```bash
-git clone https://github.com/XaviCode1000/webfang.git
-cd webfang
-cmake --version        # must print a version; install cmake if empty
-cargo build --release --locked --features "ai mcp" -p webfang_cli
-./target/release/webfang --version
+{{#include ../samples/installation/08-build-from-source.sh}}
 ```
 
 - `-p webfang_cli` builds only the CLI. Omitting it builds every workspace
@@ -368,11 +323,7 @@ it is the one entry that is **not** relocatable by any `WEBFANG_*` variable.
 Start at the webfang cache base:
 
 ```bash
-# Where the webfang cache base resolves on THIS machine — run the line
-# that matches your platform, and note the printed path.
-echo "${XDG_CACHE_HOME:-$HOME/.cache}"           # Linux
-# echo "${XDG_CACHE_HOME:-$HOME/Library/Caches}"   # macOS
-# echo "$env:LOCALAPPDATA"                         # Windows (PowerShell)
+{{#include ../samples/installation/09-find-cache-base.sh}}
 ```
 
 Every `webfang/…` row in the table below is **relative to that base** — the
@@ -415,9 +366,7 @@ The config base is the sibling you will also want when cleaning up:
 To remove the webfang-owned cache roots and leave everything else alone:
 
 ```bash
-# Linux / macOS: cache + state, but NOT the model cache
-rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/webfang"     # Linux
-rm -rf "${XDG_CACHE_HOME:-$HOME/Library/Caches}/webfang"  # macOS
+{{#include ../samples/installation/10-remove-cache-roots.sh}}
 ```
 
 ```powershell
@@ -442,9 +391,7 @@ is `~/Library/Caches` and `%LOCALAPPDATA%` respectively. It is only moved by
 To confirm before deleting, and to remove it:
 
 ```bash
-# Unix
-echo "${HF_HOME:-$HOME/.cache/huggingface}"
-rm -rf "${HF_HOME:-$HOME/.cache/huggingface}"
+{{#include ../samples/installation/11-remove-model-cache.sh}}
 ```
 
 ```powershell

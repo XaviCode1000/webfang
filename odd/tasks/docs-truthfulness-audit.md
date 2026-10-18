@@ -222,13 +222,32 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
 
 ### Fase 2 — Estructural (evita la recurrencia)
 
-- [ ] **T6 (S6)** — Migrar samples de `docs/src/` a archivos reales + `{{#include}}`.
-      Empezar por los que importan: `installation.md` (47 bash fences) y
-      `debugging.md` (17). Los 6 powershell son un caso aparte (nada los ejecuta).
+- [x] **T6 (S6)** — Migrar samples de `docs/src/` a archivos reales + `{{#include}}`.
+      Empezar por los que importan: `installation.md` (12 bash fences, no 47 — el
+      conteo real corregido abajo) y `debugging.md` (17). Los campos de
+      `powershell` que quedan son un caso aparte (nada los ejecuta).
       Ruta: delegated (writer, editor de superficie amplia).
       Verificación: `grep -rF '{{#include' docs/src/ | wc -l` → > 0 (no `rg -c`, que
       imprime `archivo:conteo` y no es comparable); `mdbook build docs` verde;
       `scripts/gen-cli-reference.sh --check` sigue verde.
+
+      **Implementado.** `docs/samples/installation/NN-*.sh` (11) y
+      `docs/samples/debugging/NN-*.sh` (17) con el contenido **byte-exacto** del
+      fence de origen; los 28 fences convertibles pasan a `{{#include}}`.
+      El fence 12 de `installation.md` queda inline a propósito: vive dentro de
+      un blockquote y `{{#include}}` de mdBook 0.4.51 es un splice crudo que no
+      propaga el prefijo `> ` (verificado en `preprocess/links.rs` y contra el
+      HTML construido). El conteo real es 12 fences bash en `installation.md`
+      (11 convertibles + 1 blockquoteado), no los 47 que decía el plan original.
+
+      **AC observado.** `grep -rF '{{#include' docs/src/ | wc -l` → 28; los 28
+      samples son byte-idénticos al fence de main (comparación por multiset, 0
+      mismatches); `mdbook build docs` produce HTML byte-idéntico al baseline;
+      `scripts/gen-cli-reference.sh --check` verde. En el rebase sobre main
+      @ `1650b86c` (release v2.12.0) los samples 01/02/06/07 se actualizaron a
+      `v2.12.0` para seguir coincidiendo con los fences de main, y la narrativa
+      histórica de `v2.11.0` (salida observada y el ejemplo Windows) se marca con
+      `<!-- version-stale:allow -->` / se actualiza el pin del ejemplo.
 - [x] **T7 (S1)** — Mover el guard MCP version-marker de local-only a CI
       (`scripts/check_mcp_public_surface.sh --base`).
       Ruta: delegated (toca `.github/`). Riesgo: mismo path-filter trap que T4b —
@@ -595,6 +614,26 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
   `actionlint` 1.7.12 → 0; guard con `--base` en el commit previo al fixture →
   bootstrap exit 0 (el camino legítimo no se rompió); base `deadbeef…` → exit 2.
 
+- **L17 (2026-10-18)** — T6: migración de los samples de `installation.md` y
+  `debugging.md` a archivos reales con `{{#include}}`. Los 28 fences bash
+  convertibles pasan a `docs/samples/<capítulo>/NN-*.sh` con contenido
+  byte-exacto; `grep -rF '{{#include' docs/src/ | wc -l` → 28.
+  **Corrección del plan**: `installation.md` tiene 12 fences bash, no 47 — 11
+  convertibles y 1 dentro de un blockquote que se queda inline porque
+  `{{#include}}` de mdBook 0.4.51 no propaga el prefijo `> ` (splice crudo en
+  `preprocess/links.rs`, confirmado contra el HTML). El conteo de 47 era del
+  task file, no del archivo real.
+  **Rebase sobre main**: la rama se rebasó sobre `1650b86c` (release v2.12.0 +
+  cableado del guard MCP en #2040). Los samples 01/02/06/07 se actualizaron a
+  `v2.12.0` para seguir coincidiendo con los fences de main, y `docs/src/
+  installation.md` mantiene el pin histórico `v2.11.0` de la salida observada
+  marcado `<!-- version-stale:allow -->` (el gate de pines lo exige) mientras el
+  ejemplo Windows pasó a `v2.12.0`. Evidencia: 28/28 samples byte-idénticos al
+  fence de main (multiset, 0 mismatches); `mdbook build docs` verde con HTML
+  byte-idéntico; `gen-cli-reference.sh --check` verde; `check_docs_version_pins.sh`
+  verde. Rama `docs/samples-single-source`, PR #2044 (`Closes #2037`,
+  `type:docs`).
+
 ## Next steps
 
 1. Advisories de la review de #2026 sobre el cableado (R3-1, R3-2, R3-3, R4-1, R4-2): sin
@@ -604,7 +643,8 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
    AC de #2017. Los dos advisories de la review de #2027 sobre el harness
    (`R2-lane-ci-comment-gap`, `R3-002`, ambos en el bucle de `lane_ci`): cerrados en el follow-up
    de L15 con el caso 12. T9, T9.1 y T9.2 cerrados.
-2. T6: migrar samples de `docs/src/` a `{{#include}}` (deferred).
+2. ~~T6: migrar samples de `docs/src/` a `{{#include}}`~~ — cerrado (L17,
+   PR #2044).
 3. `cargo fmt --all -- --check`, clippy strict y rustdoc verdes antes de cada commit.
 4. T8 residual (issue #2020, `status:approved`): comentario del harness `:86-87`, anclaje de
    los terminadores `awk`, clusters de flags cortos (`-qv`) y la fragilidad por dependencia del

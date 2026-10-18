@@ -26,11 +26,7 @@ structured tracing event and query it from the JSONL.
 ## Generating a trace
 
 ```bash
-# Full trace + verbose logging
-webfang --url https://example.com --trace-file debug.jsonl -vvv
-
-# Batch / crawl
-webfang --url https://example.com --max-pages 100 --trace-file crawl.jsonl -v
+{{#include ../samples/debugging/01-generate-trace.sh}}
 ```
 
 Each line of `debug.jsonl` is a JSON object:
@@ -89,8 +85,7 @@ queries:
 ### Reconstruct one run by top-level trace_id
 
 ```bash
-ROOT=0000000000000001
-jq -c "select(.trace_id == \"$ROOT\")" debug.jsonl
+{{#include ../samples/debugging/02-reconstruct-run.sh}}
 ```
 
 `$ROOT` is the 16-hex root span `Id` (top-level `trace_id`, EPHEMERAL to the
@@ -100,37 +95,37 @@ run). It returns every page plus errors for that run. The same query is
 ### All errors, with full context
 
 ```bash
-jq -c 'select(.level == "ERROR") | {target, url: .fields.url, stage: .fields.stage, error: .fields.error, msg: .fields.message}' debug.jsonl
+{{#include ../samples/debugging/03-errors-with-context.sh}}
 ```
 
 ### Slowest spans (where the time goes)
 
 ```bash
-jq -r 'select(.span_duration_ms != null) | [.span_duration_ms, .span] | @tsv' debug.jsonl | sort -rn | head -20
+{{#include ../samples/debugging/04-slowest-spans.sh}}
 ```
 
 ### Time distribution per pipeline stage
 
 ```bash
-jq -r 'select(.span == "pipeline_stage") | .fields.stage' debug.jsonl | sort | uniq -c | sort -rn
+{{#include ../samples/debugging/05-time-per-stage.sh}}
 ```
 
 ### Crawl progress over time
 
 ```bash
-jq -c 'select(.fields.message? == "crawl progress") | {pages: .fields.pages_crawled, pct: .fields.progress_pct, eta_s: .fields.eta_secs}' debug.jsonl
+{{#include ../samples/debugging/06-crawl-progress.sh}}
 ```
 
 ### Final crawl summary
 
 ```bash
-jq -c 'select(.fields.message? == "crawl completed")' debug.jsonl
+{{#include ../samples/debugging/07-crawl-summary.sh}}
 ```
 
 ### Count operations by span type
 
 ```bash
-jq -r 'select(.record != "span_close") | .span // "event"' debug.jsonl | sort | uniq -c | sort -rn
+{{#include ../samples/debugging/08-count-operations.sh}}
 ```
 
 `span_close` records share the same `.span` name, so they must be excluded
@@ -139,7 +134,7 @@ when counting events (otherwise every span is double-counted).
 ### URLs that failed
 
 ```bash
-jq -r 'select(.level == "ERROR") | .fields.url // empty' debug.jsonl | sort -u
+{{#include ../samples/debugging/09-failed-urls.sh}}
 ```
 
 ### Was this run slow, or was it PACED?
@@ -151,8 +146,7 @@ whenever a trace file was requested. They exist because a wait used to be
 invisible — a throttled crawl looked exactly like a slow network.
 
 ```bash
-# Total time spent waiting, per pacing scope.
-scripts/analyze-trace.sh debug.jsonl pacing
+{{#include ../samples/debugging/10-pacing-summary.sh}}
 ```
 
 | Scope | Meaning |
@@ -170,29 +164,26 @@ Which targets absorbed the wait (each event names the URL whose permit it
 was waiting for, and the page's `correlation_id`):
 
 ```bash
-scripts/analyze-trace.sh debug.jsonl pacing-hot 10
+{{#include ../samples/debugging/11-pacing-hot-targets.sh}}
 ```
 
 Reconstruct one page's pacing from its own identity:
 
 ```bash
-CID=00-01949e0e8b8e70008000000000000001-0000000000000042-01
-jq -c "select(.fields.correlation_id? == \"$CID\" and .message? == \"rate limit wait\")" debug.jsonl
+{{#include ../samples/debugging/12-page-pacing-by-correlation.sh}}
 ```
 
 The same wait is also folded into the page's own span, so a page record
 answers "how much of this page was pacing" without a join:
 
 ```bash
-jq -r 'select(.span == "crawl_page" and .record == "span_close")
-       | [.span_fields.outcome, .span_fields.rate_limit_wait_ms, .span_duration_ms] | @tsv' \
-  debug.jsonl | sort -k2 -rn | head
+{{#include ../samples/debugging/13-page-pacing-from-span.sh}}
 ```
 
 ### Admission and dispatch queues
 
 ```bash
-scripts/analyze-trace.sh debug.jsonl admission
+{{#include ../samples/debugging/14-admission-queues.sh}}
 ```
 
 One row per `operation`, covering the downloader resource governor
@@ -244,23 +235,7 @@ an exported document's `correlation_id` matches its page's
 `span_fields.correlation_id`:
 
 ```bash
-# Reconstruct an entire run by the single top-level trace_id (root span Id)
-ROOT=0000000000000001
-jq -c "select(.trace_id == \"$ROOT\")" debug.jsonl
-
-# Same run by the durable run-root UUID (CorrelationId in span_fields)
-CUUID=01949e0e-8b8e-7000-8000-000000000001
-jq -c "select(.span_fields.trace_id == \"$CUUID\")" debug.jsonl
-
-# The run-root identity (the `run identity` event carries it in .fields)
-jq -c 'select(.message? == "run identity") | .fields' debug.jsonl
-
-# Every page identity present in the trace
-jq -r '.span_fields.correlation_id // empty' debug.jsonl | sort -u
-
-# Reconstruct one page's scrape by its correlation_id
-CID=00-01949e0e8b8e70008000000000000001-0000000000000042-01
-jq -c "select(.span_fields.correlation_id? == \"$CID\")" debug.jsonl
+{{#include ../samples/debugging/15-identity-queries.sh}}
 ```
 
 Events (not spans): `run identity`, `scrape_multiple identity`,
@@ -274,7 +249,7 @@ carrying `error`, `url`, `stage`, `trace_id`.
 For deadlocks, starved tasks, or async resource leaks, use the Tokio Console:
 
 ```bash
-RUSTFLAGS="--cfg tokio_unstable" cargo run --features console -- --url https://example.com
+{{#include ../samples/debugging/16-tokio-console.sh}}
 ```
 
 This opens an interactive TUI showing live tasks, their states, and poll times.
@@ -311,15 +286,7 @@ before any socket opens), so it is emitted as its own event rather than
 inside the page span. It is still attributable, twice over:
 
 ```bash
-# 1. By identity — the wait carries the same correlation_id the page span does.
-CID=00-01949e0e8b8e70008000000000000001-0000000000000042-01
-jq -c "select(.fields.correlation_id? == \"$CID\")" debug.jsonl
-
-# 2. By span field — crawl_page records the wait it absorbed.
-jq -c 'select(.span == "crawl_page" and .record == "span_close")
-       | {url: .span_fields.url, outcome: .span_fields.outcome,
-          paced_ms: .span_fields.rate_limit_wait_ms,
-          total_ms: .span_duration_ms}' debug.jsonl
+{{#include ../samples/debugging/17-correlate-wait-with-page.sh}}
 ```
 
 A page where `paced_ms` is a large share of `total_ms` was queued, not
