@@ -266,11 +266,18 @@ mpid=$!
 sleep 4
 kill -TERM "$mpid" 2>/dev/null
 wait "$mpid" 2>/dev/null
+term_rc=$?
 after="$(sha256sum "$fx/scripts/check_foo.sh" | cut -d' ' -f1)"
-if [ "$before" = "$after" ]; then
-  pass "guard bytes are restored when the run is signalled mid-mutation"
-else
+if [ "$before" != "$after" ]; then
   fail "guard bytes were left mutated after a signal"
+elif [ "$term_rc" -eq 0 ]; then
+  # Restoring is not enough: a cancelled run must actually stop. A handler
+  # that restores and returns would keep executing the remaining guards.
+  fail "signalled run exited 0 — cancellation did not terminate it"
+elif kill -0 "$mpid" 2>/dev/null; then
+  fail "signalled run is still alive after SIGTERM"
+else
+  pass "a signal mid-mutation restores the guard and terminates the run"
 fi
 
 # --- summary ----------------------------------------------------------------

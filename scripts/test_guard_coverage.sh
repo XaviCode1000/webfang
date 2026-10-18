@@ -225,7 +225,12 @@ mutation_caught() { # guard-rel harness-rel
   MUTATION_GUARD="$guard"
   MUTATION_BACKUP="$backup"
   MUTATION_SUM="$sum_before"
-  trap 'restore_mutation' EXIT INT TERM
+  # EXIT covers every normal path; INT and TERM restore and then TERMINATE.
+  # A handler that only restores would leave a cancelled run executing the
+  # remaining guards, so cancellation would stop cancelling anything.
+  trap 'restore_mutation' EXIT
+  trap 'restore_mutation; exit 130' INT
+  trap 'restore_mutation; exit 143' TERM
 
   printf '#!/usr/bin/env bash\nexit 0\n' > "$guard"
 
