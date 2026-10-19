@@ -95,11 +95,22 @@ new_fx() {
   printf '## [Unreleased]\n\n### Fixed\n\n- placeholder.\n' > "$dir/CHANGELOG.md"
   git -C "$dir" add -A
   git -C "$dir" commit -q -m init
-  # The working scenario is jam inside the hotfix worktree: HEAD IS the
-  # support branch. Rename so every case below runs on support/2.12 (no
-  # checkout/switch needed).
-  git -C "$dir" branch -m main support/2.12
+  # The working scenario is inside the hotfix worktree: HEAD IS a branch of
+  # the support line. The support line is created ALONGSIDE main (both sit on
+  # the same commit) because the hotfix cases need `main` to be a DIFFERENT
+  # base to bump from. HEAD is moved with plumbing (symbolic-ref), never with
+  # checkout/switch: the harness never changes the branch of the tree it runs
+  # from, and every fixture branch shares one commit, so the working tree and
+  # the index stay consistent with it.
+  git -C "$dir" branch support/2.12 main
+  git -C "$dir" symbolic-ref HEAD refs/heads/support/2.12
   echo "$dir"
+}
+
+# switch_head_to <fixture> <branch>: point HEAD at an existing branch of the
+# fixture, without touching the working tree (see new_fx).
+switch_head_to() {
+  git -C "$1" symbolic-ref HEAD "refs/heads/$2"
 }
 
 # new_fx_decl <name> <workspace-version>: the same fixture WITH a support
@@ -219,6 +230,77 @@ if [[ -z "$(git -C "$FX_DETACHED" status --porcelain)" ]] && files_untouched "$F
   pass "el rechazo en detached no muta nada"
 else
   fail "el rechazo en detached mutó archivos"
+fi
+
+echo "== hotfix/* con base demostrable en support/X.Y: el bump SÍ procede =="
+# The sanctioned flow runs the bump inside the HOTFIX PR whose base is
+# support/X.Y, so the HEAD of that PR is `hotfix/*` — and check-topology.sh
+# admits ONLY hotfix/* -> support/*. A guard that demands the head to BE the
+# support branch makes the sanctioned patch release unrunnable, so a hotfix
+# branch is accepted when its base is PROVABLY the support line.
+FX_HOTFIX="$(new_fx hotfix_ok 2.12.0)"
+git -C "$FX_HOTFIX" branch hotfix/fix-x support/2.12
+switch_head_to "$FX_HOTFIX" hotfix/fix-x
+run_bump "$FX_HOTFIX" 2.12.1
+if [[ "$LAST_RC" -eq 0 ]]; then
+  pass "el bump procede en hotfix/fix-x (base support/2.12 demostrable)"
+else
+  fail "el bump rechazó un hotfix con base support/2.12 (rc=$LAST_RC): $LAST_OUT"
+fi
+if [[ "$(grep -m1 '^version' "$FX_HOTFIX/Cargo.toml")" == 'version = "2.12.1"' ]]; then
+  pass "el hotfix bumpeó la versión del árbol"
+else
+  fail "Cargo.toml no se bumpeó en el hotfix: $(grep -m1 '^version' "$FX_HOTFIX/Cargo.toml")"
+fi
+
+echo "== hotfix/* cuya base es main: rechazo con el diagnóstico de base =="
+FX_HOTMAIN="$(new_fx hotfix_from_main 2.12.0)"
+git -C "$FX_HOTMAIN" branch hotfix/fix-y main
+switch_head_to "$FX_HOTMAIN" hotfix/fix-y
+snap_files "$FX_HOTMAIN"
+run_bump "$FX_HOTMAIN" 2.12.1
+if [[ "$LAST_RC" -ne 0 ]]; then
+  pass "se niega a bumpear desde un hotfix basado en main"
+else
+  fail "aceptó un hotfix basado en main — out: $LAST_OUT"
+fi
+if grep -qF 'hotfix/fix-y' <<<"$LAST_OUT" && grep -qF 'support/2.12' <<<"$LAST_OUT" \
+   && grep -qF 'main' <<<"$LAST_OUT"; then
+  pass "el rechazo nombra la rama, la base exigida y la base hallada"
+else
+  fail "el diagnóstico de base no nombró rama, base exigida y base hallada: $LAST_OUT"
+fi
+if [[ -z "$(git -C "$FX_HOTMAIN" status --porcelain)" ]] && files_untouched "$FX_HOTMAIN"; then
+  pass "el rechazo por base no muta nada"
+else
+  fail "el rechazo por base mutó archivos"
+fi
+
+echo "== hotfix/* sin base demostrable: rechazo fail-closed =="
+# A branch with no creation record, no declaration and no tracking ref:
+# NOTHING says what it is based on, so the guard must refuse instead of
+# guessing — and the refusal must say how to establish the base.
+FX_HOTUNKNOWN="$(new_fx hotfix_unknown 2.12.0)"
+git -C "$FX_HOTUNKNOWN" update-ref refs/heads/hotfix/fix-z \
+  "$(git -C "$FX_HOTUNKNOWN" rev-parse HEAD)"
+switch_head_to "$FX_HOTUNKNOWN" hotfix/fix-z
+snap_files "$FX_HOTUNKNOWN"
+run_bump "$FX_HOTUNKNOWN" 2.12.1
+if [[ "$LAST_RC" -ne 0 ]]; then
+  pass "se niega cuando la base no puede establecerse (fail closed)"
+else
+  fail "aceptó un hotfix sin base demostrable — out: $LAST_OUT"
+fi
+if grep -qF 'hotfix/fix-z' <<<"$LAST_OUT" && grep -qF 'support/2.12' <<<"$LAST_OUT" \
+   && grep -qF 'webfang-base' <<<"$LAST_OUT"; then
+  pass "el rechazo nombra la rama, la base exigida y cómo establecerla"
+else
+  fail "el diagnóstico fail-closed no nombró rama, base exigida y método: $LAST_OUT"
+fi
+if [[ -z "$(git -C "$FX_HOTUNKNOWN" status --porcelain)" ]] && files_untouched "$FX_HOTUNKNOWN"; then
+  pass "el rechazo fail-closed no muta nada"
+else
+  fail "el rechazo fail-closed mutó archivos"
 fi
 
 echo "== el bump nunca retrocede DENTRO de la misma minor (semver) =="
