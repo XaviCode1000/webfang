@@ -655,6 +655,17 @@ mod spawn_latency_budget {
             Err("expected code 64, got 0".to_owned())
         });
     }
+
+    /// The third way an attempt can end: the worker dies before sending, so its
+    /// sender drops and no verdict can ever arrive. The caller must be told
+    /// which attempt was lost instead of waiting out a budget for an answer
+    /// that is already impossible — an independent verifier found this arm
+    /// reachable but unpinned when the retry loop was extracted (#2063).
+    #[test]
+    #[should_panic(expected = "gone_spawn: the attempt ended without a verdict (attempt 1)")]
+    fn issue_2063_a_disconnected_attempt_reports_the_attempt_number() {
+        assert_spawn_within(SPAWN_LATENCY_BUDGET, "gone_spawn", || panic!("worker died"));
+    }
 }
 
 #[cfg(test)]
