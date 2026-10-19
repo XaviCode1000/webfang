@@ -186,7 +186,12 @@ for m in "${!TARGET[@]}"; do
   cur="${CURRENT[$m]:-}"
   tgt="${TARGET[$m]}"
   if [[ -n "$cur" ]] && version_lt "$tgt" "$cur"; then
-    echo "la línea $m declara latest $cur y el parche publicado más nuevo es $tgt: el refresh no retrocede una declaración (fail closed; si $cur es la publicación pendiente, se declara con --set $m=$cur)" >&2
+    # The advice must not prescribe a state the enforcing gate rejects. The
+    # one-patch-ahead pending publication is recognized above and never
+    # reaches this guard, so what arrives here is a claim that is NOT a
+    # pending publication: telling the operator to re-declare the very value
+    # it already has would be circular and would land back in the red state.
+    echo "la línea $m declara latest $cur y el parche publicado más nuevo es $tgt: la declaración está por delante de lo publicado y no es una publicación pendiente (fail closed; fijá .latest en $tgt, o en el patch siguiente si la publicación está pendiente: --set $m=<X.Y.Z>)" >&2
     exit 1
   fi
 done

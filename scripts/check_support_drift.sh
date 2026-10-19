@@ -304,7 +304,11 @@ check_published() {
       stale_latest+="v$m: declarado v$l, sin ningún parche X.Y.Z publicado"$'\n'
     fi
   done < <(jq -r '.lines[] | "\(.minor)\t\(.latest // "(null)")"' "$SUPPORT_JSON" 2>/dev/null)
-  [[ -z "$stale_latest" ]] || err "líneas cuyo .latest no es el parche published más nuevo de su minor (sin tag o desactualizado): $(printf '%s' "${stale_latest%$'\n'}" | tr '\n' ' ')."
+  # The trailing separator is part of the message: `tr` turns every newline
+  # into a space, so the accumulated trailing newline yields the space before
+  # the closing period. Stripping it would change the annotation's bytes and
+  # the pre-R2-1 gate's output would no longer match byte for byte.
+  [[ -z "$stale_latest" ]] || err "líneas cuyo .latest no es el parche published más nuevo de su minor (sin tag o desactualizado): $(printf '%s' "$stale_latest" | tr '\n' ' ')."
   if [[ -n "$pending_latest" ]]; then
     local p
     while IFS= read -r p; do
