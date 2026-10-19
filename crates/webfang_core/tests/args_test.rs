@@ -316,9 +316,9 @@ fn test_args_to_crawl_options_full_parity() {
     assert_full_parity_asset_naming(&opts);
 
     // ── AiConfig (defaults when AI flags not set) ─────────────────────
-    // When feature="ai" is OFF, ai_config should be Default (0.3/32768/false/"")
-    // When feature="ai" is ON, ai_config should reflect the AI flag values
-    // (tested separately in test_ai_config_parity_* below)
+    // With no AI flag, ai_config must be Default (0.3/32768/false/"");
+    // with flags it must reflect the flag values (tested separately in
+    // test_ai_config_parity_* below).
 }
 
 // ========================================================================

@@ -50,9 +50,11 @@ deja un shim detrás. Un shim detrás de la feature que se borra no existe, en n
    webfang --url https://example.com --clean-ai --embedding-provider ollama
    ```
 
-   `--offline` conserva su semántica: loopback permitido, remoto público → exit 78. Un Ollama en
-   `127.0.0.1` sigue funcionando sin red; un endpoint LAN necesita la allowlist por CIDR
-   (`allow_cidrs`), que **no** incluye `100.64.0.0/10` salvo opt-in explícito.
+   En `--offline` no hay provider de embeddings que sirva: el guard rechaza cualquier endpoint —uno
+   remoto público o uno en `127.0.0.1`— y sale con exit 78. El "loopback permitido" del aviso del
+   paso 5 se refería al modelo local ONNX, que este paso eliminó; sin ese camino, `--offline` solo
+   sirve para corridas sin limpieza semántica. Un endpoint LAN sigue necesitando la allowlist por
+   CIDR (`allow_cidrs`), que **no** incluye `100.64.0.0/10` salvo opt-in explícito.
 
 3. **Re-indexá los vaults** que tengan vectores de Granite. No hay forma de detectar la mezcla: el
    fail-closed por dimensión no puede dispararse sobre los vaults que nunca tuvieron `model_id`, que

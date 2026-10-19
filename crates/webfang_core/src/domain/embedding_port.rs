@@ -1,10 +1,10 @@
 //! Embedding port — async domain trait for text vectorization.
 //!
 //! Defines the contract for generating embedding vectors from text.
-//! Concrete implementations live in the `webfang_ai` crate (wrapping
-//! `InferencePool`). The trait uses `BoxFuture` for dyn-compatibility,
-//! matching the pattern established in [`super::semantic_inspector`] and
-//! [`super::repository::VectorRepository`].
+//! The concrete implementation lives in `infrastructure::semantic_cleaner`
+//! (ADR-0004 paso 6 removed the local ONNX stack). The trait uses `BoxFuture`
+//! for dyn-compatibility, matching the pattern established in
+//! [`super::semantic_inspector`] and [`super::repository::VectorRepository`].
 //!
 //! # Design decisions
 //!

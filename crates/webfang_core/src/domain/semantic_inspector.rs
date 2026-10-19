@@ -1,9 +1,10 @@
 //! Semantic inspector port — async domain trait for Tier 2 selector repair.
 //!
 //! Defines the contract for semantic (embedding-based) CSS selector matching.
-//! Concrete implementations live in the `webfang_ai` crate's infrastructure
-//! layer. The trait uses `BoxFuture` for dyn-compatibility, matching the
-//! pattern established in [`super::repository::VectorRepository`].
+//! The concrete implementation lives in the infrastructure layer
+//! (`infrastructure::scraper::embedding_semantic_inspector`). The trait uses
+//! `BoxFuture` for dyn-compatibility, matching the pattern established in
+//! [`super::repository::VectorRepository`].
 
 use std::future::Future;
 use std::pin::Pin;

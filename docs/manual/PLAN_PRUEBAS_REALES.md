@@ -27,14 +27,14 @@
 ### Builds required (do in this order, share `CARGO_TARGET_DIR`)
 
 ```bash
-cargo build -p webfang_cli                                   # BIN1: plain (no ai)
-cargo build -p webfang_cli --features ai                     # BIN2: + AI (used for AI + final smoke)
+cargo build -p webfang_cli                                   # BIN1: plain
+cargo build -p webfang_cli --features mcp                    # BIN2: + MCP
 cargo build -p webfang_mcp --bin mcp_server_http             # MCP server binary
-# optional: cargo build -p webfang_mcp --features ai --bin mcp_server_http  (AI tools)
 ```
 
-> BIN1 matters on purpose: some flags (`--clean-ai`, `--adaptive-selectors`) are
-> feature-gated and must behave honestly (hidden/honest error) without the feature.
+> BIN1 matters on purpose: `--clean-ai` needs a configured remote embedding provider
+> (`--embedding-provider` / `WEBFANG_EMBEDDING_PROVIDER`) and must fail honestly
+> (exit 78) without one; `--adaptive-selectors` still needs its cargo feature.
 
 ---
 

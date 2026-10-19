@@ -233,7 +233,7 @@ An agent suggesting "clean up duplicate dependencies" must be stopped. These con
 ### Semantic cleaning (`--clean-ai`)
 
 - ONNX/ort/hf-hub are gone: the `webfang_ai` crate and the Cargo feature `ai` were deleted (ADR-0004 paso 6). There is no local inference engine and no model cache.
-- `--clean-ai` resolves its cleaner via a remote `EmbeddingPort` (`infrastructure/semantic_cleaner.rs`), wired with `--embedding-provider` (env `WEBFANG_EMBEDDING_PROVIDER`; flag > env). `--offline` keeps its semantics: loopback allowed, remote public endpoint → exit 78.
+- `--clean-ai` resolves its cleaner via a remote `EmbeddingPort` (`infrastructure/semantic_cleaner.rs`), wired with `--embedding-provider` (env `WEBFANG_EMBEDDING_PROVIDER`; flag > env). `--offline` rejects every embeddings provider (remote public or loopback) with exit 78: the guard fires before the endpoint is inspected, and the paso-5 notice's "loopback allowed" clause referred to the local ONNX model, which no longer exists.
 - Migration shims emit a notice per run, then fail: `--ai-model`, `--max-tokens` (→ `--max-chars`), envs `WEBFANG_AI_MODEL_ID` / `AI_MODEL_ID` / `WEBFANG_MAX_TOKENS` / `WEBFANG_AI_ENGINE`. Zero-config offline-total inference is gone; the endpoint (and its cost, BYO-key) is the user's.
 - Manual recovery of the old ONNX tree: tag `onnx-tree/pre-step5` (commit `38ab6a31`). See `docs/src/ai-onnx-migration.md` and ADR-0004 (*Compatibilidad*, *Reversibilidad*).
 

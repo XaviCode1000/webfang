@@ -332,7 +332,7 @@ Estado real de cada punto del diseño, verificado contra el árbol.
 ## Referencias
 
 - Traits existentes: `EmbeddingPort` (`domain/embedding_port.rs`), `LlmPort` (`domain/llm_port.rs`).
-- Implementaciones existentes: `EmbeddingAdapter` (`webfang_ai/.../embedding_adapter.rs`), `RemoteEmbeddingAdapter` (`webfang_core/.../remote.rs`), `OpenAiLlmClient` (`webfang_core/.../client.rs`).
+- Implementaciones existentes: `SemanticCleanerImpl` (`webfang_core/.../infrastructure/semantic_cleaner.rs`), `RemoteEmbeddingAdapter` (`webfang_core/.../remote.rs`), `OpenAiLlmClient` (`webfang_core/.../client.rs`).
 - Gestión de credenciales existente: `CredentialStore` + `ApiKey` (`domain/credentials.rs`).
 - Diseño de namespacing de embeddings: `model_tag` y `embedding_dim` en `EmbeddingPort`, con validación en `vault_search.rs`.
 - Error classification: `ScraperError::classify()` → `ErrorClass` (`error.rs`), con `RateLimited(u64)` para 429 y `Http { status }` para otros códigos.

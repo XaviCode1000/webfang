@@ -184,8 +184,9 @@ webfang --url https://example.com --clean-ai --export-format jsonl
 > (BYO-key, el coste es tuyo), y el zero-config offline-total con inferencia se perdió.
 > Los shims `--ai-model`, `--max-tokens`, `AI_MODEL_ID`, `WEBFANG_AI_MODEL_ID`, `WEBFANG_AI_ENGINE`
 > y `WEBFANG_MAX_TOKENS` emiten un aviso de migración en cada corrida. Los vaults con vectores de
-> Granite conviene re-indexarlos. Guardá `--offline` si querés mantener el loopback (ej. Ollama en
-> `127.0.0.1`); un endpoint remoto público con `--offline` sale con exit 78. Detalle paso a paso en
+> Granite conviene re-indexarlos. En `--offline` no hay provider de embeddings que sirva: el guard
+> rechaza cualquier endpoint (también uno en `127.0.0.1`) y sale con exit 78. El "loopback" del
+> aviso del paso 5 era el modelo local ONNX, que este paso eliminó. Detalle paso a paso en
 > [docs/src/ai-onnx-migration.md](docs/src/ai-onnx-migration.md).
 
 ### Obsidian

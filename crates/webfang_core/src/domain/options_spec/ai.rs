@@ -139,22 +139,20 @@ pub const MAX_CHARS: OptionSpec = OptionSpec {
 ///
 /// **Single source of truth.** `webfang_core` needs it to translate a legacy
 /// `--max-tokens` value at the argv boundary (`cli::args::build_ai_config`),
-/// and `webfang_ai`'s `ModelConfig::default()` needs it as the default of its
-/// own `chars_per_token` field. `webfang_core` cannot see `webfang_ai`, so the
-/// constant lives here and `webfang_ai` reads it — two independent `3.0`
-/// literals would be exactly the kind of drift that becomes a silent budget
-/// bug (the legacy flag would map to a different budget than the default
-/// advertises).
+/// and the cleaner implementation needs it as the default of its own
+/// `chars_per_token` field. Two independent `3.0` literals would be exactly
+/// the kind of drift that becomes a silent budget bug (the legacy flag would
+/// map to a different budget than the default advertises).
 pub const DEFAULT_CHARS_PER_TOKEN: f32 = 3.0;
 
 /// Default chunk budget in characters, derived from Granite's max sequence
 /// length (32 768 tokens) times [`DEFAULT_CHARS_PER_TOKEN`].
 ///
 /// Single source of truth for the same reason as [`DEFAULT_CHARS_PER_TOKEN`]:
-/// `AiConfig::default` and `webfang_ai`'s `ModelConfig::default` each carry
-/// their own `max_chars` default, and two independent `98_304` literals would
-/// let the CLI default and the library default drift apart — a silent budget
-/// bug that only shows up as "the flag I did not pass rejected my chunk".
+/// `AiConfig::default` and the cleaner implementation each carry their own
+/// `max_chars` default, and two independent `98_304` literals would let the
+/// CLI default and the library default drift apart — a silent budget bug that
+/// only shows up as "the flag I did not pass rejected my chunk".
 pub const DEFAULT_MAX_CHARS: usize = 32_768 * 3;
 
 /// Convert a legacy token budget to the equivalent character budget.
