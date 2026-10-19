@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-10-19
+
+
+### ⚠️ Breaking Changes
+
+- Declarar la ruptura del paso 6
+- El aviso de ONNX describe la retirada ya ejecutada ([#2078](https://github.com/XaviCode1000/webfang/pull/2078))
+
+### 🔧 Fixed
+
+- Assert the measured spawn waits and wait for the pending SIGKILL ([#2065](https://github.com/XaviCode1000/webfang/pull/2065))
 ## [2.13.0] - 2026-10-18
 
 
