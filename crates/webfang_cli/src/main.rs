@@ -344,8 +344,8 @@ fn emit_adr0004_deprecation_notices(pending: webfang_core::cli::args::ai::Pendin
             removed_feature = webfang_core::cli::args::ai::REMOVED_AI_FEATURE,
             removed_capability = "onnx_local",
             replacement = "webfang connect|webfang doctor|webfang show",
-            objection_channel = webfang_core::cli::args::ai::ONNX_OBJECTION_CHANNEL,
-            removal_in_minor_releases = 2,
+            removed_in_version = "3.0.0",
+            shims_retire_in_version = "3.2.0",
             "{}",
             webfang_core::cli::args::ai::ONNX_DEPRECATION_NOTICE,
         );
