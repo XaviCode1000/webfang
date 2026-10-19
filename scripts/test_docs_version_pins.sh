@@ -54,6 +54,8 @@ run_gate() {
 }
 
 # ─── 1. consistent tree passes ───────────────────────────────────────────────
+# NEGATION: pre-fix there was no enforceable check at all — the pins were prose
+# nothing read, and nine `v2.4.0` pins survived four minor releases.
 D="$(new_fixture clean 2.11.0)"
 printf 'VERSION=v2.11.0\n' > "$D/README.md"
 printf '# Chapter\n\nPin: v2.11.0\n' > "$D/docs/src/a.md"
@@ -64,6 +66,8 @@ else
 fi
 
 # ─── 2. stale pin in README fails ───────────────────────────────────────────
+# NEGATION: pre-fix a drifted pin in the narrative was read by nothing; the
+# README could claim a version the workspace had long left behind.
 D="$(new_fixture stale-readme 2.11.0)"
 printf 'VERSION=v2.4.0\n' > "$D/README.md"
 printf '# Chapter\n\nPin: v2.11.0\n' > "$D/docs/src/a.md"
@@ -78,6 +82,8 @@ else
 fi
 
 # ─── 3. stale pin inside docs/src fails ─────────────────────────────────────
+# NEGATION: pre-fix a drifted pin inside a chapter was read by nothing; the
+# docs tree could carry a version the workspace had long left behind.
 D="$(new_fixture stale-chapter 2.11.0)"
 printf 'ok\n' > "$D/README.md"
 cat > "$D/docs/src/a.md" <<'MD'
@@ -98,6 +104,9 @@ else
 fi
 
 # ─── 4. intentional history with the marker passes ──────────────────────────
+# NEGATION: pre-fix a stale pin had no sanctioned way out, so the only way to
+# keep one was to switch the check off or hand-edit an allowlist; the marker
+# keeps the gate demanding correctness instead.
 D="$(new_fixture marked 2.11.0)"
 printf 'ok\n' > "$D/README.md"
 printf '# Chapter\n\nObserved on v2.4.0. <!-- version-stale:allow -->\n' > "$D/docs/src/a.md"
@@ -108,6 +117,9 @@ else
 fi
 
 # ─── 5. marker on a DIFFERENT line does not excuse the pin ──────────────────
+# NEGATION: pre-fix no marker existed, so a stale pin could not be excused at
+# all; the marker is scoped to its own line, and one sitting on another line
+# must not excuse this pin.
 D="$(new_fixture marker-scope 2.11.0)"
 printf 'ok\n' > "$D/README.md"
 printf '# Chapter\n\n<!-- version-stale:allow -->\nVERSION=v2.4.0\n' > "$D/docs/src/a.md"
@@ -118,6 +130,8 @@ else
 fi
 
 # ─── 6. missing version in the manifest fails closed ────────────────────────
+# NEGATION: pre-fix the guard degraded to "skip" when it could not read the
+# version, reporting safety it never established.
 D="$(new_fixture no-version 2.11.0)"
 printf '[workspace]\nmembers = []\n' > "$D/Cargo.toml"
 printf 'ok\n' > "$D/README.md"
@@ -129,6 +143,8 @@ else
 fi
 
 # ─── 7. no documents at all fails closed ────────────────────────────────────
+# NEGATION: pre-fix the guard degraded to "skip" when it found no document to
+# read, reporting safety it never established.
 D="$(new_fixture no-docs 2.11.0)"
 rm -rf "$D/docs" "$D/README.md"
 if run_gate "$D"; then
@@ -138,6 +154,8 @@ else
 fi
 
 # ─── 8. an unparseable version fails closed ─────────────────────────────────
+# NEGATION: pre-fix the guard degraded to "skip" on a version it could not
+# parse, reporting safety it never established.
 D="$(new_fixture bad-version "two.eleven")"
 printf 'ok\n' > "$D/README.md"
 printf 'ok\n' > "$D/docs/src/a.md"
@@ -152,6 +170,9 @@ fi
 # so `v2.11.0-rc.1` was compared as `v2.11.0` and matched a stable workspace.
 # That is a false negative in the exact comparison this gate exists to make:
 # the recipe would install a release candidate while claiming to be current.
+# NEGATION: pre-fix the extracted pin lost its `-rc.N` suffix, so a release
+# candidate was compared as a stable version and passed against a stable
+# workspace.
 D="$(new_fixture rc-pin-stable 2.11.0)"
 printf 'ok\n' > "$D/README.md"
 printf '# Chapter\n\nPin: v2.11.0-rc.1\n' > "$D/docs/src/a.md"
@@ -166,6 +187,9 @@ fi
 # preflight requires the tag to equal the root Cargo.toml version, so an RC tag
 # cannot exist without one. The gate used to abort with "formato inesperado"
 # and left the whole tree unchecked for the window it is most needed in.
+# NEGATION: pre-fix a `-rc.N` manifest aborted the gate with "formato
+# inesperado", so the whole tree went unchecked in the very window the gate
+# exists for.
 D="$(new_fixture rc-workspace 2.11.0-rc.1)"
 printf 'ok\n' > "$D/README.md"
 printf '# Chapter\n\nPin: v2.11.0-rc.1\n' > "$D/docs/src/a.md"
@@ -178,6 +202,8 @@ fi
 # ─── 11. the success line reports the pins it read, not the file count ──────
 # It printed the number of documents while asserting what they declare, and the
 # counter that actually counted the pins was never read.
+# NEGATION: pre-fix the success line reported the document count instead of
+# the pins it had read, and the counter that counted the pins was never read.
 D="$(new_fixture success-count 2.11.0)"
 printf 'VERSION=v2.11.0\n' > "$D/README.md"
 printf '# Chapter\n\nPin: v2.11.0\nOtro pin: v2.11.0\n' > "$D/docs/src/a.md"
