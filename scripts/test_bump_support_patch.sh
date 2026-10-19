@@ -221,19 +221,34 @@ else
   fail "el rechazo en detached mutó archivos"
 fi
 
-echo "== el bump nunca retrocede sobre la versión del árbol (semver) =="
-FX_BACK="$(new_fx backwards 2.12.0)"
-# NEGATION: pre-fix a request BELOW CURRENT (2.11.0 < 2.12.0) mutated the
-# workspace version backwards and committed it — a release act in the wrong
-# nothing to stand on. The line-state gate passes here (2.11 would be
-# MAINTENANCE in a real-world rotation), so pre-fix the only thing that could
-# stop the request was the now-added monotonicity check.
+echo "== el bump nunca retrocede DENTRO de la misma minor (semver) =="
+FX_BACK="$(new_fx backwards 2.12.2)"
+# NEGATION: this case is the ONLY proof of the semver-monotonicity invariant,
+# and it is shaped so it REACHES that invariant. The request (2.12.1) belongs
+# to the SAME minor as the branch it runs on (support/2.12), so the
+# branch-binding gate PASSES and the only guard that can refuse is the
+# monotonicity comparison. The previous shape asked for 2.11.0 from
+# support/2.12 — a CROSS-minor request, which the branch guard refuses first:
+# the case was satisfied by the wrong guard, the invariant had NO proof, and
+# deleting the whole monotonicity block from the script under test left the
+# harness green. The two assertions below pin that: the refusal must carry
+# the MONOTONICITY diagnostic, and the branch diagnostic must be absent.
 snap_files "$FX_BACK"
-run_bump "$FX_BACK" 2.11.0
+run_bump "$FX_BACK" 2.12.1
 if [[ "$LAST_RC" -ne 0 ]]; then
-  pass "se niega a bajar 2.12.0 -> 2.11.0"
+  pass "se niega a bajar 2.12.2 -> 2.12.1 dentro de la misma minor"
 else
-  fail "aceptó un patch DOWNWARD (2.11.0 < CURRENT 2.12.0) — out: $LAST_OUT"
+  fail "aceptó un patch DOWNWARD (2.12.1 < CURRENT 2.12.2) — out: $LAST_OUT"
+fi
+if grep -qF 'es anterior a la versión actual del árbol' <<<"$LAST_OUT"; then
+  pass "el rechazo es el de la MONOTONICIDAD"
+else
+  fail "el rechazo no vino del guard de monotonicidad: $LAST_OUT"
+fi
+if grep -qF 'se commitea en' <<<"$LAST_OUT"; then
+  fail "el rechazo vino del guard de rama: la case NO alcanza la monotonicidad — $LAST_OUT"
+else
+  pass "el guard de rama no intervino: la case alcanza la comparación de semver"
 fi
 if [[ -z "$(git -C "$FX_BACK" status --porcelain)" ]] && files_untouched "$FX_BACK"; then
   pass "el rechazo monotónico no muta nada"
