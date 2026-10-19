@@ -100,3 +100,8 @@ Snapshot del texto del aviso con `redact_nondeterministic()` (patrón de
   obliga a force-push — y no comparte ni un archivo con PR-A, que fue lane docs puro, así que el
   rebase fue limpio. El checklist de `status:approved` se parte en dos: #1999 lo tiene, #1998 quedó
   moot al auto cerrarse.
+- **L7 (2026-10-19, cierre del reloj):** el reloj de 2 releases minor se cerró con **3.0.0**, no con
+  2.14.0: el borrado es un commit de ruptura (#2072) y la política del repo (`AGENTS.md:1106`) lo
+  convierte en major. La señal 2 (#1997) cerró sin comentarios → desenlace 6a. El aviso que este paso
+  publicó se reescribió en #2078 porque seguía en futuro una vez ejecutada la retirada — detalle en L12
+  y L13 de `adr0004-paso6-borrado-onnx.md`.
