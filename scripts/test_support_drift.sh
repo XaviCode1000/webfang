@@ -101,6 +101,16 @@ expect() {
   fi
 }
 
+# run_gate <fixture> <args...>: run the gate keeping BOTH its verdict and its
+# output, so a case can assert on the MESSAGE and not only on the exit code.
+# GATE_RC / GATE_OUT carry the result.
+run_gate() {
+  local dir="$1"; shift
+  local rc=0
+  GATE_OUT="$( ( cd "$dir" && ./scripts/check_support_drift.sh "$@" ) 2>&1 )" || rc=$?
+  GATE_RC=$rc
+}
+
 # ─── The consistent reference state ─────────────────────────────────────────
 # 2.0 and 2.1 declared; tags up to v2.1.1. This is the shape the gate must
 # accept: STABLE is the newest published minor, MAINTENANCE is the one before
@@ -223,6 +233,130 @@ set_lines "$FX_NOTAG_LINE" '{
 }'
 add_tags "$FX_NOTAG_LINE" v2.1.0 v2.1.1 v2.2.0
 expect "$FX_NOTAG_LINE" fail "línea minor sin ningún parche publicado (el .latest declarado no puede ser el más nuevo)" --scope=published
+
+# ─── The in-flight window of the sanctioned patch release (R2-1) ────────────
+# The patch bump declares the `latest` of its line BEFORE the tag exists:
+# cut-patch-tag.yml is workflow_dispatch-only and refuses a branch whose
+# Cargo.toml does not carry the version, so the tag can only be cut AFTER the
+# bump commit merges. In that window the declared `latest` is exactly ONE
+# patch above the newest published patch of its own minor — a pending
+# publication, not a stale claim.
+#
+# The gate runs on EVERY pull_request, so a red verdict in that window makes
+# the bump PR unmergeable and the sanctioned release impossible to execute.
+# The tolerance below is therefore as narrow as the state allows: one patch,
+# same minor, no tag of its own. Everything around it keeps failing.
+echo "== la ventana en vuelo del bump de parche: un parche por delante es una publicación pendiente =="
+
+# (a) THE WINDOW: declared one patch above the newest published patch of its
+# own minor, with no tag of its own yet. The gate must PASS.
+FX_PENDING="$(new_fixture pending)"
+set_lines "$FX_PENDING" '{
+  "schema_version": 1,
+  "lines": [
+    {"minor":"2.2","state":"STABLE","branch":null,"latest":"2.2.1","accepts":["bugfix","security"]},
+    {"minor":"2.1","state":"MAINTENANCE","branch":null,"latest":"2.1.1","accepts":["security"]},
+    {"minor":"2.0","state":"EOL","branch":null,"latest":"2.0.0","eol_at":"2026-09-14","eol_reason":"baseline"}
+  ]
+}'
+add_tags "$FX_PENDING" v2.0.0 v2.1.0 v2.1.1 v2.2.0
+run_gate "$FX_PENDING" --scope=published
+if [[ "$GATE_RC" -eq 0 ]]; then
+  pass "un parche declarado por delante del publicado (publicación pendiente) pasa el gate"
+else
+  fail "el gate rechazó la ventana en vuelo del bump (rc=$GATE_RC): $(tr '\n' ' ' <<<"$GATE_OUT")"
+fi
+# The acceptance must be READABLE: a note that names the line and says the
+# publication is pending, and NOT a `::error` annotation.
+if grep -qF 'publicación pendiente' <<<"$GATE_OUT" && grep -qF '2.2.1' <<<"$GATE_OUT"; then
+  pass "la ventana en vuelo se anuncia nombrando la línea y la publicación pendiente"
+else
+  fail "la aceptación de la ventana en vuelo no se distingue del silencio: $(tr '\n' ' ' <<<"$GATE_OUT")"
+fi
+if ! grep -q '::error' <<<"$GATE_OUT"; then
+  pass "la ventana en vuelo no produce anotación de error"
+else
+  fail "la ventana en vuelo produjo una anotación de error: $(tr '\n' ' ' <<<"$GATE_OUT")"
+fi
+
+# (b) TWO patches ahead: a declaration that lies. The gate must FAIL, with
+# the same message shape it uses for every other stale claim.
+FX_TWO_AHEAD="$(new_fixture pending_two)"
+set_lines "$FX_TWO_AHEAD" '{
+  "schema_version": 1,
+  "lines": [
+    {"minor":"2.2","state":"STABLE","branch":null,"latest":"2.2.2","accepts":["bugfix","security"]},
+    {"minor":"2.1","state":"MAINTENANCE","branch":null,"latest":"2.1.1","accepts":["security"]},
+    {"minor":"2.0","state":"EOL","branch":null,"latest":"2.0.0","eol_at":"2026-09-14","eol_reason":"baseline"}
+  ]
+}'
+add_tags "$FX_TWO_AHEAD" v2.0.0 v2.1.0 v2.1.1 v2.2.0
+run_gate "$FX_TWO_AHEAD" --scope=published
+if [[ "$GATE_RC" -ne 0 ]] \
+   && grep -qF 'v2.2: declarado v2.2.2, el parche published más nuevo es v2.2.0' <<<"$GATE_OUT"; then
+  pass "dos parches por delante siguen siendo un error (una declaración que miente)"
+else
+  fail "dos parches por delante no fallaron con el veredicto esperado (rc=$GATE_RC): $(tr '\n' ' ' <<<"$GATE_OUT")"
+fi
+
+# (c) BEHIND the published patch: the drift this gate exists to catch. The
+# tolerance must NOT reopen it.
+FX_BEHIND="$(new_fixture pending_behind)"
+set_lines "$FX_BEHIND" '{
+  "schema_version": 1,
+  "lines": [
+    {"minor":"2.2","state":"STABLE","branch":null,"latest":"2.2.0","accepts":["bugfix","security"]},
+    {"minor":"2.1","state":"MAINTENANCE","branch":null,"latest":"2.1.1","accepts":["security"]},
+    {"minor":"2.0","state":"EOL","branch":null,"latest":"2.0.0","eol_at":"2026-09-14","eol_reason":"baseline"}
+  ]
+}'
+add_tags "$FX_BEHIND" v2.0.0 v2.1.0 v2.1.1 v2.2.0 v2.2.1
+run_gate "$FX_BEHIND" --scope=published
+if [[ "$GATE_RC" -ne 0 ]] \
+   && grep -qF 'v2.2: declarado v2.2.0, el parche published más nuevo es v2.2.1' <<<"$GATE_OUT"; then
+  pass "un .latest declarado detrás del parche published sigue fallando (la tolerancia no lo reabre)"
+else
+  fail "un .latest declarado detrás del parche published dejó de fallar (rc=$GATE_RC): $(tr '\n' ' ' <<<"$GATE_OUT")"
+fi
+
+# (d) A line whose minor has NO published patch at all: the declaration has
+# no fact to stand on. The tolerance must not rescue it by borrowing a
+# neighbour's tag.
+FX_NO_PATCH="$(new_fixture pending_no_patch)"
+set_lines "$FX_NO_PATCH" '{
+  "schema_version": 1,
+  "lines": [
+    {"minor":"2.2","state":"STABLE","branch":null,"latest":"2.2.0","accepts":["bugfix","security"]},
+    {"minor":"2.1","state":"MAINTENANCE","branch":null,"latest":"2.1.1","accepts":["security"]},
+    {"minor":"2.4","state":"EOL","branch":null,"latest":"2.4.0","eol_at":"2026-10-01","eol_reason":"fixture"}
+  ]
+}'
+add_tags "$FX_NO_PATCH" v2.0.0 v2.1.0 v2.1.1 v2.2.0
+run_gate "$FX_NO_PATCH" --scope=published
+if [[ "$GATE_RC" -ne 0 ]] \
+   && grep -qF 'v2.4: declarado v2.4.0, sin ningún parche X.Y.Z publicado' <<<"$GATE_OUT"; then
+  pass "una minor sin ningún parche published sigue fallando cerrado"
+else
+  fail "una minor sin ningún parche published dejó de fallar (rc=$GATE_RC): $(tr '\n' ' ' <<<"$GATE_OUT")"
+fi
+
+# (e) The numeric comparison is base 10: patch 9 -> 10 is a real increment,
+# and the tolerated declaration must be recognized across it.
+FX_TEN="$(new_fixture pending_minor10)"
+set_lines "$FX_TEN" '{
+  "schema_version": 1,
+  "lines": [
+    {"minor":"2.10","state":"STABLE","branch":null,"latest":"2.10.10","accepts":["bugfix","security"]},
+    {"minor":"2.9","state":"MAINTENANCE","branch":null,"latest":"2.9.1","accepts":["security"]}
+  ]
+}'
+add_tags "$FX_TEN" v2.9.0 v2.9.1 v2.10.0 v2.10.9
+run_gate "$FX_TEN" --scope=published
+if [[ "$GATE_RC" -eq 0 ]]; then
+  pass "la ventana en vuelo se reconoce también en el salto numérico 9 -> 10"
+else
+  fail "el salto numérico 9 -> 10 no se reconoció como ventana en vuelo (rc=$GATE_RC): $(tr '\n' ' ' <<<"$GATE_OUT")"
+fi
 
 # Positive control that keeps "-rc.N" out of the published set: an rc tag for a
 # newer patch must NOT make the check demand it; the case still fails only if

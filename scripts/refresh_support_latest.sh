@@ -34,10 +34,17 @@
 # AND proved to differ from the old one ONLY in the `latest` values; the file
 # is then replaced atomically (temp file + mv), so an interrupted run can
 # never leave a half-updated support.json behind. A line whose minor has no
-# published patch has no fact to stand on: that is an error, not a skip. A
-# declaration that is AHEAD of the published patches is never rolled back
-# either — that state means "the tag is pending", and only the publisher may
-# resolve it.
+# published patch has no fact to stand on: that is an error, not a skip.
+#
+# A PENDING PUBLICATION is neither drift nor an error. When a declared
+# `latest` is exactly one patch above the newest published patch of its own
+# minor and has no tag of its own yet, the line is declaring the patch it is
+# about to publish: the bump declares it, and cut-patch-tag.yml cuts the tag
+# only after the bump merges. The recompute leaves that declaration
+# untouched and succeeds — the publisher resolves it, and rolling it back
+# would un-declare a release that is already committed. A declaration FURTHER
+# ahead than one patch is not that state: it is an inconsistent claim, and it
+# keeps failing closed.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
@@ -51,6 +58,33 @@ usage() {
 # version_lt <a> <b>: true when $1 is strictly LOWER than $2 in version order.
 version_lt() {
   [[ "$1" != "$2" && "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n 1)" == "$1" ]]
+}
+
+# pending_publication <line_minor> <declared> <newest_published>: true when the
+# declared `latest` is exactly ONE patch ahead of the newest published patch
+# of its own minor and has no tag of its own yet — the in-flight window of
+# the sanctioned patch release.
+#
+# The tolerance is the same narrow one the enforcing gate applies
+# (check_support_drift.sh): one patch, same minor, no tag of its own. A
+# declaration behind the published patch is drift and is repaired; a
+# declaration more than one patch ahead is an inconsistent claim and keeps
+# failing closed.
+#
+# The comparison is NUMERIC in base 10 (`10#`), so patch 9 -> 10 is a real
+# increment and a component with a leading zero is never read as octal.
+pending_publication() {
+  local line_minor="$1" declared="$2" newest="$3"
+  [[ "$declared" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  [[ "$newest"  =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  local v_major v_minor v_patch p_major p_minor p_patch
+  IFS='.' read -r v_major v_minor v_patch <<<"$declared"
+  IFS='.' read -r p_major p_minor p_patch <<<"$newest"
+  [[ "$v_major.$v_minor" == "$line_minor" ]] || return 1
+  [[ "$p_major.$p_minor" == "$line_minor" ]] || return 1
+  (( 10#$v_patch == 10#$p_patch + 1 )) || return 1
+  [[ -z "$(git tag --list "v$declared")" ]] || return 1
+  return 0
 }
 
 # ─── Arguments ───────────────────────────────────────────────────────────────
@@ -115,6 +149,8 @@ done
 # never a publication), keep only X.Y.Z, `sort -V`, newest last.
 declare -A CURRENT=()
 declare -A TARGET=()
+# The pending publications this run left untouched, as a human-readable list.
+PENDING_NOTE=""
 while IFS=$'\t' read -r m l; do
   [[ -n "$m" ]] || continue
   CURRENT["$m"]="$l"
@@ -127,12 +163,25 @@ while IFS=$'\t' read -r m l; do
       echo "la línea $m no tiene ningún parche vX.Y.Z publicado: no hay hecho al que apuntar (fail closed)" >&2
       exit 1
     fi
+    if pending_publication "$m" "$l" "$newest"; then
+      # A pending publication is NOT drift: the line declares the patch it
+      # is about to publish and the tag is cut after the bump merges. The
+      # target IS the current value, so the backwards guard below stays
+      # quiet and the file is not touched.
+      TARGET["$m"]="$l"
+      PENDING_NOTE+=" $m=$l"
+      continue
+    fi
     TARGET["$m"]="$newest"
   fi
 done < <(jq -r '.lines[] | "\(.minor)\t\(.latest // "")"' "$SUPPORT_JSON")
 
 # A declaration is never moved backwards: a value ahead of the published
-# patches means "the tag is pending" (the bump path), not "the file is wrong".
+# patches means "the tag is pending" (the bump path), not "the file is
+# wrong". A pending publication — one patch ahead, same minor, no tag of its
+# own — is already recognized above and its target IS its current value, so
+# it never reaches this guard. What DOES reach it is a declaration further
+# ahead than one patch: an inconsistent claim, and it fails closed.
 for m in "${!TARGET[@]}"; do
   cur="${CURRENT[$m]:-}"
   tgt="${TARGET[$m]}"
@@ -151,10 +200,20 @@ for m in "${!TARGET[@]}"; do
 done
 
 if [[ ${#UPDATES[@]} -eq 0 ]]; then
-  # The declaration already agrees with the published tags. The projection can
-  # still be behind (SUPPORT.md is a generated file, and its single writer is
-  # this script's collaborator), so a stale render is repaired here too —
-  # but a clean pair writes NOTHING at all.
+  # The declaration already agrees with the published tags — or it names a
+  # publication that is still pending, which is not a change either. The
+  # projection can still be behind (SUPPORT.md is a generated file, and its
+  # single writer is this script's collaborator), so a stale render is
+  # repaired here too — but a clean pair writes NOTHING at all.
+  if [[ -n "$PENDING_NOTE" ]]; then
+    if "$RENDERER" --check >/dev/null 2>&1; then
+      echo "OK: publicación pendiente respetada sin cambios:${PENDING_NOTE} (el tag se corta después del merge del bump)."
+      exit 0
+    fi
+    "$RENDERER" >/dev/null
+    echo "OK: publicación pendiente respetada sin cambios:${PENDING_NOTE} (se regeneró SUPPORT.md, que estaba desactualizada)."
+    exit 0
+  fi
   if "$RENDERER" --check >/dev/null 2>&1; then
     echo "OK: .latest ya coincide con los tags publicados; nada que actualizar."
     exit 0
@@ -198,4 +257,8 @@ for m in "${!TARGET[@]}"; do
     changed+=" $m=${CURRENT[$m]:-(null)}->${TARGET[$m]}"
   fi
 done
-echo "OK: .latest refrescado (${changed# })."
+if [[ -n "$PENDING_NOTE" ]]; then
+  echo "OK: .latest refrescado (${changed# }). Publicación pendiente respetada:${PENDING_NOTE}."
+else
+  echo "OK: .latest refrescado (${changed# })."
+fi

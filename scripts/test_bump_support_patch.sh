@@ -431,6 +431,42 @@ else
   fail "el commit de bump no lleva support.json + SUPPORT.md: $(tr '\n' ' ' <<<"$bump_files")"
 fi
 
+# THE WINDOW THE BUMP PR LIVES IN. The tag is cut AFTER the bump merges
+# (cut-patch-tag.yml is workflow_dispatch-only and refuses a branch whose
+# Cargo.toml does not carry the version), so between the bump commit and the
+# tag the declaration names a patch that is not published yet. The enforcing
+# gate runs on EVERY pull_request: a red verdict in that window makes the
+# bump PR unmergeable and the sanctioned release impossible to execute.
+run_drift "$FX_DECL" --scope=published
+if [[ "$LAST_DRIFT_RC" -eq 0 ]]; then
+  pass "con el parche declarado y SIN tag todavía, el gate enforcing queda VERDE (la ventana en vuelo)"
+else
+  fail "el gate enforcing está rojo en la ventana en vuelo del bump (rc=$LAST_DRIFT_RC): $LAST_DRIFT_OUT"
+fi
+if grep -qF 'publicación pendiente' <<<"$LAST_DRIFT_OUT"; then
+  pass "la ventana en vuelo se anuncia como nota (no como error)"
+else
+  fail "la ventana en vuelo no se anuncia: $LAST_DRIFT_OUT"
+fi
+
+# The recompute mode is the REPAIR path for a declaration that drifted, so
+# it must NOT "repair" a pending publication back to the published patch —
+# and it must not treat the pending state as an error either: the pending
+# declaration is a fact the publisher resolves, not a drift.
+decl_before="$(sha256sum "$FX_DECL/.github/support.json" | cut -d' ' -f1)"
+rc=0
+refresh_out="$( cd "$FX_DECL" && ./scripts/refresh_support_latest.sh 2>&1 )" || rc=$?
+if [[ $rc -eq 0 ]]; then
+  pass "el refresh en modo recompute acepta la publicación pendiente (no es un error)"
+else
+  fail "el refresh en modo recompute rechazó la publicación pendiente (rc=$rc): $(tr '\n' ' ' <<<"$refresh_out")"
+fi
+if [[ "$decl_before" == "$(sha256sum "$FX_DECL/.github/support.json" | cut -d' ' -f1)" ]]; then
+  pass "el recompute dejó la publicación pendiente byte a byte intacta"
+else
+  fail "el recompute reparó la publicación pendiente hacia el parche publicado"
+fi
+
 # The tag is cut AFTER the bump merges (cut-patch-tag.yml refuses a branch
 # whose Cargo.toml does not carry the version): the fixture simulates it.
 git -C "$FX_DECL" tag v2.12.1

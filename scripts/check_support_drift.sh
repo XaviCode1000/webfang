@@ -70,6 +70,12 @@ err() {
   ERRORS=$((ERRORS + 1))
 }
 
+# A NOTE is not a violation: it says the gate accepted something on purpose
+# and why, so the reader of the run does not have to guess.
+note() {
+  echo "::notice title=$ANNOTATION_TITLE::$*"
+}
+
 # ─── Declared scope: is the file internally coherent, and is its projection
 # ─── current? Neither question needs a single tag.
 
@@ -134,6 +140,50 @@ check_declared() {
   elif ! "$RENDERER" --check; then
     err "SUPPORT.md no coincide con el render de $SUPPORT_JSON (corré $RENDERER y commiteá ambos archivos juntos)."
   fi
+}
+
+# pending_publication <line_minor> <declared> <newest_published>: true when
+# the declared `latest` is exactly ONE patch ahead of the newest published
+# patch of its own minor and has no tag of its own yet.
+#
+# This is the in-flight window of the sanctioned patch release. The bump
+# declares the patch it is about to publish BEFORE the tag exists, because
+# cut-patch-tag.yml is workflow_dispatch-only and refuses a branch whose
+# Cargo.toml does not carry the version — so the tag can only be cut AFTER
+# the bump commit merges. In that window the declared `latest` sits exactly
+# one patch above the newest publication of its line, and the enforcing gate
+# must accept it: this gate runs on EVERY pull_request, so a red verdict
+# there makes the bump PR unmergeable and the release contract impossible to
+# execute.
+#
+# The tolerance is as narrow as the state allows — one patch, same minor, no
+# tag of its own. Everything around it keeps failing exactly as before:
+#   - a declared `latest` BEHIND the published patch is the drift this gate
+#     exists to catch, and still fails;
+#   - a declaration more than one patch ahead is a lie, and still fails;
+#   - a line whose minor has no published patch at all has no fact to stand
+#     on, and still fails closed.
+#
+# The comparison is NUMERIC in base 10 (`10#`), so patch 9 -> 10 is a real
+# increment and a component with a leading zero is never read as octal.
+pending_publication() {
+  local line_minor="$1" declared="$2" newest="$3"
+  [[ "$declared" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  [[ "$newest"  =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  local v_major v_minor v_patch p_major p_minor p_patch
+  IFS='.' read -r v_major v_minor v_patch <<<"$declared"
+  IFS='.' read -r p_major p_minor p_patch <<<"$newest"
+  # Both the declared version and the published patch must belong to the
+  # DECLARED line's own minor: the tag glob `v<minor>.*` can match another
+  # minor's patches, and a line whose minor has no published patch at all
+  # must fail closed instead of riding on a neighbour's tag.
+  [[ "$v_major.$v_minor" == "$line_minor" ]] || return 1
+  [[ "$p_major.$p_minor" == "$line_minor" ]] || return 1
+  # Exactly ONE patch ahead, in base 10.
+  (( 10#$v_patch == 10#$p_patch + 1 )) || return 1
+  # A pending publication has no tag of its own yet.
+  [[ -z "$(git tag --list "v$declared")" ]] || return 1
+  return 0
 }
 
 # ─── Published scope: does the declaration match the published tags?
@@ -227,19 +277,42 @@ check_published() {
   # has zero published patches fails too: then `latest` cannot be the newest
   # patch, and the claim has nothing to stand on. Every state is covered —
   # STABLE, MAINTENANCE and EOL alike.
-  local stale_latest
-  stale_latest="$(jq -r '.lines[] | "\(.minor)\t\(.latest // "(null)")"' "$SUPPORT_JSON" 2>/dev/null | while IFS=$'\t' read -r m l; do
+  #
+  # ONE tolerance, and it is the bump window: a declared `latest` exactly one
+  # patch above the newest published patch of its own minor, with no tag of
+  # its own yet, is a PENDING PUBLICATION (the bump declares the patch it is
+  # about to publish; the tag is cut after the bump merges). It is accepted
+  # with a note, because the gate runs on every pull_request and a red
+  # verdict in that window would make the bump PR unmergeable. A declaration
+  # BEHIND the published patch, a declaration more than one patch ahead and a
+  # line with no published patch at all all keep failing.
+  local stale_latest="" pending_latest=""
+  while IFS=$'\t' read -r m l; do
+    local newest_line
     newest_line="$(git tag --list "v$m.*" | sed 's/^v//' | grep -v -- '-' \
       | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
-    if [[ "$newest_line" != "$l" ]]; then
-      if [[ -n "$newest_line" ]]; then
-        echo "v$m: declarado v$l, el parche published más nuevo es v$newest_line"
-      else
-        echo "v$m: declarado v$l, sin ningún parche X.Y.Z publicado"
-      fi
+    if [[ "$newest_line" == "$l" ]]; then
+      continue
     fi
-  done)"
-  [[ -z "$stale_latest" ]] || err "líneas cuyo .latest no es el parche published más nuevo de su minor (sin tag o desactualizado): $(echo "$stale_latest" | tr '\n' ' ')."
+    if [[ -n "$newest_line" ]] && pending_publication "$m" "$l" "$newest_line"; then
+      pending_latest+="v$m declara v$l: publicación pendiente (el parche published más nuevo de esa minor es v$newest_line)"$'\n'
+      continue
+    fi
+    if [[ -n "$newest_line" ]]; then
+      stale_latest+="v$m: declarado v$l, el parche published más nuevo es v$newest_line"$'\n'
+    else
+      stale_latest+="v$m: declarado v$l, sin ningún parche X.Y.Z publicado"$'\n'
+    fi
+  done < <(jq -r '.lines[] | "\(.minor)\t\(.latest // "(null)")"' "$SUPPORT_JSON" 2>/dev/null)
+  [[ -z "$stale_latest" ]] || err "líneas cuyo .latest no es el parche published más nuevo de su minor (sin tag o desactualizado): $(printf '%s' "${stale_latest%$'\n'}" | tr '\n' ' ')."
+  if [[ -n "$pending_latest" ]]; then
+    local p
+    while IFS= read -r p; do
+      if [[ -n "$p" ]]; then
+        note "$p"
+      fi
+    done <<<"$pending_latest"
+  fi
 
   # MAINTENANCE is the minor immediately before STABLE, not "whatever was
   # registered last": when the chain breaks, the stale entry keeps a real
