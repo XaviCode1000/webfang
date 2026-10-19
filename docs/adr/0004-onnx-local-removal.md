@@ -152,6 +152,44 @@ Si el borrado falla, el árbol ONNX se recupera desde `onnx-tree/pre-step5` — 
 - `crates/webfang_cli/src/main.rs:602` — precedencia `--ai-model` sobre env
 - Issues: #1915 (decisión), #1917 (primera revisión, cerrada por #1918), #1919 (re-scope)
 
+## Addendum 2026-10-19 — cierre del paso 6
+
+### Desenlace: 6a, borrado total
+
+La *Condición de revisión* arbitra 6a (borrado total) frente a 6b (refugio externo) por la señal 2. #1997 quedó abierta desde 2026-10-16 y al ejecutar el borrado tenía **0 comentarios**: no hay reclamo ni dependencia declarada de ONNX. Se ejecutó **6a** en #2072 (`e9b7217a`).
+
+La limitación que este ADR ya declaraba sigue vigente y no se reescribe: la ausencia de reclamos **no prueba** ausencia de uso. La mitigación es la misma que el ADR fijó, la etiqueta `onnx-tree/pre-step5`, y no una garantía.
+
+### Umbral por defecto huérfano: aviso permanente documentado
+
+El flip anunciado ocurrió y no existe golden set. De las dos salidas que esta sección deja al owner, se toma la primera: **aviso permanente documentado**.
+
+- El aviso por corrida y `threshold_used` en el summary siguen emitiéndose; el valor no se mueve (0.3).
+- El riesgo —un endpoint remoto retiene distinto con el mismo número— queda declarado en la guía de migración, no sólo en este ADR.
+- **Salida con fecha:** al cortar **3.2.0**, el mismo release que retira los shims, el owner revisa la decisión. Si para entonces hay golden set, se recalibra; si no, renueva el aviso por otra ventana o firma el riesgo de mantener 0.3. Un solo punto de revisión para las dos ventanas abiertas, en vez de dos.
+
+Sin esa revisión el huérfano se vuelve permanente, que es exactamente lo que este ADR prohíbe.
+
+### Follow-up: la ventana de shims no cierra con este ADR
+
+Este ADR cierra el **borrado**. Los shims (`--ai-model`, `--max-tokens`, `WEBFANG_MAX_TOKENS`, `AI_MODEL_ID` / `WEBFANG_AI_MODEL_ID`, `WEBFANG_AI_ENGINE`) siguen vivos y su retiro es un slice propio, con su marker de ruptura y su issue.
+
+El ancla es **3.2.0**. La ventana del §Compatibilidad pedía "≥2 releases minor" desde el anuncio de v2.12.0: pasó 2.13.0 (minor) y 3.0.0 (major, el borrado). Contarlas como las dos releases de la ventana es la lectura que mantiene la promesa hecha al usuario sin estirarla a un tercer release.
+
+### Nota de proceso: la revisión nativa no cubrió el paso 6
+
+La revisión nativa quedó *exhausted* sobre este rango: `lens_context_budget_exceeded` con 20.706 y 15.927 líneas contra un diff de 14.534 — borrar un crate de ese tamaño desborda el presupuesto del lens. El veredicto vino de un verificador independiente (registro en L8 del feature doc de la unidad). Se anota para que una unidad de este tamaño no asuma cobertura del reviewer nativo: la ausencia de hallazgos ahí no es evidencia de ausencia de defectos.
+
+### Corrección de la Enmienda 2026-10-16
+
+La salvedad de esa enmienda pedía verificar la regla del bump "al cortar el minor", porque desde `v2.0.0` ningún commit de ruptura la había ejecutado. Se verificó, y el resultado no es el que la enmienda preveía:
+
+- El commit del paso 6 usó el título `feat!(ai):`, que **no** es Conventional Commits: el `!` va después del scope, `feat(ai)!:`.
+- Con esa forma release-plz no reconoce ni el tipo ni la ruptura y calcula un patch (2.13.1). Medido con `release-plz update` sobre el mismo árbol: `feat(ai):` → 2.14.0; `fix(cli)!:` o un footer `BREAKING CHANGE:` → 3.0.0.
+- **La enmienda no cae.** La regla del repo (un marker de ruptura produce major) se cumple; lo que estaba mal era la forma del marker, no la regla.
+
+Corolario operativo: este repo squash-mergea, así que un footer `BREAKING CHANGE:` escrito en un commit de rama queda enterrado en el cuerpo del commit squash. El marker que sobrevive es el del **título del PR**.
+
 ## Glosario de referencias (IDs opacos)
 
 Los IDs de trabajo (auditoría fuera del repo, gitignored) significan: Q1(a)=borrar, Q1(c)=refugio externo; B2=allowlist CIDR; C1–C3=docs y `--max-chars`; FIN-024=Tier 2 en silencio; PR-4/5/6=trazabilidad y contadores del MVP; M1–M4=modelos de producto; D6a=umbral relativo opt-in; Q4/Q6/Q7=preguntas al owner (golden set, alcance M2, default). Todo lo load-bearing está inline arriba; el glosario es solo índice.
