@@ -16,12 +16,6 @@
 #   lint; gate still blocks merge on it.
 #   test-core runs: unit tests (--lib) then integration/behavioral tests (--test '*')
 #   test-full runs: all features enabled (full workspace compile + test, NO AI inference)
-#   test-ai (ADVISORY, path-gated on needs_ai): AI integration tests with ONNX model.
-#     This tier keeps model inference out of CI Gate to avoid making every PR pay
-#     the 20 min AI cold-build path. It runs on PRs for signal, but merge confidence
-#     for AI-heavy changes should come from path-gated PR checks + main/queue runs.
-#     If branch protection adds this job as a direct required context, CI Gate alone
-#     is no longer the fast PR contract; keep that decision explicit and short-lived.
 #   security runs in parallel with tests (no Rust compile)
 #   feature-matrix runs after clippy (cargo-hack --each-feature, catches broken feature combos)
 #   mcp smoke runs after test-full, path-gated on needs_mcp (advisory, never in gate)
@@ -35,7 +29,7 @@
 #   test-full 1526, test-core 1208, validate 1085, doc-quality 922,
 #   feature-matrix 707, mcp 614, release 604, deploy 471, clippy 410,
 #   fuzz-build 338, code-quality 123;
-#   coverage 1419MB, test-ai 1015, tokio 569 (all trimmed — non-gate, no live entries).
+#   coverage 1419MB, tokio 569 (all trimmed — non-gate, no live entries).
 #   Saves are main-only: PRs restore main's cache lineage and never save,
 #   so the pool does not scale with open PRs (verified: zero merge-ref entries).
 #   2026-09-05: purged 1.88 GB of tag saves under the malformed ref
@@ -49,8 +43,8 @@
 #   RULE: any NEW rust-cache consumer must justify its GB in the PR and is
 #   review-blocked by default (precedent: benches.yml:55-60).
 #   Shared-keys measured 2026-09-10: no genuine compile twins among
-#   rust-cache consumers (test-ai compiles cold by design, test-core vs
-#   test-full differ in features) — no sharing applied.
+#   rust-cache consumers (test-core vs test-full differ in features) — no
+#   sharing applied.
 
 name: CI
 
@@ -126,8 +120,8 @@ jobs:
   # (fmt, clippy, test-core, test-full). push/merge_group/schedule/dispatch
   # always default to full scope (run_code_jobs=true + every lane true).
   # Downstream code jobs gate on `needs.change-scope.outputs.run_code_jobs
-  # == 'true'`; the affected-area lanes gate test-ai on needs_ai and the
-  # mcp smoke job on needs_mcp (both advisory, never in `gate` needs);
+  # == 'true'`; the affected-area lanes gate the mcp smoke job on
+  # needs_mcp (advisory, never in `gate` needs);
   # needs_mutation_hotpath is exposed as an output only (Phase 4 advisory —
   # no job gates on it in this phase, to keep the change non-breaking);
   # snapshot baselines are test expectations and keep test coverage
@@ -691,10 +685,9 @@ jobs:
       - uses: taiki-e/install-action@e88e69ecdb9658bd172693dcdc2c84e7f0ab6a11
         with:
           tool: nextest@0.9.114
-      # NOTE: no ONNX model download here. test-full runs zero AI inference
-      # (all --features compile + test, no --ignored); the only --ignored
-      # consumer is the test-ai job, which keeps its own download. Skipping
-      # the ~372MB model cache entry here saves Actions-cache budget.
+      # NOTE: no model download here. test-full runs zero AI inference (all
+      # --features compile + test, no --ignored); no job in this workflow
+      # consumes --ignored tests, so no model cache entry is needed here.
       - name: Pre-build test binary
         run: cargo build -p webfang_cli --bin webfang --all-features
       - run: cargo nextest run --all-features --retries 2
@@ -712,10 +705,10 @@ jobs:
   # signal semantics) and must not block merges. Promotion to required is a
   # deliberate follow-up once the lane is green.
   # No extra tooling: release.yml already builds Windows (x86_64-pc-windows-msvc)
-  # and macOS (aarch64-apple-darwin) with BoringSSL/ai without installing
+  # and macOS (aarch64-apple-darwin) with BoringSSL/mcp without installing
   # anything — cmake/NASM are preinstalled on GitHub runners.
   # No rust-cache (#1171): non-gate job, compiles cold — cache pool budget,
-  # tokio-console-smoke/test-ai precedent.
+  # tokio-console-smoke precedent.
   #
   # DECISION (#1633): this lane STAYS GATING — deliberately NOT shielded, and
   # the recorded reason is not "we forgot", it is the trade:
@@ -827,111 +820,6 @@ jobs:
         run: cargo check -p webfang_cli --features console
       - name: Console smoke test (delta ceiling + baseline recovery)
         run: cargo nextest run -p webfang_core --features console --test tokio_console_smoke_test
-
-  # ============================================================================
-  # TEST AI (ADVISORY SIGNAL IN PR): AI integration tests with ONNX model.
-  #
-  # These tests load a 372MB ONNX model and run real inference. They remain on PRs
-  # as signal, but CI Gate no longer depends on `test-ai`: the 20 min AI path was
-  # the biggest known merge-latency cost when model-heavy changes were unrelated.
-  # Path-gated: runs only when run_code_jobs=true AND needs_ai=true
-  # (AI/model inputs changed or full scope). Advisory only — never in `gate` needs.
-  # Run after clippy to avoid spending model download/compute on compile failures.
-  # If AI changes must become merge-blocking again, do it through branch protection
-  # explicitly or re-add them to the gate after measuring the wall-clock effect.
-  # ============================================================================
-  test-ai:
-    name: Tests (AI integration)
-    needs: [clippy, change-scope]
-    if: ${{ needs.change-scope.outputs.run_code_jobs == 'true' && needs.change-scope.outputs.needs_ai == 'true' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
-      # no rust-cache (#1171): non-gate job, compiles cold — cache pool budget, benches.yml:55-60 precedent
-      - name: Cache ONNX model (Granite-97M)
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
-        with:
-          path: ~/.cache/huggingface/hub/
-          key: onnx-model-${{ runner.os }}-granite-97m-v1
-          restore-keys: |
-            onnx-model-${{ runner.os }}-granite-97m-
-      - name: Download ONNX model (cache miss)
-        run: |
-          set -e
-          MODEL_DIR="$HOME/.cache/huggingface/hub/models--ibm-granite--granite-embedding-97m-multilingual-r2"
-          BLOB_SHA="68e592b160673d30250824c1116bc6ab33f70efb22b97c9e1d7ce1e69c1c9d70"
-          TOKENIZER_BLOB_SHA="4f2842d568e2724370aec203652a42ac783c7937f8347a1a2cc7506d71f1582f"
-          BLOB_FILE="$MODEL_DIR/blobs/$BLOB_SHA"
-          TOKENIZER_BLOB_FILE="$MODEL_DIR/blobs/$TOKENIZER_BLOB_SHA"
-          SNAPSHOT_DIR="$MODEL_DIR/snapshots/835ad14087e140460703cf0fae09f97d469d65c2"
-          SNAPSHOT_FILE="$SNAPSHOT_DIR/onnx/model.onnx"
-          SNAPSHOT_TOKENIZER="$SNAPSHOT_DIR/tokenizer.json"
-          # Same ref-repair as the test-ai block above (#843): printf writes
-          # no trailing newline; hf-hub 0.5.0 reads refs/main verbatim.
-          mkdir -p "$MODEL_DIR/refs"
-          printf '%s' "835ad14087e140460703cf0fae09f97d469d65c2" > "$MODEL_DIR/refs/main"
-          if [ -f "$SNAPSHOT_FILE" ] || [ -L "$SNAPSHOT_FILE" ]; then
-            echo "Model already cached, skipping download"
-            exit 0
-          fi
-          echo "Downloading Granite-97M ONNX model (~372MB)..."
-          mkdir -p "$MODEL_DIR/blobs"
-          mkdir -p "$SNAPSHOT_DIR/onnx"
-          curl -L --fail --retry 5 --retry-all-errors \
-            --retry-delay 5 -o "$BLOB_FILE" \
-            "https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2/resolve/main/onnx/model.onnx"
-          echo "Verifying model SHA256..."
-          echo "$BLOB_SHA  $BLOB_FILE" | sha256sum --check --status
-          echo "Downloading tokenizer.json..."
-          curl -L --fail --retry 5 --retry-all-errors \
-            --retry-delay 5 -o "$TOKENIZER_BLOB_FILE" \
-            "https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2/resolve/main/tokenizer.json"
-          echo "Verifying tokenizer SHA256..."
-          echo "$TOKENIZER_BLOB_SHA  $TOKENIZER_BLOB_FILE" | sha256sum --check --status
-          ln -s "../../../blobs/$BLOB_SHA" "$SNAPSHOT_FILE"
-          ln -s "../../blobs/$TOKENIZER_BLOB_SHA" "$SNAPSHOT_TOKENIZER"
-          echo "Model + tokenizer downloaded, verified, and cached"
-          ls -lh "$BLOB_FILE"
-      - name: AI integration tests (CLI+AI, MCP+AI, AI crate)
-        run: |
-          set -eo pipefail
-          # Full output, no tail truncation: `| tail -5` hid the actual panic
-          # messages of these suites for months (#843). pipefail preserves the
-          # exit code; logs belong in CI untruncated.
-          # webfang_ai tests (#[ignore]'d, require model, run serially to avoid OOM)
-          cargo test -p webfang_ai --features ai --test ai_integration -- \
-            --ignored --test-threads=1
-          # CLI+AI tests (#[ignore]'d, require model)
-          # Explicit allowlist, NOT a blanket `--ignored`. This job is REQUIRED,
-          # and `--ignored` force-runs every ignored test in the target — including
-          # ones ignored because the finding they pin is still OPEN. #1240 hit that
-          # with cli::export_test::trace_file_never_leaks_url_credentials (#1239,
-          # F-31 residual: the raw CLI seed URL reaches --trace-file through the
-          # root `run` span, not through ValidUrl). libtest ORs positional filters,
-          # so entering this gate is now a deliberate edit, not a side effect of
-          # adding #[ignore].
-          # Trade-off: a new model-requiring test stays out until listed here.
-          # check_ignored_guard.sh fails on any #[ignore] count drift against
-          # docs/test-inventory.md, so every addition touches that inventory —
-          # that is where the reminder lives. Open-finding tests keep running
-          # daily as advisory in bug-discovery.yml (--run-ignored only).
-          # `--skip waf_gauntlet_observability_trace` is deleted, not ported: that
-          # test is no longer #[ignore]'d (counter-based mock), so the skip was
-          # inert and the non-ignored gates already cover it.
-          cargo test -p webfang_core --features ai --test behavioral -- \
-            --ignored --test-threads=1 \
-            cli::ai_integration_test:: \
-            cli::export_test::vector_export_total_documents_matches_documents \
-            cli::trace_correlation_test::scrape_trace_and_vector_export_share_per_page_correlation
-          # MCP+AI tests (#[ignore]'d, require model)
-          cargo test -p webfang_mcp --features mcp,ai --test mcp_behavioral_test -- \
-            --ignored --test-threads=1
 
   # ============================================================================
   # SECURITY: No Rust compile — runs in PARALLEL with tests
@@ -1086,7 +974,7 @@ jobs:
     name: Notify (scheduled CI result)
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [gate, code-quality, tokio-console-smoke, test-ai, feature-matrix, mcp]
+    needs: [gate, code-quality, tokio-console-smoke, feature-matrix, mcp]
     # #1510: Miri jobs (miri, miri-infra-fast, miri-infra-slow) are advisory
     # and intentionally absent from this needs list.
     if: ${{ !cancelled() && github.event_name == 'schedule' }}
@@ -1173,24 +1061,6 @@ jobs:
     needs: [clippy]
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    env:
-      # The `ort-sys` build script downloads the ONNX Runtime static library to
-      # $ORT_CACHE_DIR, else ${XDG_CACHE_HOME:-$HOME/.cache}/ort.pyke.io -- a
-      # directory OUTSIDE target/ and outside every path Swatinem/rust-cache
-      # saves. The build script's fingerprint and recorded output, which carry
-      # `cargo:rustc-link-search=native=<that dir>`, ARE cached inside target/.
-      # A restore can therefore replay a fingerprint whose library directory
-      # does not exist on the fresh runner, and the link dies with
-      # "error: could not find native static library `onnxruntime`".
-      # Co-locating the library under target/ makes the pair atomic: the cache
-      # carries the library or it carries neither.
-      #
-      # MUST stay absolute (ort-sys records the value verbatim and resolves it
-      # against the crate root) and byte-identical for this job's cache lineage:
-      # ORT_CACHE_DIR is not a declared rerun input of the build script, so
-      # changing it against a warm target silently replays the previous -L.
-      # See odd/tasks/fix-feature-matrix-ai-onnxruntime.md.
-      ORT_CACHE_DIR: ${{ github.workspace }}/target/ort-cache
     permissions:
       contents: read
     steps:
@@ -1216,49 +1086,9 @@ jobs:
       # matrix. Compile the test targets for the combo that exposed the gap (#737).
       - name: Feature-gated test targets compile (adaptive-selectors)
         run: cargo check -p webfang_core --no-default-features --features adaptive-selectors --tests
-      - name: Reset ort-sys build state before the harness
-        run: |
-          # `cargo hack check` (above) runs the `ort-sys` build script in check
-          # mode: it leaves a cached fingerprint but no ort_sys rlib, so this
-          # job's cached target/ can restore a fingerprint whose native library
-          # was never downloaded. The harness then rebuilds the rlib, finds the
-          # build script unit fresh, skips it, and fails to link.
-          #
-          # `cargo clean -p ort-sys` ALONE IS NOT ENOUGH, and was the reason
-          # this lane stayed red after #1642: the download is gated on
-          # `!bin_extract_dir.exists()` in ort-sys build/download/mod.rs, and
-          # clean does not touch $ORT_CACHE_DIR. A restore that brings the
-          # extract dir back without the .a inside it therefore keeps the gate
-          # closed, and the clean just rebuilds a Fresh fingerprint around the
-          # same missing library. Verified locally: clean+build reproduces the
-          # exact "could not find native static library" and downloads nothing;
-          # clearing the extract dir first makes the same build download and
-          # link cleanly.
-          #
-          # ~20 files / 101.5 MiB for the package artifacts. The co-located
-          # ORT_CACHE_DIR is not a package artifact, so an already-downloaded
-          # library survives the clean and no re-download is triggered on a
-          # self-consistent cache.
-          cargo clean -p ort-sys
-          # Clear a half-restored extract dir so the download gate re-opens.
-          # No-op on a cold or self-consistent cache.
-          if [ -n "${ORT_CACHE_DIR:-}" ] && [ -d "${ORT_CACHE_DIR:-}" ]; then
-            find "${ORT_CACHE_DIR}" -mindepth 1 -maxdepth 1 -type d -name 'dfbin' \
-              -exec rm -rf {} + 2>/dev/null || true
-          fi
-      - name: Warm the ONNX Runtime native library
-        run: |
-          # The harness's per-combo [compile] phase is `cargo check`, which does
-          # not fetch the native library. Force one real build of the ort-linking
-          # feature set so the library is present before the combos run, and so a
-          # genuine download failure is reported here with this job's name
-          # instead of surfacing as a confusing link error twice inside the
-          # harness (ai and full).
-          set -euo pipefail
-          cargo build -p webfang_cli --features ai
       # Per-combo runtime probes: build + behavioral crawl + resume round-trip +
-      # exit-contract gates (65/78) for default, no-default, ai, chromium, mcp and
-      # full feature sets. Advisory only (not in `gate` needs). The script
+      # exit-contract gates (65) for default, no-default, chromium, mcp and full
+      # feature sets. Advisory only (not in `gate` needs). The script
       # rebuilds per combo, so the timeout is generous.
       - name: Compatibility harness (per-combo probes)
         run: bash scripts/check_compatibility.sh --ci-required
@@ -1343,7 +1173,7 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Build optimized binary
-        run: cargo build --release --locked --features "ai mcp"
+        run: cargo build --release --locked --features "mcp"
       - name: Strip binary
         run: |
           strip target/release/webfang
