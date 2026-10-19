@@ -284,11 +284,6 @@ pub struct CrawlerArgs {
     pub extraction_fingerprint: bool,
 
     /// Use AI-powered semantic cleaning for better RAG output
-    #[cfg(feature = "ai")]
-    pub clean_ai: bool,
-
-    /// Feature flag placeholder when AI is not enabled
-    #[cfg(not(feature = "ai"))]
     pub clean_ai: bool,
 
     /// Enable adaptive CSS selector repair (2-tier cascade)
@@ -1211,12 +1206,10 @@ mod spec_parity_tests {
         //   of it by tripping exit 78 at runtime.
         // - Un-hiding it is what lets the same operator read what the flag
         //   does BEFORE running anything.
-        // - The capability half is unchanged and still named: a build without
-        //   `ai` rejects `--clean-ai` through
-        //   `preflight::check_clean_ai_feature` (exit 78, before any network
-        //   I/O). So the operator trades an undiscoverable flag for a
-        //   discoverable one whose rejection says exactly what to do
-        //   ("recompilá con --features ai").
+        // - Post-ADR-0004 paso 6 there is no `ai` cargo feature to reject by
+        //   name: a requested `--clean-ai` whose wiring could not build a
+        //   cleaner surfaces at run time as the export flow's Spanish
+        //   ConfigError naming `--embedding-provider`.
         //
         // Keeping the help text identical in both builds is the point of the
         // assertion: the flag means the same thing whichever build renders it.

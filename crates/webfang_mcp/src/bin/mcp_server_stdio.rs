@@ -410,8 +410,12 @@ async fn main() -> CliExit {
 
     let args = Args::parse();
 
-    // Keep the `enable_ai` flag honest when compiled without the `ai` feature.
-    #[cfg(not(feature = "ai"))]
+    // Keep the `enable_ai` flag honest. The warning is now UNCONDITIONAL:
+    // ADR-0004 paso 6 removed the `ai` Cargo feature, so there is no build
+    // left in which the flag could enable anything. The TEXT is unchanged —
+    // it is the same line a non-`ai` build has always printed for this flag,
+    // and the AI tools keep answering with their honest "not available"
+    // error (see `mcp_server::handlers::ai`).
     if args.enable_ai {
         tracing::warn!("--enable-ai requested but the `ai` feature is not compiled in; ignoring");
     }

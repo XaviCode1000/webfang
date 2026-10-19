@@ -42,10 +42,6 @@ pub mod state;
 pub(crate) mod test_probe;
 pub mod validation;
 
-/// Vault-search AI port wiring (#433) — only compiled with the `ai` feature.
-#[cfg(feature = "ai")]
-pub mod ai_wiring;
-
 use futures::FutureExt;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::ServerHandler;
@@ -66,8 +62,9 @@ pub use state::McpState;
 /// This is used by both `mcp_server_http.rs` and `mcp_server_stdio.rs`
 /// binaries to avoid code duplication. The AI wiring that used to run inside
 /// this function (and block the MCP `initialize` handshake behind the hf_hub
-/// model resolution) is now performed lazily by [`spawn_ai_wiring`] after the
-/// server starts serving (#759).
+/// model resolution) was performed lazily by [`spawn_ai_wiring`] after the
+/// server starts serving (#759); since ADR-0004 paso 6 that wiring is a
+/// no-op, because the local ONNX stack it resolved is gone.
 ///
 /// # Errors
 ///
@@ -121,94 +118,27 @@ pub fn build_mcp_state(
         .with_export_roots(export_roots))
 }
 
-/// Kick off the lazy AI port wiring in a background task (#759).
+/// Lazy AI port wiring — a NO-OP since ADR-0004 paso 6 (#759).
 ///
-/// Shares the same `Arc<Container>` that the MCP server already holds and
-/// injects the AI ports (semantic cleaner, embedding, chunker, notes) after
-/// the server has started serving. This unblocks the MCP `initialize`
-/// handshake, which previously waited on the hf_hub model resolution
-/// (~390 MB download on a cold cache). During warmup the AI tools degrade to
-/// their pre-existing honest "not available" error.
-#[cfg(feature = "ai")]
-pub fn spawn_ai_wiring(container: Arc<webfang_core::application::container::Container>) {
-    use tracing::Instrument;
-
-    // Loud env resolution (#874): a set-but-invalid AI_MODEL_ID must never be
-    // silently downgraded to the default model — skip AI wiring with an error
-    // log instead (English logs per project convention; the MCP tools then keep
-    // their pre-existing honest "not available" error during this run).
-    let variant = match webfang_ai::AiModel::from_env() {
-        Ok(Some(variant)) => variant,
-        Ok(None) => webfang_ai::AiModel::default(),
-        Err(e) => {
-            tracing::error!(
-                variable = "AI_MODEL_ID",
-                error = %e,
-                "AI wiring skipped: AI_MODEL_ID is set to an unknown model and \
-                 cannot be silently defaulted"
-            );
-            return;
-        },
-    };
-    // Engine selection, resolved exactly like the CLI (#1569): `WEBFANG_AI_ENGINE`
-    // (`single` | `pool:<N>`), unset meaning the MEASURE-calibrated `Pool`
-    // default. Same #874 discipline: a set-but-invalid value skips AI wiring
-    // with an error log instead of silently building a different engine.
-    let engine_config = match webfang_ai::infrastructure_ai::EngineConfig::from_env() {
-        Ok(config) => config,
-        Err(e) => {
-            tracing::error!(
-                variable = "WEBFANG_AI_ENGINE",
-                error = %e,
-                "AI wiring skipped: WEBFANG_AI_ENGINE is set to an invalid engine \
-                 spec and cannot be silently defaulted"
-            );
-            return;
-        },
-    };
-    let span = tracing::info_span!(
-        "ai_lazy_wiring",
-        model = variant.display_name(),
-        engine = ?engine_config
-    );
-
-    tokio::spawn(
-        async move {
-            let model_config = webfang_ai::ModelConfig::default().with_model_variant(variant);
-            // ADR-0004: ONE composition root for the local embedding stack.
-            // The cleaner takes only the port; the SAME engine + tokenizer
-            // back the vault-search embedding adapter and Tier 2 — one model
-            // load, Single and Pool modes alike.
-            match webfang_ai::infrastructure_ai::embedding_adapter::build_onnx_embedding_port(
-                &model_config,
-                engine_config,
-            )
-            .await
-            {
-                Ok((port, engine, tokenizer)) => {
-                    let cleaner: Arc<dyn webfang_core::domain::semantic_cleaner::SemanticCleaner> =
-                        Arc::new(webfang_ai::SemanticCleanerImpl::from_parts(
-                            port,
-                            model_config,
-                        ));
-                    container.inject_vault_ports(
-                        webfang_core::application::container::VaultAiPorts {
-                            cleaner: Some(cleaner),
-                            ..Default::default()
-                        },
-                    );
-                    ai_wiring::wire_ai_ports(&container, engine, tokenizer).await;
-                    tracing::info!("AI ports wired (lazy, post-handshake)");
-                },
-                Err(e) => tracing::warn!(error = %e, "AI warmup failed; continuing without AI"),
-            }
-        }
-        .instrument(span),
-    );
-}
-
-/// No-op placeholder when the `ai` feature is not compiled in (#759).
-#[cfg(not(feature = "ai"))]
+/// The wiring this function used to start was ONNX-only: it resolved a
+/// local Granite model through `hf_hub` and injected the cleaner's shared
+/// engine + tokenizer as the vault-search embedding port. ADR-0004 paso 6
+/// removes that whole stack (the `webfang_ai` crate and the `ai` Cargo
+/// feature), so there is no local pool left to warm up and nothing to
+/// inject.
+///
+/// The function is KEPT — with the same name, the same signature and the same
+/// call sites — because the two MCP binaries call it unconditionally and
+/// because the AI TOOLS are registered in every configuration: `semantic_cleaner`
+/// and `search_obsidian` keep answering with their honest Spanish
+/// "funcionalidad no disponible" error, exactly as a non-`ai` build always
+/// did. The tool list and the provenance wrapping are therefore unchanged.
+///
+/// Wiring the remote `EmbeddingPort` into the daemon is NOT done here: it
+/// would be a NEW capability in the default build (the daemon would start
+/// answering these tools where it has always answered "not available"), and
+/// the daemon has no per-run argv to resolve a provider id with. That is a
+/// product decision beyond ADR-0004's removal scope.
 pub fn spawn_ai_wiring(_container: Arc<webfang_core::application::container::Container>) {}
 
 /// The DOM inspector every MCP server instance ships with (#1294 NS-01).

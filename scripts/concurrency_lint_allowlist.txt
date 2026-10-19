@@ -22,5 +22,5 @@
 crates/webfang_core/src/application/batch/processor.rs|max_concurrent|BatchProcessor::new returns Err(InvalidConcurrency) when it is 0, before this call
 crates/webfang_core/src/infrastructure/downloader/resource_governor.rs|max_permits|with_max_instances applies max_permits.max(1) immediately above this call
 crates/webfang_core/src/application/container.rs|permits|build_ingestion_semaphore_permits clamps to at least 1 (added #1616)
-crates/webfang_core/src/application/adaptive_engine/mod.rs|max_concurrent_inference|clamped with .max(1) at this call site (added #1616)
+crates/webfang_core/src/application/adaptive_engine/real.rs|max_concurrent_inference|clamped with .max(1) at this call site (added #1616)
 crates/webfang_mcp/src/mcp_server/state.rs|limits.|CategoryLimits holds NonZeroUsize, so .get() cannot be zero

@@ -91,10 +91,13 @@ shopt -s lastpipe
 #     Dockerfile*/docker-compose (container build inputs).
 #
 #   ai_changed
-#     Heuristic (filename-only, may over-match): crates/webfang_ai/** plus
-#     AI-model/inference markers anywhere (ai_integration, clean_ai, onnx,
-#     granite, embedding). Content check is deliberately NOT done here; the
-#     AI lane treats a match as "run the model tests", a miss costs a lane.
+#     Heuristic (filename-only, may over-match): AI-model/inference markers
+#     anywhere (ai_integration, clean_ai, onnx, granite, embedding). The
+#     `webfang_ai` crate is gone (ADR-0004 paso 6), so the marker set is what
+#     survives of it: the semantic-cleaning surface now lives in
+#     crates/webfang_core (EmbeddingPort, remote embedding adapter). Content
+#     check is deliberately NOT done here; the AI lane treats a match as "run
+#     the model tests", a miss costs a lane.
 #
 #   mcp_changed
 #     crates/webfang_mcp/** or any path containing `mcp` (mcp_server,
@@ -362,7 +365,7 @@ classify() {
       fi
 
       case "$f" in
-        *webfang_ai* | *ai_integration* | *clean_ai* | *onnx* | *granite* | *embedding*)
+        *ai_integration* | *clean_ai* | *onnx* | *granite* | *embedding*)
           ai_changed=true ;;
       esac
       case "$f" in

@@ -23,12 +23,7 @@ use crate::domain::{CorrelationId, CrawlerConfig, ScrapedContent, ValidUrl};
 use crate::error::{Result as ScraperResult, ScraperError};
 use crate::infrastructure::observability::log_scrape_error;
 
-#[cfg(feature = "adaptive-selectors")]
 use crate::application::adaptive_engine::AdaptiveSelectorEngine;
-
-/// Placeholder when `adaptive-selectors` feature is disabled.
-#[cfg(not(feature = "adaptive-selectors"))]
-type AdaptiveSelectorEngine = ();
 
 // Sitemap discovery was extracted to `sitemap_discovery.rs` (and sitemap XML
 // parsing stays in the infrastructure layer per #442 / ADR-0012-B). The

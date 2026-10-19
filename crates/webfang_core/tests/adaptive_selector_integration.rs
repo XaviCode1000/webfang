@@ -1,6 +1,18 @@
 //! Integration tests for the adaptive selector repair engine.
 //!
 //! Tests the 2-tier cascade (lexical + semantic) with caching and backpressure.
+//!
+//! # Entry point
+//!
+//! The engine exposes ONE public entry point, [`AdaptiveSelectorEngine::select_sync_aware`]:
+//! it takes the raw HTML (`String`), the failed selector (`String`) and an
+//! optional domain hint, and it parses the document INTERNALLY on the blocking
+//! pool. The previous `repair(&document, html, selector, domain)` signature
+//! took a `&scraper::Html` — a `!Sync` type that cannot cross an `await` — and
+//! was removed together with the rest of the ONNX-era surface (ADR-0004
+//! paso 6, commit `9716a913`). Migrating the call sites also removes the
+//! `scraper::Html::parse_document` bindings the old signature required: the
+//! engine now owns the parse.
 
 #![cfg(feature = "adaptive-selectors")]
 
@@ -72,9 +84,10 @@ async fn test_tier1_high_score_no_tier2() {
 
     let engine = AdaptiveSelectorEngine::new(inspector, None, AdaptiveSelectorOptions::default());
     let html = "<div class='main-content'>Hello</div>";
-    let document = scraper::Html::parse_document(html);
 
-    let result = engine.repair(&document, html, ".content", None).await;
+    let result = engine
+        .select_sync_aware(html.to_owned(), ".content".to_owned(), None)
+        .await;
     assert!(
         result.is_ok(),
         "repair should succeed with high Tier 1 score"
@@ -101,9 +114,10 @@ async fn test_tier1_low_score_no_semantic_fallback() {
 
     let engine = AdaptiveSelectorEngine::new(inspector, None, AdaptiveSelectorOptions::default());
     let html = "<div class='similar'>Hello</div>";
-    let document = scraper::Html::parse_document(html);
 
-    let result = engine.repair(&document, html, ".content", None).await;
+    let result = engine
+        .select_sync_aware(html.to_owned(), ".content".to_owned(), None)
+        .await;
     assert!(
         result.is_ok(),
         "should return Tier 1 best when no semantic provider"
@@ -122,9 +136,10 @@ async fn test_no_suggestions_returns_error() {
 
     let engine = AdaptiveSelectorEngine::new(inspector, None, AdaptiveSelectorOptions::default());
     let html = "<div>Hello</div>";
-    let document = scraper::Html::parse_document(html);
 
-    let result = engine.repair(&document, html, ".content", None).await;
+    let result = engine
+        .select_sync_aware(html.to_owned(), ".content".to_owned(), None)
+        .await;
     assert!(result.is_err(), "should fail with no suggestions");
 
     match result.unwrap_err() {
@@ -144,11 +159,10 @@ async fn test_cache_hit_returns_cached() {
 
     let engine = AdaptiveSelectorEngine::new(inspector, None, AdaptiveSelectorOptions::default());
     let html = "<div class='cached'>Hello</div>";
-    let document = scraper::Html::parse_document(html);
 
     // First call — populates cache
     let r1 = engine
-        .repair(&document, html, ".target", None)
+        .select_sync_aware(html.to_owned(), ".target".to_owned(), None)
         .await
         .unwrap();
     assert!(!r1.trace.as_ref().unwrap().cache_hit);
@@ -156,7 +170,7 @@ async fn test_cache_hit_returns_cached() {
 
     // Second call — should hit cache
     let r2 = engine
-        .repair(&document, html, ".target", None)
+        .select_sync_aware(html.to_owned(), ".target".to_owned(), None)
         .await
         .unwrap();
     assert!(
@@ -189,9 +203,10 @@ async fn test_semantic_provider_called_in_ambiguity_zone() {
         AdaptiveSelectorOptions::default(),
     );
     let html = "<div class='article-body'>Hello</div>";
-    let document = scraper::Html::parse_document(html);
 
-    let result = engine.repair(&document, html, ".content", None).await;
+    let result = engine
+        .select_sync_aware(html.to_owned(), ".content".to_owned(), None)
+        .await;
     assert!(result.is_ok());
 
     let outcome = result.unwrap();
@@ -216,9 +231,10 @@ async fn test_semaphore_timeout_skips_tier2() {
     });
     let engine = AdaptiveSelectorEngine::new(inspector, None, AdaptiveSelectorOptions::default());
     let html = "<div class='similar'>Hello</div>";
-    let document = scraper::Html::parse_document(html);
 
-    let result = engine.repair(&document, html, ".content", None).await;
+    let result = engine
+        .select_sync_aware(html.to_owned(), ".content".to_owned(), None)
+        .await;
     assert!(result.is_ok());
     let outcome = result.unwrap();
     assert_eq!(

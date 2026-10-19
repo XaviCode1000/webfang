@@ -2,7 +2,7 @@
 //
 // This is the "release de deprecación" half of ADR-0004 (`Decision` step 5 /
 // `Compatibilidad`): it ANNOUNCES the announced break, it does not remove
-// anything. Two notices exist, both emitted ONCE per run:
+// anything. Three notices exist, all emitted ONCE per run:
 //
 // 1. `ONNX_DEPRECATION_NOTICE` — what disappears (the `ai` Cargo feature and
 //    ONNX local), what survives un-gated (`--clean-ai`, `--offline`), which
@@ -11,8 +11,12 @@
 // 2. The orphan-threshold warning — the shipped `0.3` was calibrated for
 //    Granite, and with the only calibrated model gone a remote endpoint
 //    retains differently under the same number.
+// 3. The `--ai-model` shim notice (ADR-0004 paso 6) — the flag and its env
+//    vars still PARSE, but the local model they selected is GONE, so the
+//    value is ignored; the notice names the knob that replaced it
+//    (`--embedding-provider`).
 //
-// Both are gated on the SAME predicate: the run actually TOUCHES the AI
+// (1) and (2) are gated on the SAME predicate: the run actually TOUCHES the AI
 // surface. That is deliberate and load-bearing, not an optimization — see
 // `cli::args::ai::record_adr0004_notices`. A run that never asked for AI has
 // nothing to migrate and nothing to recalibrate, so it stays silent; a notice
@@ -49,33 +53,28 @@ const RUN_TIMEOUT_SECS: u64 = 60;
 /// rather than satisfied by an identical value.
 const EXPLICIT_THRESHOLD: &str = "0.55";
 
-/// Snapshot name suffix for a run that went through `--clean-ai`.
+/// Distinctive substring of the `--ai-model` shim notice (ADR-0004 paso 6).
 ///
-/// `--clean-ai` is FEATURE-GATED: without the `ai` feature the flag is a
-/// configuration error (exit 78, "recompilá con --features ai"), and the run
-/// stops before scraping. With the feature on, the same invocation resolves an
-/// endpoint and the scrape proceeds to completion. The two WARN lines this file
-/// exists to pin are byte-identical either way; only the trailing result block
-/// differs.
+/// Counted, not merely searched, for the same reason the other two anchors
+/// are: "announced exactly once per run" is only a real assertion when the
+/// anchor identifies ONE notice.
+const AI_MODEL_SHIM_NOTICE_MARKER: &str = "el modelo local ya no existe";
+
+/// Snapshot name for a run that went through `--clean-ai`.
 ///
-/// An insta snapshot is feature-BLIND — it cannot express "this under `ai`,
-/// that without it". One committed file could therefore only ever describe one
-/// of the two builds, and `test-full` (`cargo nextest run --all-features`) and
-/// `test-core` (`cargo nextest run --test '*'`) would disagree on which. So the
-/// NAME carries the discriminator, and both configurations get pinned.
+/// ONE name, because there is ONE configuration left: ADR-0004 paso 6
+/// removed the `ai` Cargo feature, so the discriminator this name used to
+/// carry (`ai_feature_on` / `ai_feature_off`) can no longer be computed —
+/// a `cfg!` on that feature would not even compile once the manifest entry
+/// is gone. The notice text is the same either way; only the trailing result
+/// block differs, and the snapshot pins the whole stderr.
 ///
-/// The feature set is an exact proxy for the binary's behavior, not a guess:
-/// `common::cli_harness::webfang_path()` derives the child `cargo build`'s
-/// `--features` from this very crate's `cfg!(feature = "ai")`, so the binary
-/// under test always carries the feature the test was compiled with. See
-/// `cli_harness.rs`, the `active_features` block.
+/// The binary under test is built by `common::cli_harness::webfang_path()`,
+/// which forwards this crate's active features to the child `cargo build` —
+/// and since the `ai` arm is gone from that list, the binary is always the
+/// one a user gets.
 fn clean_ai_snapshot_name(base: &str) -> String {
-    let suffix = if cfg!(feature = "ai") {
-        "ai_feature_on"
-    } else {
-        "ai_feature_off"
-    };
-    format!("{base}_{suffix}")
+    base.to_string()
 }
 
 /// Mount a single catch-all page so a run that reaches the scrape path has a
@@ -121,35 +120,32 @@ async fn scrape(t: &BehavioralTest, extra: &[&str]) -> std::process::Output {
         .expect("spawn webfang")
 }
 
-/// One AI-surface scrape, hermetic in BOTH feature sets.
+/// One AI-surface scrape, hermetic in EVERY configuration.
 ///
-/// `--clean-ai` reached the real ONNX loader, and the loader is cache-first
-/// ONLINE: pointed at an empty `HF_HOME` it would pull ~397 MB from
-/// huggingface.co and then run a genuine embedding pass. That is the one thing
-/// a behavioral test must not do — it puts a live network call and a
-/// third-party service inside a suite whose whole premise is that it dials
-/// nothing but its own wiremock. It also silently made `test-full` download the
-/// model, contradicting that lane's documented "zero AI inference" design
-/// (`ci.yml`, the note above its `Pre-build test binary` step).
+/// `--clean-ai` no longer reaches a local model loader: since ADR-0004 paso 6
+/// the semantic cleaner runs over a remote `EmbeddingPort`, and a run with no
+/// resolvable provider stops at the configuration error (exit 78) BEFORE any
+/// request leaves the process. `--offline` is kept on the invocation because
+/// it is one of the two flags the announcement promises survives un-gated, and
+/// its semantics (loopback allowed) are unchanged.
 ///
-/// The fix is the vector `ai_error_propagation.rs` already established and
-/// documented: `--clean-ai --offline` against an EMPTY hf_hub cache. Offline
-/// resolution then fails fast before any download, deterministically, on both
-/// a default-features build (which stops earlier still, at the capability gate)
-/// and an ai-enabled one. `--offline` permits loopback, so the wiremock page
-/// itself stays reachable — what fails is the model resolution, which is the
-/// only part that needed the network.
+/// The run therefore ends in exit 78 with the honest "no embedding provider"
+/// message — and that is EXACTLY what these tests want to observe: the two
+/// notices are rendered by `webfang_cli::main` right after
+/// `init_logging_dual`, which is UPSTREAM of the preflight gates. An operator
+/// on a binary that cannot honor `--clean-ai` is precisely the operator who
+/// most needs to know the flag is going away, so the notice must reach them
+/// even though the run itself fails.
 ///
-/// The empty cache must outlive the child process, hence the `TempDir` scoped
-/// to this function rather than a shared fixture.
+/// No `HF_HOME` juggling any more: the hf_hub cache is gone with the ONNX
+/// stack, and the hermetic `WEBFANG_CONFIG` the harness installs (an empty
+/// file) is what guarantees no provider is resolved.
 async fn scrape_ai_surface(t: &BehavioralTest, extra: &[&str]) -> std::process::Output {
-    let empty_hf_cache = tempfile::TempDir::new().expect("create empty hf_hub cache");
     let mut cmd = t.scraper_cmd();
     cmd.arg("--single-page")
         .arg("--ignore-robots")
         .arg("--clean-ai")
-        .arg("--offline")
-        .env("HF_HOME", empty_hf_cache.path());
+        .arg("--offline");
     for arg in extra {
         cmd.arg(arg);
     }
@@ -162,11 +158,12 @@ async fn scrape_ai_surface(t: &BehavioralTest, extra: &[&str]) -> std::process::
 /// is going away, what survives, which shims are still supported, where to
 /// migrate and where to object — EXACTLY once.
 ///
-/// `--clean-ai` on a build without the `ai` feature still reaches the notice:
-/// the replay happens right after `init_logging_dual`, which is upstream of the
-/// `--clean-ai` capability gate. That ordering is the point — an operator on a
-/// non-AI binary is exactly the operator who most needs to know the flag is
-/// going away.
+/// `--clean-ai` still reaches the notice even though the run itself now FAILS
+/// with the "no embedding provider" configuration error (exit 78): the replay
+/// happens right after `init_logging_dual`, which is upstream of every
+/// preflight gate. That ordering is the point — an operator whose binary
+/// cannot honor `--clean-ai` is exactly the operator who most needs to know
+/// the flag is going away.
 #[tokio::test]
 async fn onnx_deprecation_notice_fires_once_when_clean_ai_is_used() {
     let (t, stderr) = ai_surface_stderr(&[]).await;
@@ -237,8 +234,8 @@ async fn onnx_deprecation_notice_does_not_fire_when_the_ai_surface_is_untouched(
 }
 
 /// The env legs of the trigger. `AI_MODEL_ID` and `WEBFANG_AI_ENGINE` are read
-/// below clap (`webfang_ai`'s `compat::read_ai_model_id_with` and
-/// `EngineConfig::from_env`), so from argv they are invisible and must be probed
+/// below clap (by the CLI itself, since ADR-0004 paso 6 removed the
+/// `webfang_ai` readers), so from argv they are invisible and must be probed
 /// directly — an operator who only exported one of them is still an AI-surface
 /// run.
 #[tokio::test]
@@ -261,6 +258,84 @@ async fn ai_engine_env_alone_reaches_the_deprecation_notice() {
         1,
         "`WEBFANG_AI_ENGINE` alone must reach the notice; stderr:\n{stderr}"
     );
+}
+
+// ---------------------------------------------------------------------------
+// The `--ai-model` shim notice (ADR-0004 paso 6)
+// ---------------------------------------------------------------------------
+
+/// `--ai-model` still PARSES, but the local model it used to select is GONE:
+/// the value is IGNORED, and the ONE notice that says so names the knob that
+/// replaced it.
+///
+/// A silently ignored flag is the defect this notice exists to prevent — the
+/// operator typed `--ai-model granite-311m` and the run quietly cleaned with
+/// whatever the remote endpoint provides. So the notice is not optional, and
+/// it is not "once per process": it is ONCE per run that used the shim.
+#[tokio::test]
+async fn ai_model_flag_emits_exactly_one_migration_notice() {
+    let t = BehavioralTest::new().await;
+    mount_single_page_site(&t).await;
+
+    let output = t
+        .scraper_cmd()
+        .arg("--single-page")
+        .arg("--ignore-robots")
+        .arg("--ai-model")
+        .arg("granite-97m")
+        .timeout(Duration::from_secs(RUN_TIMEOUT_SECS))
+        .output()
+        .expect("spawn webfang");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert_eq!(
+        notice_events(&stderr, AI_MODEL_SHIM_NOTICE_MARKER),
+        1,
+        "the --ai-model shim notice must appear EXACTLY once; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("--embedding-provider"),
+        "the notice must name the knob that replaced the local model; stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("granite-97m"),
+        "the notice must report the model the operator asked for; stderr:\n{stderr}"
+    );
+}
+
+/// Both env doors reach the SAME single notice.
+///
+/// `WEBFANG_AI_MODEL_ID` is clap-bound to the `--ai-model` slot, so it lands
+/// in `AiConfig.model`. The legacy bare `AI_MODEL_ID` is NOT clap-bound, so
+/// the emitter reads it directly. An operator who only exported one of them
+/// must still be told — otherwise the shim is silently ignored for exactly
+/// the operators most likely to have it set in a systemd unit.
+#[tokio::test]
+async fn ai_model_env_vars_emit_the_same_single_migration_notice() {
+    for var in ["WEBFANG_AI_MODEL_ID", "AI_MODEL_ID"] {
+        let t = BehavioralTest::new().await;
+        mount_single_page_site(&t).await;
+
+        let output = t
+            .scraper_cmd()
+            .env(var, "granite-97m")
+            .arg("--single-page")
+            .arg("--ignore-robots")
+            .timeout(Duration::from_secs(RUN_TIMEOUT_SECS))
+            .output()
+            .expect("spawn webfang");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert_eq!(
+            notice_events(&stderr, AI_MODEL_SHIM_NOTICE_MARKER),
+            1,
+            "`{var}` alone must reach the ONE migration notice; stderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("--embedding-provider"),
+            "the notice must name `--embedding-provider`; stderr:\n{stderr}"
+        );
+    }
 }
 
 /// The orphaned-default mitigation, exactly once, while the threshold is still

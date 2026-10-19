@@ -15,7 +15,7 @@ Phase 6 ("Observability and SLOs").
 | Tier 1 (fast correctness gate) | 10 min | PR: fmt + targeted check/clippy/tests for the changed area (see `scripts/ci_fast_gate.sh`) |
 | Tier 2 (main integration) | 30 min | Push to `main`: full matrix, coverage, AI integration, sanitizers |
 | Docs-only | 3 min | Docs-only changes: cheap validation, no cargo |
-| AI path | accepted separately | ONNX inference runs outside the PR gate; tracked on its own, never compared here |
+| AI path | accepted separately | semantic cleaning runs on remote embedding endpoints outside the PR gate; tracked on its own, never compared here. The local ONNX path was removed (ADR-0004 paso 6) |
 
 ## How to regenerate
 

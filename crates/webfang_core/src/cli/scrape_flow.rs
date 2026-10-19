@@ -31,12 +31,7 @@ use crate::infrastructure::export::RecordStore;
 use crate::infrastructure::observability::log_scrape_error;
 use crate::HttpClientConfig;
 
-#[cfg(feature = "adaptive-selectors")]
 use crate::application::adaptive_engine::AdaptiveSelectorEngine;
-
-/// Placeholder when `adaptive-selectors` feature is disabled.
-#[cfg(not(feature = "adaptive-selectors"))]
-type AdaptiveSelectorEngine = ();
 
 /// Resolve the default state directory (`<cache>/webfang/state` —
 /// XDG_CACHE_HOME or `~/.cache` on Linux; %LOCALAPPDATA% / ~/Library/Caches

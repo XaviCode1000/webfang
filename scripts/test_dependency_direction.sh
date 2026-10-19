@@ -6,7 +6,8 @@
 # (test_ignored_guard.sh, test_concurrency_lints.sh). It proves, on mktemp
 # fixtures and fully offline (no repo state is read beyond the gate script
 # itself), that the dependency-direction gate:
-#   - passes a clean six-crate baseline;
+#   - passes a clean five-crate baseline (post-ADR-0004 paso 6: the
+#     webfang_ai crate is gone);
 #   - FAILS on a deliberately introduced forbidden edge (negative control);
 #   - accepts the [dev-dependencies] tier into webfang_test_utils from any
 #     crate, while a [dependencies] edge into the test harness stays forbidden;
@@ -43,10 +44,10 @@ serde = "1"
 EOF
 }
 
-# reset_fixture — a clean six-crate tree, so every case starts from scratch.
+# reset_fixture — a clean five-crate tree, so every case starts from scratch.
 reset_fixture() {
   local crate
-  for crate in webfang_core webfang_ai webfang_mcp webfang_cli webfang_test_utils webfang_benchmark; do
+  for crate in webfang_core webfang_mcp webfang_cli webfang_test_utils webfang_benchmark; do
     mkdir -p "$tmp/crates/$crate"
     write_clean_manifest "$crate"
   done
@@ -109,14 +110,16 @@ finish_case() {
 
 # Case 1: a fully clean workspace passes.
 reset_fixture
-expect_gate ok - "gate exits 0 on a clean six-crate tree (no internal edges)"
+expect_gate ok - "gate exits 0 on a clean five-crate tree (no internal edges)"
 finish_case "clean baseline passes"
 
 # Case 2: negative control (#1825 acceptance criterion) — a deliberately
-# introduced forbidden edge FAILS the gate.
+# introduced forbidden edge FAILS the gate. The pair changed with ADR-0004
+# paso 6 (webfang_ai no longer exists): webfang_core -> webfang_mcp keeps the
+# probe symmetric (core has no allowed edge at all).
 reset_fixture
-overlay_manifest webfang_ai $'[dependencies]\nwebfang_mcp = { workspace = true }'
-expect_gate fail "must NOT depend on webfang_mcp" "forbidden edge webfang_ai -> webfang_mcp fails the gate (negative control)"
+overlay_manifest webfang_core $'[dependencies]\nwebfang_mcp = { workspace = true }'
+expect_gate fail "must NOT depend on webfang_mcp" "forbidden edge webfang_core -> webfang_mcp fails the gate (negative control)"
 finish_case "negative control: forbidden prod edge fails"
 
 # Case 3: a production edge into the test harness stays forbidden.
@@ -149,7 +152,7 @@ finish_case "dotted-key form extracted"
 
 # Case 7: a missing manifest fails closed.
 reset_fixture
-rm "$tmp/crates/webfang_ai/Cargo.toml"
+rm "$tmp/crates/webfang_benchmark/Cargo.toml"
 expect_gate fail "missing manifest" "absent manifest fails the gate closed"
 finish_case "missing manifest fails closed"
 

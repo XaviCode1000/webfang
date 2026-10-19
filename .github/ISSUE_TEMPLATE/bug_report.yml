@@ -48,7 +48,7 @@ body:
       description: Which build are you running?
       options:
         - Default features
-        - '--features ai'
+        - '--features mcp'
         - Built from source (dev)
     validations:
       required: true

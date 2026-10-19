@@ -17,12 +17,7 @@ use crate::error::{Result, ScraperError};
 use crate::infrastructure::observability::log_scrape_error;
 use tracing::{debug, warn};
 
-#[cfg(feature = "adaptive-selectors")]
 use crate::application::adaptive_engine::AdaptiveSelectorEngine;
-
-/// Placeholder when `adaptive-selectors` feature is disabled.
-#[cfg(not(feature = "adaptive-selectors"))]
-type AdaptiveSelectorEngine = ();
 
 /// Extract HTML content using a CSS selector.
 ///

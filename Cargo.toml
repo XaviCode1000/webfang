@@ -2,7 +2,6 @@
 resolver = "2"
 members = [
     "crates/webfang_core",
-    "crates/webfang_ai",
     "crates/webfang_mcp",
     "crates/webfang_cli",
     "crates/webfang_test_utils",
@@ -24,7 +23,6 @@ homepage = "https://github.com/XaviCode1000/webfang"
 # release-plz git_only change detection). release-plz keeps these in sync
 # with the workspace version on every bump.
 webfang_core = { path = "crates/webfang_core", version = "2.13.0" }
-webfang_ai = { path = "crates/webfang_ai", version = "2.13.0" }
 webfang_mcp = { path = "crates/webfang_mcp", version = "2.13.0" }
 webfang_cli = { path = "crates/webfang_cli", version = "2.13.0" }
 webfang_test_utils = { path = "crates/webfang_test_utils" }
@@ -108,12 +106,9 @@ tracing-tree = "0.4"
 # MIME detection
 
 # AI features
-tokenizers = "0.21"
 unicode-segmentation = "1.12"
 smallvec = "1.13"
 wide = "0.7"
-ort = { version = "2.0.0-rc.12", default-features = false, features = ["std", "ndarray", "download-binaries", "copy-dylibs", "tls-native"] }
-hf-hub = { version = "0.5", default-features = false, features = ["tokio", "rustls-tls"] }
 
 # MCP features
 rmcp = { version = "1.7", features = ["server", "macros", "schemars", "transport-streamable-http-server"] }

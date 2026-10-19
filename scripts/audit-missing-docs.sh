@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# The `webfang_ai` crate was removed in ADR-0004 paso 6; the semantic-cleaning
+# surface it held now lives in webfang_core, which is already listed here.
 CRATES=(
   webfang_core
-  webfang_ai
 )
 
 TMPFILE=$(mktemp)

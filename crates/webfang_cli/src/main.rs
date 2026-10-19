@@ -31,8 +31,6 @@ use webfang_core::cli::orchestrator;
 
 use std::panic;
 use std::sync::Arc;
-#[cfg(feature = "ai")]
-use webfang_ai::{ModelConfig, SemanticCleanerImpl, SemanticError};
 #[cfg(feature = "adaptive-selectors")]
 use webfang_core::application::adaptive_engine::{AdaptiveSelectorEngine, AdaptiveSelectorOptions};
 use webfang_core::application::crawl_options::CrawlOptions;
@@ -41,7 +39,6 @@ use webfang_core::cli::error::{CliError, CliExit};
 use webfang_core::cli::parse::subcommand_args;
 use webfang_core::cli::preflight;
 use webfang_core::cli::preflight::ArgSources;
-#[cfg(feature = "ai")]
 use webfang_core::domain::semantic_cleaner::SemanticCleaner;
 use webfang_core::infrastructure::platform::init_console_output_encoding;
 #[cfg(feature = "adaptive-selectors")]
@@ -230,10 +227,9 @@ async fn __main() -> CliExit {
     // emitted exactly once, at the one point that has both the provenance
     // (`AiConfig::deprecated_max_tokens`) and a live subscriber.
     //
-    // Shape follows the existing env-var deprecation
-    // (`webfang_ai::infrastructure_ai::compat::read_ai_model_id_with`): English
-    // structured field names, user-facing message text in Spanish, with the
-    // migration target and the removal schedule stated.
+    // Shape follows the existing env-var deprecation: English structured
+    // field names, user-facing message text in Spanish, with the migration
+    // target and the removal schedule stated.
     if let Some(max_tokens) = opts.ai_config.deprecated_max_tokens {
         tracing::warn!(
             flag = "--max-tokens",
@@ -250,6 +246,12 @@ async fn __main() -> CliExit {
             opts.ai_config.max_chars,
         );
     }
+
+    // The `--ai-model` shim (ADR-0004 paso 6). Same rule as `--max-tokens`
+    // above, for the same reason (#796): the flag still PARSES, but the local
+    // ONNX model it selected is gone, so the value is IGNORED — and a silently
+    // ignored flag is precisely what this notice exists to prevent.
+    emit_ai_model_shim_notice(&opts);
 
     // 6c. JS strategy dependency preflight (#685): --js-strategy full needs
     // Chrome installed — fail fast with exit 78 before any crawl starts.
@@ -275,12 +277,6 @@ async fn __main() -> CliExit {
     // --elastic, so reject it before any crawl starts (exit 78) instead of
     // letting the run persist nothing.
     if let Err(exit) = preflight::check_db_path_requires_elastic(&opts) {
-        return exit;
-    }
-
-    // 6e. AI feature preflight (#761): --clean-ai on a non-AI build must
-    // fail before any network request, not after a full scrape.
-    if let Err(exit) = preflight::check_clean_ai_feature(&opts) {
         return exit;
     }
 
@@ -345,7 +341,7 @@ fn emit_adr0004_deprecation_notices(pending: webfang_core::cli::args::ai::Pendin
     if pending.onnx_deprecation {
         tracing::warn!(
             notice = "onnx_deprecation",
-            removed_feature = "ai",
+            removed_feature = webfang_core::cli::args::ai::REMOVED_AI_FEATURE,
             removed_capability = "onnx_local",
             replacement = "webfang connect|webfang doctor|webfang show",
             objection_channel = webfang_core::cli::args::ai::ONNX_OBJECTION_CHANNEL,
@@ -368,6 +364,48 @@ fn emit_adr0004_deprecation_notices(pending: webfang_core::cli::args::ai::Pendin
             webfang_core::cli::args::ai::orphan_threshold_notice(threshold),
         );
     }
+}
+
+/// Emit the ONE `--ai-model` migration notice (ADR-0004 paso 6).
+///
+/// `--ai-model` — and its env vars `WEBFANG_AI_MODEL_ID` / `AI_MODEL_ID` —
+/// still PARSE: they are shims, not errors. But the local ONNX model they
+/// used to select is GONE, so the value is IGNORED, and a silently ignored
+/// flag is exactly what this notice exists to prevent. The operator is told,
+/// in Spanish, which knob replaced it: the remote provider.
+///
+/// Fires ONLY when the operator actually used the shim, and exactly once per
+/// run:
+/// - the flag or `WEBFANG_AI_MODEL_ID` — both reach `AiConfig::model`
+///   (clap binds the env var to the arg), and
+/// - the legacy `AI_MODEL_ID`, which is NOT clap-bound and therefore never
+///   reaches `CrawlOptions`; it is read here, from the same constant the
+///   core module uses.
+///
+/// Shape follows the `--max-tokens` deprecation: English structured fields
+/// carrying the facts, the Spanish prose as the event message.
+fn emit_ai_model_shim_notice(opts: &CrawlOptions) {
+    let requested = opts.ai_config.model.trim();
+    let legacy = std::env::var(webfang_core::cli::args::ai::LEGACY_AI_MODEL_ENV).ok();
+    if requested.is_empty() && legacy.is_none() {
+        return;
+    }
+    let requested_model = if requested.is_empty() {
+        legacy.as_deref().unwrap_or_default()
+    } else {
+        requested
+    };
+    tracing::warn!(
+        flag = "--ai-model",
+        env = "WEBFANG_AI_MODEL_ID",
+        legacy_env = webfang_core::cli::args::ai::LEGACY_AI_MODEL_ENV,
+        replacement = "--embedding-provider",
+        requested_model,
+        "el modelo local ya no existe: `--ai-model` (y `WEBFANG_AI_MODEL_ID` / \
+         `AI_MODEL_ID`) se ignoran. La limpieza semántica ahora la resuelve un \
+         provider remoto: pasá `--embedding-provider <id>` (o exportá \
+         `WEBFANG_EMBEDDING_PROVIDER`).",
+    );
 }
 
 /// Handle the `connect` subcommand (issue #1933, ADR-0004 step 4).
@@ -682,8 +720,8 @@ mod wiring_tests {
     /// End-to-end wiring evidence (AS-2): the engine built by the production
     /// wiring function resolves a repair through Tier 2. `trace.tier2_score`
     /// is `Some` only on the semantic path — Tier 1 outcomes always carry
-    /// `None`, so this marker is equivalent to the trace field
-    /// `method = "tier2_semantic"` emitted by the cascade.
+    /// `None`, so this marker is the cascade's own record of which tier
+    /// answered.
     #[tokio::test]
     async fn wired_engine_resolves_repair_through_tier2() {
         let semantic_hit = Some(SemanticMatch {
@@ -725,21 +763,19 @@ mod wiring_tests {
     /// foreign trait for `Arc<T>` — and `Arc<CountingEmbedder>` would be the
     /// otherwise-natural shape.
     ///
-    /// `ai`-gated because the only test that uses it is, and this module
-    /// compiles with `adaptive-selectors` alone: without the gate the whole
-    /// fixture is dead code in that combination.
-    #[cfg(feature = "ai")]
+    /// Ungated since ADR-0004 paso 6: the fixture needs only the core
+    /// `EmbeddingPort` trait, and the test it serves (the Tier 2 slot stays
+    /// bound to the port it was handed) is a TYPE-level invariant that
+    /// outlived the local ONNX pool.
     struct CountingEmbedder {
         inner: Arc<CountingInner>,
     }
 
-    #[cfg(feature = "ai")]
     struct CountingInner {
         vec: Vec<f32>,
         embedded: std::sync::atomic::AtomicUsize,
     }
 
-    #[cfg(feature = "ai")]
     impl CountingEmbedder {
         fn new(vec: Vec<f32>) -> Self {
             Self {
@@ -763,7 +799,6 @@ mod wiring_tests {
         }
     }
 
-    #[cfg(feature = "ai")]
     impl webfang_core::domain::embedding_port::EmbeddingPort for CountingEmbedder {
         fn embed<'a>(
             &'a self,
@@ -805,7 +840,11 @@ mod wiring_tests {
     /// handed in, all the way down to the adapter — the part that would break
     /// first if `semantic_inspector` or `EmbeddingSemanticInspector::new`
     /// started resolving its own port.
-    #[cfg(feature = "ai")]
+    ///
+    /// The LOCAL pool it models is gone (ADR-0004 paso 6); what the test still
+    /// pins is the TYPE separation — `Tier2EmbeddingPort::Local` and the vault
+    /// slot are different types, so the vault slot can never reach the
+    /// inspector by accident (issue #1977).
     #[test]
     fn tier2_inspector_stays_bound_to_the_local_port() {
         let local = Arc::new(CountingEmbedder::new(vec![1.0, 0.0]));
@@ -814,9 +853,9 @@ mod wiring_tests {
         let shared =
             Some(webfang_core::domain::embedding_port::LocalEmbeddingPort::new(local.as_port()));
 
-        // Models the composition order: the vault slot gets overwritten by a
-        // remote provider after `build_ai_cleaner` already handed out the local
-        // port. The inspector only ever sees `shared`.
+        // Models the composition order: the vault slot holds a DIFFERENT
+        // provider than the one the inspector was handed. The inspector only
+        // ever sees `shared`.
         let vault_slot: Option<Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort>> =
             Some(remote.as_port());
 
@@ -855,9 +894,9 @@ mod wiring_tests {
 
 /// Build the adaptive selector engine when the feature and flag are both active.
 ///
-/// The `semantic` parameter carries the Tier 2 provider when the `ai` feature
-/// supplied one (shared ONNX pool + tokenizer); `None` degrades the engine to
-/// Tier 1 (lexical) repair. `options` is the shared engine configuration —
+/// The `semantic` parameter carries the Tier 2 provider when the run resolved
+/// one (an explicit `--tier2-embedding-provider`); `None` degrades the engine
+/// to Tier 1 (lexical) repair. `options` is the shared engine configuration —
 /// the SAME instance that configured the Tier 2 threshold.
 #[cfg(feature = "adaptive-selectors")]
 fn build_adaptive_engine(
@@ -895,12 +934,8 @@ fn build_adaptive_engine(
 /// the parameter is `Option<Tier2EmbeddingPort>`, and the vault slot's
 /// `Option<Arc<dyn EmbeddingPort>>` is not assignable to it.
 ///
-/// Gated on `adaptive-selectors` alone, NOT `all(ai, adaptive-selectors)`:
-/// both the `ai` and the `not(ai)` call sites reach it — without `ai` there
-/// is no local pool, but an explicit `--tier2-embedding-provider` still
-/// resolves. Requiring `ai` here left the `not(ai)` arm calling a function
-/// that did not exist, which is exactly what the Feature-matrix job exists
-/// to catch (`cargo hack check --each-feature`).
+/// Gated on `adaptive-selectors` alone: it is the feature that owns the
+/// `AdaptiveSelectorOptions` type, and the only consumer of this function.
 #[cfg(feature = "adaptive-selectors")]
 fn semantic_inspector(
     tier2_port: Option<webfang_core::domain::embedding_port::Tier2EmbeddingPort>,
@@ -915,144 +950,59 @@ fn semantic_inspector(
     })
 }
 
-/// Map an AI cleaner init failure to its CLI exit: download faults are
-/// transient network errors, everything else is a config error.
-#[cfg(feature = "ai")]
-fn ai_init_error(e: SemanticError) -> CliExit {
-    let msg = format!("No se pudo inicializar el limpiador semántico AI: {e}");
-    match e {
-        SemanticError::Download { .. } => CliExit::NetworkError(msg),
-        _ => CliExit::ConfigError(msg),
-    }
-}
-
-/// Build the AI semantic cleaner and its vault-search ports, surfacing the
-/// cleaner's shared LOCAL embedding port so Tier 2 semantic repair reuses it
-/// without a second model load (ADR-0004 slice 1).
+/// Build the AI semantic cleaner and the vault-search ports (ADR-0004 paso 6).
 ///
-/// The third element is deliberately the local `EmbeddingPort` and not the
-/// engine+tokenizer bundle it was before: Tier 2 is now port-backed, and the
-/// port is the only thing it needs. Returning it **from here**, rather than
-/// having the inspector read a slot later, is what makes the binding safe —
-/// see the slot-overwrite note at the call site.
+/// `--clean-ai` carries no local ONNX model: the cleaner is built over
+/// whatever `EmbeddingPort` the run resolved — remote only, since ADR-0004
+/// removed the local stack. The port is the SAME one the vault slot gets
+/// (ONE resolution, ONE probe dial per run), resolved with the pattern that
+/// already fills that slot: `--embedding-provider` (flag) >
+/// `WEBFANG_EMBEDDING_PROVIDER` (env) > the configured default embedding
+/// provider. A `--clean-ai` run with no resolvable remote provider is a
+/// `ConfigError` in Spanish naming `--embedding-provider` (exit 78) — never
+/// a silent no-op.
 ///
-/// It is returned as a
-/// [`LocalEmbeddingPort`](webfang_core::domain::embedding_port::LocalEmbeddingPort)
-/// rather than a bare trait object, so the origin survives the trip: the caller
-/// cannot pass it to anything that would lose the fact that it is local
-/// (issue #1977).
-#[cfg(feature = "ai")]
-async fn build_ai_cleaner(
+/// WITHOUT `--clean-ai` this returns no cleaner and the ports the run would
+/// have had anyway: today's default build never carried an AI cleaner, and
+/// the vault slot is wired only when a provider resolves.
+fn build_ai_cleaner(
     opts: &CrawlOptions,
+    embedding_port: Option<Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort>>,
 ) -> Result<
     (
         Option<Arc<dyn SemanticCleaner>>,
         webfang_core::application::container::VaultAiPorts,
-        Option<webfang_core::domain::embedding_port::LocalEmbeddingPort>,
     ),
     CliExit,
 > {
+    let mut ports = webfang_core::application::container::VaultAiPorts::default();
+    if let Some(port) = &embedding_port {
+        ports.embedding_port = Some(Arc::clone(port));
+    }
+
     if !opts.ai || opts.export.dry_run {
-        return Ok((
-            None,
-            webfang_core::application::container::VaultAiPorts::default(),
-            None,
+        return Ok((None, ports));
+    }
+
+    let Some(port) = embedding_port else {
+        return Err(CliExit::ConfigError(
+            "--clean-ai requiere un provider de embeddings remoto: pasá \
+             '--embedding-provider <id>' (o exportá WEBFANG_EMBEDDING_PROVIDER) \
+             con un provider configurado en el archivo de config."
+                .to_string(),
         ));
-    }
-
-    // Resolve model variant: CLI flag takes precedence over AI_MODEL_ID env var
-    let model_variant = if opts.ai_config.model.is_empty() {
-        // Flag absent: honor AI_MODEL_ID if set, failing loudly when its
-        // value is not a valid model ID (#874). Unset → silent Granite-97M
-        // default (the user made no choice).
-        match webfang_ai::AiModel::from_env() {
-            Ok(Some(variant)) => variant,
-            Ok(None) => webfang_ai::AiModel::default(),
-            Err(e) => {
-                return Err(CliExit::UsageError(format!(
-                    "Modelo AI inválido para la variable de entorno AI_MODEL_ID: {e}"
-                )));
-            },
-        }
-    } else {
-        match opts.ai_config.model.parse::<webfang_ai::AiModel>() {
-            Ok(variant) => variant,
-            Err(e) => {
-                return Err(CliExit::UsageError(format!(
-                    "Modelo AI inválido para --ai-model: {e}"
-                )));
-            },
-        }
     };
 
-    // Engine selection (P0-001 MEASURE, issue #1456): env-first via
-    // `WEBFANG_AI_ENGINE` (`single` | `pool:<N>`), unset meaning the
-    // MEASURE-calibrated `Pool` default (rollout shipped per
-    // `docs/p0-001-n-decision.md`: N=4 knee, 5.44× wall, bit-identical
-    // correctness). `WEBFANG_AI_ENGINE=single` is the rollback hatch. Set-but-
-    // invalid is a loud startup error, never a silent fallback (#874
-    // discipline shared with `AI_MODEL_ID` above). No `--ai-engine` flag by
-    // design: a flag could never reach the MCP daemon (no per-run argv); the
-    // env var reaches both the CLI and the MCP daemon from the shared
-    // `webfang_ai` layer (#1569).
-    let engine_config = match webfang_ai::infrastructure_ai::EngineConfig::from_env() {
-        Ok(config) => config,
-        Err(e) => return Err(CliExit::ConfigError(e)),
-    };
-
-    let model_config = ModelConfig::default()
-        .with_model_variant(model_variant)
-        .with_relevance_threshold(opts.ai_config.threshold)
-        .map(|c| {
-            c.with_max_chars(opts.ai_config.max_chars)
-                .with_offline_mode(opts.ai_config.offline)
-        });
-
-    match model_config {
-        Ok(config) => {
-            // ONE composition root for the local embedding stack (#1569,
-            // ADR-0004): `build_onnx_embedding_port` resolves the model ONCE
-            // and returns the port plus the SAME engine + tokenizer the vault
-            // ports and the Tier 2 inspector need — `Single` routes through
-            // `build_engine` (byte-for-byte today's pool construction, drainer
-            // contract included) and `Pool { N }` through the N-session
-            // engine. The cleaner itself only takes the port.
-            match webfang_ai::infrastructure_ai::embedding_adapter::build_onnx_embedding_port(
-                &config,
-                engine_config,
-            )
-            .await
-            {
-                Ok((port, engine, tokenizer)) => {
-                    let cleaner = SemanticCleanerImpl::from_parts(Arc::clone(&port), config);
-                    // Hand the SAME local port to Tier 2. Wrapped in
-                    // `LocalEmbeddingPort` — the only production construction
-                    // of that type — and captured here, before
-                    // `resolve_remote_embedding` overwrites the vault slot, so
-                    // `--embedding-provider remote` can never reach the
-                    // inspector's input (ADR-0004 slice 1, issue #1977). The
-                    // ordering is the convention; the wrapper is the type.
-                    let shared =
-                        Some(webfang_core::domain::embedding_port::LocalEmbeddingPort::new(port));
-                    let cleaner: Option<Arc<dyn SemanticCleaner>> = Some(Arc::new(cleaner));
-                    let mut ports = build_vault_ports(engine, tokenizer).await;
-                    ports.cleaner = cleaner.clone();
-                    Ok((cleaner, ports, shared))
-                },
-                Err(e) => Err(ai_init_error(e)),
-            }
-        },
-        Err(e) => Err(CliExit::ConfigError(format!(
-            "Configuración de umbral AI inválida: {e}"
-        ))),
-    }
+    let cleaner = webfang_core::infrastructure::semantic_cleaner::SemanticCleanerImpl::new(
+        port,
+        opts.ai_config.max_chars,
+        opts.ai_config.threshold,
+    );
+    let cleaner: Option<Arc<dyn SemanticCleaner>> = Some(Arc::new(cleaner));
+    ports.cleaner = cleaner.clone();
+    Ok((cleaner, ports))
 }
 
-/// Resolve the remote embedding adapter for the embedding slot (#1462).
-///
-/// An explicit `--embedding-provider` always resolves (fail fast even
-/// without `ai`, so vault search works with no local model); with `ai` the
-/// default slot may also select a remote provider. Otherwise `None` with no
 /// Load the provider registry from the config file.
 ///
 /// Shared by the vault and Tier 2 embedding resolvers, which otherwise repeat
@@ -1065,29 +1015,42 @@ fn load_providers() -> webfang_core::domain::providers::ProvidersConfig {
     }
 }
 
-/// config load and no probe — plain runs never dial an embeddings endpoint.
+/// Resolve the embedding port for the whole run (ADR-0004 paso 6).
+///
+/// An explicit `--embedding-provider` always resolves (fail fast even
+/// without `--clean-ai`, so vault search works with no local model); with
+/// `--clean-ai` the default slot may also select a remote provider.
+/// Otherwise `None` with no config load and no probe — plain runs never dial
+/// an embeddings endpoint.
+///
+/// The port is returned ERASED (`Arc<dyn EmbeddingPort>`), not as the
+/// concrete adapter: the `--clean-ai` cleaner is built over the trait object
+/// and the vault slot stores the same one, so the endpoint is probed exactly
+/// once per run.
 async fn resolve_remote_embedding(
     opts: &CrawlOptions,
-) -> Result<
-    Option<
-        std::sync::Arc<webfang_core::infrastructure::llm::remote_embedding::RemoteEmbeddingAdapter>,
-    >,
-    CliExit,
-> {
+) -> Result<Option<std::sync::Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort>>, CliExit>
+{
     if opts.embedding_provider.is_none() && !opts.ai {
         return Ok(None);
     }
     let providers = load_providers();
     webfang_core::cli::llm_wire::build_embedding_provider(opts, &providers, opts.ai_config.offline)
         .await
+        .map(|adapter| {
+            adapter.map(|a| {
+                a as std::sync::Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort>
+            })
+        })
 }
 
 /// Resolve the remote embedding adapter for the Tier 2 semantic inspector (ADR-0004).
 ///
 /// Separate from `resolve_remote_embedding` on purpose: vault search and
 /// Tier 2 repair are distinct privacy domains (issue #1977). An explicit
-/// `--tier2-embedding-provider` always resolves (fail fast even without `ai`).
-/// Without it, the local ONNX pool `--ai` already builds serves Tier 2: the
+/// `--tier2-embedding-provider` always resolves (fail fast even without
+/// `--clean-ai`). Without it, Tier 2 has NO provider at all: the local ONNX
+/// pool that used to serve this slot is gone (ADR-0004 paso 6), and the
 /// vault slot's default embedding provider is never adopted, so a remote
 /// provider configured for vault search cannot open a Tier 2 egress (#1981).
 /// `None` with no config load and no probe — plain runs never dial an
@@ -1155,10 +1118,10 @@ fn compute_consent_hash(provider_id: &str, base_url: &url::Url) -> String {
 
 /// Build optional engines and dispatch to the orchestrator.
 ///
-/// The AI cleaner is built FIRST (#702): the adaptive engine needs the
-/// cleaner's shared ONNX assets to wire Tier 2 semantic repair. The argument
-/// list passed to the orchestrator depends on which optional features are
-/// compiled in, so each combination is spelled out explicitly.
+/// The AI cleaner is built FIRST (#702): the adaptive engine needs a
+/// semantic provider to wire Tier 2 repair. The argument list passed to the
+/// orchestrator depends on which optional features are compiled in, so each
+/// combination is spelled out explicitly.
 ///
 /// If `--extract-with-llm` is set, builds the LLM provider from config,
 /// injects it into a Container, and validates startup (caducidad del DEBE §8b:
@@ -1223,23 +1186,18 @@ async fn build_and_run(opts: CrawlOptions) -> CliExit {
         None
     };
 
-    #[cfg(feature = "ai")]
-    let (ai_cleaner, mut vault_ports, shared) = match build_ai_cleaner(&opts).await {
+    // Resolve the embedding slot ONCE (ADR-0004 paso 6): the vault-search
+    // slot and the `--clean-ai` cleaner are the SAME port, so the endpoint
+    // is probed once per run instead of twice.
+    let embedding_port = match resolve_remote_embedding(&opts).await {
+        Ok(port) => port,
+        Err(e) => return e,
+    };
+
+    let (ai_cleaner, vault_ports) = match build_ai_cleaner(&opts, embedding_port) {
         Ok(v) => v,
         Err(e) => return e,
     };
-    #[cfg(not(feature = "ai"))]
-    let mut vault_ports = webfang_core::application::container::VaultAiPorts::default();
-
-    match resolve_remote_embedding(&opts).await {
-        Ok(Some(adapter)) => {
-            // Explicit remote wins over the local pool adapter: same
-            // `embedding_port` slot, overwritten (not merged).
-            vault_ports.embedding_port = Some(adapter);
-        },
-        Ok(None) => {},
-        Err(e) => return e,
-    }
 
     // Resolve Tier 2 remote embedding (separate flag, separate privacy domain)
     // Only when adaptive-selectors is enabled, but defined here so it's
@@ -1273,146 +1231,33 @@ async fn build_and_run(opts: CrawlOptions) -> CliExit {
                 ..AdaptiveSelectorOptions::default()
             }
         };
-        #[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
-        let semantic = {
-            // Tier 2 slot priority: explicit remote > shared local. BOTH arms
-            // produce `Tier2EmbeddingPort`, so `vault_ports.embedding_port` —
-            // in scope right here — cannot reach `semantic_inspector`.
-            let tier2_port = tier2_remote.clone().or_else(|| {
-                shared.as_ref().map(|s| {
-                    webfang_core::domain::embedding_port::Tier2EmbeddingPort::Local(s.clone())
-                })
-            });
-            semantic_inspector(tier2_port, &engine_options)
-        };
-        #[cfg(all(not(feature = "ai"), feature = "adaptive-selectors"))]
-        let semantic = {
-            // Without `ai` feature, no local ONNX pool exists.
-            // Tier 2 ONLY works if explicit --tier2-embedding-provider is set.
-            semantic_inspector(tier2_remote.clone(), &engine_options)
-        };
+        // Tier 2 has its OWN privacy domain (issue #1977): the inspector
+        // binds ONLY to an explicit `--tier2-embedding-provider`. The vault
+        // slot's provider is never adopted here — it is a DIFFERENT type
+        // (`Tier2EmbeddingPort` vs `Option<Arc<dyn EmbeddingPort>>`), so
+        // `vault_ports.embedding_port` cannot reach `semantic_inspector` even
+        // by accident. The local ONNX pool that used to serve this slot is
+        // gone (ADR-0004 paso 6), so the explicit remote is the only arm left.
+        let semantic = semantic_inspector(tier2_remote.clone(), &engine_options);
         // Build adaptive engine inside the cfg block so semantic and engine_options are in scope
         let adaptive_engine = build_adaptive_engine(&opts, semantic, engine_options);
 
-        #[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
-        {
-            let threshold = opts.ai_config.threshold;
-            let exit =
-                orchestrator::run(opts, ai_cleaner, adaptive_engine, vault_ports, llm_port).await;
-            // Print embedding summary if Tier 2 remote was used
-            if let Some(ref tier2) = tier2_remote {
-                print_embedding_summary(tier2.port(), threshold).await;
-            }
-            exit
+        let threshold = opts.ai_config.threshold;
+        let exit =
+            orchestrator::run(opts, ai_cleaner, adaptive_engine, vault_ports, llm_port).await;
+        // Print embedding summary if Tier 2 remote was used
+        if let Some(ref tier2) = tier2_remote {
+            print_embedding_summary(tier2.port(), threshold).await;
         }
-        #[cfg(all(not(feature = "ai"), feature = "adaptive-selectors"))]
-        {
-            let threshold = opts.ai_config.threshold;
-            let exit = orchestrator::run(opts, adaptive_engine, vault_ports, llm_port).await;
-            if let Some(ref tier2) = tier2_remote {
-                print_embedding_summary(tier2.port(), threshold).await;
-            }
-            exit
-        }
+        exit
     }
     #[cfg(not(feature = "adaptive-selectors"))]
     {
-        // AdaptiveSelectorOptions is gated behind adaptive-selectors feature.
-        // Define the default inline for when the feature is disabled.
-        use std::time::Duration;
-        #[allow(dead_code)]
-        struct EngineOptions {
-            pub lexical_threshold: f64,
-            pub escalation_lower_bound: f64,
-            pub semantic_threshold: f32,
-            pub cache_ttl: Duration,
-            pub max_cache_entries: usize,
-            pub max_concurrent_inference: usize,
-        }
-        impl Default for EngineOptions {
-            fn default() -> Self {
-                Self {
-                    lexical_threshold: 0.85,
-                    escalation_lower_bound: 0.70,
-                    semantic_threshold: 0.75,
-                    cache_ttl: Duration::from_secs(30 * 60),
-                    max_cache_entries: 10_000,
-                    max_concurrent_inference: 4,
-                }
-            }
-        }
-        let _engine_options = EngineOptions::default();
-        // No adaptive engine to feed — keep the shared assets from becoming an
-        // unused binding on the ai-only combo.
-        #[cfg(all(feature = "ai", not(feature = "adaptive-selectors")))]
-        let _ = shared;
-
-        #[cfg(all(feature = "ai", not(feature = "adaptive-selectors")))]
-        {
-            orchestrator::run(opts, ai_cleaner, vault_ports, llm_port).await
-        }
-        #[cfg(all(not(feature = "ai"), not(feature = "adaptive-selectors")))]
-        {
-            orchestrator::run(opts, vault_ports, llm_port).await
-        }
+        // No adaptive engine to feed — call orchestrator without it.
+        // The `adaptive-selectors` feature gates the `AdaptiveSelectorOptions` type,
+        // so we don't define a local copy here anymore.
+        orchestrator::run(opts, ai_cleaner, vault_ports, llm_port).await
     }
-}
-
-/// Assemble the vault-search AI ports (#433) from the cleaner's shared model.
-///
-/// Builds the ONNX embedding adapter + Markdown chunker (always under `ai`) from
-/// the semantic cleaner's shared erased engine + tokenizer — so the `--ai` path
-/// loads the ONNX model exactly once, in `Single` and `Pool` modes alike (#1569)
-/// — plus the SQLite note repository (under `persistence`). Embedding + chunker
-/// assembly is infallible (the components are already valid); only the note
-/// repository can fail, and it degrades gracefully — the port stays `None` and
-/// the capability answers with an honest error rather than aborting the run.
-#[cfg(feature = "ai")]
-async fn build_vault_ports(
-    pool: Arc<dyn webfang_ai::infrastructure_ai::InferenceEngine + Send + Sync>,
-    tokenizer: Arc<webfang_ai::MiniLmTokenizer>,
-) -> webfang_core::application::container::VaultAiPorts {
-    use webfang_core::application::container::VaultAiPorts;
-
-    let mut ports = VaultAiPorts::default();
-
-    // Assemble the embedding adapter from the cleaner's shared engine + tokenizer.
-    // Infallible — no model resolution happens here (that already happened once
-    // inside the cleaner constructor), so there is nothing to degrade around.
-    let adapter = webfang_ai::EmbeddingAdapter::new(pool, tokenizer);
-    ports.embedding_port = Some(Arc::new(adapter));
-    ports.text_chunker = Some(Arc::new(webfang_ai::MarkdownChunker::new()));
-
-    #[cfg(feature = "persistence")]
-    {
-        use webfang_core::infrastructure::autotuning::{env_db_path, resolve_db_path};
-        use webfang_core::infrastructure::persistence::{
-            create_pool, setup_schema, SqliteVectorRepository,
-        };
-
-        let db_path = resolve_db_path(None, env_db_path());
-        match create_pool(&db_path, 4) {
-            Ok(db_pool) => match setup_schema(&db_pool).await {
-                Ok(()) => {
-                    ports.note_repository = Some(Arc::new(SqliteVectorRepository::new(db_pool)));
-                },
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        "note repository schema init failed, persistence disabled"
-                    );
-                },
-            },
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    "note repository pool creation failed, persistence disabled"
-                );
-            },
-        }
-    }
-
-    ports
 }
 
 /// Print embedding metrics summary at the end of a successful run.

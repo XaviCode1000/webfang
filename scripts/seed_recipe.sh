@@ -390,8 +390,9 @@ seed_recipe_parse() {
   SEED_RECIPE_CONFIG_DIGEST="$(seed_recipe_config_digest "$repo")"
   SEED_RECIPE_WORKSPACE_DIGEST="$(seed_recipe_workspace_contract "$repo")" \
     || { echo "seed_recipe: refusing to proceed without a workspace build contract" >&2; exit 1; }
-  # Canonicalise the feature list once, so "ai,mcp" and "mcp,ai" cannot become
-  # two seeds, and so the string handed to cargo is the same one that was keyed.
+  # Canonicalise the feature list once, so "mcp,chromium" and "chromium,mcp"
+  # cannot become two seeds, and so the string handed to cargo is the same
+  # one that was keyed.
   SEED_RECIPE_FEATURES_CANON="$(
     printf '%s' "$SEED_RECIPE_FEATURES" | tr ',' '\n' | sed '/^$/d' | LC_ALL=C sort | paste -sd, -
   )"

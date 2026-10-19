@@ -1,11 +1,12 @@
 //! Text chunker port — domain trait for content segmentation.
 //!
 //! Defines the contract for splitting text into semantic chunks.
-//! The concrete Markdown implementation lives in `webfang_ai`
-//! (`MarkdownChunker`); the HTML implementation uses `HtmlChunker`.
+//! The concrete Markdown implementation moved to `webfang_core` when ADR-0004
+//! paso 6 removed the `webfang_ai` crate; the HTML implementation uses
+//! `HtmlChunker`.
 //!
 //! This trait enables the application layer to orchestrate chunking
-//! without depending on `webfang_ai` directly (dependency inversion).
+//! without depending on the concrete implementation (dependency inversion).
 
 use crate::error::SemanticError;
 

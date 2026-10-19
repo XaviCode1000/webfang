@@ -151,9 +151,8 @@ jobs:
             os: ubuntu-latest
             archive: tar.gz
             cross: true
-          # x86_64-apple-darwin intentionally NOT built: ONNX Runtime dropped
-          # x64 macOS as of 1.24.1, so ort-sys has no prebuilt for it and the
-          # `ai` feature cannot link (upstream pykeio/ort#556, closed not_planned).
+          # x86_64-apple-darwin is NOT in this matrix: the published targets are
+          # Linux x86_64/aarch64, macOS Apple Silicon and Windows x86_64.
           # macOS 26 (Tahoe) is also Apple's last Intel release.
           - target: aarch64-apple-darwin
             os: macos-latest
@@ -213,7 +212,7 @@ jobs:
         # target on `stable` leaves the pinned toolchain without it ->
         # E0463 "can't find crate for `core`". The @1.88.0 rev installs the
         # target on the SAME toolchain cargo resolves via the toolchain file.
-        run: cargo build --release --locked --features "ai mcp" --target ${{ matrix.target }} -p webfang_cli
+        run: cargo build --release --locked --features "mcp" --target ${{ matrix.target }} -p webfang_cli
 
       - name: Strip binary (Linux/macOS)
         if: runner.os != 'Windows'
@@ -699,7 +698,7 @@ jobs:
             echo "| macOS Apple Silicon | \`webfang-aarch64-apple-darwin.tar.gz\` |"
             echo "| Windows x86_64 | \`webfang-x86_64-pc-windows-msvc.zip\` |"
             echo ""
-            echo "**There is no Intel macOS artifact** — this is deliberate. ONNX Runtime dropped x64 macOS, so the \`ai\` feature cannot link there; build from source without \`ai\` if you need an Intel Mac build."
+            echo "**There is no Intel macOS artifact** — the published targets are Linux x86_64, Linux ARM64, macOS Apple Silicon and Windows x86_64; Intel macOS is not in the list. Build from source (see the From source section below) if you need an Intel Mac build."
             echo ""
             echo "Each archive holds a single bare binary (\`webfang.exe\` on Windows). Nothing installs it for you — extract it, make it executable, and put it on your PATH:"
             echo ""
@@ -726,7 +725,7 @@ jobs:
             echo '```bash'
             echo "git clone https://github.com/XaviCode1000/webfang"
             echo "cd webfang"
-            echo 'cargo build --release --locked --features "ai mcp" -p webfang_cli'
+            echo 'cargo build --release --locked --features "mcp" -p webfang_cli'
             echo '```'
             echo ""
             echo "## Verification"

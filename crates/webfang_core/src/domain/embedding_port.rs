@@ -1,18 +1,18 @@
 //! Embedding port — async domain trait for text vectorization.
 //!
 //! Defines the contract for generating embedding vectors from text.
-//! Concrete implementations live in the `webfang_ai` crate (wrapping
-//! `InferencePool`). The trait uses `BoxFuture` for dyn-compatibility,
-//! matching the pattern established in [`super::semantic_inspector`] and
-//! [`super::repository::VectorRepository`].
+//! The concrete implementation lives in `infrastructure::semantic_cleaner`
+//! (ADR-0004 paso 6 removed the local ONNX stack). The trait uses `BoxFuture`
+//! for dyn-compatibility, matching the pattern established in
+//! [`super::semantic_inspector`] and [`super::repository::VectorRepository`].
 //!
 //! # Design decisions
 //!
 //! - **Not sealed**: unlike `SemanticCleaner`, this trait is open for
 //!   testing (mock embeddings) and future alternative backends.
-//! - **Always compiled**: the trait definition has no `#[cfg(feature = "ai")]`
-//!   guard. The Container stores `Option<Arc<dyn EmbeddingPort>>` which is
-//!   `None` when the `ai` feature is disabled.
+//! - **Always compiled**: the trait definition carries no `cfg` guard. The
+//!   Container stores `Option<Arc<dyn EmbeddingPort>>` which is `None` when
+//!   no embedding backend was wired.
 //! - **Separate from `SemanticCleaner`**: the cleaner is a sealed, HTML-only
 //!   pipeline. This port exposes the raw embedding primitive needed by vault
 //!   search (issue #386) and any future semantic feature.

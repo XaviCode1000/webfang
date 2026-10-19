@@ -212,9 +212,10 @@ fn assert_vector_export_identities(t: &BehavioralTest, lines: &[serde_json::Valu
     );
 }
 
-/// Vector export requires `--clean-ai`, hence a cached ONNX model (preflight #796).
+/// Vector export requires `--clean-ai`, hence a CONFIGURED REMOTE EMBEDDING
+/// PROVIDER (preflight #796).
 #[tokio::test]
-#[ignore = "requires cached ONNX model"]
+#[ignore = "requires a configured remote embedding provider"]
 async fn scrape_trace_and_vector_export_share_per_page_correlation() {
     let t = BehavioralTest::new().await;
     let base = mount_two_page_site(&t.server).await;

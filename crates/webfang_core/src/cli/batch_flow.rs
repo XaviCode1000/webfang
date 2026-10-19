@@ -29,7 +29,6 @@ use crate::domain::http_config::HttpClientConfig;
 use crate::domain::persistence::StateStorePort;
 use crate::CrawlerConfig;
 
-#[cfg(feature = "ai")]
 use crate::domain::semantic_cleaner::SemanticCleaner;
 
 /// Run batch processing mode: scrape multiple URLs from stdin or file.
@@ -48,7 +47,7 @@ use crate::domain::semantic_cleaner::SemanticCleaner;
 /// `--resume` (#631, #637), with bounded memory (#653).
 pub(crate) async fn run_batch(
     opts: CrawlOptions,
-    #[cfg(feature = "ai")] ai_cleaner: Option<std::sync::Arc<dyn SemanticCleaner>>,
+    ai_cleaner: Option<std::sync::Arc<dyn SemanticCleaner>>,
     vault_ports: crate::application::container::VaultAiPorts,
     _llm_port: Option<std::sync::Arc<dyn crate::domain::llm_port::LlmPort>>,
     cancel: &tokio_util::sync::CancellationToken,
@@ -117,19 +116,11 @@ pub(crate) async fn run_batch(
     // engine reports blocks through `summary` — so pass 0.
     let _ = report_phase(&results, &failures, 0, opts.verbosity);
 
-    #[cfg(feature = "ai")]
     let export_exit = export_phase(
         std::sync::Arc::clone(&results),
         &opts,
         state_store.as_deref(),
         ai_cleaner,
-    )
-    .await;
-    #[cfg(not(feature = "ai"))]
-    let export_exit = export_phase(
-        std::sync::Arc::clone(&results),
-        &opts,
-        state_store.as_deref(),
     )
     .await;
 
@@ -779,29 +770,6 @@ mod tests {
         assert_eq!(config.delay_ms, 0);
     }
 
-    #[cfg(not(feature = "ai"))]
-    #[tokio::test]
-    async fn run_batch_returns_config_error_when_output_vectors_without_ai() {
-        let mut opts = CrawlOptions::default();
-        opts.elastic.output_vectors = Some("vectors.jsonl".to_string());
-        let cancel = tokio_util::sync::CancellationToken::new();
-
-        let exit = run_batch(
-            opts,
-            crate::application::container::VaultAiPorts::default(),
-            None,
-            &cancel,
-            &crate::domain::CorrelationId::new(),
-        )
-        .await;
-
-        assert!(
-            matches!(exit, CliExit::ConfigError(_)),
-            "expected CliExit::ConfigError, got {exit:?}"
-        );
-    }
-
-    #[cfg(feature = "ai")]
     #[tokio::test]
     async fn run_batch_returns_data_error_when_output_vectors_without_clean_ai() {
         let mut opts = CrawlOptions::default();

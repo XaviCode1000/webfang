@@ -841,12 +841,11 @@ pub const DOM_PREPRUNE: OptionSpec = OptionSpec {
 /// the missing feature, but `--help` never told them the flag existed.
 ///
 /// Now that the semantic cleaner needs no ONNX build, the flag renders in
-/// EVERY configuration. It is ALSO the one flag whose meaning differs by
-/// build: a local-ONNX build is what actually runs the cleaner, and a build
-/// without `ai` rejects `--clean-ai` by name via
-/// `cli::preflight::check_clean_ai_feature` (exit 78, before any network
-/// I/O). That gate is feature-independent by construction, so rendering the
-/// flag does not weaken it — it just makes the failure discoverable.
+/// EVERY configuration. Post-ADR-0004 paso 6 there is no cargo feature left
+/// to reject by name: a requested `--clean-ai` whose cleaner wiring failed
+/// surfaces at run time as the export flow's Spanish ConfigError naming
+/// `--embedding-provider` (exit 78), so the failure stays named and
+/// actionable.
 pub const CLEAN_AI: OptionSpec = OptionSpec {
     id: "clean_ai",
     value_name: "CLEAN_AI",

@@ -58,8 +58,9 @@ fn cmd() -> Command {
     let mut c = Command::new(webfang_path());
     // Hermeticity: remove all WEBFANG_* / WEBFANG_AI_MODEL_ID / AI_MODEL_ID
     // env vars so poisoned CI environments (bug-discovery workflow) don't
-    // affect arg parsing. Legacy `AI_MODEL_ID` is still honored by
-    // `webfang_ai::infrastructure_ai::compat::read_ai_model_id_with` / `read_ai_model_id` (#980).
+    // affect arg parsing. Legacy `AI_MODEL_ID` is still honored by the CLI
+    // itself, via `webfang_core::cli::args::ai::LEGACY_AI_MODEL_ENV` — the
+    // `webfang_ai` reader is gone since ADR-0004 paso 6 (#980).
     let poisoned: Vec<String> = std::env::vars()
         .filter(|(k, _)| k.starts_with("WEBFANG_") || k == "AI_MODEL_ID")
         .map(|(k, _)| k)
@@ -76,7 +77,51 @@ fn cmd() -> Command {
         webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
         "1",
     );
+    // Config gets the same treatment, for a stronger reason than the cache:
+    // the CLI resolves its config file through `WEBFANG_CONFIG`
+    // (`cli::config::load_config_defaults`), so pointing that at an EMPTY
+    // file means a spawned binary can never read the developer's real
+    // `~/.config/webfang/config.toml`. It MATTERS for the `--clean-ai` case
+    // below: a config that declares an embedding provider would make the run
+    // resolve — and PROBE — that endpoint instead of failing with the
+    // "no provider" configuration error the test is about. An explicit
+    // override must be absolute and present (#1659), so the file is created
+    // for real; `ConfigDefaults` is `#[serde(default)]`, so empty TOML parses
+    // to the same all-`None` defaults an absent file used to produce.
+    c.env("WEBFANG_CONFIG", hermetic_empty_config_file());
     c
+}
+
+/// An EMPTY config file for one spawned-binary invocation.
+///
+/// Created eagerly (the explicit-override contract rejects a missing file,
+/// #1659) and left for the OS temp cleanup to reclaim: the `Command` cannot
+/// own the file's lifetime.
+///
+/// Thin wrapper over [`hermetic_config_file`] with an empty body: the
+/// "no provider resolvable" run needs a file that DECLARES nothing, while
+/// the `--offline` run needs one that DECLARES a provider — same contract
+/// (absolute, present, parseable), different body.
+fn hermetic_empty_config_file() -> std::path::PathBuf {
+    hermetic_config_file("")
+}
+
+/// A config file with the given contents for one spawned-binary invocation.
+///
+/// The explicit-override contract rejects a missing file (#1659), so the file
+/// is created for real. `ConfigDefaults` is `#[serde(default)]`, so empty
+/// TOML parses to the same all-`None` defaults an absent file used to
+/// produce — which is why the "no provider" run can point at an EMPTY file
+/// and the `--offline` run at one that declares a provider.
+fn hermetic_config_file(contents: &str) -> std::path::PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!(
+        "webfang-exit-code-config-{}-{n}.toml",
+        std::process::id()
+    ));
+    std::fs::write(&path, contents).expect("create hermetic config.toml");
+    path
 }
 
 // ============================================================================
@@ -290,15 +335,25 @@ async fn test_valid_sitemap_returns_exit_0() {
 }
 
 // ============================================================================
-// Tests: --clean-ai preflight on non-AI builds (#761)
+// Tests: --clean-ai without a resolvable embedding provider (#761, ADR-0004)
 // ============================================================================
 
-/// `--clean-ai` on a binary built without the `ai` feature must fail in
-/// preflight with exit 78 BEFORE any network request — previously the CLI
-/// scraped the whole page and only failed at export time (#761).
-#[cfg(not(feature = "ai"))]
+/// `--clean-ai` WITHOUT a resolvable remote embedding provider must fail
+/// with exit 78 BEFORE any network request — previously the CLI scraped the
+/// whole page and only failed at export time (#761).
+///
+/// ADR-0004 paso 6 changed the CAUSE, not the shape. The `ai` Cargo feature
+/// is gone, so "this build has no cleaner" is no longer a question about the
+/// binary: `--clean-ai` is un-gated, and what it needs is an embedding
+/// provider (`--embedding-provider` / `WEBFANG_EMBEDDING_PROVIDER`). With
+/// none resolvable, `build_ai_cleaner` answers `CliExit::ConfigError` —
+/// exit 78 — and names the knob that fixes it.
+///
+/// The run is hermetic: `cmd()` points `WEBFANG_CONFIG` at an EMPTY config
+/// file, so no provider can be resolved from the developer's machine and no
+/// endpoint is ever probed.
 #[tokio::test]
-async fn test_clean_ai_without_feature_fails_before_fetch() {
+async fn test_clean_ai_without_embedding_provider_fails_before_fetch() {
     let mock_server = MockServer::start().await;
 
     // If the CLI fetches anything, this mock would record it — the assertion
@@ -321,12 +376,193 @@ async fn test_clean_ai_without_feature_fails_before_fetch() {
         .timeout(Duration::from_secs(30))
         .assert()
         .code(78)
-        .stderr(predicate::str::contains("--clean-ai"));
+        .stderr(predicate::str::contains("--clean-ai"))
+        .stderr(predicate::str::contains("--embedding-provider"));
 
     let requests = mock_server.received_requests().await.unwrap();
     assert!(
         requests.is_empty(),
         "preflight must fail before any network request, got {} requests",
+        requests.len()
+    );
+}
+
+// ============================================================================
+// Tests: --clean-ai --offline with a CONFIGURED provider (ADR-0004 S10)
+// ============================================================================
+
+/// Stable head of the offline guard's user-facing message.
+///
+/// Source: the `offline` arm of `build_embedding_provider`
+/// (`crates/webfang_core/src/cli/llm_wire.rs:141-147`), rendered by
+/// `CliExit::ConfigError` as `Error: {msg}` (`cli/error.rs:426-429`).
+/// Only the stable head of the sentence is asserted: the tail names the
+/// remedy and is free to change with the wording.
+const OFFLINE_REMOTE_FRAGMENT: &str = "modo offline con provider remoto de embeddings";
+
+/// RFC 2606 reserved hostname: guaranteed never to resolve, so the
+/// configured endpoint is genuinely un-dialable and the test never touches a
+/// real network.
+const REMOTE_PROVIDER_HOST: &str = "embeddings.invalid";
+
+/// A config file declaring ONE remote (public) embedding provider.
+///
+/// The provider is declared, not selected: `--embedding-provider` and
+/// `WEBFANG_EMBEDDING_PROVIDER` are both absent (the harness strips every
+/// `WEBFANG_*` variable), so the run resolves the CONFIG FILE's default
+/// provider — the first one declaring the `embedding` capability
+/// (`ProviderRegistry::resolve_default_embedding`,
+/// `crates/webfang_core/src/domain/providers.rs:322`).
+fn remote_provider_config() -> String {
+    format!(
+        r#"
+[[providers]]
+id = "remote-embeddings"
+display_name = "Remote embeddings (public)"
+kind = "open_ai_compatible"
+base_url = "https://{REMOTE_PROVIDER_HOST}/v1"
+auth = {{ source = "none" }}
+capabilities = ["embedding"]
+model = "text-embedding-test"
+"#
+    )
+}
+
+/// `--clean-ai --offline` with a CONFIGURED REMOTE embedding provider must
+/// exit 78 BEFORE any request leaves the process (ADR-0004 S10).
+///
+/// S10 — "`--offline` + remoto: exit 78 (guard de regresión, no criterio
+/// nuevo; `cli/error.rs:36`, `llm_wire.rs:141-147`)" (ADR:116).
+///
+/// The guard lives in the provider RESOLUTION path, so it only fires once a
+/// provider IS resolvable — which is exactly why this test needs a
+/// CONFIGURED provider. The other arm (no provider at all → the "no
+/// provider" message) is covered by
+/// `test_clean_ai_without_embedding_provider_fails_before_fetch`.
+///
+/// The endpoint is `embeddings.invalid` (RFC 2606 reserved): it can never
+/// resolve, so the run is deterministic and the endpoint is un-dialable. If
+/// the code ever dialed BEFORE the offline check, the run would fail with a
+/// transport/DNS error naming the endpoint instead of the offline message —
+/// the negative assertion below is written to catch exactly that.
+#[tokio::test]
+async fn test_clean_ai_offline_with_remote_embedding_provider_exits_78() {
+    let mock_server = MockServer::start().await;
+
+    // Method-agnostic catch-all: if the CLI reaches the network AT ALL, this
+    // mock records it — a GET on the seed URL, a POST on the provider's
+    // `/v1/embeddings`, anything. The assertion below proves the preflight
+    // fired before any request left the process.
+    Mock::given(wiremock::matchers::any())
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(
+                "<html><body><p>content that must never be fetched</p></body></html>",
+            ),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let base_url = format!("{}/", mock_server.uri());
+
+    let outcome = cmd()
+        .env(
+            "WEBFANG_CONFIG",
+            hermetic_config_file(&remote_provider_config()),
+        )
+        .arg("--url")
+        .arg(&base_url)
+        .arg("--clean-ai")
+        .arg("--offline")
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .code(78)
+        .stderr(predicate::str::contains(OFFLINE_REMOTE_FRAGMENT));
+
+    // The guard runs BEFORE the adapter is built, so the configured endpoint
+    // is never contacted: a dial names the endpoint in the error, the guard
+    // does not.
+    let stderr = String::from_utf8_lossy(&outcome.get_output().stderr).into_owned();
+    assert!(
+        !stderr.contains(REMOTE_PROVIDER_HOST),
+        "the offline guard must fire before the endpoint is contacted, got: {stderr}"
+    );
+
+    let requests = mock_server.received_requests().await.unwrap();
+    assert!(
+        requests.is_empty(),
+        "preflight must fail before any network request, got {} requests",
+        requests.len()
+    );
+}
+
+/// `--clean-ai --offline` with a CONFIGURED LOOPBACK embedding provider is
+/// ALSO rejected today — a DISCREPANCY with the documented semantics, pinned
+/// here on purpose.
+///
+/// The notice the CLI prints on every run states the rule as "loopback
+/// permitido, remoto público -> exit 78"
+/// (`crates/webfang_core/src/cli/args/ai.rs:263`), and the ADR repeats it.
+/// The implementation does not implement that rule: the `offline` arm of
+/// `build_embedding_provider`
+/// (`crates/webfang_core/src/cli/llm_wire.rs:141-147`) rejects EVERY
+/// resolved `open_ai_compatible` provider, loopback included, because the
+/// guard never looks at the endpoint's host. The guard was introduced
+/// unconditional in #1518, so this is a prose/implementation mismatch, not a
+/// paso-6 regression.
+///
+/// This test therefore pins the CURRENT behavior and names the criterion it
+/// does not yet satisfy. When the guard learns to exempt loopback, THIS test
+/// is the one that must change — that is the reason it exists.
+///
+/// The endpoint is the mock server itself, so the zero-request assertion
+/// below is a REAL proof that the guard fired before the dial: without it,
+/// the adapter would build and POST to `/v1/embeddings`.
+#[tokio::test]
+async fn test_clean_ai_offline_with_loopback_embedding_provider_is_rejected_today() {
+    let mock_server = MockServer::start().await;
+
+    // Method-agnostic catch-all: the provider endpoint IS this server, so a
+    // dial would land here as a POST on `/v1/embeddings`.
+    Mock::given(wiremock::matchers::any())
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(
+                "<html><body><p>content that must never be fetched</p></body></html>",
+            ),
+        )
+        .mount(&mock_server)
+        .await;
+
+    let base_url = format!("{}/", mock_server.uri());
+    let provider_config = format!(
+        r#"
+[[providers]]
+id = "loopback-embeddings"
+display_name = "Loopback embeddings"
+kind = "open_ai_compatible"
+base_url = "{}/v1"
+auth = {{ source = "none" }}
+capabilities = ["embedding"]
+model = "text-embedding-test"
+allow_loopback = true
+"#,
+        mock_server.uri()
+    );
+
+    cmd()
+        .env("WEBFANG_CONFIG", hermetic_config_file(&provider_config))
+        .arg("--url")
+        .arg(&base_url)
+        .arg("--clean-ai")
+        .arg("--offline")
+        .timeout(Duration::from_secs(30))
+        .assert()
+        .code(78)
+        .stderr(predicate::str::contains(OFFLINE_REMOTE_FRAGMENT));
+
+    let requests = mock_server.received_requests().await.unwrap();
+    assert!(
+        requests.is_empty(),
+        "the offline guard must fire before the endpoint is dialed, got {} requests",
         requests.len()
     );
 }

@@ -2,9 +2,10 @@
 //
 // `--max-chars` renders in EVERY cargo configuration (ADR-0004): it replaced a
 // token budget the cleaner can no longer compute, because the cleaner no longer
-// tokenizes — it embeds through the domain `EmbeddingPort`. So unlike the rest
-// of the AI group this file is NOT `#![cfg(feature = "ai")]`: both flags must
-// be answered by a binary built with or without the feature. Run with:
+// tokenizes — it embeds through the domain `EmbeddingPort`. And since ADR-0004
+// paso 6 removed the `ai` Cargo feature altogether, there is no configuration
+// left where the AI group is absent: both flags must be answered by the ONE
+// binary that exists. Run with:
 //   cargo nextest run -p webfang_core --test max_chars_bound_test
 
 //! `--max-chars` bounds and the `--max-tokens` migration (ADR-0004).
@@ -460,11 +461,16 @@ fn max_tokens_spec_declares_a_deprecation_not_a_removal() {
     );
 }
 
-/// The conversion factor is ONE constant, read by both sides: `webfang_core`
-/// translates the legacy value here, and `webfang_ai`'s
-/// `ModelConfig::default().chars_per_token` reads the same constant (pinned on
-/// the `webfang_ai` side by `embedding_port_cleaner_test`, which CAN see both
-/// crates — this one cannot, because `webfang_ai` depends on `webfang_core`).
+/// The conversion factor is ONE constant, read by both sides.
+///
+/// `webfang_core` translates the legacy value here, and the retired
+/// `webfang_ai`'s `ModelConfig::default().chars_per_token` read the same
+/// constant (it was pinned on the `webfang_ai` side by
+/// `embedding_port_cleaner_test`, which COULD see both crates — this one
+/// cannot, because `webfang_ai` depended on `webfang_core`). ADR-0004 paso 6
+/// deleted the `webfang_ai` crate, so `webfang_core` is now the ONLY reader:
+/// the constant lives in `options_spec::ai` and the pin below is the whole
+/// story.
 #[test]
 fn the_conversion_factor_is_a_single_shared_constant() {
     use webfang_core::domain::options_spec as spec;

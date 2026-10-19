@@ -13,19 +13,14 @@ use crate::{
     OutputFormat,
 };
 
-#[cfg(feature = "ai")]
 use tracing::info;
 
-#[cfg(feature = "ai")]
 use crate::domain::semantic_cleaner::SemanticCleaner;
 
-#[cfg(feature = "ai")]
 use crate::domain::DocumentChunk;
 
-#[cfg(feature = "ai")]
 use crate::error::SemanticError;
 
-#[cfg(feature = "ai")]
 use crate::error::ErrorClass;
 
 // ============================================================================
@@ -62,7 +57,6 @@ pub struct ExportConfig<'a> {
 /// Run the export flow: AI-cleaned or standard export.
 ///
 /// Returns the list of processed URLs on success.
-#[cfg(feature = "ai")]
 pub async fn run_export(
     config: ExportConfig<'_>,
     ai_cleaner: Option<std::sync::Arc<dyn SemanticCleaner>>,
@@ -78,19 +72,6 @@ pub async fn run_export(
     } else {
         run_standard_export(config).await
     }
-}
-
-/// Run the export flow (non-AI build).
-#[cfg(not(feature = "ai"))]
-pub async fn run_export(config: ExportConfig<'_>) -> Result<Vec<String>, CliExit> {
-    if config.clean_ai {
-        warn!("--clean-ai requires the 'ai' feature. Recompile with --features ai");
-        return Err(CliExit::UsageError(
-            "AI semantic cleaning requires --features ai. Recompile with: cargo run --features ai"
-                .into(),
-        ));
-    }
-    run_standard_export(config).await
 }
 
 /// Surface the shared Spanish unreadable-state notice on the export resume
@@ -138,7 +119,6 @@ async fn run_standard_export(config: ExportConfig<'_>) -> Result<Vec<String>, Cl
 }
 
 /// AI semantic cleaning export path.
-#[cfg(feature = "ai")]
 async fn run_ai_export(
     config: ExportConfig<'_>,
     cleaner: std::sync::Arc<dyn SemanticCleaner>,
@@ -222,7 +202,6 @@ async fn await_blocking_export(
 /// Per-page failures fall back to the raw content, but a TOTAL failure (every
 /// page fails to clean) is treated as a model/config error and propagated as
 /// `Err` instead of silently exiting 0 (#543).
-#[cfg(feature = "ai")]
 async fn clean_all_pages(
     results: &[ScrapedContent],
     cleaner: &std::sync::Arc<dyn SemanticCleaner>,
@@ -354,7 +333,10 @@ pub fn save_files(
     }
 }
 
-#[cfg(all(test, feature = "ai"))]
+// The AI export path is ungated (ADR-0004 paso 6): the cleaner runs over
+// whatever `EmbeddingPort` the run wired, and the mock cleaner below only
+// needs the core `SemanticCleaner` trait, which no longer depends on ONNX.
+#[cfg(test)]
 mod tests {
     use std::future::Future;
     use std::pin::Pin;

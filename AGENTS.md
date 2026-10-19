@@ -2,7 +2,7 @@
 
 Production-ready web scraper. Clean Architecture, AI semantic cleaning, sitemap-based crawling.
 
-**Stack:** Rust 1.88 · Tokio · wreq 6 (TLS fingerprint) · ort (feature-gated) · SQLite
+**Stack:** Rust 1.88 · Tokio · wreq 6 (TLS fingerprint) · SQLite
 
 ---
 
@@ -117,27 +117,27 @@ several concurrent agent sessions on this repo, `mem_save` / `mem_judge` fail wi
 
 ## 🏗️ Architecture & Code Rules
 
-### Workspace structure (6 crates)
+### Workspace structure (5 crates)
 
 ```text
 webfang/                          # virtual workspace root (no [package])
 ├── crates/
 │   ├── webfang_core/             # domain + application + infrastructure
-│   ├── webfang_ai/               # ONNX embeddings, semantic cleaning
 │   ├── webfang_mcp/              # MCP server (36 tools)
 │   ├── webfang_cli/              # CLI binary (webfang)
 │   └── webfang_test_utils/       # shared test utilities (not shipped)
 │   └── webfang_benchmark/        # public benchmark harness (tooling leaf)
 ```
 
+`webfang_ai` was removed in ADR-0004 paso 6 (see `docs/adr/0004-onnx-local-removal.md`);
+semantic cleaning now runs through the remote `EmbeddingPort` adapters in `webfang_core`.
+```
+
 ### Inter-crate dependency direction (ENFORCED POLICY)
 
 ```text
-ai ───→ core
 cli ──→ mcp ──→ core
 cli ──────────→ core
-cli ──→ ai   (feature-gated, #433)
-mcp ──→ ai   (feature-gated, #433)
 ```
 
 Full allow-matrix (effective build graph):
@@ -145,9 +145,8 @@ Full allow-matrix (effective build graph):
 | Crate | May depend on |
 | :--- | :--- |
 | `webfang_core` | — |
-| `webfang_ai` | `webfang_core` |
-| `webfang_mcp` | `webfang_core`, `webfang_ai` |
-| `webfang_cli` | `webfang_core`, `webfang_ai`, `webfang_mcp` |
+| `webfang_mcp` | `webfang_core` |
+| `webfang_cli` | `webfang_core`, `webfang_mcp` |
 | `webfang_test_utils` | `webfang_core` (leaf; test harness, `publish = false`) |
 | `webfang_benchmark` | `webfang_core`, `webfang_test_utils` (leaf; benchmark tooling, no production dependents) |
 
@@ -213,7 +212,7 @@ ValidUrl (entry) → rate limit (pre-fetch pacing) → per-attempt request:
 ### Async rules
 
 - Tokio multi-threaded runtime.
-- `spawn_blocking` for CPU-intensive work (ONNX inference, HTML parsing) — see `CpuBridge.dispatch`.
+- `spawn_blocking` for CPU-intensive work (HTML parsing and other CPU-heavy stages) — see `CpuBridge.dispatch`.
 - Never hold `Mutex`/`RwLock` across `.await`.
 - Bounded channels for backpressure.
 
@@ -231,10 +230,12 @@ MCP tools: 36 tools across 9 categories. Transport: Streamable HTTP (`rmcp`) at 
 
 An agent suggesting "clean up duplicate dependencies" must be stopped. These conflicts are intentional.
 
-### AI feature (`--features ai`)
+### Semantic cleaning (`--clean-ai`)
 
-- ONNX models cached in the native hf_hub cache (`~/.cache/huggingface/hub/`): Granite-97M (default, ~390MB, 384d) or Granite-311M (~1.25GB) via `WEBFANG_AI_MODEL_ID` / `--ai-model` (legacy `AI_MODEL_ID` is still honored as a fallback). `--clean-ai` uses hf_hub natively: cache-first when online, strict cache-only when offline.
-- `cleaner.clean(html)` → `Vec<DocumentChunk>` with embeddings. Embeddings only appear in exports with `--output-vectors`.
+- ONNX/ort/hf-hub are gone: the `webfang_ai` crate and the Cargo feature `ai` were deleted (ADR-0004 paso 6). There is no local inference engine and no model cache.
+- `--clean-ai` resolves its cleaner via a remote `EmbeddingPort` (`infrastructure/semantic_cleaner.rs`), wired with `--embedding-provider` (env `WEBFANG_EMBEDDING_PROVIDER`; flag > env). `--offline` rejects every embeddings provider (remote public or loopback) with exit 78: the guard fires before the endpoint is inspected, and the paso-5 notice's "loopback allowed" clause referred to the local ONNX model, which no longer exists.
+- Migration shims emit a notice per run, then fail: `--ai-model`, `--max-tokens` (→ `--max-chars`), envs `WEBFANG_AI_MODEL_ID` / `AI_MODEL_ID` / `WEBFANG_MAX_TOKENS` / `WEBFANG_AI_ENGINE`. Zero-config offline-total inference is gone; the endpoint (and its cost, BYO-key) is the user's.
+- Manual recovery of the old ONNX tree: tag `onnx-tree/pre-step5` (commit `38ab6a31`). See `docs/src/ai-onnx-migration.md` and ADR-0004 (*Compatibilidad*, *Reversibilidad*).
 
 ### Build requirement
 
@@ -856,12 +857,12 @@ Run it locally before committing any support mutation: `scripts/check_support_dr
 ### Release candidates
 
 - PATCH: no RC, straight tag on the support line.
-- MINOR/MAJOR: `vX.Y.0-rc.N` (`prerelease:true`, resolved by `release.yml` preflight) only when the maintainer declares a stabilization window (state migrations, export format, ONNX/ai changes). During RC, `release/X.Y` takes fixes only; `main` stays open.
+- MINOR/MAJOR: `vX.Y.0-rc.N` (`prerelease:true`, resolved by `release.yml` preflight) only when the maintainer declares a stabilization window (state migrations, export format, major AI (embedding-provider) changes). During RC, `release/X.Y` takes fixes only; `main` stays open.
 
 ### Cutting a release (labels are signals, authority is the maintainer)
 
 - `MAJOR` → always cuts `release/X.Y`. `PATCH` → never does.
-- `MINOR` → cuts `release/X.Y` when it touches state format/compat, SQLite migrations, behavior incompatible with existing installs, major AI/ONNX changes, operational protocol/API changes, or any issue explicitly marked release-risk. Labels (`breaking:*`, `migration:*`) and the categories above are triage *signals*; the *decision* is the maintainer applying `release:cut`. A forgotten label must never silently skip stabilization for a risky minor.
+- `MINOR` → cuts `release/X.Y` when it touches state format/compat, SQLite migrations, behavior incompatible with existing installs, major AI (embedding-provider) changes, operational protocol/API changes, or any issue explicitly marked release-risk. Labels (`breaking:*`, `migration:*`) and the categories above are triage *signals*; the *decision* is the maintainer applying `release:cut`. A forgotten label must never silently skip stabilization for a risky minor.
 
 ### Versioning authority
 
@@ -1076,8 +1077,9 @@ merge PR to main
        └─> tag push fires release.yml natively (push: tags — App token, no suppression)
            └─> release.yml: 4 binaries + SHA256SUMS + GitHub Release
                (linux x86_64/aarch64, macOS Apple Silicon, Windows x86_64 —
-               Intel macOS is not built: ONNX Runtime dropped x64 macOS as of
-               1.24.1, so the `ai` feature has no prebuilt to link against)
+               Intel macOS is not built: the historical reason was the ONNX
+               prebuilt; the target list was not extended after the ONNX
+               removal, ADR-0004 paso 6)
 ```
 
 > ⚠️ **The `v*` tag push IS the hand-off — `release.yml` triggers on `push: tags` natively.**

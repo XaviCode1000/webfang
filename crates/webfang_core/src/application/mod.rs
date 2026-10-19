@@ -29,7 +29,6 @@ pub mod title_resolver;
 pub mod url_filter;
 pub mod vault_search;
 
-#[cfg(feature = "adaptive-selectors")]
 pub mod adaptive_engine;
 #[cfg(feature = "adaptive-selectors")]
 pub mod structural_score;

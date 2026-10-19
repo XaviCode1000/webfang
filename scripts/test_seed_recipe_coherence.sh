@@ -97,15 +97,15 @@ check_field() {
 }
 
 check_field "profile"  "--profile dev"    --profile dev
-check_field "features" "--features ai"     --features ai
+check_field "features" "--features chromium" --features chromium
 check_field "target"   "--target aarch64-unknown-linux-gnu" --target aarch64-unknown-linux-gnu
 
 # --- 2. two different contracts must not share a key -------------------------
 K_DEV="$(pub --profile dev)"
 K_REL="$(pub --profile release)"
-K_AI="$(pub --features ai)"
+K_FEAT="$(pub --features chromium)"
 K_TGT="$(pub --target aarch64-unknown-linux-gnu)"
-UNIQ="$(printf '%s\n' "$K_DEV" "$K_REL" "$K_AI" "$K_TGT" | sort -u | grep -c .)"
+UNIQ="$(printf '%s\n' "$K_DEV" "$K_REL" "$K_FEAT" "$K_TGT" | sort -u | grep -c .)"
 if [ "$UNIQ" -eq 4 ]; then ok "four different contracts produced four different keys"
 else bad "four contracts collapsed onto $UNIQ key(s)"; fi
 

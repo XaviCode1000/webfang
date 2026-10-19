@@ -44,11 +44,11 @@ no README inside.
 | Any platform | `SHA256SUMS.txt` | checksum manifest |
 
 **There is no Intel macOS artifact.** `x86_64-apple-darwin` is deliberately
-not built: ONNX Runtime dropped x64 macOS as of 1.24.1, so `ort-sys` has no
-prebuilt to link against and the `ai` feature cannot compile there. If you are
-on an Intel Mac, there is nothing to mis-download — see
-[Intel macOS](#intel-macos-unsupported) for what building from source costs
-you.
+not built. The original reason was ONNX-local (no x64 macOS prebuilt for
+ONNX Runtime); the ONNX removal (ADR-0004 paso 6) makes that reason moot, but
+the target list was never extended — each release re-trains on the artifact
+list as-is, so the entry stays. If you are on an Intel Mac, there is nothing
+to mis-download — see [Intel macOS](#intel-macos-unsupported).
 
 Set the version once and reuse it. Copy the tag from
 [the latest release](https://github.com/XaviCode1000/webfang/releases/latest):
@@ -182,12 +182,14 @@ Notes:
 **No artifact exists for Intel macOS, and that is deliberate** — it is a
 decision, not a release gap, so do not go looking for a fourth `.tar.gz`.
 
-Building from source is possible, but the `ai` feature cannot link there
-(ONNX Runtime ships no x64 macOS prebuilt), so **everything semantic is
-absent**: `--clean-ai`, `--offline`, `--ai-model`, `--threshold`,
-`--max-chars`, and Obsidian vault search. Scraping, crawling, and every
-non-AI export format work normally. Build without `ai`
-(see [from source](#from-source-developers)).
+Building from source works on the normal developer path (Rust 1.88 toolchain,
+cmake for BoringSSL — see [from source](#from-source-developers)). The old
+ONNX excuse no longer applies (ADR-0004 paso 6 removed the `ai` feature and
+the local engine), so a source build has **no semantic holes**: `--clean-ai`
+and `--offline` work via remote embedding endpoints (`--embedding-provider`),
+Obsidian vault search included. What you lose on one machine is only runtime
+network policy — a remote public endpoint is rejected under `--offline`
+(exit 78) unless it is loopback/LAN-allowlisted.
 
 ### Windows
 
@@ -242,7 +244,7 @@ Notes:
 | Platform | Requirement | Why |
 | :--- | :--- | :--- |
 | Linux x86_64 / ARM64 | **glibc 2.39 or newer**; no musl build exists | The artifacts are built on GitHub's `ubuntu-latest` runner (Ubuntu 24.04, glibc 2.39) and link glibc directly. The floor is **inherited from the builder**, not a chosen target — so a distro older than Ubuntu 24.04 has no compatible artifact. |
-| macOS | Apple Silicon only | Intel macOS has no artifact; `ai` cannot link there. |
+| macOS | Apple Silicon only | Intel macOS has no artifact (decision pre-dating the ONNX removal; the target list was never extended). |
 | Windows | Visual C++ Redistributable 2015-2022 (x64) | MSVC's default dynamic CRT. |
 | Any | ~17 MB download, no installer, no bundled runtime | `strip`ped binary; needs only standard system libraries (glibc + libstdc++/libgcc_s). |
 
@@ -255,8 +257,10 @@ to; build from source instead.
 
 ## What is *not* in the release binary
 
-The release build is `cargo build --release --locked --features "ai mcp" -p webfang_cli`.
+The release build is `cargo build --release --locked --features mcp -p webfang_cli`.
 Two consequences worth knowing before you file a bug:
+(Note the `ai` feature of the pre-paso-6 releases is gone: semantic cleaning
+is runtime-configured, not compiled in — [migration guide](ai-onnx-migration.md).)
 
 | Missing from the release binary | Consequence |
 | :--- | :--- |
@@ -266,10 +270,11 @@ Two consequences worth knowing before you file a bug:
 | `adaptive-selectors` feature | Adaptive selector learning is off. |
 | MCP server | The `webfang` CLI exposes no MCP flag. The MCP server lives in the separate `webfang_mcp` crate (`webfang-mcp`, `webfang-mcp-stdio`), which the release build never compiles — it is reachable from source only. See the [MCP section](https://github.com/XaviCode1000/webfang#-mcp-server) in the README. |
 
-The `ai` feature **is** compiled into the release binary, alongside the default
-`images` + `documents`. The `mcp` feature in that build command is inert: it is
-an empty feature in `webfang_core` that gates no shipped code — the feature
-that matters is the `webfang_mcp` *crate*, which is not in the release.
+The `mcp` feature in that build command is inert: it is empty in
+`webfang_core` and gates no shipped code — the feature that matters is the
+`webfang_mcp` *crate*, which is not in the release. The former `ai` feature
+no longer exists (ADR-0004 paso 6): remote-embedding semantic cleaning ships
+in the default build with no ONNX/ort/hf-hub dependency and no model cache.
 
 ---
 
@@ -290,14 +295,11 @@ that says nothing about the real cause.
 
 - `-p webfang_cli` builds only the CLI. Omitting it builds every workspace
   member.
-- On Intel macOS drop `"ai mcp"` — `ai` cannot link there.
 - The first build compiles BoringSSL from source and takes minutes, not
   seconds. This is normal.
-- **Build-time egress:** with `ai` enabled, `ort` downloads prebuilt ONNX
-  Runtime binaries from `cdn.pyke.io` while compiling — the only third-party
-  endpoint a build touches beyond crates.io. An air-gapped build must drop
-  `"ai"` from the feature list or pre-provision ONNX Runtime (see ort's
-  `load-dynamic` feature and `ORT_DYLIB_PATH`).
+- **Build-time egress:** since the ONNX removal (ADR-0004 paso 6) the only
+  third-party endpoint a build touches is crates.io. (Pre-paso-6 builds also
+  pulled ONNX Runtime from `cdn.pyke.io`.)
 
 ---
 
@@ -317,10 +319,11 @@ WebFang never removes anything for you. The binary itself is one file; the
 
 ### 2. Remove the data
 
-**Check where things actually live first** — the ONNX model cache is the big
-one (~372 MB for the default `granite-97m`, ~1.2 GB for `granite-311m`), and
-it is the one entry that is **not** relocatable by any `WEBFANG_*` variable.
-Start at the webfang cache base:
+**Check where things actually live first.** The biggest artifacts live under
+the webfang cache base; the expected output tree lives next to your runs.
+(The historical ~372 MB ONNX model cache is a pre-ADR-0004-paso-6 item: the
+current binary never creates it — see the legacy note
+[below](#the-model-cache-is-the-exception).) Start at the webfang cache base:
 
 ```bash
 {{#include ../samples/installation/09-find-cache-base.sh}}
@@ -335,11 +338,12 @@ The config base is the sibling you will also want when cleaning up:
 `~/.config` (Linux), `~/Library/Application Support` (macOS), `%APPDATA%`
 (Windows).
 
-> ⚠️ **The model cache is NOT under any of those bases.** It is the only
-> entry in this table that does not live under the webfang cache base, and
-> [§ below](#the-model-cache-is-the-exception) gives its exact location on
-> each platform. `XDG_CACHE_HOME` moves the webfang roots; it does **not**
-> move the model.
+> ⚠️ **The model cache was NOT under any of those bases** — legacy, pre-paso-6
+> (ADR-0004). It was the only entry in this table that did not live under the
+> webfang cache base, and [§ below](#the-model-cache-is-the-exception) keeps
+> its exact location on each platform for cleanup after an upgrade from an
+> old release. `XDG_CACHE_HOME` moves the webfang roots; it never moved the
+> model.
 >
 > Also note `XDG_CACHE_HOME` / `XDG_CONFIG_HOME` are honored **only when they
 > hold an absolute path** — a relative or empty value is ignored, and the
@@ -352,7 +356,7 @@ The config base is the sibling you will also want when cleaning up:
 | `webfang/state/<domain>.json.lock` | every `RecordStore` write | 0 B | **No — permanent by design.** See the note below. |
 | `webfang/state/<domain>.json.bak` | migrating a stale state version | same as state | No — an existing backup is kept as-is |
 | `~/.webfang/crawl.db` — **absolute**, under `$HOME`, not the cache base | crawl/scrape runs that persist to SQLite (only with the `persistence` feature — **absent from the release binary**): extraction fingerprints, resources, chunks, notes | grows with fingerprinted pages | Rows older than N days are pruned (plus `VACUUM`) when a run passes `--retention-days N`; otherwise delete the file while no run is active. Relocatable via `--db-path` / `WEBFANG_DB_PATH` |
-| `huggingface/hub/` — see [below](#the-model-cache-is-the-exception) | any `--clean-ai` run, via `hf_hub` | **372 MB** default / ~1.2 GB | No — relocatable via **`HF_HOME`**, a HuggingFace variable, *not* `WEBFANG_*` |
+| `huggingface/hub/` — legacy only, see [below](#the-model-cache-is-the-exception) | **pre-paso-6 releases only** (ADR-0004) — current builds never write it | 0 for current builds; up to **372 MB** / ~1.2 GB for old ones | No — relocatable via **`HF_HOME`**, a HuggingFace variable, *not* `WEBFANG_*` |
 | `<output_dir>/` — Markdown, `export.jsonl`, `rag_dataset/`, `_inbox/` | every run | unbounded — **your data** | Opt-in: files older than N days are pruned when a run passes `--retention-days N`. Relocatable via `-o` / `WEBFANG_OUTPUT`; defaults to `output/` in the current directory |
 | `webfang/config.toml` (under the **config** base: `~/.config`, `~/Library/Application Support`, `%APPDATA%`) | you, by editing it | KBs | No — relocatable via `WEBFANG_CONFIG` or `XDG_CONFIG_HOME` |
 
@@ -374,9 +378,16 @@ To remove the webfang-owned cache roots and leave everything else alone:
 Remove-Item -Recurse -Force "$env:LOCALAPPDATA\webfang"
 ```
 
-#### The model cache is the exception
+#### The model cache is the exception (legacy)
 
-`hf_hub` does not use WebFang's platform helper. Its default is
+Since the ONNX removal (ADR-0004 paso 6) the current binary never creates
+this cache: there is no local model to fetch, and no hf-hub dependency
+remains. **If you are upgrading from a pre-paso-6 release**, the directory a
+previous binary filled still exists, is inert, and is entirely yours to
+delete; the details:
+
+`hf_hub` (used by pre-paso-6 releases) does not use WebFang's platform
+helper. Its default is
 `dirs::home_dir()/.cache/huggingface/hub` — literally `~/.cache/…` on
 **every** platform, including macOS and Windows, where the webfang cache base
 is `~/Library/Caches` and `%LOCALAPPDATA%` respectively. It is only moved by

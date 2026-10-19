@@ -367,8 +367,7 @@ async fn server_error_response_exit_code_nonzero() {
 /// fail-fast in place the request never lands, and wiremock would fail the
 /// test on drop over the unmet expectation.)
 ///
-/// No `#[ignore]`: the gate fires before any ONNX model could load.
-#[cfg(feature = "ai")]
+/// No `#[ignore]`: the gate fires before any cleaner could be built.
 mod output_vectors_without_clean_ai {
     use crate::assert_snapshot_redacted;
     use crate::BehavioralTest;
@@ -445,8 +444,7 @@ mod output_vectors_without_clean_ai {
 /// never lands, and wiremock would fail the test on drop over the unmet
 /// expectation.)
 ///
-/// No `#[ignore]`: the gate fires before any ONNX model could load.
-#[cfg(feature = "ai")]
+/// No `#[ignore]`: the gate fires before any cleaner could be built.
 mod export_format_vector_without_clean_ai {
     use crate::assert_snapshot_redacted;
     use crate::BehavioralTest;

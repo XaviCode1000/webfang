@@ -2,18 +2,18 @@
 
 **WebFang** is a production-ready web scraper built in Rust (1.88), with
 Clean Architecture, a TLS-fingerprinting HTTP client, optional AI semantic
-cleaning, and sitemap-based crawling.
+cleaning (remote embeddings — see the migration guide,
+[ONNX removal](ai-onnx-migration.md)), and sitemap-based crawling.
 
 This book is the narrative documentation. The complete **API reference** for
-all five crates is generated from source via `cargo doc` and published
+the workspace crates is generated from source via `cargo doc` and published
 alongside this book under `/api/<crate>/` (e.g. `/api/webfang_core/`).
 
 ## Crates
 
 | Crate | Role |
 | :--- | :--- |
-| `webfang_core` | Domain, application, and infrastructure layers — the scraping engine |
-| `webfang_ai` | ONNX embeddings + semantic cleaning (feature-gated) |
+| `webfang_core` | Domain, application, and infrastructure layers — the scraping engine (semantic cleaning via remote `EmbeddingPort` adapters included) |
 | `webfang_mcp` | MCP server (35 tools) |
 | `webfang_cli` | CLI binary (`webfang`) |
 | `webfang_test_utils` | Shared test helpers |

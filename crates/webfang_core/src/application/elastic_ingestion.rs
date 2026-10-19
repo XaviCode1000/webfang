@@ -68,7 +68,6 @@ pub struct ElasticIngestion<R: VectorRepository + Send + Sync> {
     /// embeddings cannot run in the sync Rayon bridge closure and must live in
     /// the orchestrator's async context. See PR5 apply-progress for the full
     /// rationale.
-    #[cfg(feature = "ai")]
     cleaner: Option<std::sync::Arc<dyn crate::domain::semantic_cleaner::SemanticCleaner>>,
 }
 
@@ -91,7 +90,6 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
             bridge,
             repository,
             config,
-            #[cfg(feature = "ai")]
             cleaner: None,
         }
     }
@@ -104,7 +102,6 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
     /// it cannot run in the sync Rayon bridge closure and must live here.
     ///
     /// [`SemanticCleaner`]: crate::domain::semantic_cleaner::SemanticCleaner
-    #[cfg(feature = "ai")]
     #[must_use]
     pub fn with_cleaner(
         mut self,
@@ -208,24 +205,17 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
     }
 
     /// Layer 4: dispatch the downloaded bytes through the CPU cleaning pipeline.
-    /// Under `ai` with a cleaner set, routes through the ONNX semantic cleaner;
-    /// otherwise (and in the no-`ai` build) through the CpuBridge.
+    /// With a cleaner set, routes through the semantic cleaner; otherwise
+    /// through the CpuBridge.
     async fn clean_chunks(
         &self,
         url: &str,
         bytes: Vec<u8>,
         size: u64,
     ) -> Result<Vec<ProcessedChunk>, ScraperError> {
-        #[cfg(feature = "ai")]
-        {
-            if let Some(cleaner) = &self.cleaner {
-                self.cleaner_chunks(cleaner, url, &bytes).await
-            } else {
-                self.bridge_chunks(url, bytes, size).await
-            }
-        }
-        #[cfg(not(feature = "ai"))]
-        {
+        if let Some(cleaner) = &self.cleaner {
+            self.cleaner_chunks(cleaner, url, &bytes).await
+        } else {
             self.bridge_chunks(url, bytes, size).await
         }
     }
@@ -361,11 +351,8 @@ impl<R: VectorRepository + Send + Sync> ElasticIngestion<R> {
         }
     }
 
-    /// Route HTML through the ONNX semantic cleaner (async: chunking +
-    /// embeddings). Only compiled under `--features ai`; runtime-untested
-    /// because `SemanticCleaner` is sealed (no test impl) and
-    /// `SemanticCleanerImpl::new` eagerly loads a ~90 MB model.
-    #[cfg(feature = "ai")]
+    /// Route HTML through the semantic cleaner (async: chunking + embeddings)
+    /// when a cleaner is wired via [`with_cleaner`](Self::with_cleaner).
     async fn cleaner_chunks(
         &self,
         cleaner: &std::sync::Arc<dyn crate::domain::semantic_cleaner::SemanticCleaner>,

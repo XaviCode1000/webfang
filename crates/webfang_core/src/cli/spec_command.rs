@@ -162,9 +162,9 @@ fn build_arg(spec: &'static OptionSpec, headings: Headings) -> clap::Arg {
     // makes the flag PARSE; deleting it would turn an actionable
     // build-capability error into clap's "unexpected argument" (exit 64) that
     // never names the missing feature. The rejection half lives in
-    // `preflight::check_adaptive_selectors_feature` /
-    // `preflight::check_clean_ai_feature` (exit 78, before any network I/O),
-    // and it can only see the request because this arg still parses it.
+    // `preflight::check_adaptive_selectors_feature` (exit 78, before any
+    // network I/O), and it can only see the request because this arg still
+    // parses it.
     //
     // ADR-0004 slice C removed `clean_ai` from the gated set, so
     // `adaptive_selectors` is now the only entry that reaches here. The
@@ -295,7 +295,7 @@ enum AiSlot {
 /// first by [`ai_args`], mirroring its field position.
 ///
 /// There is deliberately no "gated" counterpart any more (ADR-0004, slice C).
-/// Both `cfg` arms used to render a subset behind `#[cfg(feature = "ai")]`
+/// Both `cfg` arms used to render a subset behind a cargo-feature gate
 /// and let the rest render ungated, so a build without the feature advertised
 /// a DIFFERENT CLI than one with it and answered `--threshold` / `--offline` /
 /// `--ai-model` with clap's "unexpected argument" (exit 64) instead of naming
@@ -325,15 +325,13 @@ fn build_ai_slot(slot: &AiSlot, headings: Headings) -> clap::Arg {
 /// hand-built `threshold` first (it is a field of `AiArgs`), then the spec
 /// slots in [`AI_SPEC_LAYOUT`] order.
 ///
-/// Ungated by decision (ADR-0004, slice C). Every flag here describes
-/// behavior a build without the `ai` cargo feature can still honor — the
-/// cleaner runs over whatever
+/// Ungated by decision (ADR-0004). Every flag here describes behavior every
+/// build can still honor — the cleaner runs over whatever
 /// [`EmbeddingPort`](crate::domain::embedding_port::EmbeddingPort) the
-/// run built, remote included — so hiding any of them from one build trades a
-/// named, actionable exit 78 from
-/// [`check_clean_ai_feature`](crate::cli::preflight::check_clean_ai_feature)
-/// for clap's exit 64 "unexpected argument", which names neither what the
-/// flag means nor the capability behind it.
+/// run built, remote included — so hiding any of them behind a cargo feature
+/// trades either clap's exit 64 "unexpected argument" (which names neither
+/// what the flag means nor the capability behind it) or a silent no-op for an
+/// honest wiring failure surfaced at run time by the export flow.
 pub(crate) fn ai_args(headings: Headings) -> Vec<clap::Arg> {
     let mut args = Vec::with_capacity(expected_ai_arg_count());
     args.push(build_ai_slot(&AiSlot::Manual(manual_threshold), headings));
@@ -593,7 +591,6 @@ mod tests {
             obsidian_args(Headings::Omitted).len(),
             options_spec::obsidian::GROUP.len()
         );
-        #[cfg(feature = "ai")]
         assert_eq!(ai_args(Headings::Omitted).len(), expected_ai_arg_count());
     }
 
@@ -609,7 +606,6 @@ mod tests {
             obsidian_args(Headings::Applied).len(),
             options_spec::obsidian::GROUP.len()
         );
-        #[cfg(feature = "ai")]
         assert_eq!(ai_args(Headings::Applied).len(), expected_ai_arg_count());
     }
 
@@ -636,7 +632,8 @@ mod tests {
     ];
 
     /// The AI surface is IDENTICAL in every cargo configuration and for both
-    /// heading shapes (ADR-0004 slice C).
+    /// heading shapes (ADR-0004 slice C, terminal state after paso 6: the
+    /// flag is pure and there is no cargo feature to split the surface).
     ///
     /// This used to be split: without `ai` the group collapsed to the ungated
     /// pair (`max_chars`, `max_tokens`), and each `cfg` arm asserted its own
@@ -658,26 +655,10 @@ mod tests {
         }
     }
 
-    /// Without the `ai` cargo feature the group STILL renders in full — this
-    /// is the regression guard for slice C. The cleaner needs no ONNX build, so
-    /// a build without the feature must offer the same flags rather than
-    /// answering an operator with clap's "unexpected argument" (exit 64).
+    /// The AI group renders exactly five entries in every configuration.
     #[test]
-    #[cfg(not(feature = "ai"))]
-    fn ai_args_renders_the_full_set_without_feature() {
-        assert_ai_layout_in_every_shape("without ai");
-        assert_eq!(
-            expected_ai_arg_count(),
-            EXPECTED_AI_IDS.len(),
-            "the count must be derived from one source for both configurations"
-        );
-    }
-
-    /// With the `ai` cargo feature the surface is the same five entries.
-    #[test]
-    #[cfg(feature = "ai")]
-    fn ai_args_has_five_entries_with_feature() {
-        assert_ai_layout_in_every_shape("with ai");
+    fn ai_args_has_five_entries() {
+        assert_ai_layout_in_every_shape("always");
         assert_eq!(
             expected_ai_arg_count(),
             EXPECTED_AI_IDS.len(),

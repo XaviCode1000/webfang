@@ -10,17 +10,19 @@
 #
 # What it pins:
 #   section A  the pure helpers, via `check_compatibility.sh --self-test`
-#              (feature-argument decoder, the `ai` predicate, the derived
-#              --output-vectors exit contract, run_logged's status contract);
+#              (feature-argument decoder, the --output-vectors exit contract,
+#              run_logged's status contract);
 #   section B  a mismatching exit code prints the binary's own output BEFORE
 #              the FAIL line (finding 1);
 #   section C  the crawl availability branch is fail-closed — a listing that
 #              fails, or lists no crawl test, FAILS the combo and never
 #              degrades into a compile-only pass (finding 5);
-#   section D  the --output-vectors exit contract is derived per combo from
-#              whether `ai` is enabled, not from a fixed branch: a binary that
-#              honours the contract passes all six combos, while one that
-#              always exits 78 fails the ai-bearing ones and vice versa
+#   section D  the --output-vectors exit contract is asserted PER COMBO, not
+#              accepted from whatever the binary returns: since ADR-0004
+#              paso 6 there is exactly ONE contract (65 on every build), so a
+#              binary honouring it passes all five combos, while one that
+#              still applies the retired build-capability arm (65 only for an
+#              --all-features build) or one that always exits 78 fails
 #              (finding 3).
 #
 # Exit code: 0 when every assertion holds, 1 otherwise.
@@ -151,26 +153,23 @@ case "${1:-}" in
 esac
 echo "STUB-PROBE-STDOUT: webfang $*"
 echo "STUB-PROBE-STDERR: simulated application failure" >&2
-# The oracle: independent re-derivation of the contract, from the argv the
-# build actually received (start_build runs just before this probe, so the
-# file is current for the combo under test). `--all-features` enables `ai`; an
-# explicit feature list enables it iff one of its comma-separated tokens is
-# `ai`.
+# The oracle: independent re-derivation of the contract. Since ADR-0004
+# paso 6 the `--output-vectors` contract is UNIFORM — without `--clean-ai`
+# it is a data-format error (65) on every build — so the honest binary
+# always exits 65. The `oldcontract` mode re-derives the RETIRED
+# pre-paso-6 contract from the argv the build actually received (65 only
+# for an `--all-features` build, 78 otherwise), so the harness can be
+# shown to REJECT it: a harness that took the exit code from the binary
+# instead of asserting it would pass that mode.
 STUB_BUILD_ARGV="$(cat "$STUB_FLAGS" 2>/dev/null || true)"
-ai_enabled=0
-prev=""
+all_features=0
 for tok in $STUB_BUILD_ARGV; do
-  [ "$tok" = "--all-features" ] && ai_enabled=1
-  if [ "$prev" = "--features" ]; then
-    IFS=',' read -r -a feats <<<"$tok"
-    for f in "${feats[@]}"; do [ "$f" = "ai" ] && ai_enabled=1; done
-  fi
-  prev="$tok"
+  [ "$tok" = "--all-features" ] && all_features=1
 done
 case "${STUB_WEBFANG_MODE:-exit}" in
-predicate) [ "$ai_enabled" = "1" ] && exit 65 || exit 78 ;;
+predicate) exit 65 ;;
+oldcontract) [ "$all_features" = "1" ] && exit 65 || exit 78 ;;
 always78) exit 78 ;;
-always65) exit 65 ;;
 *) exit "${STUB_WEBFANG_EXIT:-0}" ;;
 esac
 STUB
@@ -229,15 +228,16 @@ A_OUT="$(bash "$HARNESS" --self-test 2>&1)"
 A_RC=$?
 assert_eq "self-test exit status" "0" "$A_RC"
 assert_contains "self-test verdict" "$A_OUT" "self-test: PASS"
-assert_contains "unseen ai combo asserted as 65" "$A_OUT" "expected_vectors_exit ai,persistence,chromium = 65"
-assert_contains "non-ai combo asserted as 78" "$A_OUT" "expected_vectors_exit mcp,chromium = 78"
+assert_contains "unseen combo asserted as 65" "$A_OUT" "expected_vectors_exit mcp,persistence,chromium = 65"
+assert_contains "default combo asserted as 65" "$A_OUT" "expected_vectors_exit default = 65"
+assert_not_contains "the retired 78 arm is gone" "$A_OUT" "expected_vectors_exit default = 78"
 assert_contains "run_logged returns the real status" "$A_OUT" "run_logged exit 42 = 42"
 
 # --- section B: opaque exit-contract diagnostics (finding 1) -----------------
 echo "B: mismatching --output-vectors exit code is diagnosable (finding 1)"
 B_OUT="$(run_harness b STUB_WEBFANG_MODE=exit STUB_WEBFANG_EXIT=64)"
 assert_contains "harness fails" "$B_OUT" "HARNESS_EXIT=1"
-assert_contains "FAIL line names the contract" "$B_OUT" "FAIL failure-path default: --output-vectors expected 78 got 64"
+assert_contains "FAIL line names the contract" "$B_OUT" "FAIL failure-path default: --output-vectors expected 65 got 64"
 assert_contains "binary stdout reaches the log" "$B_OUT" "STUB-PROBE-STDOUT"
 assert_contains "binary stderr reaches the log" "$B_OUT" "STUB-PROBE-STDERR"
 B_PROBE_LINE="$(grep -n "STUB-PROBE-STDERR" <<<"$B_OUT" | head -1 | cut -d: -f1)"
@@ -263,26 +263,27 @@ assert_contains "harness fails when the listing cannot be produced" "$C2_OUT" "H
 assert_contains "listing error fails the combo" "$C2_OUT" "FAIL crawl default: cannot list the behavioral suite for (default)"
 assert_contains "listing error output is shown" "$C2_OUT" "cannot list target"
 
-# --- section D: exit contract is derived, not branch-selected (finding 3) ----
-echo "D: --output-vectors contract discriminates per combo (finding 3)"
+# --- section D: exit contract is asserted, not taken from the binary ---------
+echo "D: --output-vectors contract is asserted per combo (finding 3)"
 D_OUT="$(run_harness d STUB_WEBFANG_MODE=predicate)"
-assert_contains "a contract-honouring binary passes all 6 combos" "$D_OUT" "Compatibility harness: PASS (ci-required)"
-assert_contains "ai combo passed" "$D_OUT" "PASS ai"
-assert_contains "full combo passed" "$D_OUT" "PASS full"
+assert_contains "a contract-honouring binary passes all 5 combos" "$D_OUT" "Compatibility harness: PASS (ci-required)"
 assert_contains "default combo passed" "$D_OUT" "PASS default"
+assert_contains "chromium combo passed" "$D_OUT" "PASS chromium"
+assert_contains "mcp combo passed" "$D_OUT" "PASS mcp"
+assert_contains "full combo passed" "$D_OUT" "PASS full"
 
-D2_OUT="$(run_harness d2 STUB_WEBFANG_MODE=always78)"
-assert_contains "always-78 binary fails the harness" "$D2_OUT" "HARNESS_EXIT=1"
-assert_contains "ai combo asserts 65" "$D2_OUT" "FAIL failure-path ai: --output-vectors expected 65 got 78"
-assert_contains "full combo asserts 65" "$D2_OUT" "FAIL failure-path full: --output-vectors expected 65 got 78"
-assert_contains "no-default combo still asserts 78 (accepted)" "$D2_OUT" "PASS no-default"
+# The RETIRED build-capability contract: 65 only for an --all-features build.
+# The harness must reject it on every combo it gets wrong — a harness that
+# read the expected code out of the binary would pass this mode.
+D2_OUT="$(run_harness d2 STUB_WEBFANG_MODE=oldcontract)"
+assert_contains "the retired build-capability contract fails the harness" "$D2_OUT" "HARNESS_EXIT=1"
+assert_contains "default combo asserts 65" "$D2_OUT" "FAIL failure-path default: --output-vectors expected 65 got 78"
+assert_contains "chromium combo asserts 65" "$D2_OUT" "FAIL failure-path chromium: --output-vectors expected 65 got 78"
+assert_contains "mcp combo asserts 65" "$D2_OUT" "FAIL failure-path mcp: --output-vectors expected 65 got 78"
 
-D3_OUT="$(run_harness d3 STUB_WEBFANG_MODE=always65)"
-assert_contains "always-65 binary fails the harness" "$D3_OUT" "HARNESS_EXIT=1"
-assert_contains "default combo asserts 78" "$D3_OUT" "FAIL failure-path default: --output-vectors expected 78 got 65"
-assert_contains "no-default combo asserts 78" "$D3_OUT" "FAIL failure-path no-default: --output-vectors expected 78 got 65"
-assert_contains "chromium combo asserts 78" "$D3_OUT" "FAIL failure-path chromium: --output-vectors expected 78 got 65"
-assert_contains "mcp combo asserts 78" "$D3_OUT" "FAIL failure-path mcp: --output-vectors expected 78 got 65"
+D3_OUT="$(run_harness d3 STUB_WEBFANG_MODE=always78)"
+assert_contains "always-78 binary fails the harness" "$D3_OUT" "HARNESS_EXIT=1"
+assert_contains "full combo asserts 65" "$D3_OUT" "FAIL failure-path full: --output-vectors expected 65 got 78"
 
 # --- section E: binary resolution honours CARGO_TARGET_DIR (#1698) ---------
 # The bug: the probes ran a hardcoded ./target/debug/webfang, so every
@@ -310,7 +311,7 @@ new_sandbox
 FAR="$NEW_SANDBOX"
 install_stubs "$FAR" "target-ext"
 E1_OUT="$(run_in "$FAR" "$FAR/target-ext" STUB_WEBFANG_MODE=predicate)"
-assert_contains "external CARGO_TARGET_DIR passes all 6 combos" "$E1_OUT" "Compatibility harness: PASS (ci-required)"
+assert_contains "external CARGO_TARGET_DIR passes all 5 combos" "$E1_OUT" "Compatibility harness: PASS (ci-required)"
 assert_contains "resolved path is the external one" "$E1_OUT" "[--help] default ($FAR/target-ext/debug/webfang)"
 assert_contains "failure-path probe ran the external binary" "$E1_OUT" "failure-path ok (default)"
 assert_not_contains "no in-repo target path is referenced" "$E1_OUT" "[--help] default (target/debug/webfang)"
@@ -397,7 +398,7 @@ rm -rf "$FS"
 # F5: failure-path column fails — the --output-vectors contract is violated.
 F5_OUT="$(run_harness f5 STUB_WEBFANG_MODE=exit STUB_WEBFANG_EXIT=64)"
 assert_contains "failure-path column fails the harness" "$F5_OUT" "HARNESS_EXIT=1"
-assert_contains "failure-path contract breach is reported" "$F5_OUT" "FAIL failure-path default: --output-vectors expected 78 got 64"
+assert_contains "failure-path contract breach is reported" "$F5_OUT" "FAIL failure-path default: --output-vectors expected 65 got 64"
 
 # --- summary ----------------------------------------------------------------
 if [ "$FAILED" -ne 0 ]; then

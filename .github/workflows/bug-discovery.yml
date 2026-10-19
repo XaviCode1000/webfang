@@ -4,9 +4,9 @@ on:
     - cron: "0 6 * * *"  # Diario 6AM
   workflow_dispatch: {}
   # pull_request trigger removed: this workflow is for scheduled/on-demand
-  # production bug discovery, not PR validation. It downloads a ~372MB model
-  # and runs ignored tests, which causes mergeStateStatus=UNSTABLE while
-  # required checks are green (GitHub evaluates ALL checks, not just required).
+  # production bug discovery, not PR validation. It runs ignored tests, which
+  # causes mergeStateStatus=UNSTABLE while required checks are green (GitHub
+  # evaluates ALL checks, not just required).
 
 jobs:
   poisoned-env:
@@ -78,104 +78,25 @@ jobs:
           # No PR trigger (schedule/dispatch on main); only main saves (#1171)
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - uses: taiki-e/install-action@e88e69ecdb9658bd172693dcdc2c84e7f0ab6a11
-      - name: Cache ONNX model (Granite-97M)
-        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25
-        with:
-          # Stable key: never bump the suffix so the cached model survives across
-          # merges. A changing key would invalidate the cache and force a re-download
-          # on every run. restore-keys keep older variants usable as fallback;
-          # the warm step below VALIDATES whatever was restored and rebuilds
-          # it from scratch when the layout is incomplete or corrupt.
-          path: ~/.cache/huggingface/hub/
-          key: onnx-model-${{ runner.os }}-granite-97m
-          restore-keys: |
-            onnx-model-${{ runner.os }}-granite-97m
-      - name: Download ONNX model (cache miss)
-        run: |
-          set -e
-          MODEL_DIR="$HOME/.cache/huggingface/hub/models--ibm-granite--granite-embedding-97m-multilingual-r2"
-          REV="835ad14087e140460703cf0fae09f97d469d65c2"
-          BLOB_SHA="68e592b160673d30250824c1116bc6ab33f70efb22b97c9e1d7ce1e69c1c9d70"
-          TOKENIZER_BLOB_SHA="4f2842d568e2724370aec203652a42ac783c7937f8347a1a2cc7506d71f1582f"
-          BLOB_FILE="$MODEL_DIR/blobs/$BLOB_SHA"
-          TOKENIZER_BLOB_FILE="$MODEL_DIR/blobs/$TOKENIZER_BLOB_SHA"
-          SNAPSHOT_DIR="$MODEL_DIR/snapshots/$REV"
-          SNAPSHOT_FILE="$SNAPSHOT_DIR/onnx/model.onnx"
-          SNAPSHOT_TOKENIZER="$SNAPSHOT_DIR/tokenizer.json"
-
-          # hf_hub offline resolution requires: refs/main -> <rev>, and
-          # snapshots/<rev>/{onnx/model.onnx,tokenizer.json} resolving to real,
-          # non-empty blobs. A restored cache from an older restore-keys entry
-          # can satisfy mere file-existence while being unusable (observed in
-          # run 32456250722: stale -v1 restore produced OfflineMode +
-          # Lock-acquisition failures). Validate structure AND content hash;
-          # on any mismatch, wipe and re-download instead of trusting it.
-          cache_valid() {
-            [ "$(cat "$MODEL_DIR/refs/main" 2>/dev/null)" = "$REV" ] || return 1
-            [ -f "$SNAPSHOT_FILE" ] && [ -s "$SNAPSHOT_FILE" ] || return 1
-            [ -f "$SNAPSHOT_TOKENIZER" ] && [ -s "$SNAPSHOT_TOKENIZER" ] || return 1
-            echo "Verifying cached model SHA256..."
-            echo "$BLOB_SHA  $(readlink -f "$SNAPSHOT_FILE")" | sha256sum --check --status
-          }
-
-          if cache_valid; then
-            echo "Model cache present and verified, skipping download"
-            exit 0
-          fi
-
-          echo "Cache missing or invalid (stale restore-keys fallback) - rebuilding..."
-          rm -rf "$MODEL_DIR"
-          echo "Downloading Granite-97M ONNX model (~372MB)..."
-          mkdir -p "$MODEL_DIR/blobs"
-          mkdir -p "$SNAPSHOT_DIR/onnx"
-          # --retry 3 with retry-all-errors tolerates transient Hugging Face
-          # network failures / rate limits. curl resumes or retries the single
-          # transfer; the model is fetched at most once per run (guarded above).
-          curl -L --fail --retry 3 --retry-all-errors --retry-delay 5 -o "$BLOB_FILE" \
-            "https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2/resolve/main/onnx/model.onnx"
-          echo "Verifying model SHA256..."
-          echo "$BLOB_SHA  $BLOB_FILE" | sha256sum --check --status
-          echo "Downloading tokenizer.json..."
-          curl -L --fail --retry 3 --retry-all-errors --retry-delay 5 -o "$TOKENIZER_BLOB_FILE" \
-            "https://huggingface.co/ibm-granite/granite-embedding-97m-multilingual-r2/resolve/main/tokenizer.json"
-          echo "Verifying tokenizer SHA256..."
-          echo "$TOKENIZER_BLOB_SHA  $TOKENIZER_BLOB_FILE" | sha256sum --check --status
-          mkdir -p "$MODEL_DIR/refs"
-          echo "$REV" > "$MODEL_DIR/refs/main"
-          ln -s "../../../blobs/$BLOB_SHA" "$SNAPSHOT_FILE"
-          ln -s "../../blobs/$TOKENIZER_BLOB_SHA" "$SNAPSHOT_TOKENIZER"
-          echo "Model + tokenizer downloaded, verified, and cached"
       - name: Run ignored tests (bug discovery)
-        # Downloads the ONNX model so AI integration tests run and pass.
-        # Skips tests that fundamentally cannot pass in CI: timing-sensitive,
-        # env-dependent, and network-requiring tests.
-        # Also excludes two deliberately manual, environment-bound measurements:
-        # tier_311m_peak_rss_under_budget requires a pre-cached granite-311m HF
-        # blob (this job provisions only 97M); measure_short_paragraph_loss_on_real_corpus
-        # requires WEBFANG_1368_CORPUS, a local corpus dir. Both document their
-        # manual contract at their definition sites (see #1436).
+        # Runs the surviving #[ignore]'d suite. Skips tests that fundamentally
+        # cannot pass in CI: timing-sensitive, env-dependent, and
+        # network-requiring tests.
         # Plus sitemap_entry_max_pages_truncates_many_url_fixture: kept RED by
         # design (TDD evidence of the naive unbounded reading, "never run in
         # CI"); the GREEN pin sitemap_entry_max_pages_bound_pins_inflight_drain
         # asserts the real bound (see #1469, W-03).
-        # #1510: p0_001_measure_sweep is a MEASUREMENT CAMPAIGN (7 engine
-        # configs × 4 pages × 3 reps, each cell spawns child processes and
-        # reloads the ONNX model; single×1p alone medians 33.5s) — 40-120 min
-        # total, impossible inside any daily CI budget. The full sweep stays a
-        # manual command (same contract as tier_311m_peak_rss_under_budget and
-        # measure_short_paragraph_loss_on_real_corpus, #1436). The daily job
-        # runs a smoke subset via the env knobs the test itself documents:
-        # single/pool2/pool4 × pages 1,2 ≈ 18 cells ≈ 10-18 min. The timeout
-        # problem is additionally covered by the dedicated nextest profile
-        # `discovery` (slow-timeout 600s, global 45m).
-        env:
-          WEBFANG_P0_001_CONFIGS: "single,pool2,pool4"
-          WEBFANG_P0_001_PAGES: "1,2"
+        # The ONNX-era exclusions (the 311m RSS measurement, the real-corpus
+        # paragraph-loss measurement and the engine measurement campaign) went
+        # away with the removal of the local ONNX stack (ADR-0004 paso 6), so
+        # their filter terms and their env knobs are gone with them. The
+        # remaining suite fits the dedicated nextest profile `discovery`
+        # (slow-timeout 600s, global 45m).
         run: |
           set -o pipefail
           cargo nextest run --workspace --all-features --run-ignored only --no-fail-fast \
             --profile discovery \
-            -E 'not(test(/session_pool/) | test(/vault_detector/) | test(/cli_binary_test/) | test(/tier_311m_peak_rss_under_budget/) | test(/measure_short_paragraph_loss_on_real_corpus/) | test(/sitemap_entry_max_pages_truncates_many_url_fixture/))' \
+            -E 'not(test(/session_pool/) | test(/vault_detector/) | test(/cli_binary_test/) | test(/sitemap_entry_max_pages_truncates_many_url_fixture/))' \
             2>&1 | tee /tmp/ignored-tests-nextest.log
       - name: Publish failure names
         if: always()

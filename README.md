@@ -26,8 +26,10 @@ plus a checksum manifest, on [GitHub Releases](https://github.com/XaviCode1000/w
 | Windows x86_64 | `webfang-x86_64-pc-windows-msvc.zip` | `.zip` |
 | Any | `SHA256SUMS.txt` | checksums |
 
-**There is no Intel macOS artifact** — ONNX Runtime dropped x64 macOS, so the
-`ai` feature cannot link there. Each archive holds a bare binary: verify the
+**There is no Intel macOS artifact.** The release target list is unchanged
+and deliberately does not include `x86_64-apple-darwin` (historically, ONNX
+Runtime had no x64 macOS prebuilt; after the ONNX removal the reason is moot
+but no target was added). Each archive holds a bare binary: verify the
 checksum, then `chmod +x` and put it on your `PATH`.
 
 <details>
@@ -63,7 +65,7 @@ nothing about the real cause.
 git clone https://github.com/XaviCode1000/webfang.git
 cd webfang
 cmake --version
-cargo build --release --locked --features "ai mcp" -p webfang_cli
+cargo build --release --locked --features mcp -p webfang_cli
 ./target/release/webfang --version
 ```
 
@@ -80,8 +82,9 @@ webfang --url https://example.com
 # Crawl an entire site
 webfang --url https://example.com --use-sitemap --max-pages 50
 
-# Export for RAG pipelines
-webfang --url https://example.com --export-format jsonl --clean-ai
+# Export for RAG pipelines (semantic cleaning via a remote embedding endpoint)
+webfang --url https://example.com --export-format jsonl \
+  --clean-ai --embedding-provider ollama
 ```
 
 Output is saved to `output/` as Markdown by default.
@@ -90,22 +93,20 @@ Output is saved to `output/` as Markdown by default.
 
 ## Architecture
 
-Clean Architecture with enforced dependency direction across 4 workspace crates (plus `webfang_test_utils`, a shared dev/test-support crate):
+Clean Architecture with enforced dependency direction across 3 workspace crates (plus `webfang_test_utils`, a shared dev/test-support crate):
 
 ```
-webfang_cli ──→ webfang_ai ───→ webfang_core
 webfang_cli ──→ webfang_mcp ──→ webfang_core
 webfang_cli ──────────────────────→ webfang_core
 ```
 
 | Crate | Purpose | Key Dependencies |
 |-------|---------|-----------------|
-| `webfang_core` | Domain, application, infrastructure | wreq, tokio, scraper, lol_html |
-| `webfang_ai` | ONNX semantic cleaning | ort |
+| `webfang_core` | Domain, application, infrastructure (incl. semantic cleaning via remote `EmbeddingPort` adapters) | wreq, tokio, scraper, lol_html |
 | `webfang_mcp` | MCP server for AI agents | rmcp |
 | `webfang_cli` | Binary entry point + CLI parsing | clap |
 
-**Dependency direction:** CLI → {MCP, AI} → Core. No circular dependencies.
+**Dependency direction:** CLI → MCP → Core. No circular dependencies. The former `webfang_ai` crate (local ONNX) was removed in ADR-0004 paso 6 — see [docs/src/ai-onnx-migration.md](docs/src/ai-onnx-migration.md).
 
 ---
 
@@ -114,7 +115,7 @@ webfang_cli ──────────────────────�
 | Feature | Description |
 |---------|-------------|
 | **Content extraction** | Readability-based extraction — strips menus, ads, sidebars |
-| **AI semantic cleaning** | ONNX embeddings filter irrelevant content (feature `ai`) |
+| **Semantic cleaning** | `--clean-ai` filters irrelevant content with remote embeddings (`--embedding-provider`) — BYO endpoint |
 | **Multi-format export** | Markdown, JSON, JSONL (RAG), Vector (embeddings) |
 | **Obsidian integration** | Direct vault saves with wiki-links and metadata |
 | **Sitemap discovery** | Auto-discovers all pages via robots.txt + sitemap.xml |
@@ -178,14 +179,15 @@ See [docs/src/debugging.md](docs/src/debugging.md) for the full query cookbook a
 webfang --url https://example.com --clean-ai --export-format jsonl
 ```
 
-> **ONNX local está en retirada.** La feature `ai` y la inferencia ONNX se eliminan dos releases
-> minor después de este aviso; `--clean-ai` y `--offline` sobreviven des-gateados, pero `--clean-ai`
-> pasará a resolver su endpoint por `--embedding-provider`, así que **el zero-config offline-total se
-> pierde**: vas a necesitar un endpoint propio (BYO-key, el coste es tuyo) y re-indexar los vaults
-> con vectores de Granite. Shims (`--ai-model`, `--max-tokens`, `AI_MODEL_ID`, `WEBFANG_AI_MODEL_ID`,
-> `WEBFANG_AI_ENGINE`) siguen funcionando ≥2 minors. Pasá por
-> [docs/src/ai-onnx-migration.md](docs/src/ai-onnx-migration.md); si dependés de ONNX local,
-> comentá en [#1997](https://github.com/XaviCode1000/webfang/issues/1997).
+> **ONNX local ya no existe (ADR-0004 paso 6).** `--clean-ai` resuelve su endpoint con
+> `--embedding-provider` (env `WEBFANG_EMBEDDING_PROVIDER`): necesitás un endpoint propio
+> (BYO-key, el coste es tuyo), y el zero-config offline-total con inferencia se perdió.
+> Los shims `--ai-model`, `--max-tokens`, `AI_MODEL_ID`, `WEBFANG_AI_MODEL_ID`, `WEBFANG_AI_ENGINE`
+> y `WEBFANG_MAX_TOKENS` emiten un aviso de migración en cada corrida. Los vaults con vectores de
+> Granite conviene re-indexarlos. En `--offline` no hay provider de embeddings que sirva: el guard
+> rechaza cualquier endpoint (también uno en `127.0.0.1`) y sale con exit 78. El "loopback" del
+> aviso del paso 5 era el modelo local ONNX, que este paso eliminó. Detalle paso a paso en
+> [docs/src/ai-onnx-migration.md](docs/src/ai-onnx-migration.md).
 
 ### Obsidian
 
@@ -277,10 +279,10 @@ The MCP server provides **36 tools** across **9 categories** for AI agent integr
 
 ```bash
 # HTTP mode (Streamable HTTP at http://127.0.0.1:8080/mcp)
-cargo run -p webfang_mcp --example mcp_server --features "mcp ai persistence"
+cargo run -p webfang_mcp --example mcp_server --features "mcp persistence"
 
 # stdio mode (for OpenCode, Claude Desktop, Cursor; JSON-RPC over stdin/stdout)
-cargo run -p webfang_mcp --example mcp_server_stdio --features "mcp ai persistence"
+cargo run -p webfang_mcp --example mcp_server_stdio --features "mcp persistence"
 ```
 
 | Category | Tools |
@@ -315,13 +317,14 @@ CLI arguments override config file values.
 ## Build Features
 
 Features are compiled in at **build** time. A release binary is built with
-`--features "ai mcp"`, so only `default`, `ai`, and `mcp` are present in it —
-everything else needs a [source build](#installation).
+`--features mcp`, so only `default` and `mcp` are present in it — everything
+else needs a [source build](#installation). The `ai` feature is gone (ADR-0004
+paso 6): semantic cleaning is runtime-configured remote embeddings, not a
+build feature.
 
 | Feature | Activates | In the release binary? |
 |---------|-----------|--------|
 | `default` (`images` + `documents`) | Image and document extraction | ✅ Yes |
-| `ai` | Semantic cleaning with ONNX (~390 MB model) | ✅ Yes |
 | `mcp` | The `webfang_mcp` crate's MCP server | ⚠️ The CLI's `mcp` feature gates no shipped code — the crate itself is not in the release. See [MCP Server](#-mcp-server) |
 | `persistence` | SQLite checkpoint store | ❌ No — `--features persistence` from source |
 | `chromium` | Headless Chrome for `--js-strategy full` (rejected at preflight without it) | ❌ No — `--features chromium` from source |
@@ -339,27 +342,29 @@ touched is yours to delete.
 # 1. The binary
 sudo rm /usr/local/bin/webfang            # or ~/.local/bin/webfang
 
-# 2. Cache + state + user-agent cache (NOT the model cache)
+# 2. Cache + state + user-agent cache
 rm -rf "${XDG_CACHE_HOME:-$HOME/.cache}/webfang"
 
-# 3. The ONNX model cache (~372 MB default) — check you did not relocate it
-rm -rf "${HF_HOME:-$HOME/.cache/huggingface}"
-
-# 4. Your own output — NOT deleted by webfang, and not backed up
+# 3. Your own output — NOT deleted by webfang, and not backed up
 ls output/
 ```
 
-Steps 2 and 3 are POSIX-shell commands. On macOS the webfang cache base is
-`~/Library/Caches`, and the model cache is `~/.cache/huggingface` on **every**
-platform — not `%LOCALAPPDATA%`. The PowerShell equivalents are in the guide.
+> WebFang no longer uses a local model cache: ONNX local was removed
+> (ADR-0004 paso 6) and the binary never touches `~/.cache/huggingface`.
+> Releases before the ONNX retirement cached models under
+> `${HF_HOME:-$HOME/.cache/huggingface}` (HuggingFace's own `HF_HOME`, not any
+> `WEBFANG_*` variable); if you upgraded from one, that directory is inert and
+> yours to delete.
+```
+
+The commands above are POSIX-shell commands. On macOS the webfang cache base
+is `~/Library/Caches`. The PowerShell equivalents are in the guide.
 
 `webfang/state/<domain>.json.lock` is a **permanent sentinel**; its survival
 after an uninstall is correct behaviour, not a failed removal.
 
-> **The model cache is not relocatable by any `WEBFANG_*` variable** — it is
-> HuggingFace's `HF_HOME`. Check it before deleting, or you will delete the
-> wrong directory and recover nothing. Windows/macOS paths, the full table of
-> what each run creates, and the per-platform commands:
+> Windows/macOS paths, the full table of what each run creates, and the
+> per-platform commands:
 > [docs/src/installation.md#uninstall](docs/src/installation.md#uninstall).
 
 ---
@@ -393,7 +398,6 @@ cargo +nightly miri test --lib
 webfang/
 ├── crates/
 │   ├── webfang_core/     # Domain + application + infrastructure
-│   ├── webfang_ai/       # AI/ONNX inference
 │   ├── webfang_mcp/      # MCP server
 │   └── webfang_cli/      # Binary entry point
 ├── Cargo.toml                 # Workspace manifest
@@ -421,12 +425,12 @@ codedb index .
 
 ### Architecture rules
 
-- **Dependency direction:** CLI → {MCP, AI} → Core (never reverse)
+- **Dependency direction:** CLI → MCP → Core (never reverse)
 - **Port/Adapter pattern:** Domain defines traits, Infrastructure implements them
 - **Error types:** DomainError, InfraError → ScraperError (dual wrapping)
 - **User-facing errors:** Spanish. Internal logs: English.
 
-**Stack:** Rust 1.88 · Tokio · wreq (TLS fingerprint) · scraper 0.27 · lol_html · ort
+**Stack:** Rust 1.88 · Tokio · wreq (TLS fingerprint) · scraper 0.27 · lol_html
 
 ---
 

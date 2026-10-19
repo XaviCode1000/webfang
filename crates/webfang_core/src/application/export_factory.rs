@@ -869,7 +869,6 @@ pub fn domain_from_url(url: &str) -> String {
 /// This function is used when `--clean-ai` is enabled. It accepts
 /// `DocumentChunk` instances that already have embeddings populated
 /// by the `SemanticCleaner`, bypassing the simple field-mapping conversion.
-#[cfg(feature = "ai")]
 pub fn process_results_with_chunks(
     chunks: &[crate::domain::DocumentChunk],
     output_dir: PathBuf,
@@ -1653,7 +1652,6 @@ mod tests {
     // the AI chunk path must mirror that ordering so --clean-ai --resume
     // never appends chunks whose URL is COMMITTED-proven or whose bytes
     // are already flushed (PromoteFromFlushProof).
-    #[cfg(feature = "ai")]
     mod ai_chunk_resume_gate {
         use super::*;
         use crate::domain::DocumentChunkUnvalidated;

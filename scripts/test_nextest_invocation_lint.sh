@@ -136,9 +136,9 @@ jobs:
 EOF
 
 # --- 5. correct shapes must NOT be flagged --------------------------------
-assert_case libtest_ignored_serial_passes PASS "scripts/run_ai.sh" <<'EOF'
+assert_case libtest_ignored_serial_passes PASS "scripts/run_serial.sh" <<'EOF'
 #!/usr/bin/env bash
-cargo test -p webfang_ai --features ai --test ai_integration -- \
+cargo test -p webfang_core --test behavioral -- \
   --ignored --test-threads=1
 EOF
 

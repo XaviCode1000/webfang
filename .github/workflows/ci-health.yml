@@ -9,12 +9,13 @@
 #     nivel de step (su propio estado), nunca abre el tracking issue
 #     "Scheduled CI failed on main" aunque el schedule lleve 10+ semanas rojo.
 #     Ese es un título HISTÓRICO y ya retirado: ver RETIRED_TITLE_CI abajo.
-#   W-02: `CI Gate` no incluye miri* ni test-ai en su `needs:` → verde con
-#     4 jobs en failure. Este observer mira los JOBS reales, no el gate.
+#   W-02: `CI Gate` no incluye miri* en su `needs:` → verde con 3 jobs en
+#     failure. Este observer mira los JOBS reales, no el gate.
 #   W-03/W-04: Bug Discovery recoge un test #[ignore] "kept RED by design"
 #     (rojo permanente) y no crea issues. Este observer lo clasifica como
 #     falso-positivo-conocido y lo reporta sin ruido.
-#   W-05: Benches muere con exit 143/SIGTERM compilando webfang_ai.
+#   W-05: Benches muere con exit 143/SIGTERM durante la compilación (la causa
+#     entonces era el crate de IA, eliminado en ADR-0004 paso 6).
 #   W-08: 0 watchers → sin este observer nadie se entera.
 #
 # Diseño:

@@ -6,10 +6,14 @@
 #
 # Why it works the way it does:
 #   - The binary is ALWAYS built first, with EXACTLY the release feature set
-#     (`ai mcp` — see .github/workflows/release.yml). Feature-gated flags
-#     (AI flags) must appear; dev-only features (e.g.
-#     adaptive-selectors) must NOT. Incremental: a no-op when already up to
-#     date, so this is cheap to run locally and in CI.
+#     (`mcp` — see .github/workflows/release.yml). Feature-gated flags must
+#     appear; dev-only features (e.g. adaptive-selectors) must NOT.
+#     Incremental: a no-op when already up to date, so this is cheap to run
+#     locally and in CI.
+#     The `ai` feature was removed with the `webfang_ai` crate (ADR-0004
+#     paso 6), so the release set no longer carries it; the semantic-cleaning
+#     flags are UNGATED now (ADR-0004 slice C) and therefore appear in every
+#     build, gated or not.
 #   - Help output is captured via command substitution (`$(...)`), which
 #     means stdout is NOT a tty: clap emits no ANSI styling and wraps at the
 #     fixed non-interactive width. This keeps the captured bytes stable across
@@ -32,7 +36,7 @@ set -euo pipefail
 CHAPTER="docs/src/cli-reference.md"
 BEGIN_MARKER="CLI-REFERENCE:BEGIN"
 END_MARKER="CLI-REFERENCE:END"
-FEATURES="ai mcp"
+FEATURES="mcp"
 # Honor CARGO_TARGET_DIR (shared build cache via direnv in worktrees); the
 # hardcoded target/ path silently broke every sibling-worktree run (#360).
 BIN="${CARGO_TARGET_DIR:-target}/debug/webfang"

@@ -214,15 +214,12 @@ pub enum ScraperError {
 /// # Examples
 ///
 /// ```
-/// # #[cfg(feature = "ai")]
-/// # fn example() {
 /// use webfang_core::error::SemanticError;
 /// use std::io;
 ///
 /// let io_err = io::Error::new(io::ErrorKind::NotFound, "model file missing");
 /// let semantic_err = SemanticError::ModelLoad(io_err);
 /// assert!(semantic_err.to_string().contains("modelo"));
-/// # }
 /// ```
 #[derive(Error, Debug)]
 pub enum SemanticError {

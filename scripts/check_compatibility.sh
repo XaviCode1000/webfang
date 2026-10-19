@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # Compatibility harness — Sprint 0 Gate 0
-# Loops 6 CI-required combos + 2 pairwise spot-checks (local/nightly).
+# Loops 5 CI-required combos + 1 pairwise spot-check (local/nightly).
+#
+# The `ai` and `ai+persistence` combos were retired with the `ai` feature and
+# the `webfang_ai` crate (ADR-0004 paso 6); COMPATIBILITY-MATRIX.md records
+# the surviving matrix: 5 required combos + 1 pairwise.
 # Usage: bash scripts/check_compatibility.sh --ci-required | --all | --self-test | --help
 # Each combo verifies: compile | start | --help | crawl | resume | failure-path
 
@@ -11,7 +15,7 @@ for arg in "$@"; do
     --ci-required) MODE="ci-required" ;;
     --all) MODE="all" ;;
     --self-test) MODE="self-test" ;;
-    --help|-h) echo "Usage: $0 [--ci-required|--all|--self-test]"; echo "  --ci-required  6 required combos (CI)"; echo "  --all          6 + 2 pairwise (local/nightly)"; echo "  --self-test    unit-check the pure helpers (no cargo, no network)"; exit 0 ;;
+    --help|-h) echo "Usage: $0 [--ci-required|--all|--self-test]"; echo "  --ci-required  5 required combos (CI)"; echo "  --all          5 + 1 pairwise (local/nightly)"; echo "  --self-test    unit-check the pure helpers (no cargo, no network)"; exit 0 ;;
     *) echo "Unknown arg: $arg" >&2; exit 2 ;;
   esac
 done
@@ -19,13 +23,11 @@ done
 COMBOS_CI=(
   "default:default"
   "no-default:--no-default-features"
-  "ai:ai"
   "chromium:chromium"
   "mcp:mcp"
   "full:full"
 )
 COMBOS_PAIRWISE=(
-  "ai+persistence:ai,persistence"
   "mcp+chromium:mcp,chromium"
 )
 
@@ -218,25 +220,21 @@ failure_path_check() {
   local name="$2"
   echo "  [failure-path] $name ($flags)"
   # Deterministic, pre-network exit contracts, asserted per combo:
-  #   65: --output-vectors <path> on a build WITH the `ai` feature but
-  #       without --clean-ai (data-format error, #703);
-  #   78: --output-vectors <path> on a build WITHOUT the `ai` feature
-  #       (config error, #652).
-  # Both gates fire in run() before any fetch, so they are feature- and
-  # network-independent. (The old bad --state-dir probe is dropped: record
+  #   65: --output-vectors <path> without --clean-ai (data-format error,
+  #       #703). ONE answer for every build: the local inference stack that
+  #       used to make a build unable to produce vectors AT ALL is gone
+  #       (ADR-0004 paso 6), so the gate asks the same question on every
+  #       build — "did the operator ask for vectors without asking for the
+  #       thing that produces them?" — and answers 65. The retired
+  #       build-capability arm (78) described a build that no longer exists,
+  #       so it is not a second answer any more.
+  # The gate fires in run() before any fetch, so it is network-independent.
+  # (The old bad --state-dir probe is dropped: record
   # store persist failures are advisory by design (#1230/#1247) — logged,
   # never fatal — so that command's exit code is network-dependent, not a
   # state contract. The 69/74 I/O classes stay pinned by the error_path
   # suite, which runs against wiremock.)
-  #
-  # The expected code is DERIVED from whether the combo enables `ai`
-  # (expected_vectors_exit below), never matched against a list of combos:
-  # an allowlist silently asserted the wrong contract for any new
-  # ai-bearing combination — `ai,persistence,chromium` selected the 78
-  # branch and the gate passed on a build that must exit 65 (#1635
-  # finding 3).
-  local expected_vectors
-  expected_vectors=$(expected_vectors_exit "$flags")
+  local expected_vectors="$EXPECTED_VECTORS_EXIT"
   decode_core_feature_args "$flags"
   local bin
   bin="$(webfang_bin)"
@@ -262,112 +260,26 @@ failure_path_check() {
   echo "  failure-path ok ($name)"
 }
 
-# --- preflight (read-only, cheap) ---
+# --- the --output-vectors exit contract --------------------------------------
 
-# True when the combo's cargo invocation enables the `ai` feature: `full`
-# passes --all-features (which includes `ai`), and any explicit feature list
-# carrying the `ai` token does. One predicate, two consumers: the ONNX
-# Runtime preflight below (the `ai` feature is what links ONNX Runtime) and
-# expected_vectors_exit() (the --output-vectors exit contract). Classifying a
-# combo by what it ENABLES is what keeps an unseen combination such as
-# `ai,persistence,chromium` on the right side of both (#1635 finding 3).
-combo_enables_ai() {
-  local flags="$1"
-  local -a tokens=()
-  local token
-  if [ "$flags" = "full" ]; then
-    return 0
-  fi
-  IFS=',' read -r -a tokens <<<"$flags"
-  for token in "${tokens[@]}"; do
-    if [ "$token" = "ai" ]; then
-      return 0
-    fi
-  done
-  return 1
-}
-
-# The exit code `--output-vectors <path>` must produce for a combo, derived
-# from the `ai` predicate. Consumed by failure_path_check() above.
-expected_vectors_exit() {
-  if combo_enables_ai "$1"; then printf '%s\n' 65; else printf '%s\n' 78; fi
-}
-
-# Directory the ort-sys build script downloads the ONNX Runtime static library
-# into: $ORT_CACHE_DIR, else ${XDG_CACHE_HOME:-$HOME/.cache}/ort.pyke.io.
-ort_cache_dir() {
-  printf '%s\n' "${ORT_CACHE_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/ort.pyke.io}"
-}
-
-# Preflight for the ai-bearing combos. The ONNX Runtime static library is
-# downloaded by the ort-sys build script at build time, and it lands OUTSIDE
-# target/ unless ORT_CACHE_DIR points inside it. rust-cache saves only target/,
-# which is where the build script's recorded `cargo:rustc-link-search` lives, so
-# a restored target/ can replay that link-search line while the library it names
-# does not exist on this runner — and the link dies with "could not find native
-# static library `onnxruntime`" (issue #1639). Naming the cause before the
-# combos run is what makes the failure readable from the job log alone.
+# The exit code `--output-vectors <path>` must produce, for EVERY combo.
 #
-# Advisory only: it never fails the harness. The combo loop already reports the
-# failure, and the library is legitimately absent on a cold cache, where the
-# first ort-sys build downloads it.
-preflight_ort_native_lib() {
-  local combo name flags dir
-  for combo in "${COMBOS[@]}"; do
-    IFS=":" read -r name flags <<<"$combo"
-    if ! combo_enables_ai "$flags"; then
-      continue
-    fi
-    dir=$(ort_cache_dir)
-    if [ -n "$(find "$dir" -type f -name libonnxruntime.a -print -quit 2>/dev/null)" ]; then
-      return 0
-    fi
-    # Self-heal the half-restored cache. The download is gated on
-    # `!bin_extract_dir.exists()` (ort-sys build/download/mod.rs), so a
-    # restored-but-incomplete cache — extract dir present, library absent —
-    # makes the build script skip the download and the link die. The
-    # fingerprint is then Fresh, so nothing retries it.
-    #
-    # `cargo clean -p ort-sys` alone is NOT the remedy and must not be
-    # presented as one: it drops the build-script unit but leaves
-    # $ORT_CACHE_DIR untouched, so the gate above still sees the directory
-    # and still skips. Verified on this repo: with the extract dir present
-    # and the .a removed, clean+build fails with the same
-    # "could not find native static library" and downloads nothing; clearing
-    # the extract dir makes the next build download and link cleanly.
-    echo "  [preflight] ONNX Runtime library missing with the extract dir present"
-    echo "  [preflight]   clearing $dir so the ort-sys build script re-downloads"
-    if [ -n "$dir" ] && [ -d "$dir" ]; then
-      find "$dir" -mindepth 1 -maxdepth 1 -type d -name 'dfbin' -exec rm -rf {} + 2>/dev/null || true
-    fi
-    cargo clean -p ort-sys >/dev/null 2>&1 || true
-    {
-      echo "  [preflight] ONNX Runtime native library not found, but combo '$name' links it"
-      echo "  [preflight]   missing file : libonnxruntime.a (host target)"
-      echo "  [preflight]   searched dir : $dir"
-      echo "  [preflight]   the ort-sys build script downloads that library at build"
-      echo "  [preflight]   time into \$ORT_CACHE_DIR, else"
-      echo "  [preflight]   \${XDG_CACHE_HOME:-\$HOME/.cache}/ort.pyke.io"
-      echo "  [preflight]   A target/ restored from a CI cache can carry the cached"
-      echo "  [preflight]   ort-sys build-script fingerprint, which records a"
-      echo "  [preflight]   cargo:rustc-link-search naming that directory, without the"
-      echo "  [preflight]   library itself. The link then fails with"
-      echo "  [preflight]   \"error: could not find native static library \`onnxruntime\`\"."
-      echo "  [preflight]   Expected on a cold cache (the first build downloads it)."
-      echo "  [preflight]   The extract dir above has been cleared, so the next"
-      echo "  [preflight]   ort-sys build re-downloads. If a link error still"
-      echo "  [preflight]   follows, the cache restore is dropping the library"
-      echo "  [preflight]   itself — see #1639."
-    } >&2
-    return 0
-  done
-  return 0
-}
+# Since ADR-0004 paso 6 there is exactly ONE contract, and it does not depend
+# on the build: the local inference stack that used to make a build unable to
+# produce vectors AT ALL is gone, so the gate asks every build the same
+# question — "did the operator ask for vectors without asking for the thing
+# that produces them?" — and answers with a data-format error (65).
+#
+# The retired second answer (78, for a build WITHOUT the `ai` feature) is not
+# a variant of the current one: it described a build that cannot be produced
+# any more. Keeping a predicate that classified combos by whether they
+# enabled `ai` would keep a decision that no longer has a question behind it.
+EXPECTED_VECTORS_EXIT=65
 
 # --- self-test (--self-test) ---
 # Unit checks for the pure helpers above: the feature-argument protocol, the
-# `--output-vectors` exit contract, the `ai` predicate and run_logged's status
-# contract. No cargo, no network, no binary. Driven by
+# `--output-vectors` exit contract and run_logged's status contract. No cargo,
+# no network, no binary. Driven by
 # scripts/tests/test_check_compatibility.sh, which also exercises the probe
 # failure paths end to end with stub binaries.
 #
@@ -393,10 +305,6 @@ self_test_contains() {
   esac
 }
 
-self_test_yes_no() {
-  if "$@"; then printf '%s\n' true; else printf '%s\n' false; fi
-}
-
 self_test() {
   local combo rc captured
   echo "self-test: compatibility harness helpers"
@@ -409,27 +317,16 @@ self_test() {
   self_test_eq "decode --no-default-features" "--no-default-features" "${CORE_FEATURE_ARGS[*]-}"
   decode_core_feature_args full
   self_test_eq "decode full" "--all-features" "${CORE_FEATURE_ARGS[*]-}"
-  decode_core_feature_args ai,persistence
-  self_test_eq "decode ai,persistence" "--features ai,persistence" "${CORE_FEATURE_ARGS[*]-}"
-  decode_core_feature_args ai,persistence,chromium
-  self_test_eq "decode ai,persistence,chromium" "--features ai,persistence,chromium" "${CORE_FEATURE_ARGS[*]-}"
+  decode_core_feature_args mcp,persistence
+  self_test_eq "decode mcp,persistence" "--features mcp,persistence" "${CORE_FEATURE_ARGS[*]-}"
+  decode_core_feature_args mcp,persistence,chromium
+  self_test_eq "decode mcp,persistence,chromium" "--features mcp,persistence,chromium" "${CORE_FEATURE_ARGS[*]-}"
 
-  # `ai` predicate: a combo is classified by what it enables, not by
-  # membership in a list of combos someone remembered to add.
-  for combo in default --no-default-features chromium mcp mcp,chromium; do
-    self_test_eq "combo_enables_ai $combo" "false" "$(self_test_yes_no combo_enables_ai "$combo")"
-  done
-  for combo in ai full ai,persistence ai,persistence,chromium; do
-    self_test_eq "combo_enables_ai $combo" "true" "$(self_test_yes_no combo_enables_ai "$combo")"
-  done
-
-  # Exit contract derived from that predicate. `ai,persistence,chromium` is
-  # the combo the old allowlist got wrong (it selected 78).
-  for combo in default --no-default-features chromium mcp mcp,chromium; do
-    self_test_eq "expected_vectors_exit $combo" "78" "$(expected_vectors_exit "$combo")"
-  done
-  for combo in ai full ai,persistence ai,persistence,chromium; do
-    self_test_eq "expected_vectors_exit $combo" "65" "$(expected_vectors_exit "$combo")"
+  # Exit contract: ONE answer for every combo since ADR-0004 paso 6. The list
+  # includes an UNSEEN combination (not one of the matrix's combos) on
+  # purpose: the contract is asserted per combination, not per list entry.
+  for combo in default --no-default-features chromium mcp mcp,chromium full mcp,persistence,chromium; do
+    self_test_eq "expected_vectors_exit $combo" "65" "$EXPECTED_VECTORS_EXIT"
   done
 
   # Binary resolution: honour CARGO_TARGET_DIR, fall back to ./target (#1698).
@@ -470,7 +367,6 @@ fi
 
 echo "Compatibility harness: mode=$MODE combos=${#COMBOS[@]}"
 echo "Retention: cargo hack --each-feature (isolated) stays in ci.yml feature-matrix"
-preflight_ort_native_lib
 overall_fail=0
 for c in "${COMBOS[@]}"; do
   IFS=":" read -r name flags <<<"$c"

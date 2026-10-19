@@ -8,9 +8,9 @@
 //! - `schema_version` is always present, and a profile declaring a version this
 //!   build does not understand is rejected instead of being used silently;
 //! - the two Granite profiles carry the values this repo can actually verify
-//!   (`webfang_ai`'s `cache_config.rs` / `tokenizer.rs`), with the citation
-//!   attached, and the native-768 vs effective-384 Matryoshka distinction is
-//!   modelled rather than flattened;
+//!   (the ADR-0004 profile authority, and the budget constants in
+//!   `options_spec/ai.rs`), with the citation attached, and the native-768 vs
+//!   effective-384 Matryoshka distinction is modelled rather than flattened;
 //! - `dimensions` (the OpenAI-compatible request field) is omitted for a
 //!   non-Matryoshka profile — vLLM rejects it with a 400 — and carries the
 //!   effective dimension for a Matryoshka one;
@@ -45,12 +45,12 @@ fn granite_97m_carries_the_values_verifiable_in_this_repo() {
         .expect("granite-97m is a builtin profile");
 
     assert_eq!(profile.id, "granite-97m");
-    // cache_config.rs:80 — Granite97M => 384, no truncation.
+    // The ADR-0004 profile authority — Granite97M => 384, no truncation.
     assert_eq!(profile.dim, 384);
     assert!(!profile.matryoshka);
-    // cache_config.rs:88 — output_dim() => 384 for both tiers.
+    // The same authority — output_dim() => 384 for both tiers.
     assert_eq!(profile.output_dim(), 384);
-    // tokenizer.rs:40 — DEFAULT_MAX_LENGTH.
+    // options_spec/ai.rs:158 — the 32 768-token sequence length.
     assert_eq!(profile.context, 32_768);
 }
 
@@ -62,8 +62,11 @@ fn granite_311m_keeps_native_768_distinct_from_effective_384() {
 
     // The distinction must be modelled, not flattened: `dim` is the model's
     // native width, `output_dim` is what the vault stores.
-    assert_eq!(profile.dim, 768, "cache_config.rs:81 — Granite311M => 768");
-    assert!(profile.matryoshka, "cache_config.rs:88 — truncated to 384d");
+    assert_eq!(
+        profile.dim, 768,
+        "the ADR-0004 profile authority — Granite311M => 768"
+    );
+    assert!(profile.matryoshka, "the same authority — truncated to 384d");
     assert_eq!(profile.output_dim(), MATRYOSHKA_OUTPUT_DIM);
     assert_eq!(profile.output_dim(), 384);
     assert_eq!(profile.context, 32_768);
@@ -91,7 +94,9 @@ fn every_builtin_profile_cites_its_repo_provenance_and_is_verified() {
         );
         assert_eq!(profile.provenance, ProfileProvenance::RepoVerified);
         assert!(
-            profile.citation.contains("cache_config.rs"),
+            profile
+                .citation
+                .contains("docs/adr/0004-onnx-local-removal.md"),
             "{} must cite the repo source of its dimension, got: {}",
             profile.id,
             profile.citation
@@ -109,15 +114,20 @@ fn every_builtin_profile_cites_its_repo_provenance_and_is_verified() {
 /// pins**, or it can drift onto a neighbouring doc comment without anything
 /// failing.
 ///
-/// Regression pin: the shipped citation used to say `cache_config.rs:32,33,35,
-/// 73-76`, and `:73-76` is the doc comment above `embedding_dim` — the literals
-/// are at `:80`, `:81` and `:88`. The old assertion (`contains("cache_config.rs")`)
-/// could not tell those two apart, so a comment-only citation passed. What this
-/// test really measures is that the citation is *self-locating*: `embedding_dim`
-/// and `output_dim` are grep-able symbols, so a reader (or the next editor)
-/// lands on the values rather than on prose about them.
+/// Regression pin (history): the shipped citation used to say
+/// `cache_config.rs:32,33,35,73-76`, and `:73-76` is the doc comment above
+/// `embedding_dim` — the literals were at `:80`, `:81` and `:88`. The old
+/// assertion (`contains("cache_config.rs")`) could not tell those two apart,
+/// so a comment-only citation passed.
+///
+/// What this measures NOW is the same property, on the authority that
+/// survives ADR-0004 paso 6: the citation is *self-locating* — it names the
+/// symbols whose literals back `dim` and `output_dim`, and the recovery tag
+/// where those literals live — AND it does not point into the deleted crate,
+/// which would be a dead link in the very output the citation exists to make
+/// auditable.
 #[test]
-fn the_dimension_citation_names_the_symbols_and_not_only_doc_comments() {
+fn the_dimension_citation_names_the_symbols_and_not_a_deleted_path() {
     for profile in builtin_profiles() {
         assert!(
             profile.citation.contains("AiModel::embedding_dim"),
@@ -132,41 +142,54 @@ fn the_dimension_citation_names_the_symbols_and_not_only_doc_comments() {
             profile.citation
         );
         assert!(
-            !profile.citation.contains("73-76"),
-            "73-76 is cache_config.rs's doc comment for `embedding_dim`, not its \
-             values (384/768 are at 80/81); got: {}",
+            profile.citation.contains("onnx-tree/pre-step5"),
+            "{} must name the tag where the deleted literals are recoverable, \
+             got: {}",
+            profile.id,
+            profile.citation
+        );
+        assert!(
+            !profile.citation.contains("crates/webfang_ai"),
+            "the citation must not point into the deleted crate — a dead path \
+             cannot be audited; got: {}",
             profile.citation
         );
     }
 }
 
-/// The verified line numbers, pinned so a future edit cannot move the citation
+/// The verified anchors, pinned so a future edit cannot move the citation
 /// silently.
 ///
-/// Verified by hand against
-/// `crates/webfang_ai/src/infrastructure_ai/cache_config.rs`:
+/// Verified by hand against the two files this repo still owns:
 ///
 /// ```text
-/// :80  AiModel::Granite97M  => 384,
-/// :81  AiModel::Granite311M => 768,
-/// :88  384 // Unified 384d across both tiers
+/// docs/adr/0004-onnx-local-removal.md:87-89                     §Perfiles de modelo
+/// crates/webfang_core/src/domain/options_spec/ai.rs:148         DEFAULT_CHARS_PER_TOKEN = 3.0
+/// crates/webfang_core/src/domain/options_spec/ai.rs:158         DEFAULT_MAX_CHARS = 32_768 * 3
 /// ```
 ///
-/// and `tokenizer.rs:40` `DEFAULT_MAX_LENGTH: usize = 32768`.
+/// plus the recovery tag `onnx-tree/pre-step5` (commit `38ab6a31`), which
+/// `git rev-parse onnx-tree/pre-step5` resolves to the last `main` commit
+/// with the local inference stack intact.
 ///
-/// What this deliberately does **not** do: read `cache_config.rs` and check
-/// that each cited line really contains the digit the profile claims. That
-/// would be a strictly better test, and it is not written, because the one
-/// file carrying every dimension is deleted by ADR-0004 step 6 — the check
-/// would then fail for a reason unrelated to provenance, and its natural "fix"
-/// (deleting the assertion) would quietly remove the coverage.
-/// Line-to-literal correspondence stays one `sed -n` away, done by hand on
-/// whichever commit changes a citation; these two tests guard the weaker,
-/// durable invariant instead of pretending to the stronger one.
+/// What this deliberately does **not** do: read the deleted implementation and
+/// check that each cited line really contains the digit the profile claims.
+/// That file no longer exists in this tree, so the check could only run
+/// against a tag — and its natural "fix" (deleting the assertion) would
+/// quietly remove the coverage. Anchor-to-literal correspondence stays one
+/// `sed -n` away, done by hand on whichever commit changes a citation; these
+/// tests guard the weaker, durable invariant instead of pretending to the
+/// stronger one.
 #[test]
 fn citation_keeps_the_hand_verified_line_numbers() {
     let citation = &builtin_profiles()[0].citation;
-    for fragment in ["cache_config.rs:80,81", ":88", "tokenizer.rs:40"] {
+    for fragment in [
+        "docs/adr/0004-onnx-local-removal.md:87-89",
+        "onnx-tree/pre-step5",
+        "38ab6a31",
+        "options_spec/ai.rs:158",
+        "options_spec/ai.rs:148",
+    ] {
         assert!(
             citation.contains(fragment),
             "citation must keep the verified fragment `{fragment}`, got: {citation}"
@@ -427,7 +450,9 @@ fn overriding_the_dimension_drops_verification() {
     assert!(!profile.verified, "512d is not a value this repo verifies");
     assert_eq!(profile.provenance, ProfileProvenance::OperatorOverride);
     assert!(
-        profile.citation.contains("cache_config.rs"),
+        profile
+            .citation
+            .contains("docs/adr/0004-onnx-local-removal.md"),
         "the original citation is kept for traceability, got: {}",
         profile.citation
     );

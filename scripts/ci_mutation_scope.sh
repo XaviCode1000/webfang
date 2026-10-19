@@ -33,7 +33,8 @@
 #                        + extractor/**
 #     downloader area -> infrastructure/network/** + waf_engine.rs + bridge.rs
 #     core area       -> the FULL 6-path set (conservative: see delta 1)
-#     ai area         -> crates/webfang_ai/** (advisory; see delta 3)
+#     ai area         -> the semantic-cleaning surface inside webfang_core
+#                        (advisory; see delta 3)
 #
 # Documented deltas (classifier is filename-broad, mutants gate is exact):
 #   1. `core_changed` covers ALL of crates/webfang_core/**, but the mutants
@@ -48,12 +49,15 @@
 #      those (outside the 3 gated downloader paths) still recommend the 3
 #      gated paths — guard order is load-bearing, so any guard-adjacent
 #      change deserves the gated scope.
-#   3. The classifier `ai` predicate (crates/webfang_ai/** + model markers)
-#      has NO counterpart in the current mutants workflow, which runs
-#      `cargo mutants -p webfang_core` only. An ai-only change is reported
-#      with scope-path `crates/webfang_ai/**` flagged as OUT-OF-CURRENT-SCOPE
-#      (future lane, not today's mutants-pr gate). Blocking semantics of
-#      mutants.yml are unchanged by this phase.
+#   3. The classifier `ai` predicate (model markers: embedding, onnx, granite,
+#      clean_ai, ai_integration) has NO counterpart in the current mutants
+#      workflow, which runs `cargo mutants -p webfang_core` over the 6 gated
+#      hot paths only. Since ADR-0004 paso 6 the `webfang_ai` crate is gone
+#      and the semantic-cleaning surface lives inside webfang_core
+#      (EmbeddingPort, the remote embedding adapter, the cleaner), so an
+#      ai-only change is reported with those scope-paths flagged as
+#      OUT-OF-CURRENT-SCOPE (future lane, not today's mutants-pr gate).
+#      Blocking semantics of mutants.yml are unchanged by this phase.
 #
 # Exit code: always 0 (advisory). Classifier failure degrades to
 # needs_mutation_hotpath=true (fail closed to the full gated set).
@@ -166,7 +170,9 @@ else
   fi
 fi
 if [[ "$ai_changed" == "true" ]]; then
-  echo "  crates/webfang_ai/** (OUT-OF-CURRENT-SCOPE: mutants workflow runs -p webfang_core only; future lane)"
+  echo "  crates/webfang_core/src/domain/embedding_port.rs (OUT-OF-CURRENT-SCOPE: mutants workflow runs -p webfang_core over the 6 gated hot paths only; future lane)"
+  echo "  crates/webfang_core/src/infrastructure/llm/** (OUT-OF-CURRENT-SCOPE: mutants workflow runs -p webfang_core over the 6 gated hot paths only; future lane)"
+  echo "  crates/webfang_core/src/infrastructure/semantic_cleaner.rs (OUT-OF-CURRENT-SCOPE: mutants workflow runs -p webfang_core over the 6 gated hot paths only; future lane)"
 fi
 echo "recommendation: mutate the paths above (gated subset of .cargo/mutants.toml examine_globs); mutants-pr blocking semantics unchanged."
 

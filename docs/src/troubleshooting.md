@@ -27,7 +27,7 @@ and its one-line fix; the full verified commands are in
 | `VCRUNTIME140.dll was not found` (Windows) | MSVC dynamic CRT / Visual C++ Redistributable absent | Install the VC++ Redistributable 2015-2022 (x64) |
 | `sha256sum: command not found` (macOS) | `sha256sum` is GNU coreutils; stock macOS ships `shasum` | `shasum -a 256 <archive>` and compare with the `SHA256SUMS.txt` line |
 | A hash does not match `SHA256SUMS.txt` | Truncated/partial download, or the file is not from this release | Re-download the archive; do not run the binary |
-| No binary for your platform (Intel Mac) | `x86_64-apple-darwin` is not built — ONNX Runtime dropped x64 macOS | Nothing to download; see [Intel macOS](installation.md#intel-macos-unsupported) |
+| No binary for your platform (Intel Mac) | `x86_64-apple-darwin` is not built (the original reason was the ONNX prebuilt; the target list was not extended after the ONNX removal) | Nothing to download; see [Intel macOS](installation.md#intel-macos-unsupported) |
 | `--js-strategy full` or SQLite resume absent | `chromium` / `persistence` are not in the release build | Expected; see [what is not in the release binary](installation.md#what-is-not-in-the-release-binary) |
 | No `webfang-mcp` binary | MCP lives in a separate crate the release never compiles | Run it from source; see the [MCP section](https://github.com/XaviCode1000/webfang#-mcp-server) |
 
