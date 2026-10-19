@@ -80,14 +80,10 @@ version_group = "webfang"
 # commits so a release reads as one chronological story (lockstep version).
 changelog_update = true
 changelog_path = "./CHANGELOG.md"
-changelog_include = ["webfang_core", "webfang_ai", "webfang_mcp"]
+changelog_include = ["webfang_core", "webfang_mcp"]
 
 [[package]]
 name = "webfang_core"
-version_group = "webfang"
-
-[[package]]
-name = "webfang_ai"
 version_group = "webfang"
 
 [[package]]
