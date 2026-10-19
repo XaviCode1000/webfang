@@ -13,6 +13,15 @@
 #      already in the root Cargo.toml. EQUALITY is the documented idempotent
 #      re-run path and must keep working.
 #
+# A third property is the RELEASE CONTRACT itself: the declaration of the
+# line (`.github/support.json`, plus the rendered `SUPPORT.md`) must follow
+# the patch the bump produces, because the enforcing gate
+# (`check_support_drift.sh --scope=published`, a REQUIRED check) compares the
+# declared `latest` against the published tags and turns red for EVERY later
+# PR when the declaration lags behind them. The case below proves the gate
+# turns GREEN after the bump — and that the SAME fixture without the bump
+# stays RED, which is the direction that matters.
+#
 # RED discipline: the refusal cases below are marked NEGATION with the
 # pre-fix verdict recorded — before the guards existed the script mutated
 # Cargo.toml, CHANGELOG.md and HEAD with exit 0 from any branch.
@@ -21,10 +30,12 @@
 # same fake-returning-0 shim style as test_seed_contamination.sh): no build,
 # no network, no mutation of the repository this harness runs from. The git
 # settings that would otherwise leak from the developer's global config are
-# pinned per fixture, and no fixture carries .github/support.json on
-# purpose: the line-state check's own "tip, omitted" fallback path is used
-# so these cases isolate the NEW guards (the state check is a pre-existing
-# guard, not this task's scope).
+# pinned per fixture, and the plain fixture carries no
+# .github/support.json on purpose: the line-state check's own "tip, omitted"
+# fallback path is used so those cases isolate the NEW guards (the state
+# check is a pre-existing guard, not this task's scope). The declaration
+# cases use a fixture that HAS one, because that is the path the release
+# contract has to keep honest.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -63,8 +74,15 @@ make_shims
 new_fx() {
   local dir="$WORK/$1"
   mkdir -p "$dir/scripts"
-  cp "$REPO_ROOT/scripts/bump-support-patch.sh" "$dir/scripts/"
-  chmod +x "$dir/scripts/bump-support-patch.sh"
+  # The script under test and the three collaborators it needs inside the
+  # fixture: the declaration refresh (scripts/refresh_support_latest.sh), the
+  # single writer of the projection (scripts/render-support-md.sh) and the
+  # enforcing gate the declaration is judged by
+  # (scripts/check_support_drift.sh).
+  for s in bump-support-patch.sh refresh_support_latest.sh render-support-md.sh check_support_drift.sh; do
+    cp "$REPO_ROOT/scripts/$s" "$dir/scripts/"
+  done
+  chmod +x "$dir"/scripts/*.sh
   git -C "$dir" init -q -b main
   git -C "$dir" config user.email fixture@example.invalid
   git -C "$dir" config user.name fixture
@@ -84,6 +102,40 @@ new_fx() {
   echo "$dir"
 }
 
+# new_fx_decl <name> <workspace-version>: the same fixture WITH a support
+# declaration (one STABLE line, 2.12) and the matching published tag. This is
+# the fixture the release contract is about: the plain one above has no
+# declaration on purpose, so the line-state check falls back to its "tip,
+# omitted" path and the NEW guards stay isolated.
+new_fx_decl() {
+  local dir
+  dir="$(new_fx "$1" "$2")"
+  mkdir -p "$dir/.github"
+  cat > "$dir/.github/support.json" <<'JSON'
+{
+  "schema_version": 1,
+  "lines": [
+    {
+      "minor": "2.12",
+      "state": "STABLE",
+      "branch": null,
+      "latest": "2.12.0",
+      "released_at": "2026-10-01T00:00:00+00:00",
+      "accepts": [
+        "bugfix",
+        "security"
+      ]
+    }
+  ]
+}
+JSON
+  ( cd "$dir" && ./scripts/render-support-md.sh >/dev/null )
+  git -C "$dir" add -A
+  git -C "$dir" commit -q -m "declaracion de soporte"
+  git -C "$dir" tag v2.12.0
+  echo "$dir"
+}
+
 # run_bump <fixture> <version> [args...]: run the script in the fixture with
 # the stubs on PATH; LAST_RC / LAST_OUT carry the verdict.
 run_bump() {
@@ -98,6 +150,17 @@ run_bump() {
   ) > "$WORK/out.txt" || rc=$?
   LAST_RC=$rc
   LAST_OUT="$(cat "$WORK/out.txt")"
+}
+
+# run_drift <fixture> <args...>: run the ENFORCING gate inside the fixture —
+# the same script CI runs as a required check. LAST_DRIFT_RC / LAST_DRIFT_OUT
+# carry the verdict.
+run_drift() {
+  local dir="$1"; shift
+  local rc=0
+  ( cd "$dir" && ./scripts/check_support_drift.sh "$@" ) > "$WORK/drift.out" 2>&1 || rc=$?
+  LAST_DRIFT_RC=$rc
+  LAST_DRIFT_OUT="$(cat "$WORK/drift.out")"
 }
 
 # snap_files <fixture>: copy the three mutable files so refused paths can be
@@ -227,6 +290,118 @@ if [[ "$(git -C "$FX_OK" rev-list --count HEAD)" -eq $((NOTAG_BEFORE + 1)) ]]; t
   pass "la re-ejecución NO añadió commit"
 else
   fail "la re-ejecución añadió commit(s) extra"
+fi
+
+# ─── The release contract: the declaration follows the patch (ID-1) ─────────
+# `latest` is a fact about the published tags, and the enforcing gate
+# (check_support_drift.sh --scope=published, a REQUIRED check inside
+# `Validate PR metadata`) compares it against them. Before this contract
+# existed, the first patch published on a support line left the declaration
+# stale and the gate RED for every later PR — with no sanctioned writer to
+# repair it. The case proves BOTH directions: the gate turns GREEN after the
+# bump, and the same fixture WITHOUT the bump stays RED.
+echo "== el bump mantiene la declaración: el gate queda verde tras publicar el parche =="
+FX_DECL="$(new_fx_decl declaration 2.12.0)"
+# Control: before the bump, the declaration agrees with the published tags.
+run_drift "$FX_DECL" --scope=published
+if [[ "$LAST_DRIFT_RC" -eq 0 ]]; then
+  pass "la declaración coherente pasa el gate enforcing antes del bump"
+else
+  fail "el fixture de declaración no pasa el gate antes del bump (rc=$LAST_DRIFT_RC): $LAST_DRIFT_OUT"
+fi
+
+run_bump "$FX_DECL" 2.12.1
+if [[ "$LAST_RC" -eq 0 ]]; then
+  pass "el bump con declaración procede"
+else
+  fail "el bump con declaración falló (rc=$LAST_RC): $LAST_OUT"
+fi
+declared_latest="$(jq -r '.lines[] | select(.minor=="2.12") | .latest' "$FX_DECL/.github/support.json")"
+if [[ "$declared_latest" == "2.12.1" ]]; then
+  pass "la declaración declara el parche que el bump produce (.latest = 2.12.1)"
+else
+  fail "la declaración quedó en '$declared_latest': el bump no actualizó .latest"
+fi
+if grep -qF '| 2.12 | STABLE | 2.12.1 |' "$FX_DECL/SUPPORT.md"; then
+  pass "SUPPORT.md fue re-renderizado por el escritor único con la nueva última"
+else
+  fail "SUPPORT.md no refleja la nueva última: $(grep -m1 '^| 2.12' "$FX_DECL/SUPPORT.md")"
+fi
+bump_files="$(git -C "$FX_DECL" show --name-only --format= HEAD)"
+if grep -qxF '.github/support.json' <<<"$bump_files" && grep -qxF 'SUPPORT.md' <<<"$bump_files"; then
+  pass "el commit de bump lleva la declaración y su proyección"
+else
+  fail "el commit de bump no lleva support.json + SUPPORT.md: $(tr '\n' ' ' <<<"$bump_files")"
+fi
+
+# The tag is cut AFTER the bump merges (cut-patch-tag.yml refuses a branch
+# whose Cargo.toml does not carry the version): the fixture simulates it.
+git -C "$FX_DECL" tag v2.12.1
+run_drift "$FX_DECL" --scope=published
+if [[ "$LAST_DRIFT_RC" -eq 0 ]]; then
+  pass "con el parche publicado, el gate enforcing queda VERDE para la línea bumpeada"
+else
+  fail "el gate sigue rojo tras el bump (rc=$LAST_DRIFT_RC): $LAST_DRIFT_OUT"
+fi
+
+# NEGATION: the SAME fixture without the bump must still be RED. Without the
+# declaration update the gate turns red for every later PR, which is exactly
+# the defect this case pins — a case that only ever saw GREEN would prove
+# nothing.
+git -C "$FX_DECL" show HEAD~1:.github/support.json > "$FX_DECL/.github/support.json"
+run_drift "$FX_DECL" --scope=published
+if [[ "$LAST_DRIFT_RC" -ne 0 ]]; then
+  pass "sin el bump, el MISMO fixture sigue rojo (dirección NEGATION)"
+else
+  fail "el gate quedó verde sin el bump: la declaración no era lo que lo sostenía"
+fi
+
+echo "== el refresh es idempotente y falla cerrado =="
+FX_IDEM="$(new_fx_decl idempotente 2.12.0)"
+run_bump "$FX_IDEM" 2.12.1
+idem_before="$(sha256sum "$FX_IDEM/.github/support.json" | cut -d' ' -f1)"
+idem_commits="$(git -C "$FX_IDEM" rev-list --count HEAD)"
+run_bump "$FX_IDEM" 2.12.1
+idem_after="$(sha256sum "$FX_IDEM/.github/support.json" | cut -d' ' -f1)"
+if [[ "$idem_before" == "$idem_after" && "$(git -C "$FX_IDEM" rev-list --count HEAD)" -eq "$idem_commits" ]]; then
+  pass "re-ejecutar el bump no mueve la declaración ni añade commit (idempotente)"
+else
+  fail "la re-ejecución movió la declaración o añadió commits"
+fi
+
+# A declared line whose minor has NO published patch has no fact to point at.
+# The refresh must refuse instead of writing a half-updated declaration, and
+# the refusal must leave the tree exactly as it was — the refresh runs BEFORE
+# the version mutation for that reason.
+FX_FC="$(new_fx_decl fail_closed 2.12.0)"
+jq '.lines += [{"minor":"2.11","state":"EOL","branch":null,"latest":"2.11.0","eol_reason":"fixture"}]' \
+  "$FX_FC/.github/support.json" > "$FX_FC/.github/support.json.tmp"
+mv "$FX_FC/.github/support.json.tmp" "$FX_FC/.github/support.json"
+( cd "$FX_FC" && ./scripts/render-support-md.sh >/dev/null )
+git -C "$FX_FC" add -A
+git -C "$FX_FC" commit -q -m "linea sin parche publicado"
+fc_decl="$(sha256sum "$FX_FC/.github/support.json" | cut -d' ' -f1)"
+fc_cargo="$(sha256sum "$FX_FC/Cargo.toml" | cut -d' ' -f1)"
+run_bump "$FX_FC" 2.12.1
+if [[ "$LAST_RC" -ne 0 ]]; then
+  pass "el bump se niega cuando la declaración no puede calcularse (fail closed)"
+else
+  fail "el bump aceptó una declaración que no puede calcularse: $LAST_OUT"
+fi
+if [[ "$fc_decl" == "$(sha256sum "$FX_FC/.github/support.json" | cut -d' ' -f1)" ]]; then
+  pass "la declaración quedó byte a byte intacta tras el rechazo"
+else
+  fail "el rechazo mutó la declaración a medias"
+fi
+if [[ "$fc_cargo" == "$(sha256sum "$FX_FC/Cargo.toml" | cut -d' ' -f1)" ]]; then
+  pass "Cargo.toml quedó intacto: el refresh ocurre antes de la mutación"
+else
+  fail "el rechazo mutó Cargo.toml"
+fi
+if [[ -z "$(git -C "$FX_FC" status --porcelain)" ]]; then
+  pass "el rechazo no dejó cambios sin commitear"
+else
+  fail "el rechazo dejó cambios: $(git -C "$FX_FC" status --porcelain | tr '\n' ' ')"
 fi
 
 echo

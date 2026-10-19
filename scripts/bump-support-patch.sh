@@ -5,17 +5,22 @@
 # on a disposable branch — not an inference).
 #
 # Runs INSIDE the hotfix PR worktree (base support/X.Y) and commits: root
-# Cargo.toml version, regenerated Cargo.lock, and CHANGELOG.md entry. The
-# version test no longer needs a snapshot rewrite (webfang#1543): it derives
-# expected output from CARGO_PKG_VERSION, so a re-run after a failed bump
-# just re-checks and proceeds to the commit instead of failing on a .snap.
+# Cargo.toml version, regenerated Cargo.lock, the CHANGELOG.md entry, and the
+# support declaration (`.github/support.json` + the rendered `SUPPORT.md`).
+# The version test no longer needs a snapshot rewrite (webfang#1543): it
+# derives expected output from CARGO_PKG_VERSION, so a re-run after a failed
+# bump just re-checks and proceeds to the commit instead of failing on a .snap.
 #
 # HOTFIX CODE vs RELEASE PREPARATION are different concepts sharing one PR:
 # the fix commit(s) come first (authored by the agent); this script enforces
 # the release contract (tag uniqueness, line accepts, lock in sync, CHANGELOG
-# entry, `test_version` green) and produces the single `chore: bump` commit.
+# entry, the support declaration following the patch, `test_version` green)
+# and produces the single `chore: bump` commit.
 set -euo pipefail
-cd "$(git rev-parse --show-toplevel)"
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+SUPPORT_JSON=".github/support.json"
 
 NEW_VERSION="${1:?usage: bump-support-patch.sh X.Y.Z [hotfix-pr-number]}"
 PR_REF="${2:-}"
@@ -58,7 +63,7 @@ fi
 git fetch --tags origin >/dev/null 2>&1 || true
 git rev-parse "v${NEW_VERSION}" >/dev/null 2>&1 && { echo "tag v${NEW_VERSION} ya existe" >&2; exit 1; }
 # 2. The X.Y line must exist and must accept changes (STABLE or MAINTENANCE).
-LINE_JSON="$(git show origin/main:.github/support.json 2>/dev/null || cat .github/support.json 2>/dev/null || true)"
+LINE_JSON="$(git show "origin/main:${SUPPORT_JSON}" 2>/dev/null || cat "$SUPPORT_JSON" 2>/dev/null || true)"
 if [[ -n "$LINE_JSON" ]]; then
   STATE="$(printf '%s' "$LINE_JSON" | jq -r --arg m "$MINOR" '.lines[] | select(.minor==$m) | .state // empty')"
   [[ -z "$STATE" ]] && STATE="MISSING"
@@ -68,6 +73,23 @@ if [[ -n "$LINE_JSON" ]]; then
   esac
 else
   echo "tip: support.json no disponible, se omite el check de estado (revisar a mano)" >&2
+fi
+
+# --- ID-1: the declaration of the line follows the patch this bump produces ---
+# `latest` is a FACT about the published tags, and the enforcing gate
+# (check_support_drift.sh --scope=published, a REQUIRED check inside
+# `Validate PR metadata`) fails as soon as the declaration lags behind them.
+# The patch this bump produces IS the new `latest` of its line, and nothing
+# else in the release flow writes it: release-plz never touches support.json,
+# and rotate-stable.sh writes the `latest` of the minor it creates and of no
+# other. So the refresh is part of the release contract, not an afterthought.
+#
+# It runs BEFORE the version mutation: a refusal must leave the tree exactly
+# as it was, and the refresh is the only new step that can refuse.
+if [[ -f "$SUPPORT_JSON" ]]; then
+  "$REPO_ROOT/scripts/refresh_support_latest.sh" --set "${MINOR}=${NEW_VERSION}"
+else
+  echo "tip: $SUPPORT_JSON no disponible, se omite el refresh de la declaración de soporte" >&2
 fi
 
 # --- Bump (root workspace only; crates inherit via version.workspace = true,
@@ -105,7 +127,14 @@ if ! cargo nextest run -p webfang_core test_version >/dev/null 2>&1; then
 fi
 
 # --- Commit (explicit stage; never -A inside an agent worktree) ---
-git add Cargo.toml Cargo.lock CHANGELOG.md
+# The declaration and its rendered projection travel with the bump: the gate
+# reads both, and a commit that carried one without the other would leave the
+# repository inconsistent by construction.
+STAGE=(Cargo.toml Cargo.lock CHANGELOG.md)
+if [[ -f "$SUPPORT_JSON" ]]; then
+  STAGE+=("$SUPPORT_JSON" "SUPPORT.md")
+fi
+git add "${STAGE[@]}"
 if git diff --cached --quiet; then
   echo "OK: nada nuevo que commitear (re-ejecución tras accept)."
 else
