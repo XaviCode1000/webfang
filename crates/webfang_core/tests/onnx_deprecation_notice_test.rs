@@ -4,10 +4,10 @@
 // `Compatibilidad`): it ANNOUNCES the announced break, it does not remove
 // anything. Three notices exist, all emitted ONCE per run:
 //
-// 1. `ONNX_DEPRECATION_NOTICE` — what disappears (the `ai` Cargo feature and
-//    ONNX local), what survives un-gated (`--clean-ai`, `--offline`), which
-//    shims keep working for at least 2 more minor releases, where to migrate
-//    (`webfang connect` / `doctor` / `show`), and where to object.
+// 1. `ONNX_DEPRECATION_NOTICE` — what disappeared in 3.0.0 (the `ai` Cargo
+//    feature and ONNX local), what survives un-gated (`--clean-ai`,
+//    `--offline`), which shims keep working until 3.2.0, and where to migrate
+//    (`webfang connect` / `doctor` / `show`).
 // 2. The orphan-threshold warning — the shipped `0.3` was calibrated for
 //    Granite, and with the only calibrated model gone a remote endpoint
 //    retains differently under the same number.
@@ -175,8 +175,8 @@ async fn onnx_deprecation_notice_fires_once_when_clean_ai_is_used() {
          run; stderr:\n{stderr}"
     );
     // The notice has to be actionable, not merely present: it must name what
-    // disappears, what survives, the shims, the migration commands and the
-    // objection channel (ADR-0004 `Compatibilidad`, all five in order).
+    // disappeared, what survives, the shims with their retirement version, and
+    // the migration commands (ADR-0004 `Compatibilidad`, in order).
     for required in [
         "cargo build --features ai",
         "--clean-ai",
@@ -191,7 +191,8 @@ async fn onnx_deprecation_notice_fires_once_when_clean_ai_is_used() {
         "webfang connect",
         "webfang doctor",
         "webfang show",
-        "https://github.com/XaviCode1000/webfang/issues/1997",
+        "3.0.0",
+        "3.2.0",
     ] {
         assert!(
             stderr.contains(required),
