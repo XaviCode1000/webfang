@@ -112,10 +112,25 @@ elif ! printf '%s' "$OUT" | grep -Eq '^([[:space:]]*-p[[:space:]]+[A-Za-z0-9_-]+
   bad "1. real repo emits only '-p <pkg>' tokens (got: $OUT)"
 elif ! printf '%s' "$OUT" | grep -q -- '-p webfang_core'; then
   bad "1. real repo includes webfang_core (got: $OUT)"
-elif ! printf '%s' "$OUT" | grep -q -- '-p webfang_ai'; then
-  bad "1. real repo includes webfang_ai (got: $OUT)"
 else
-  ok "1. real repo derives a single line of -p tokens"
+  # Every `-p <pkg>` token must name a package that EXISTS. `cargo bench -p
+  # <ghost>` fails the whole nightly, and a stale hardcoded list is exactly
+  # how that happens — the `webfang_ai` bench (ai_phase_profile.rs) went with
+  # the crate in ADR-0004 paso 6, and nothing about the derivation would
+  # complain if a hardcoded list still named it.
+  GHOST=""
+  for tok in $OUT; do
+    [ "$tok" = "-p" ] && continue
+    case "$tok" in
+      -*) continue ;;
+    esac
+    [ -d "$REPO_ROOT/crates/$tok" ] || GHOST="$GHOST $tok"
+  done
+  if [ -n "$GHOST" ]; then
+    bad "1. real repo scope names packages that do not exist:$GHOST (got: $OUT)"
+  else
+    ok "1. real repo derives a single line of -p tokens"
+  fi
 fi
 
 # Determinism: the same tree must derive the same scope every time, or the

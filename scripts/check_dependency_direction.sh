@@ -11,11 +11,16 @@
 #
 # Policy matrix (source of truth — keep in sync with AGENTS.md):
 #   webfang_core:       (none)
-#   webfang_ai:         webfang_core
-#   webfang_mcp:        webfang_core, webfang_ai      (ai feature-gated, #433)
-#   webfang_cli:        webfang_core, webfang_ai, webfang_mcp
+#   webfang_mcp:        webfang_core
+#   webfang_cli:        webfang_core, webfang_mcp
 #   webfang_test_utils: webfang_core
 #   webfang_benchmark:  webfang_core
+#
+# webfang_ai was removed in ADR-0004 paso 6 (see docs/adr/
+# 0004-onnx-local-removal.md): the crate and its ai feature no longer exist.
+# Any surviving webfang_* name still matches the extractor (including
+# webfang_ai) and is not in any crate's allowlist, so a stray re-introduction
+# fails this gate instead of silently passing.
 #
 # Dev tier (#1825): [dev-dependencies] may additionally target
 # webfang_test_utils from ANY crate — it is the shared test harness
@@ -32,9 +37,8 @@ set -euo pipefail
 
 declare -A ALLOWED=(
   [webfang_core]=""
-  [webfang_ai]="webfang_core"
-  [webfang_mcp]="webfang_core webfang_ai"
-  [webfang_cli]="webfang_core webfang_ai webfang_mcp"
+  [webfang_mcp]="webfang_core"
+  [webfang_cli]="webfang_core webfang_mcp"
   [webfang_test_utils]="webfang_core"
   # webfang_benchmark: leaf harness crate (benchmark tooling, no production
   # dependents). Its [dev-dependencies] edge into webfang_test_utils is
@@ -42,14 +46,14 @@ declare -A ALLOWED=(
   [webfang_benchmark]="webfang_core"
 )
 
-CRATES=(webfang_core webfang_ai webfang_mcp webfang_cli webfang_test_utils webfang_benchmark)
+CRATES=(webfang_core webfang_mcp webfang_cli webfang_test_utils webfang_benchmark)
 status=0
 
 # Extract internal webfang_* dependency names from a crate manifest, tagged
 # with their tier: "prod <dep>" from [dependencies] and
 # [target.'cfg(...)'.dependencies], "dev <dep>" from [dev-dependencies] and
 # [target.'cfg(...)'.dev-dependencies]. Only those tables are considered:
-# [features] entries like `ai = ["dep:webfang_ai", ...]` and
+# [features] tables (e.g. a feature enabling a dependency via `dep:`) and
 # [workspace.dependencies] are skipped.
 extract_internal_deps() {
   awk -F= '
@@ -66,6 +70,10 @@ extract_internal_deps() {
     }
   ' "$1"
 }
+
+# NOTE: the extractor alternation keeps `ai` after paso 6 on purpose: if a
+# webfang_ai edge is ever re-introduced it is extracted and then rejected
+# (nothing in any allowlist matches it) instead of silently ignored.
 
 for crate in "${CRATES[@]}"; do
   manifest="crates/$crate/Cargo.toml"

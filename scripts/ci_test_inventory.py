@@ -57,7 +57,7 @@ IGNORE_RE = re.compile(r"#\[ignore")
 INSTA_RE = re.compile(r"\binsta\b|assert_snapshot")
 AI_CONTENT_RE = re.compile(r"clean.ai|onnx|granite|embedding", re.IGNORECASE)
 
-AI_PATH_MARKS = ("webfang_ai", "ai_integration", "clean_ai", "onnx", "granite", "embedding")
+AI_PATH_MARKS = ("ai_integration", "clean_ai", "onnx", "granite", "embedding")
 MCP_PATH_MARKS = ("webfang_mcp", "mcp")
 CLI_PATH_MARKS = ("webfang_cli", "cli_harness", "cli_reference")
 DOWNLOADER_MARKS = (

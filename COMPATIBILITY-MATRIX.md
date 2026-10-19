@@ -4,13 +4,24 @@ Verifies `webfang` across all release-critical feature combinations.
 Executed locally via `scripts/check_compatibility.sh` and retained in CI as a single
 required context. See `docs/test-inventory.md` for ignored-test catalog and sitemap correction.
 
-## Release combos (CI-required — 6)
+## Release combos (CI-required — 5)
+
+> ADR-0004 paso 6 removed the `ai` feature together with the crate that
+> provided it; the `ai` and `ai+persistence` combos were retired with it.
+> Semantic cleaning is now runtime-configured remote embeddings — see
+> [docs/src/ai-onnx-migration.md](docs/src/ai-onnx-migration.md).
+> **Sync note (A4, 2026-10-19):** `scripts/check_compatibility.sh` now runs
+> exactly the 5 required combos and the 1 pairwise check below — it no longer
+> names the retired ones. The CI `feature-matrix` job still carries the
+> removed `ai` machinery (its ONNX warm-up step and
+> `cargo build -p webfang_cli --features ai`) and must drop it in the same
+> landing; that job lives under `.github/**`, which this change does not
+> touch.
 
 | Combo | Features flag | compile | start | --help | crawl | resume | failure-path |
 |-------|---------------|---------|-------|--------|-------|--------|--------------|
 | default | `(default)` `images,documents` | pass | pass | exit 0 | wiremock `BehavioralTest` | fresh+corrupt round-trip | 65/74/77 |
 | no-default | `--no-default-features` | pass | pass | exit 0 | wiremock | fresh+corrupt | 65/74/77 |
-| ai | `--features ai` | pass | pass | exit 0 | wiremock | fresh+corrupt | 65/74/77 |
 | chromium | `--features chromium` | pass | pass | exit 0 | wiremock | fresh+corrupt | 65/74/77 |
 | mcp | `--features mcp` | pass | pass | exit 0 | wiremock | fresh+corrupt | 65/74/77 |
 | full | `--all-features` | pass | pass | exit 0 | wiremock | fresh+corrupt | 65/74/77 |
@@ -21,10 +32,9 @@ required context. See `docs/test-inventory.md` for ignored-test catalog and site
 
 | Combo | Features flag | Note |
 |-------|---------------|------|
-| ai+persistence | `--features ai,persistence` | local `scripts/check_compatibility.sh --all` |
 | mcp+chromium | `--features mcp,chromium` | local/nightly only — saves ~10 min CI |
 
-Exhaustive `2^10` / `--feature-powerset` (1024) is **not** run in CI by design.
+Exhaustive feature-powerset enumeration is **not** run in CI by design.
 
 ## Column definitions
 
@@ -67,9 +77,14 @@ Bump `SCHEMA_VERSION` only together with a migration, and only after that migrat
 ## Harness
 
 ```bash
-bash scripts/check_compatibility.sh --ci-required   # 6 required combos (CI)
-bash scripts/check_compatibility.sh --all           # +2 pairwise (local/nightly)
+bash scripts/check_compatibility.sh --ci-required   # 5 required combos (CI)
+bash scripts/check_compatibility.sh --all           # +1 pairwise (local/nightly)
 ```
+
+*(Counts above name the post-paso-6 matrix. `scripts/check_compatibility.sh`
+matches it exactly as of unit A4 (2026-10-19): 5 required combos + 1 pairwise.
+The CI `feature-matrix` job still carries the removed `ai` machinery — see the
+sync note under "Release combos".)*
 
 The binary under test is resolved from `$CARGO_TARGET_DIR`, falling back to
 `./target` when that variable is unset — the same convention as
@@ -81,7 +96,7 @@ contract failure and is not one (#1698).
 
 ## Inventory
 
-Full 32-row `#[ignore]` catalog (26 test attributes + 6 doc/comment mentions): [`docs/test-inventory.md`](docs/test-inventory.md) (generated via `rg -n "#\[ignore" crates/ --glob '!target'`).
+Post-paso-6 12-row `#[ignore]` catalog (8 test attributes + 4 doc/comment mentions): [`docs/test-inventory.md`](docs/test-inventory.md) (generated via `rg -n "#\[ignore" crates/ --glob '!target'`; the 14 rows under the removed AI crate were dropped with it, and the 4 rows of the deleted `model_asset_test.rs` with the local-ONNX artifacts they measured).
 
 ## CI integration
 
@@ -94,5 +109,5 @@ Full 32-row `#[ignore]` catalog (26 test attributes + 6 doc/comment mentions): [
 - SDD: `sdd/stabilization-sprint0-baseline`
 - Gate 0 freeze: **retired 2026-09-07** (#1241) — see `AGENTS.md` §"Gate 0 freeze — RETIRED"
 - `scripts/check_dependency_direction.sh` still enforces inter-crate direction
-- Stack: `wreq` (TLS fingerprint), `Tokio`, `ort` (feature-gated), `SQLite`
+- Stack: `wreq` (TLS fingerprint), `Tokio`, `SQLite`. `wreq`-only holds for the default build — `--all-features` still pulls `reqwest` via the `chromium` feature (`chromiumoxide`), recorded in ADR-0004 (*Consecuencias*)
 

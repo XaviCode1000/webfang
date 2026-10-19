@@ -3,7 +3,7 @@
 # build-llm-artifact.sh — assemble the LLM/RAG documentation artifact (#734)
 #
 # Emits docs/book/webfang-docs-llm/, an llms.txt v2 directory: llms.txt index,
-# per-source files (00-narrative, 01..05-<crate>, 06-cli-reference — one H1
+# per-source files (00-narrative, 01..04-<crate>, 06-cli-reference — one H1
 # each) and webfang-docs-full.md, the back-compat monolith (pre-#734 single
 # file, unchanged heading conventions).
 #
@@ -33,8 +33,12 @@ SOURCE_COMMIT="${GITHUB_SHA:-}"
 PAGES_PREFIX="https://xavicode1000.github.io/webfang/webfang-docs-llm"
 CHAPTERS="overview debugging testing troubleshooting"
 # webfang_cli is bin-only and stays excluded from the API render: it is covered
-# by the 06-cli-reference chapter (#733). Only the 5 lib crates are rendered.
-ALL_CRATES="webfang_core webfang_ai webfang_mcp webfang_test_utils"
+# by the 06-cli-reference chapter (#733). The `webfang_ai` crate was removed in
+# ADR-0004 paso 6, so the rendered set is the 3 remaining lib crates. The
+# per-source numbers keep their historical values (02 is a gap where
+# webfang_ai used to be), so the published URLs of the surviving files do not
+# change under a reader's bookmark.
+ALL_CRATES="webfang_core webfang_mcp webfang_test_utils"
 
 for f in $CHAPTERS cli-reference; do
   if [ ! -f "docs/src/$f.md" ]; then
@@ -150,9 +154,8 @@ PYEOF
 render_api() {
   local crate="$1" out="$2" features
   case "$crate" in
-  webfang_core) features="default persistence console dev-tracing ai adaptive-selectors mcp chromium" ;;
-  webfang_ai) features="ai" ;;
-  webfang_mcp) features="mcp ai persistence" ;;
+  webfang_core) features="default persistence console dev-tracing adaptive-selectors mcp chromium" ;;
+  webfang_mcp) features="mcp persistence" ;;
   *) features="" ;;
   esac
   local -a cmd=(rustdoc-markdown print "$crate" --manifest "crates/$crate/Cargo.toml" --include-other --output "$out.raw")
@@ -192,7 +195,6 @@ emit_chapters() {
 per_source_file() {
   case "$1" in
   webfang_core) echo "01-webfang_core.md" ;;
-  webfang_ai) echo "02-webfang_ai.md" ;;
   webfang_mcp) echo "03-webfang_mcp.md" ;;
   webfang_test_utils) echo "04-webfang_test_utils.md" ;;
   *) echo "" ;;
@@ -202,7 +204,6 @@ per_source_file() {
 crate_description() {
   case "$1" in
   webfang_core) echo "core domain/application/infrastructure API" ;;
-  webfang_ai) echo "ONNX embeddings and semantic cleaning API" ;;
   webfang_mcp) echo "MCP server (35 tools) API" ;;
   webfang_test_utils) echo "shared test utilities API" ;;
   *) echo "" ;;
@@ -309,7 +310,7 @@ done
 # Summary.
 echo
 echo "Output: $OUT_DIR"
-for f in llms.txt 00-narrative.md 01-webfang_core.md 02-webfang_ai.md 03-webfang_mcp.md 04-webfang_test_utils.md 06-cli-reference.md webfang-docs-full.md; do
+for f in llms.txt 00-narrative.md 01-webfang_core.md 03-webfang_mcp.md 04-webfang_test_utils.md 06-cli-reference.md webfang-docs-full.md; do
   [ -f "$OUT_DIR/$f" ] || continue
   echo "$f $(wc -w <"$OUT_DIR/$f") words"
 done

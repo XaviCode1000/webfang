@@ -1,7 +1,29 @@
 # Test Inventory — `#[ignore]` Catalog (Gate 0)
 
-**Source of truth:** `rg -n "#\[ignore" crates/ --glob '!target'` — **45 rows** (35 test attributes + 10 doc/comment mentions).
+**Source of truth:** `rg -n "#\[ignore" crates/ --glob '!target'` — **12 rows** (8 test attributes + 4 doc/comment mentions).
 Generated: `2026-08-21`, updated `2026-09-07`, re-baselined `2026-09-12` (#1328: composition corrected from the stale 27+5 claim to the on-disk 26+6; rows re-keyed from drifting `file:line` to stable `file` + test name). Catalogued #1368 measurement rows `2026-09-13` (#1384 decision: retain + catalogue — the corpus lives outside the repo, so the ignore is legitimate). Catalogued the #1561 timing benchmark `2026-10-03` (quarantined, assertion kept verbatim; needs an idle box with ≥8 cores). Catalogued the #1576 two-spec 97m budgets `2026-10-04` (the new `pool:4` sibling). Linked to `COMPATIBILITY-MATRIX.md`.
+
+**ADR-0004 paso 6 (`2026-10-19`):** the 14 rows under `crates/webfang_ai/**` (9 attributes + 6 doc mentions)
+were removed together with the crate — the crate's test targets no longer exist, so the live scan they
+fed is gone with them. Rows renumbered 45 → 30; the Quantification and Timing benchmark groups dropped
+with their rows (#1368, #1561 lived inside the crate). The 19 remaining ONNX rows live in surviving
+core/mcp behavioral tests and keep their ignore budget until the post-paso-6 suite is re-baselined.
+
+**Unit A3 (`2026-10-19`, same ADR):** the local-ONNX test surface is gone from the surviving crates
+too, so the budget was re-baselined once more. `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs`
+was deleted (9 attributes + 1 doc mention), the five MCP AI tests are no longer `#[ignore]`d (they run
+against a fixture embedding port, not a cached model), and the one MCP doc mention that remains is
+catalogued as a Comments/docs row. `trace_correlation_test.rs` KEEPS its ignore, but the reason is
+now its real precondition: a configured remote embedding provider. Rows 30 → 16 (12 attributes +
+4 doc mentions).
+
+**Unit A4 (`2026-10-19`, same ADR):** the last local-ONNX rows left the tree with
+`crates/webfang_core/tests/behavioral/cli/model_asset_test.rs` — the Granite RSS budgets (#1315,
+#1576) and the cold-pull event check (#1316) measured artifacts that no longer exist, so their
+ignores went with the file. Rows 16 → 12 (8 attributes + 4 doc mentions). The ONNX group keeps the
+two rows that do NOT need a local model (a cached ONNX export fixture and a configured remote
+embedding provider); the Network group loses the cold pull, which was the only network row outside
+the "real DNS / real HTTP" class.
 
 **CI enforcement:** this baseline is a frozen budget — `scripts/check_ignored_guard.sh` runs in the CI `repo-guards` job and fails on any drift between this inventory and the live scan, **per category**: each group's declared count, the file+test-name pair set, and the per-file doc/comment counts are all checked, so a composition swap with an equal total fails even when the sum matches (the totals-only blind spot that #1328 killed). Update this file in the same PR when adding/removing an ignored test or a doc/comment mention.
 
@@ -9,15 +31,17 @@ Generated: `2026-08-21`, updated `2026-09-07`, re-baselined `2026-09-12` (#1328:
 
 | Group | Count | Reason pattern | Issue | Next action |
 |-------|-------|----------------|-------|-------------|
-| ONNX | 26 | `requires cached ONNX model` / `requires the granite-<tier> model in the native HF cache` | #433, #1315, #1576 | Sprint 1 promote with cache |
-| Network | 4 | `requires network` / DNS / client | #542, #1316 | Keep ignored; wiremock alternative in behavioral |
+| ONNX | 2 | `requires cached ONNX model` / `requires a configured remote embedding provider` | #433 | Re-baseline the post-paso-6 surface |
+| Network | 3 | `requires network` / DNS / client | #542 | Keep ignored; wiremock alternative in behavioral |
 | Tracing | 1 | `tracing global subscriber` | #501 | Keep ignored; subscriber race |
 | Reproduction | 2 | race window too narrow to force from a fixture; kept-RED TDD evidence | #1230, #1429 | Keep ignored; the deterministic pins are the seam test / GREEN bound pin |
-| Quantification | 1 | `one-off quantification #1368; needs WEBFANG_1368_CORPUS dir` | #1368 | Keep ignored; corpus is out-of-repo by design (#1384) — re-run by hand for loss evidence |
-| Timing benchmark | 1 | `BENCH … needs ≥8 idle cores and an unloaded machine` | #1561 | Keep ignored; run by hand on an idle box — a ratio floor on a pinned-8-worker executor is red for reasons unrelated to the code under test |
-| Comments/docs | 10 | doc comment mentions `#[ignore]` | #386 | Not tests — counted as their own checked category |
+| Comments/docs | 4 | doc comment mentions `#[ignore]` | #386 | Not tests — counted as their own checked category |
 
-Total: 26+4+1+2+1+1+10 = **45**.
+Total: 2+3+1+2+4 = **12**. (Post-ADR-0004-paso-6 budget, re-baselined twice: by unit A3 the
+Quantification and Timing benchmark groups went with the deleted crate — #1368 and #1561's measured
+rows lived in `crates/webfang_ai/**` — and the surviving core/mcp ONNX surface was re-counted with
+the deleted `ai_integration_test.rs` and the un-ignored MCP AI tests removed from it; by unit A4 the
+Granite RSS budgets and the cold-pull check went with the deleted `model_asset_test.rs`.)
 
 > The former **WAF** group (1 row, `waf_gauntlet` at `waf_gauntlet_test.rs:126`, #337) is gone:
 > `waf_gauntlet_observability_trace` was un-ignored — the mock is counter-based and deterministic,
@@ -50,7 +74,7 @@ discoverable from the same document as its `#[ignore]` budget.
 Adding or removing any of them does NOT change this file's counts — the `#[ignore]` budget and this
 table are independent by design, and `scripts/check_ignored_guard.sh` enforces only the former.
 
-## Full catalog (45 rows)
+## Full catalog (12 rows)
 
 Rows are keyed by **file + identifier**, never by line number — inserting code above an ignored
 test must not invalidate its row. `Identifier` is the test function name for attributes and `doc`
@@ -58,51 +82,18 @@ for doc/comment mentions (compared per file by count). `Line` is not recorded on
 
 | # | Group | File | Identifier | Reason | Issue | Next |
 |---|-------|------|------------|--------|-------|------|
-| 1 | ONNX | `crates/webfang_ai/tests/ai_integration.rs` | `test_semantic_cleaner_full_pipeline` | `requires cached ONNX model` | #433 | Sprint 1 cache |
-| 2 | ONNX | `crates/webfang_ai/tests/ai_integration.rs` | `test_semantic_cleaner_long_content` | `requires cached ONNX model` | #433 | Sprint 1 cache |
-| 3 | ONNX | `crates/webfang_ai/tests/ai_integration.rs` | `test_error_chunk_too_large` | `requires cached ONNX model` | #433 | Sprint 1 cache |
-| 4 | ONNX | `crates/webfang_ai/tests/ai_integration.rs` | `test_pipeline_empty_input` | `requires cached ONNX model` | #433 | Sprint 1 cache |
-| 5 | ONNX | `crates/webfang_ai/tests/ai_integration.rs` | `test_pipeline_html_only` | `requires cached ONNX model` | #433 | Sprint 1 cache |
-| 6 | ONNX | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs` | `scrape_clean_ai_pipeline` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 7 | ONNX | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs` | `clean_ai_output_vectors` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 8 | ONNX | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs` | `batch_mode_clean_ai` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 9 | ONNX | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs` | `clean_ai_error_no_model` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 10 | ONNX | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs` | `clean_ai_threshold_reject` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 11 | ONNX | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs` | `clean_ai_model_reject` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 12 | ONNX | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs` | `clean_ai_trace_file` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 13 | ONNX | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs` | `clean_ai_feature_gated` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 14 | ONNX | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs` | `clean_ai_exports_chunks_regression_569` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 15 | ONNX | `crates/webfang_core/tests/behavioral/cli/export_test.rs` | `vector_export_total_documents_matches_documents` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 16 | ONNX | `crates/webfang_core/tests/behavioral/cli/trace_correlation_test.rs` | `scrape_trace_and_vector_export_share_per_page_correlation` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 17 | ONNX | `crates/webfang_mcp/tests/mcp_behavioral_test.rs` | `semantic_cleaner_with_cleaner_success` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 18 | ONNX | `crates/webfang_mcp/tests/mcp_behavioral_test.rs` | `search_obsidian_honest_error` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 19 | ONNX | `crates/webfang_mcp/tests/mcp_behavioral_test.rs` | `mcp_ai_observability` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 20 | ONNX | `crates/webfang_mcp/tests/mcp_behavioral_test.rs` | `semantic_cleaner_invalid_url_reject` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 21 | ONNX | `crates/webfang_mcp/tests/mcp_behavioral_test.rs` | `mcp_ai_tools_registered_with_ai_off` | `requires cached ONNX model` | #433 | Sprint 1 |
-| 22 | ONNX | `crates/webfang_core/tests/behavioral/cli/model_asset_test.rs` | `tier_97m_peak_rss_under_budget` | `requires the granite-97m model in the native HF cache` | #1315, #1576 | Keep ignored; pins `WEBFANG_AI_ENGINE=single` with ceiling 1,000,000 KiB (#1576) — deterministic per spec, runs in bug-discovery (`--run-ignored only`); rerun by hand for per-tier RSS evidence (plan row 7.12) |
-| 23 | ONNX | `crates/webfang_core/tests/behavioral/cli/model_asset_test.rs` | `tier_97m_pool4_peak_rss_under_budget` | `requires the granite-97m model in the native HF cache` | #1576 | Keep ignored; sibling spec pinning `WEBFANG_AI_ENGINE=pool:4` with ceiling 2,100,000 KiB (~9.1% headroom) — deterministic per spec, runs in bug-discovery (`--run-ignored only`); widen only consciously, never silently |
-| 24 | ONNX | `crates/webfang_core/tests/behavioral/cli/model_asset_test.rs` | `tier_311m_peak_rss_under_budget` | `requires the granite-311m ONNX model (~1.2 GB) in the native HF cache` | #1315 | Keep ignored; this is the tier the mmap fix targets — run by hand |
-| 25 | Network | `crates/webfang_core/tests/cli_binary_test.rs` | `test_dry_run_with_url` | `requires network access` | #542 | keep ignored |
-| 26 | Network | `crates/webfang_core/src/application/http_client/client.rs` | `test_http_client_get_example_com` | `requires network - run with cargo test --ignored` | #542 | keep ignored |
-| 27 | Network | `crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs` | `test_parse_from_url_depth_one_attempts_fetch` | `requires network — hits real DNS for invalid-host-xyz-12345.com` | #542 | keep ignored (by design) |
-| 28 | Network | `crates/webfang_core/tests/behavioral/cli/model_asset_test.rs` | `cold_pull_emits_structured_events_without_tty` | `requires network: performs a real cold pull (~390 MB) into an isolated HF_HOME` | #1316 | Keep ignored; run by hand to prove non-TTY resolve events |
-| 29 | Tracing | `crates/webfang_core/src/infrastructure/observability/logging.rs` | `test_init_json_logging_with_temp_dir` | `tracing global subscriber may already be set in test context` | #501 | keep ignored |
-| 30 | Reproduction | `crates/webfang_core/tests/behavioral/cli/transactional_store_test.rs` | `concurrent_resume_processes_lose_no_records` | asserts the no-loss invariant under real multi-process contention, but measured 8/8 runs against the unfixed code with zero records lost — the clobber window is microseconds wide and a fixture cannot force it. NOT a falsifier of #1230; the deterministic falsifier is tests/record_store_transaction_test.rs | #1230 | Keep ignored; run by hand for stress evidence |
-| 31 | Comments/docs | `crates/webfang_ai/tests/ai_integration.rs` | `doc` | `/// ... These pipeline tests are #[ignore]'d (require the cached ONNX` | #386 | docs only |
-| 32 | Comments/docs | `crates/webfang_core/tests/behavioral/cli/ai_integration_test.rs` | `doc` | `//! All tests are #[ignore = "requires cached ONNX model"]` | #386 | docs only |
-| 33 | Comments/docs | `crates/webfang_core/tests/behavioral/cli/error_path_test.rs` | `doc` | `/// No #[ignore]: the gate fires before any ONNX model could load.` | #386 | docs only |
-| 34 | Comments/docs | `crates/webfang_core/tests/behavioral/cli/error_path_test.rs` | `doc` | `/// No #[ignore]: the gate fires before any ONNX model could load.` | #386 | docs only |
-| 35 | Comments/docs | `crates/webfang_core/tests/behavioral/cli/waf_gauntlet_test.rs` | `doc` | `/// ... the historical wiremock-FIFO flakiness that motivated #[ignore] no longer applies.` | #386 | docs only |
-| 36 | Quantification | `crates/webfang_ai/src/infrastructure_ai/chunker.rs` | `measure_short_paragraph_loss_on_real_corpus` | `one-off quantification #1368; needs WEBFANG_1368_CORPUS dir` | #1368 | Keep ignored; corpus out-of-repo (#1384) — run by hand with WEBFANG_1368_CORPUS to reproduce the loss measurement |
-| 37 | Comments/docs | `crates/webfang_ai/src/infrastructure_ai/chunker.rs` | `doc` | `/// ... its tests are #[ignore]d, so it stays dormant in CI.` | #1368 | docs only |
-| 38 | Reproduction | `crates/webfang_core/src/application/crawler/sitemap_session.rs` | `sitemap_entry_max_pages_truncates_many_url_fixture` | kept RED by design: asserts the naive unbounded reading (all 9 pages with max_pages=3), fails against the truncating bound; GREEN pin `sitemap_entry_max_pages_bound_pins_inflight_drain` carries the contract | #1429 | Keep ignored; RED-evidence for the overshoot bound, never run in CI |
-| 39 | ONNX | `crates/webfang_ai/tests/p0_001_measure.rs` | `p0_001_engine_parity` | `requires cached ONNX model` (real-model parity pin, skips gracefully without cache) | #1456 | Keep ignored; run by hand with the HF cache for the N-decision numbers |
-| 40 | ONNX | `crates/webfang_ai/tests/p0_001_measure.rs` | `p0_001_measure_sweep` | `requires cached ONNX model` (real-model BENCH sweep, fresh process per cell) | #1456 | Keep ignored; BENCH-only, run by hand for the N-decision table |
-| 41 | Comments/docs | `crates/webfang_ai/tests/p0_001_measure.rs` | `doc` | `//! ... [p0_001_measure_sweep] is #[ignore]-gated, runs REAL models only ...` | #386 | docs only |
-| 42 | Comments/docs | `crates/webfang_ai/tests/p0_001_measure.rs` | `doc` | `/// ... Not #[ignore]: the parent re-executes this binary ...` | #386 | docs only |
-| 43 | Comments/docs | `crates/webfang_ai/tests/p0_001_measure.rs` | `doc` | `// Parent: the sweep (#[ignore]-gated BENCH)` | #386 | docs only |
-| 44 | Timing benchmark | `crates/webfang_ai/tests/mock_inference_benchmark.rs` | `mock_fixed_latency_scales_linearly` | `BENCH mock fan-out B/C ratio (#1561): needs ≥8 idle cores and an unloaded machine` (B/C ≥ 0.3 timing floor, executor pinned to 8 workers) | #1561 | Keep ignored; flaky in the default suite on a green `main` (run 37152742982, `FLAKY 2/3`) — run by hand with `--ignored --nocapture` on an idle ≥8-core box |
-| 45 | Comments/docs | `crates/webfang_ai/tests/mock_inference_benchmark.rs` | `doc` | `//! ... is #[ignore]-gated (#1561): it is a` | #386 | docs only |
+| 1 | ONNX | `crates/webfang_core/tests/behavioral/cli/export_test.rs` | `vector_export_total_documents_matches_documents` | `requires cached ONNX model` | #433 | Sprint 1 |
+| 2 | ONNX | `crates/webfang_core/tests/behavioral/cli/trace_correlation_test.rs` | `scrape_trace_and_vector_export_share_per_page_correlation` | `requires a configured remote embedding provider` | #433 | Sprint 1 |
+| 3 | Network | `crates/webfang_core/tests/cli_binary_test.rs` | `test_dry_run_with_url` | `requires network access` | #542 | keep ignored |
+| 4 | Network | `crates/webfang_core/src/application/http_client/client.rs` | `test_http_client_get_example_com` | `requires network - run with cargo test --ignored` | #542 | keep ignored |
+| 5 | Network | `crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs` | `test_parse_from_url_depth_one_attempts_fetch` | `requires network — hits real DNS for invalid-host-xyz-12345.com` | #542 | keep ignored (by design) |
+| 6 | Tracing | `crates/webfang_core/src/infrastructure/observability/logging.rs` | `test_init_json_logging_with_temp_dir` | `tracing global subscriber may already be set in test context` | #501 | keep ignored |
+| 7 | Reproduction | `crates/webfang_core/tests/behavioral/cli/transactional_store_test.rs` | `concurrent_resume_processes_lose_no_records` | asserts the no-loss invariant under real multi-process contention, but measured 8/8 runs against the unfixed code with zero records lost — the clobber window is microseconds wide and a fixture cannot force it. NOT a falsifier of #1230; the deterministic falsifier is tests/record_store_transaction_test.rs | #1230 | Keep ignored; run by hand for stress evidence |
+| 8 | Reproduction | `crates/webfang_core/src/application/crawler/sitemap_session.rs` | `sitemap_entry_max_pages_truncates_many_url_fixture` | kept RED by design: asserts the naive unbounded reading (all 9 pages with max_pages=3), fails against the truncating bound; GREEN pin `sitemap_entry_max_pages_bound_pins_inflight_drain` carries the contract | #1429 | Keep ignored; RED-evidence for the overshoot bound, never run in CI |
+| 9 | Comments/docs | `crates/webfang_mcp/tests/mcp_behavioral_test.rs` | `doc` | `/// (A second test asserted the same thing under the name `mcp_ai_tools_registered_with_ai_off`; it was `#[ignore]`d behind a "requires cached ONNX model" reason it never needed. One test, one assertion.)` | #386 | docs only |
+| 10 | Comments/docs | `crates/webfang_core/tests/behavioral/cli/error_path_test.rs` | `doc` | `/// No `#[ignore]`: the gate fires before any cleaner could be built.` | #386 | docs only |
+| 11 | Comments/docs | `crates/webfang_core/tests/behavioral/cli/error_path_test.rs` | `doc` | `/// No `#[ignore]`: the gate fires before any cleaner could be built.` | #386 | docs only |
+| 12 | Comments/docs | `crates/webfang_core/tests/behavioral/cli/waf_gauntlet_test.rs` | `doc` | `/// ... the historical wiremock-FIFO flakiness that motivated `#[ignore]` no longer applies.` | #386 | docs only |
 
 > **Guard contract (since #1328, 2026-09-12):** `check_ignored_guard.sh` compares this catalog to
 > the live scan per category — group counts, the file+test-name pair set, and per-file doc/comment
@@ -118,7 +109,7 @@ for doc/comment mentions (compared per file by count). `Line` is not recorded on
 rg -n "#\[ignore" crates/ --glob '!target'
 # Attributes: lines whose content starts with #[ignore — pair each with the
 # following test fn name. Prose: every other mention — group per file.
-# Then categorize: ONNX 21, network 3, tracing 1, reproduction 1, doc/comment 6.
+# Then categorize into the groups in the table above (counts live in the Summary table).
 ```
 
 SDD: `sdd/stabilization-sprint0-baseline` | Matrix: `../COMPATIBILITY-MATRIX.md`

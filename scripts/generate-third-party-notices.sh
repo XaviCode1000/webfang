@@ -15,9 +15,9 @@
 # SCOPE, STATED PLAINLY
 # ====================
 # The inventory covers every crate locked in EITHER lockfile (Cargo.lock and
-# fuzz/Cargo.lock — see the SBOM script for why the second one is invisible to a
-# workspace walk). That is a SUPERSET of what links into any one binary: the
-# release builds `-p webfang_cli --features "ai mcp"`, while the full lock also
+# fuzz/Cargo.lock — see the SBOM script for why the second one is invisible to
+# a workspace walk). That is a SUPERSET of what links into any one binary: the
+# release builds `-p webfang_cli --features "mcp"`, while the full lock also
 # contains crates behind other features and other workspace members. A superset
 # is the right direction for a notice bundle — it cannot under-declare — and the
 # exact per-target inventory is the SBOM's job.
@@ -209,7 +209,7 @@ append("  * Cargo.lock      — the workspace, resolved with all features.")
 append("  * fuzz/Cargo.lock — the fuzz harness, which the workspace `exclude`")
 append("    array keeps out of every workspace walk, so nothing else sees it.")
 append("That is a superset of what links into any single binary. The release")
-append("builds `-p webfang_cli --features \"ai mcp\"`; the full lock also contains")
+append("builds `-p webfang_cli --features \"mcp\"`; the full lock also contains")
 append("crates behind other features and other workspace members. The exact,")
 append("machine-readable per-package inventory — with checksums — is the")
 append("accompanying SBOM (webfang.spdx.json, SPDX 2.3).")

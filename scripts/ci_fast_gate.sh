@@ -667,7 +667,11 @@ targeted_cargo() {
   [[ "$core_changed" == "true" || "$crawler_changed" == "true" || "$downloader_changed" == "true" ]] && pkgs+=(webfang_core)
   [[ "$cli_changed" == "true" ]] && pkgs+=(webfang_cli)
   [[ "$mcp_changed" == "true" ]] && pkgs+=(webfang_mcp)
-  [[ "$ai_changed" == "true" ]] && pkgs+=(webfang_ai)
+  # The `ai` feature/crate is gone (ADR-0004 paso 6): the semantic-cleaning
+  # surface lives in webfang_core now, so an AI-area change inside core/mcp/cli
+  # is already covered by those packages and needs no package of its own. An
+  # AI-area change outside them falls through to the workspace-scope branch
+  # below, which is the honest scope for it.
   if [[ "$code_changed" == "true" && ${#pkgs[@]} -eq 0 ]]; then
     echo "fast-gate: code changed outside known crates -> workspace scope"
     run_step "cargo check (workspace, all targets+features)" cargo check --workspace --all-targets --all-features
@@ -693,11 +697,14 @@ targeted_cargo() {
     run_step "pre-build webfang binary" cargo build -p webfang_cli --bin webfang
   fi
   # Unit + mock integration/behavioral for the affected crates. Default
-  # nextest runs NEVER include #[ignore] model tests, so no AI inference
-  # happens here; coverage/release/mutation are main-tier concerns.
-  # --all-features is load-bearing, not strictness: webfang_ai's whole
-  # infrastructure_ai tree (lib AND integration tests) is ai-gated, so
-  # without it a targeted -p run discovers 0 tests and fails vacuous-green.
+  # nextest runs NEVER include #[ignore] tests, and the only ones left are
+  # network/model-budget rows, so no local inference happens here;
+  # coverage/release/mutation are main-tier concerns.
+  # --all-features is load-bearing, not strictness: feature-gated code (the
+  # `chromium` subtree in webfang_core/webfang_mcp, the `mcp` and
+  # `persistence` gates) is compiled out without it, so a targeted -p run
+  # discovers 0 tests in those subtrees and fails vacuous-green — and, worse,
+  # a clippy run without it sees the gated imports as dead code.
   # shellcheck disable=SC2068
   run_step "nextest unit (-p ${pkgs[*]} --lib, all features)" cargo nextest run $(printf -- '-p %s ' ${pkgs[@]}) --all-features --lib --retries 2
   if [[ "$tests_changed" == "true" || "$crawler_changed" == "true" || "$downloader_changed" == "true" || "$cli_changed" == "true" || "$mcp_changed" == "true" ]]; then

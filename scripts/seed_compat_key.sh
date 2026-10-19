@@ -28,7 +28,7 @@ set -euo pipefail
 #                inside it.
 #   features     the caller's feature selection, sorted. Supplied by the
 #                invocation, not read from the repo: the same worktree built
-#                with --features ai is a different build contract.
+#                with --features chromium is a different build contract.
 #   lockfile     sha256 of Cargo.lock. Deliberately conservative — a lockfile can
 #                change in ways that do not affect every unit, so this loses some
 #                reuse. Losing reuse is cheap; an incompatible seed is not.
@@ -104,8 +104,8 @@ else
 fi
 [ -n "$TARGET_TRIPLE" ] || { echo "seed_compat_key.sh: could not determine host triple" >&2; exit 1; }
 
-# Sorting makes the feature list canonical: "ai,mcp" and "mcp,ai" are the same
-# build contract and must not produce two seeds.
+# Sorting makes the feature list canonical: "mcp,chromium" and "chromium,mcp"
+# are the same build contract and must not produce two seeds.
 FEATURES_CANON="$(printf '%s' "$FEATURES" | tr ',' '\n' | sed '/^$/d' | LC_ALL=C sort | paste -sd, -)"
 
 # The configuration surface is supplied by the recipe, not discovered here.

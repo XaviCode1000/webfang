@@ -1,7 +1,13 @@
 # P0-001 N-decision: release sweep, mock evidence, P2 archival (issue #1456)
 
+> **Histórico (2026-10):** ADR-0004 paso 6 eliminó el ONNX local (crate `webfang_ai`, feature
+> `ai`, envs `WEBFANG_AI_ENGINE` / `WEBFANG_AI_MODEL_ID`). La superficie medida aquí (pool de
+> inferencia, sweep con modelos reales) ya no existe en el build actual; este documento queda
+> como registro congelado de la decisión, no como guía operativa. Recuperar el árbol medido:
+> tag `onnx-tree/pre-step5` (commit `38ab6a31`).
+
 **Status: N DECIDED (2026-09-24, release sweep with real models) — N=4 as the recalibrated
-`default_pool_size()` knee; rollout flips the default engine to `Pool`.** The deciding tables
+`default_pool_size()` knee; rollout flips the default engine to `Pool`. The deciding tables
 and the verdict chain are in "Release sweep" below. The mock evidence further down settles the
 downstream question (P2-001/002) and the assert-floor question.
 

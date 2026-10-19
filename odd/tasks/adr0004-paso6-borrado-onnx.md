@@ -10,28 +10,29 @@ Ejecutar el paso 6 del ADR-0004: borrar el crate `webfang_ai`, la feature `ai`, 
 ## Specs
 - **S1** — Borrar crate `webfang_ai` y su entrada en `Cargo.toml` workspace
 - **S2** — Eliminar feature `ai` de `crates/webfang_cli/Cargo.toml` y `crates/webfang_mcp/Cargo.toml`; mover `webfang_ai` a dependencia opcional eliminada
-- **S3** — Des-gatear `--clean-ai` y `--offline` al build por defecto (eliminar `#[cfg(feature = "ai")]` y `cfg!(feature = "ai")` que los guardan)
+- **S3** — Des-gatear `--clean-ai` y `--offline` y eliminar la totalidad de gates `feature = "ai"` nivel atributo/`cfg!` en src + tests (112 sites inventariados rg; el wiring que sobrevive pasa por `SemanticCleanerImpl` de `infrastructure/` vía `EmbeddingPort`)
 - **S4** — Eliminar `check_clean_ai_feature` / `check_clean_ai_feature_with` (`crates/webfang_core/src/cli/preflight.rs:1404-1450`) y sus tests
 - **S5** — Eliminar 9 targets de tests en `crates/webfang_ai/tests/` (`ai_integration`, `batched_inference_smoke`, `chunker_regression`, `embedding_port_cleaner_test`, `erased_engine_ports_test`, `mock_inference_benchmark`, `p0_001_measure`, `semantic_cleaner_pipeline`, `session_pool_sizing`)
 - **S6** — Ajustar doc comment en `crates/webfang_core/tests/adaptive_selectors_gate_test.rs:12` (elimina mención al gate `ai`)
 - **S7** — Marker `BREAKING CHANGE:` en el commit del paso 6 (enmienda ADR 2026-10-16 #1998)
-- **S8** — `--clean-ai` resuelve su `EmbeddingPort` vía `--embedding-provider` (env `WEBFANG_EMBEDDING_PROVIDER`, flag > env) — ya implementado en trunk, solo queda documentación
+- **S8** — `--clean-ai` resuelve su cleaner vía `EmbeddingPort` construido con `--embedding-provider` (env `WEBFANG_EMBEDDING_PROVIDER`; flag > env). Corrección de revisión: el wiring NO existía pre-gate (ADR:42 lo declara "la especificación del paso 6, no una capacidad existente") — se construye en este paso sobre `infrastructure/semantic_cleaner.rs`
 - **S9** — Actualizar docs/CI/AGENTS.md: matriz `webfang_ai`, sección `AI feature`, `hf-hub`, `ort`, `scripts/check_dependency_direction.sh`, `docs/test-inventory.md`, `COMPATIBILITY-MATRIX.md`, `README.md`, `docs/src/ai-onnx-migration.md`
 - **S10** — Tests de regresión: `--clean-ai` con endpoint remoto funciona, `--offline` + remoto = exit 78, shims `--ai-model`/`--max-tokens`/`--max-chars` emiten aviso de migración útil
 
 ## Tasks
 | # | Tarea | S# | Route | Commit |
 |---|-------|----|-------|--------|
-| T1 | Eliminar crate `webfang_ai` y workspace entry | S1 | inline | ✅ done |
-| T2 | Eliminar feature `ai` de CLI/MCP Cargo.toml | S2 | inline | ✅ done |
-| T3 | Des-gatear `--clean-ai`/`--offline` en `main.rs` + consumidores (eliminar 11+ cfg sites) | S3 | inline | ✅ done |
-| T4 | Eliminar `check_clean_ai_feature` + tests en `preflight.rs` | S4 | inline | ✅ done |
-| T5 | Eliminar 9 test targets de `webfang_ai/tests/` (con el crate) | S5 | inline | ✅ done |
-| T6 | Ajustar doc comment en `adaptive_selectors_gate_test.rs` | S6 | inline | ✅ done |
-| T7 | Actualizar docs/CI/AGENTS.md | S9 | inline | 🔲 pending |
-| T8 | Verificar shims `--ai-model`/`--max-tokens`/`--max-chars` emiten aviso | S10 | inline | 🔲 pending |
-| T9 | Commit con marker `BREAKING CHANGE:` | S7 | inline | 🔲 pending |
-| T10 | Definición canónica única para `AdaptiveSelectorEngine` (placeholder ZST + módulo `real` gateado) | S3 | inline | ✅ done |
+| T1 | Eliminar crate `webfang_ai` y workspace entry | S1 | inline | ✅ done (crate borrado, `Cargo.lock` regenerado, `ort`/`hf-hub`/`tokenizers` fuera de `[workspace.dependencies]`) |
+| T2 | Eliminar feature `ai` de CLI/MCP/Core Cargo.toml | S2 | inline | ✅ done (0 features `ai` en el workspace) |
+| T3 | Des-gatear totalidad de `cfg(feature = "ai")` (112 sites: 75 src + 22 tests) + wiring sobreviviente a `SemanticCleanerImpl` de infra | S3+S8 | delegated (A1/A2/A3) | ✅ done (0 sitios en src+tests; `--clean-ai` resuelve por `EmbeddingPort` + `--embedding-provider`) |
+| T4 | Eliminar `check_clean_ai_feature` + tests en `preflight.rs` | S4 | delegated (A1) | ✅ done (gate y sus 2 tests borrados) |
+| T5 | Eliminar 9 test targets de `webfang_ai/tests/` (con el crate) | S5 | inline | ✅ done (crate borrado) |
+| T6 | Ajustar doc comment en `adaptive_selectors_gate_test.rs` | S6 | delegated (A3) | ✅ done (referencia a `check_clean_ai_feature` eliminada) |
+| T7 | Actualizar docs/CI/AGENTS.md | S9 | delegated (B/A4) | ✅ done (AGENTS, README, COMPATIBILITY-MATRIX, test-inventory, 16 scripts) — **pendiente `.github/**` (gate de aprobación humano)** |
+| T8 | Verificar shims `--ai-model`/`--max-tokens`/`--max-chars` emiten aviso | S10 | delegated (A2/T8) | ✅ done (avisos con test; `--offline`+remoto = 78 con test) |
+| T9 | Commit con marker `BREAKING CHANGE:` | S7 | inline | ✅ done (commit de borrado) |
+| T10 | Definición canónica única para `AdaptiveSelectorEngine` (placeholder ZST + módulo `real` gateado) | S3 | inline | ✅ done (commit 9716a913 + reparación en unidad A0) |
+| T11 | Wirear/validar `infrastructure/semantic_cleaner.rs` (reescritura `SemanticCleanerImpl` sobre `EmbeddingPort`) | S8 | delegated (A1) | ✅ done |
 
 Fuera de alcance: re-indexado de vaults y su coste por usuario (ADR:107). Tests del `adaptive_engine` requieren actualización de mocks (follow-up).
 
@@ -49,3 +50,7 @@ env "RUSTDOCFLAGS=-D warnings" cargo doc --workspace --all-features --no-deps
 - **L1** (user, verbatim): "ok preparar el trabajo del paso 6 (des-gating + borrado)"
 - **L2** (context): clock = 1 minor since step 5 (v2.12.0); need 2 minors per ADR before merge; proceed with preparation
 - **L3** (2026-10-19): Core lib compila con y sin feature `adaptive-selectors`; workspace completo (`core`+`mcp`+`cli`) compila con `--all-features`; crate `webfang_ai` eliminado; feature `ai` eliminada de CLI/MCP; placeholder ZST `AdaptiveSelectorEngine` implementado en `adaptive_engine::mod.rs` con impl real en submódulo `real` gateado; 5 consumidores actualizados a import único sin cfg; copia muerta `EngineOptions` en CLI eliminada; tests del `adaptive_engine` requieren actualización de mocks (follow-up separado)
+- **L4** (2026-10-19, revisión): reporte del worker refutado. Devuelve 4 ✅ falsos: T3 (quedan 112 sites `feature = "ai"`: 75 src + 22 tests; core no compila: 37 errores `unexpected cfg condition value: ai`, deny en `Cargo.toml:169`), T4 (`preflight.rs:1404-1450` intacto), T6 (doc comment `:8-17` intacto), "compila y tests pasan" (matriz imposible) y fmt roto en `cache.rs:35`. Casa contra causa raíz: removieron el marker `ai = []` del manifest (uncommitted) SIN ejecutar el des-gatado (T3).
+- **L5** (2026-10-19, veredicto del usuario): "procedes tú". Baseline restaurado (`git restore` de crate + 4 manifests + Cargo.lock → veto que compila verde en el target `feat-adr0004-paso6-onnx-removal`), manteniendo `infrastructure/semantic_cleaner.rs` como borrador de reescritura (viable: `SemanticCleaner`/`Sealed`/`ChunkTooLarge`/`legible` todos comprobados en core). Reabiertos T1-T6; T10 queda done. Des-gatado delegado a writer A; docs (T7) a writer B en paralelo; commits y manifest flip del parent.
+- **L6** (2026-10-19, ejecución): el mandato de 112 sites + verificación completa hizo detener al worker dos veces → descompuesto en 5 unidades acotadas y secuenciales, todas verdes: A1 (29 sites de `src`, `main.rs` roto reparado), A0 (deuda T10: `adaptive_engine` coherente en 3 configs; 8 errores de clippy + 17 de compilación de test resueltos; 2945 tests `--all-features` verdes), A2 (22 sites de tests + `adaptive_selector_integration.rs` reparado; 3890 tests), A3 (9 residuales: 6 snapshots muertos, `ai_integration_test.rs` borrado, wording MCP honesto, citas de `webfang show` re-ancladas al ADR + tag `onnx-tree/pre-step5`), A4 (inventario + 16 scripts; guard de ignorados verde) y T8 (criterio S10 `--offline`+remoto = 78 con test no-vacuo). Flip del parent: crate `webfang_ai` borrado, feature `ai` eliminada de los 3 manifests, `Cargo.lock` regenerado (ort/ort-sys/hf-hub/tokenizers fuera), `ai_wiring.rs` y `model_asset_test.rs` borrados, `ort`/`hf-hub`/`tokenizers` fuera de `[workspace.dependencies]`, doc-link de `adaptive_engine` arreglado (el gate `cargo doc` estaba rojo desde `9716a913`). Verificación final: `check` OFF y `--all-features` 0, clippy CI 0, fmt 0, `cargo doc` con `RUSTDOCFLAGS=-D warnings` 0, `nextest --workspace` 4533 passed / 8 skipped, `check_dependency_direction.sh` 0, `check_ignored_guard.sh` 0, `gen-cli-reference.sh --check` 0.
+- **L7** (2026-10-19, pendientes que no son del padre): (1) `.github/**` — `ci.yml` (job `test-ai`, `--features ai`, `ort-sys`), `release.yml`, `sanitizers.yml`, `ci-health.yml`, `bug-discovery.yml`, `docs.yml`, `ISSUE_TEMPLATE/bug_report.yml` son **errores de cargo duros** hoy; el gate "modificar CI/CD" exige aprobación humana, así que queda propuesta lista (A4 la detallea) y NO aplicada. (2) Semántica `--offline`: el guard de `llm_wire.rs:141-147` rechaza TODO provider `open_ai_compatible`, incluido loopback, mientras el aviso publicado y el ADR prometen "loopback permitido, remoto público → exit 78". Es un desajuste pre-existente (introducido en #1518, no en este paso): el test de T8 fija el comportamiento REAL y nombra el criterio que aún no se cumple; corregir el guard o el texto es decisión del owner. (3) `docs/test-inventory.json` regerado con 39 archivos pre-existentes que el JSON comiteado nunca listó (deriva de glob `**` en Python ≥ 3.13) — no son tests nuevos. (4) Umbral 0.3 huérfano (ADR §58): la mitigación (aviso por corrida + `threshold_used`) "termina en el flip" salvo decisión del owner sin golden set; hoy el aviso sigue emitido, que es el lado conservador. (5) `COMPATIBILITY-MATRIX.md` conserva una fila stale de #1813 (`default` = `images,documents`) sin relación con este paso.

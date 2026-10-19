@@ -2,6 +2,12 @@
 
 > **Estado**: Diseño definitivo para la feature de proveedores de IA remotos (embeddings + LLM completions).
 > Implementación en `crates/webfang_core/src/infrastructure/llm/` (`client.rs`, `provider.rs`, `remote_embedding.rs`, `mod.rs`).
+>
+> **Actualización ADR-0004 paso 6:** el ONNX local se eliminó (crate `webfang_ai` borrado, feature
+> `ai` retirada). El `EmbeddingAdapter` local ONNX ya no existe; el único adaptador de embeddings
+> vivo es el remoto (`RemoteEmbeddingAdapter`/`EmbeddingPort` en `webfang_core`), y el slot
+> `ProviderKind::LocalOnnx` propuesto abajo perdió su base (`InferencePool` ya no existe) — si el
+> registro de proveedores aterriza, llega sin la variante local o con un ADR nuevo.
 
 ---
 
@@ -14,7 +20,7 @@
   - `embed_batch(texts) -> Vec<Vec<f32>>` — batched (overrideable)
   - `embedding_dim() -> usize` — dimensión declarada
   - `model_tag() -> &str` — tag del modelo (para namespacing en vault)
-  - Implementaciones existentes: `EmbeddingAdapter` (local ONNX, en `webfang_ai`), `RemoteEmbeddingAdapter` (HTTP remoto, en `webfang_core` infra)
+  - Implementaciones existentes: `RemoteEmbeddingAdapter` (HTTP remoto, en `webfang_core` infra). El `EmbeddingAdapter` local ONNX fue removido en ADR-0004 paso 6
 
 - **`LlmPort`** (`domain/llm_port.rs`) — trait abierto, no sellado, para completions de LLM:
   - `send_completion(request: LlmRequest) -> LlmResponse` — una single completion
@@ -122,7 +128,9 @@ Donde:
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 pub enum ProviderKind {
     OpenAiCompatible,   // OpenAI-compatible API (OpenAI, OpenRouter, FreeLLM, Groq, Together, Ollama)
-    LocalOnnx,          // Proveedor local ONNX (para embeddings, reutiliza InferencePool)
+    // NOTA ADR-0004 paso 6: la variante LocalOnnx propuesta aquí quedó sin base
+    // (no queda `InferencePool` que reutilizar); si el registro aterriza, llega
+    // sin la variante local o con un ADR nuevo.
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
