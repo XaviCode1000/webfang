@@ -193,12 +193,12 @@ ok "seed published at ${SEED#"$SEEDS_ROOT"/}"
 # fingerprint is, only that the artifact carries no trace of the tree it was
 # built from. If that ever becomes non-empty, some unit is path-dependent again
 # and the contamination window is open.
-STRAY="$(grep -rl -- "$W1" "$SEED" 2>/dev/null | wc -l || true)"
+STRAY="$(grep -rlF -- "$W1" "$SEED" 2>/dev/null | wc -l || true)"
 if [ "$STRAY" -eq 0 ]; then
   ok "the published seed references no path from its source checkout"
 else
   bad "$STRAY file(s) in the seed still name the reference checkout, e.g."
-  grep -rl -- "$W1" "$SEED" 2>/dev/null | head -3 | sed 's/^/        /'
+  grep -rlF -- "$W1" "$SEED" 2>/dev/null | head -3 | sed 's/^/        /'
 fi
 
 # Pruning must not cost the benefit: third-party units must survive it. Counted
@@ -272,6 +272,100 @@ if [ "${COMPILED:-0}" -lt 100 ]; then
   ok "the destination reused the seed ($COMPILED crates compiled, not a cold 493)"
 else
   info "destination compiled $COMPILED crates — seeding saved nothing measurable here"
+fi
+
+# --- 7. S9 (#2059/B16): the path-free checks compare LITERALS ----------------
+# NEGATION: 1. the fingerprint prune (`grep -aq`) detects a contaminated
+#    unit whose checkout path carries a REGEX METACHARACTER; pre-fix the
+#    pattern was interpreted as a BRE, `webfang[1]` became `webfang1`, and
+#    the seed PUBLISHED with the unit still inside (rc 0, units kept != 0).
+# NEGATION: 2. the whole-tree stray check (`grep -ral`) refuses a build that
+#    still names the checkout through that same metacharacter path; pre-fix
+#    STRAY was 0 and the publish sailed through to publication too.
+#
+# The scenario runs the REAL seed_publish.sh against a fake `cargo` on PATH:
+# `metadata` answers with a minimal one-package workspace, `build` writes a
+# fingerprint unit whose file embeds the literal checkout path (a
+# path-dependent registry dependency — the exact contamination the prune
+# exists to stop), and the checkout itself lives at <sandbox>/repo[1], so
+# every grep pattern fed to the checks is metacharacter-laden. Same style as
+# test_advisory_policy.sh: a better shim, no cargo build, nothing outside the
+# harness's own run dir.
+S9_RUN="$RUN_DIR/s9"
+S9_REPO="$S9_RUN/repo[1]"
+mkdir -p "$S9_RUN/bin" "$S9_RUN/seeds-fp" "$S9_RUN/seeds-stray"
+
+cat > "$S9_RUN/bin/cargo" <<'S9_SHIM'
+#!/usr/bin/env bash
+# fake cargo for the S9 sandbox publish: metadata + build only
+if [ "${1:-}" = "metadata" ]; then
+  cat <<'JSON'
+{"packages":[{"name":"seedfake-core","version":"0.1.0","id":"path+file:///seedfake-core#0.1.0","dependencies":[],"features":{},"targets":[]}],"workspace_members":["path+file:///seedfake-core#0.1.0"],"workspace_default_members":["path+file:///seedfake-core#0.1.0"]}
+JSON
+  exit 0
+fi
+if [ "${1:-}" = "build" ]; then
+  : "${CARGO_TARGET_DIR:?S9 shim: no CARGO_TARGET_DIR}"
+  mkdir -p "$CARGO_TARGET_DIR/debug/.fingerprint/third-fake-0beef00d"
+  printf '%s\nvendor-tree-reference\n' "$S9_REPO_ROOT" \
+    > "$CARGO_TARGET_DIR/debug/.fingerprint/third-fake-0beef00d/output"
+  if [ "${S9_STRAY:-0}" = "1" ]; then
+    printf '%s\n' "$S9_REPO_ROOT" > "$CARGO_TARGET_DIR/debug/vendor-notes.txt"
+  fi
+  echo "S9 shim: fake build done"
+  exit 0
+fi
+echo "S9 shim: unsupported cargo subcommand: ${1:-}" >&2
+exit 2
+S9_SHIM
+chmod +x "$S9_RUN/bin/cargo"
+
+s9_publish() {  # $1=strays 0|1  $2=seeds-root -> publishes into $S9_REPO
+  chmod -R u+w "$S9_REPO" "$2" 2>/dev/null || true
+  rm -rf "$S9_REPO" "$2"
+  mkdir -p "$S9_REPO" "$2"
+  git -C "$S9_REPO" init -q -b main
+  git -C "$S9_REPO" config user.email s9@example.invalid
+  git -C "$S9_REPO" config user.name seedtest
+  : >"$S9_REPO/README.md"
+  git -C "$S9_REPO" add README.md
+  git -C "$S9_REPO" commit -qm init
+  printf '[package]\nname = "seedfake-core"\nversion = "0.1.0"\nedition = "2021"\n\n[workspace]\n' \
+    >"$S9_REPO/Cargo.toml"
+  (
+    export PATH="$S9_RUN/bin:$PATH"
+    export S9_REPO_ROOT="$S9_REPO"
+    [ "$1" = "1" ] && export S9_STRAY=1
+    SEED_REPO_ROOT="$S9_REPO" bash "$PUBLISH" --seeds-root "$2" --features '' \
+      >"$S9_RUN/publish-$1.log" 2>&1
+  )
+}
+
+# --- 7a. the fingerprint prune must catch the metacharacter path -------------
+S9_FP_RC=0
+s9_publish 0 "$S9_RUN/seeds-fp" || S9_FP_RC=$?
+S9_FP_SEED="$(find "$S9_RUN/seeds-fp" -mindepth 1 -maxdepth 1 -type d | head -1)"
+S9_FP_UNITS="$(find "$S9_FP_SEED/debug/.fingerprint" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
+S9_FP_STRAY="$(grep -rlF -- "$S9_REPO" "$S9_FP_SEED" 2>/dev/null | wc -l || true)"
+if [ "$S9_FP_RC" -eq 0 ] && [ -n "$S9_FP_SEED" ] && [ "$S9_FP_UNITS" -eq 0 ] && [ "${S9_FP_STRAY:-0}" -eq 0 ]; then
+  ok "S9/1: the prune detected the metacharacter-path unit (0 units, 0 paths kept)"
+else
+  bad "S9/1: metacharacter-path contamination was NOT caught by the prune" \
+      "(rc=$S9_FP_RC, units kept: $S9_FP_UNITS, literal paths in seed: $S9_FP_STRAY); log: $S9_RUN/publish-0.log"
+  tail -10 "$S9_RUN/publish-0.log" >&2 || true
+fi
+
+# --- 7b. the whole-tree stray check must refuse the metacharacter path -------
+S9_STRAY_RC=0
+s9_publish 1 "$S9_RUN/seeds-stray" || S9_STRAY_RC=$?
+if [ "$S9_STRAY_RC" -ne 0 ] && [ -z "$(find "$S9_RUN/seeds-stray" -mindepth 1 -maxdepth 1 -type d)" ] \
+   && grep -q 'refusing to publish, 1 file(s)' "$S9_RUN/publish-1.log" 2>/dev/null \
+   && grep -q 'vendor-notes.txt' "$S9_RUN/publish-1.log" 2>/dev/null; then
+  ok "S9/2: the stray check refused the metacharacter-path build (rc=$S9_STRAY_RC)"
+else
+  bad "S9/2: metacharacter-path stray check did not refuse" \
+      "(rc=$S9_STRAY_RC); log: $S9_RUN/publish-1.log"
+  tail -10 "$S9_RUN/publish-1.log" >&2 || true
 fi
 
 echo "----------------------------------------"

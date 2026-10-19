@@ -529,6 +529,80 @@ jobs:
           "$DIR/zizmor" --version
           "$DIR/zizmor" --config .github/zizmor.yml --min-severity high .github/workflows
 
+      # Semantics harness for the duplicate-crate ratchet in
+      # scripts/check_advisory_policy.sh (#2057, S3). The producer used to run
+      # as `cargo deny check bans ... || true` and then `return 0`, so a failed
+      # tool and a clean tree produced the same empty set and the ratchet at the
+      # call site was dead code. A fake `cargo` on PATH proves the three shapes:
+      # a failed producer fails the guard and says why, a duplicate missing from
+      # the baseline fails and is named, and a baselined duplicate still passes.
+      # Offline: no cargo, no network, no repo state touched.
+      - name: Advisory policy semantics harness
+        run: bash scripts/test_advisory_policy.sh
+      # Four harnesses that shipped with NO CI entry point: the assertions
+      # existed, no job ran them, and the fix they cover was revertible in
+      # silence — the #1707 shape. They are cheap (a few seconds each, pure
+      # bash over mktemp fixtures: no cargo, no network, no repo state
+      # touched) and they are the only proof that the guards they cover can
+      # actually fail:
+      #   - test_bump_support_patch.sh: the patch bump's branch binding, its
+      #     semver monotonicity, and the support declaration it maintains
+      #     (the enforcing gate turns green after the bump and stays red
+      #     without it).
+      #   - test_cut_support_branch.sh: the support branch is cut from the
+      #     published TAG, never from the declared `latest`.
+      #   - test_seed_target_refusal.sh: a direct invocation of seed_target.sh
+      #     cannot bypass the seed-store refusal.
+      #   - test_target_isolation_envrc.sh: the .envrc ownership registry
+      #     parses the declaration shapes real trees actually write.
+      - name: Support patch bump semantics harness
+        run: bash scripts/test_bump_support_patch.sh
+      - name: Support branch cut semantics harness
+        run: bash scripts/test_cut_support_branch.sh
+      - name: Seed target refusal semantics harness
+        run: bash scripts/test_seed_target_refusal.sh
+      - name: Target isolation envrc semantics harness
+        run: bash scripts/test_target_isolation_envrc.sh
+      # The harness of check_target_isolation.sh itself. It was unwired (only
+      # scripts/ci_fast_gate.sh ran it, and no workflow step runs the fast
+      # gate), but the step above runs a harness that DRIVES that guard, so
+      # the guard is now reachable from a workflow — and its own harness has to
+      # run here too, or the meta-guard below reports an unwired harness.
+      - name: Target isolation guard semantics harness
+        run: bash scripts/tests/test_check_target_isolation.sh
+      # Meta-guard for the whole guard layer (#2056). The audit
+      # AUDIT-SCRIPTS-FAIL-OPEN-20261018-222141 found 12 CRITICAL defects and
+      # every one of them lived in a branch no test exercised: a `|| true` over
+      # a producer whose output is parsed later, a regex over-escaped past
+      # recognition, a jq predicate that emitted zero outputs, a `comm` fed
+      # version-ordered input. A guard that cannot fail reports green, and green
+      # is indistinguishable from safe.
+      #
+      # This step enumerates every `check_*.sh` reachable from a workflow,
+      # `justfile` or `mise.toml` — including one level of indirection, so the
+      # guards the local fast gate invokes count — and requires four things: a
+      # harness next to the guard, a workflow step that runs that harness, a
+      # `# NEGATION:` marker, and the check that actually closes the root cause:
+      # the harness must turn RED when its guard is replaced by `exit 0`. The
+      # protocol is green-then-red, so a harness that is broken for an unrelated
+      # reason cannot pass itself off as coverage. The mutation is applied in
+      # place and restored from a byte-identical backup verified by checksum, so
+      # an interrupted run cannot leave the tree mutated.
+      #
+      # Deferred entries live in scripts/guard_coverage_baseline.txt and the
+      # list may only shrink: an entry that stops reproducing fails this step
+      # and asks to be removed.
+      - name: Guard coverage meta-guard
+        run: bash scripts/test_guard_coverage.sh
+      # Negation harness for the meta-guard above. Eight cases over throwaway
+      # mktemp repositories prove every violation fires — missing harness,
+      # unwired harness, missing marker, harness already red intact, harness
+      # green against a broken guard, stale baseline — and that a compliant
+      # fixture passes. A meta-guard that only ever prints OK would be the same
+      # defect one level up. Offline, pure bash, never touches this tree.
+      - name: Guard coverage meta-guard semantics harness
+        run: bash scripts/tests/test_guard_coverage.sh
+
   # ============================================================================
   # TIER 1: FORMAT GATE (30-60 seconds)
   # No compilation needed — instant feedback on style.

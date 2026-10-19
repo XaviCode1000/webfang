@@ -74,8 +74,12 @@ async fn mount_crash_fixture(t: &BehavioralTest) -> String {
 /// exit code and not some other signal).
 ///
 /// `child_stderr` travels in the panic message so a death by a DIFFERENT
-/// signal (observed once as SIGABRT on `macos-latest` with the export on the
-/// blocking pool) names its own cause instead of leaving a bare wait status.
+/// signal names its own cause instead of leaving a bare wait status — which is
+/// how the one real case was found: `mid_state_file_write` died by `SIGABRT`
+/// on `macos-latest` because `kill_self` fell through from a successful `kill`
+/// into `abort()` before the pending `SIGKILL` was delivered (#2063). The
+/// assertion stays strict at `SIGKILL(9)` — that is the contract — and the
+/// harness now waits for its own signal and logs the errno if it refuses one.
 fn assert_killed_by_sigkill(status: &ExitStatus, child_stderr: &str) {
     assert!(
         !status.success(),

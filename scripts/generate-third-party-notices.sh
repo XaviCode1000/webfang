@@ -302,7 +302,12 @@ fi
 # The bundle must actually CARRY both licence texts. A generator that silently
 # skipped Apache-2.0 would produce a plausible-looking file that drops the option
 # a consumer is entitled to.
-for marker in "MIT License" "Apache License"; do
+#
+# The markers are lines only the REAL licence files carry. Grepping the section
+# headings ("MIT License", "Apache License") was fail-open by construction: the
+# generator emits them unconditionally, so a bundle with two empty licence files
+# still contained both markers and the guard could never fail.
+for marker in "Permission is hereby granted" "Version 2.0, January 2004"; do
     if ! grep -qF "$marker" "$OUT"; then
         echo "::error::'$OUT' no contiene el texto de '$marker': el paquete declara 'MIT OR Apache-2.0' y ambos textos deben viajar con el binario (SC-13)."
         exit 1

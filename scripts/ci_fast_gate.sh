@@ -230,13 +230,19 @@ skip_step() {
 range_files() {
   local base="$1" head="$2" resolved=""
   local candidate
-  for candidate in "$base" "main" "HEAD~1"; do
+  # HEAD~1 is deliberately NOT a candidate (#2058): it is not the PR base, so
+  # falling back to it classified the branch tip instead of the branch. A base
+  # that does not resolve must WIDEN the run, never narrow it.
+  for candidate in "$base" "main"; do
     if git rev-parse --verify --quiet "$candidate" >/dev/null 2>&1; then
       resolved="$candidate"
       break
     fi
   done
-  [[ -z "$resolved" ]] && return 0
+  if [[ -z "$resolved" ]]; then
+    echo "fast-gate: cannot resolve base '$base' (or 'main') — widening to FULL" >&2
+    return 1
+  fi
   git diff --name-only "${resolved}...${head}" -- 2>/dev/null \
     || git diff --name-only "$resolved" "$head" -- 2>/dev/null \
     || true
@@ -252,8 +258,13 @@ worktree_files() {
 
 UNION_TMP="$(mktemp)"
 # Temp cleanup is owned by fast_gate_early_exit_trap (the single EXIT trap).
+BASE_UNRESOLVED=false
+RANGE_FILES=""
+if ! RANGE_FILES="$(range_files "$BASE_REF" "$HEAD_REF")"; then
+  BASE_UNRESOLVED=true
+fi
 {
-  range_files "$BASE_REF" "$HEAD_REF"
+  printf '%s\n' "$RANGE_FILES"
   worktree_files
 } | grep -v '^$' | sort -u > "$UNION_TMP" || true
 
@@ -262,8 +273,18 @@ sed 's/^/  changed: /' "$UNION_TMP"
 
 CLASS_TMP="$(mktemp)"
 # (No per-file EXIT trap here either — see above.)
-bash "$CLASSIFIER" --base-ref "$BASE_REF" --head-ref "$HEAD_REF" \
-  --files "$(cat "$UNION_TMP")" --github-output "$CLASS_TMP"
+#
+# The classifier's exit status is CHECKED (#2057, S2). It used to run as a bare
+# command, so a crash left $CLASS_TMP empty, every key below defaulted to
+# `false`, and the dispatch fell through to the cheap docs+CI lanes: no cargo,
+# green gate, nothing verified. A failed classification is a failed step AND a
+# widening — never a silent downgrade.
+CLASSIFIER_OK=true
+if ! bash "$CLASSIFIER" --base-ref "$BASE_REF" --head-ref "$HEAD_REF" \
+  --files "$(cat "$UNION_TMP")" --github-output "$CLASS_TMP"; then
+  echo "::error::path classifier exited non-zero — refusing the default lanes" >&2
+  CLASSIFIER_OK=false
+fi
 
 # Load only the 14 known keys (never blind-source tool output).
 # Pre-initialised so `set -u`-style readers and shellcheck (SC2154) see
@@ -272,12 +293,40 @@ docs_only=false ci_only=false code_changed=false ai_changed=false
 mcp_changed=false cli_changed=false core_changed=false crawler_changed=false
 downloader_changed=false tests_changed=false release_changed=false
 lock_changed=false lib_src_changed=false all=false
-for key in docs_only ci_only code_changed ai_changed mcp_changed cli_changed \
-  core_changed crawler_changed downloader_changed tests_changed \
-  release_changed lock_changed lib_src_changed all; do
+CLASS_KEYS=(docs_only ci_only code_changed ai_changed mcp_changed cli_changed
+  core_changed crawler_changed downloader_changed tests_changed
+  release_changed lock_changed lib_src_changed all)
+for key in "${CLASS_KEYS[@]}"; do
   val="$(grep -E "^${key}=" "$CLASS_TMP" | tail -1 | cut -d= -f2)"
   printf -v "$key" '%s' "${val:-false}"
 done
+
+# An absent key is as untrustworthy as a failed run: `false` is a verdict the
+# classifier never gave. Assert all 14 before trusting any of them.
+MISSING_KEYS=()
+for key in "${CLASS_KEYS[@]}"; do
+  grep -qE "^${key}=" "$CLASS_TMP" || MISSING_KEYS+=("$key")
+done
+if [[ ${#MISSING_KEYS[@]} -gt 0 ]]; then
+  echo "::error::path classifier output is missing ${#MISSING_KEYS[@]} key(s): ${MISSING_KEYS[*]}" >&2
+  CLASSIFIER_OK=false
+fi
+
+if [[ "$CLASSIFIER_OK" != "true" ]]; then
+  FAIL=$((FAIL + 1))
+  FAILED_STEPS+=("path classification")
+fi
+
+# A base that could not be resolved means the changed-file list is not the
+# PR's: widen instead of guessing (#2058, S4).
+if [[ "$BASE_UNRESOLVED" == "true" ]]; then
+  FAIL=$((FAIL + 1))
+  FAILED_STEPS+=("base resolution")
+fi
+
+if [[ "$CLASSIFIER_OK" != "true" || "$BASE_UNRESOLVED" == "true" ]]; then
+  all=true
+fi
 
 echo "fast-gate: lane inputs: docs_only=$docs_only ci_only=$ci_only code=$code_changed all=$all"
 
@@ -290,7 +339,7 @@ lane_docs() {
     # Re-assert the docs-only claim against the live worktree: a stray .rs or
     # manifest edit must flip the lane, not slip through.
     run_step "assert no code files in worktree diff" bash -c "
-      ! grep -Eq '\\\\.rs$|Cargo\\\\.toml|Cargo\\\\.lock|^crates/|^tests/|^benches/|^examples/|^fuzz/|\\\\.github/|scripts/' '$UNION_TMP'
+      ! grep -Eq '\\.rs$|Cargo\\.toml|Cargo\\.lock|^crates/|^tests/|^benches/|^examples/|^fuzz/|\\.github/|scripts/' '$UNION_TMP'
     "
   else
     skip_step "assert docs-only" "mixed known non-code scope"

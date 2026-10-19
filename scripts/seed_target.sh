@@ -51,8 +51,14 @@ SEEDS_ROOT="$SEED_RECIPE_SEEDS_ROOT"
 
 # D6: a seed is an immutable source, never a build output. The fast gate refuses
 # this too; refusing here as well means a direct invocation cannot bypass it.
-case "$(readlink -f "$TARGET_DIR" 2>/dev/null || echo "$TARGET_DIR")" in
-  "$(readlink -f "$SEEDS_ROOT" 2>/dev/null || echo "$SEEDS_ROOT")"/*)
+# Identity predicate matches check_target_isolation.sh (`== || == /*`): the
+# store ROOT itself is as off-limits as any descendant — it only ever differed
+# by the /* glob losing the equality arm, and a build into the store root
+# writes into every seed it contains.
+_target_id="$(readlink -f "$TARGET_DIR" 2>/dev/null || echo "$TARGET_DIR")"
+_seeds_id="$(readlink -f "$SEEDS_ROOT" 2>/dev/null || echo "$SEEDS_ROOT")"
+case "$_target_id" in
+  "$_seeds_id"|"$_seeds_id"/*)
     echo "seed_target.sh: refusing to use a seed directory as a build target" >&2
     echo "  target: $TARGET_DIR" >&2
     echo "  seeds are read-only sources; each worktree needs its own target dir." >&2
@@ -73,18 +79,6 @@ if seed_recipe_has_build_dir "$REPO_ROOT"; then
 fi
 
 [ -n "$TARGET_DIR" ] || { echo "seed_target.sh: no target dir (set CARGO_TARGET_DIR or pass --target-dir)" >&2; exit 1; }
-
-# D6: a seed is an immutable source, never a build output. The fast gate refuses
-# this too; refusing here as well means a direct invocation cannot bypass it.
-case "$(readlink -f "$TARGET_DIR" 2>/dev/null || echo "$TARGET_DIR")" in
-  "$(readlink -f "$SEEDS_ROOT" 2>/dev/null || echo "$SEEDS_ROOT")"/*)
-    echo "seed_target.sh: refusing to use a seed directory as a build target" >&2
-    echo "  target: $TARGET_DIR" >&2
-    echo "  seeds are read-only sources; each worktree needs its own target dir." >&2
-    exit 2 ;;
-esac
-
-export SEED_REPO_ROOT="$REPO_ROOT"
 
 
 # NOTE: this check must stay AFTER the key is computed. `cold` interpolates

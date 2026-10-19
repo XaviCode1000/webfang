@@ -116,12 +116,34 @@ fn kill_self() -> ! {
     // `std::process::id()` removes the `i32` conversion fallback entirely:
     // there is no value (in particular never `-1`, which would broadcast to
     // every signalable process) that can miss the current process (#1124).
-    unsafe {
-        libc::kill(libc::getpid(), libc::SIGKILL);
+    let refused = unsafe { libc::kill(libc::getpid(), libc::SIGKILL) } != 0;
+    if refused {
+        // `kill` DID return, so no signal is pending: falling through would
+        // let the pipeline continue as if the crash point had never fired.
+        // This branch — a seccomp filter or a PID-namespace block — is the
+        // only legitimate reason to abort, and it names its errno so a death
+        // by `SIGABRT` is diagnosable from `child_stderr` alone.
+        tracing::error!(
+            error = %std::io::Error::last_os_error(),
+            "crash-injection harness: SIGKILL was refused; terminating with abort"
+        );
+        std::process::abort();
     }
-    // If `kill` returned (seccomp filter, PID-namespace block), still
-    // guarantee termination instead of falling through.
-    std::process::abort();
+    // `kill` returned 0: the signal is PENDING, not yet delivered — it is taken
+    // when this thread next returns to a point where signals can be handled.
+    // Falling through to `abort()` would race that delivery with a synchronous
+    // `SIGABRT`, and on `macos-latest` the abort won: the crash matrix asserted
+    // `SIGKILL(9)` and observed `unix_wait_status(6)` (#2063). Wait for the
+    // signal instead. `SIGKILL` cannot be caught, blocked or ignored, so this
+    // wait always ends in the process dying by the very signal the matrix
+    // asserts on — never in a hang.
+    loop {
+        // SAFETY: `pause(2)` takes no arguments and touches no memory. It
+        // returns only after a signal HANDLER has run, and `SIGKILL` has none,
+        // so this never returns; a caught signal would return `EINTR` and
+        // simply re-enter the wait.
+        unsafe { libc::pause() };
+    }
 }
 
 #[cfg(not(unix))]

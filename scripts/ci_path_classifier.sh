@@ -283,10 +283,13 @@ classify() {
   else
     local root
     root="$(git rev-parse --show-toplevel 2>/dev/null || dirname "$0")"
-    # Resolve the base: requested ref, then main, then HEAD~1. Anything else
-    # is fail-closed (all=true) rather than fail-open.
+    # Resolve the base: the requested ref, then main for local runs. HEAD~1 is
+    # deliberately NOT a candidate (#2058): it is not the PR base, so falling
+    # back to it classified the branch tip instead of the branch, and a PR
+    # whose last commit was a docs edit read as docs-only while the branch also
+    # touched Rust. Anything else is fail-closed (all=true).
     local resolved=""
-    for candidate in "$base" "main" "HEAD~1"; do
+    for candidate in "$base" "main"; do
       if git -C "$root" rev-parse --verify --quiet "$candidate" >/dev/null 2>&1; then
         resolved="$candidate"
         break

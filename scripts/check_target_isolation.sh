@@ -23,10 +23,14 @@
 #                                                 --allow-unregistered-target
 #
 # The ownership registry is the set of live worktrees' .envrc files. Each
-# contributes its LAST `export CARGO_TARGET_DIR=` line, with $HOME / ${HOME}
-# and a leading ~/ expanded — sibling .envrc files write literal $HOME/...
-# while main's uses an absolute path. A tree with no .envrc (tool-generated
-# detached worktrees) declares nothing, is nobody's owner, and is skipped.
+# contributes its LAST `export CARGO_TARGET_DIR=` line, parsed liberally
+# (S10/B32): matching surrounding quotes stripped, flexible whitespace around
+# the declaration, `$HOME` / `${HOME}` / `${VAR:-default}` / a leading ~/
+# expanded — sibling .envrc files write literal $HOME/..., quoted or
+# indented forms — while main's uses an absolute path. A sibling's RELATIVE
+# declaration resolves against THAT sibling's worktree root, never against
+# the cwd of this guard. A tree with no .envrc (tool-generated detached
+# worktrees) declares nothing, is nobody's owner, and is skipped.
 #
 # Every comparison is by canonical path identity (`realpath -m`), never by a
 # string prefix: a sibling directory named `seeds-webfang` shares a prefix
@@ -151,10 +155,27 @@ _canon_soft() {
 }
 
 # expand_home <value>: expand the .envrc declaration forms actually in use.
-# Sibling .envrc files write literal $HOME/... (or ${HOME}/... or ~/...);
-# main's writes an absolute path, which passes through untouched.
+# Sibling .envrc files write literal $HOME/... (or ${HOME}/... or ~/... or
+# a ${VAR:-default} indirection — S10/B32); main's writes an absolute path,
+# which passes through untouched.
 expand_home() {
   local v="$1"
+  # ${VAR:-default} (S10/B32), left to right: when VAR is set and non-empty
+  # its value is substituted, the literal default otherwise. `${HOME}` (no
+  # `:-`) and `$HOME` are handled by the fixed replacements below, unchanged.
+  # The iteration cap closes a pathological loop in case a value fed back in
+  # by an environment variable itself carries the same shape.
+  local re='\$\{([A-Za-z_][A-Za-z0-9_]*):-([^}]*)\}'
+  local name deflt val m
+  local -i i=0
+  while [[ "$v" =~ $re ]] && (( i < 16 )); do
+    name="${BASH_REMATCH[1]}"
+    deflt="${BASH_REMATCH[2]}"
+    m="${BASH_REMATCH[0]}"
+    if [[ -n "${!name+x}" ]]; then val="${!name}"; else val="$deflt"; fi
+    v="${v/"$m"/$val}"
+    (( i += 1 ))
+  done
   v="${v//\$\{HOME\}/$HOME}"
   v="${v//\$HOME/$HOME}"
   # Patterns compare a LITERAL leading tilde (no expansion inside [[ ]]);
@@ -163,6 +184,45 @@ expand_home() {
     v="$HOME/${v:2}"
   elif [[ "$v" == \~ ]]; then
     v="$HOME"
+  fi
+  printf '%s' "$v"
+}
+
+# parse_envrc_target_decl <file>: print the value of the LAST
+# `export CARGO_TARGET_DIR=` declaration in <file> (S10/B32). The parse is
+# liberal exactly where the old `sed -n 's/^export CARGO_TARGET_DIR=//p'`
+# was rigid, and rigid nowhere else:
+#   - flexible whitespace before `export` and between `export` and the name
+#     (`export  CARGO_TARGET_DIR=` on an indented line is written in the wild)
+#   - one pair of MATCHING surrounding quotes is stripped, so
+#     `export CARGO_TARGET_DIR="$HOME/..."` is read as the same declaration
+#     as its unquoted form (S10's named example)
+#   - surrounding whitespace is trimmed; the result may legitimately be
+#     empty, and "declares nothing" stays the empty signal the caller
+#     already reasons about
+# Nothing here resolves a path: expansion and resolution belong to the
+# caller, which knows WHICH tree declared the value.
+parse_envrc_target_decl() {
+  local f="$1" v
+  v="$(sed -n 's/^[[:space:]]*export[[:space:]]\{1,\}CARGO_TARGET_DIR=[[:space:]]*//p' "$f" 2>/dev/null | tail -1)"
+  v="${v%"${v##*[![:space:]]}"}" # trim trailing whitespace
+  if [[ ${#v} -ge 2 ]]; then
+    case "$v" in
+      \"*\") v="${v:1:${#v}-2}" ;;
+      \'*\') v="${v:1:${#v}-2}" ;;
+    esac
+  fi
+  printf '%s' "$v"
+}
+
+# resolve_tree_relative <tree-root> <value>: a RELATIVE declaration resolves
+# against the tree whose .envrc declared it (S10/B32), never against the cwd
+# of this guard — a sibling worktree's relative target means THAT tree's
+# root, not ours. Absolute values pass through unchanged.
+resolve_tree_relative() {
+  local base="$1" v="$2"
+  if [[ "$v" != /* ]]; then
+    v="$base/$v"
   fi
   printf '%s' "$v"
 }
@@ -344,15 +404,17 @@ for wt in "${WT_PATHS[@]}"; do
     SELF_HAS_ENVRC=false
     if [[ -f "$W_CANON/.envrc" ]]; then
       SELF_HAS_ENVRC=true
-      SELF_DECL_RAW="$(sed -n 's/^export CARGO_TARGET_DIR=//p' "$W_CANON/.envrc" 2>/dev/null | tail -1)"
+      SELF_DECL_RAW="$(parse_envrc_target_decl "$W_CANON/.envrc")"
     fi
     continue
   fi
   W_ENVRC="$W_CANON/.envrc"
   [[ -f "$W_ENVRC" ]] || continue # no declaration -> not an owner
-  W_RAW="$(sed -n 's/^export CARGO_TARGET_DIR=//p' "$W_ENVRC" 2>/dev/null | tail -1)"
+  W_RAW="$(parse_envrc_target_decl "$W_ENVRC")"
   [[ -n "$W_RAW" ]] || continue # declares nothing -> not an owner
-  W_DECL="$(_canon "$(expand_home "$W_RAW")" "sibling-declaration-unparseable" "$W_CANON")" || exit 2
+  # S10/B32: the sibling's value is resolved against the SIBLING's root, so
+  # THAT tree's relative declaration means that tree's own target.
+  W_DECL="$(_canon "$(resolve_tree_relative "$W_CANON" "$(expand_home "$W_RAW")")" "sibling-declaration-unparseable" "$W_CANON")" || exit 2
   if [[ -z "$OWNER_TREE" && "$W_DECL" == "$TGT_CANON" ]]; then
     OWNER_TREE="$W_CANON"
     OWNER_DECL="$W_DECL"
@@ -389,7 +451,9 @@ fi
 # --- 8. own registration -------------------------------------------------------------------
 SELF_DECL_CANON=""
 if [[ -n "$SELF_DECL_RAW" ]]; then
-  SELF_DECL_CANON="$(_canon_soft "$(expand_home "$SELF_DECL_RAW")")" || true
+  # The tree under check's own relative declaration resolves against its own
+  # root (== $ROOT_CANON, which the cwd already is) — same rule, own tree.
+  SELF_DECL_CANON="$(_canon_soft "$(resolve_tree_relative "$ROOT_CANON" "$(expand_home "$SELF_DECL_RAW")")")" || true
 fi
 if [[ -n "$SELF_DECL_CANON" && "$SELF_DECL_CANON" == "$TGT_CANON" ]]; then
   {

@@ -255,7 +255,7 @@ while IFS= read -r dir; do
   # silently skips them — a mistake that undercounted dead worktree references
   # by 6x during the audit.
   embeds=0
-  if grep -aq -- "$REPO_ROOT" "$dir"/* 2>/dev/null; then embeds=1; fi
+  if grep -aqF -- "$REPO_ROOT" "$dir"/* 2>/dev/null; then embeds=1; fi
   if [ "$is_member" -eq 1 ] || [ "$embeds" -eq 1 ]; then
     rm -rf "${dir:?}"
     rm -rf "${REF:?}/debug/build/${pkg}-${hash}"*
@@ -299,10 +299,10 @@ fi
 # (uplifted rlibs and differently-named bins).
 # `|| true` is load-bearing: grep exits 1 when it finds nothing, which is the
 # SUCCESS case here, and under `set -o pipefail` that would abort the script.
-STRAY="$( { grep -ral "$REPO_ROOT" "$REF" 2>/dev/null || true; } | wc -l)"
+STRAY="$( { grep -ralF "$REPO_ROOT" "$REF" 2>/dev/null || true; } | wc -l)"
 if [ "$STRAY" -ne 0 ]; then
   echo "seed_publish.sh: refusing to publish, $STRAY file(s) still reference this checkout:" >&2
-  grep -ral "$REPO_ROOT" "$REF" 2>/dev/null | head -10 | sed "s#$REF/#    #" >&2
+  grep -ralF "$REPO_ROOT" "$REF" 2>/dev/null | head -10 | sed "s#$REF/#    #" >&2
   echo "  a seed must be path-free; anything still naming the build tree is a" >&2
   echo "  candidate for cross-worktree contamination." >&2
   exit 1
