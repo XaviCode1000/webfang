@@ -20,8 +20,6 @@
 #     the entry disappears.
 #   - mcp_public_surface has wiring-only coverage. A wiring harness proves the
 #     step exists, not that the guard decides anything.
-#   - test_check_target_isolation.sh is the #1707 shape: only
-#     scripts/ci_fast_gate.sh runs it, and no workflow step runs the fast gate.
 
 no-harness check_archive_reproducibility.sh    no harness and no ODD task yet — needs its own issue
 no-harness check_dead_tests.sh                 no harness and no ODD task yet — needs its own issue
@@ -32,7 +30,6 @@ no-harness check_release_dispatch.sh           no harness and no ODD task yet �
 
 unwired-guard check_orphan_snapshots.sh   only scripts/ci_fast_gate.sh invokes it, and no workflow runs the fast gate
 unwired-guard check_regression_naming.sh  only scripts/ci_fast_gate.sh invokes it — with `|| true`, so even there it cannot fail
-unwired-guard check_target_isolation.sh   only scripts/ci_fast_gate.sh invokes it; its harness scripts/tests/test_check_target_isolation.sh runs nowhere in CI (#1707 shape, S1.5)
 
 no-marker scripts/tests/test_check_compatibility.sh   marker retrofit lands with that harness's own task (T3-T7)
 no-marker scripts/test_concurrency_lints.sh           marker retrofit lands with that harness's own task (T3-T7)

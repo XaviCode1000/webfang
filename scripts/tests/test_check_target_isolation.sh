@@ -291,6 +291,12 @@ ln -s "$A3" "$LINK3"
 run_case "case 12: symlink resolving to another tree's target" \
   2 target-owned-by-other-worktree "$WT3B" "$LINK3"
 
+# NEGATION: before #1829 this policy lived inline in scripts/ci_fast_gate.sh
+# and compared this tree's target ONLY against MAIN's declaration — there was
+# no live-worktree registry, so two SIBLING worktrees declaring the SAME
+# target were not detected at all. That is the #1267 hole: one target dir,
+# two sets of output filenames, and an E2E run silently executing the other
+# tree's binary. The registry is what turns it into a refusal.
 run_case "case 6: KEY collision rejects even with --allow-unregistered-target" \
   2 target-owned-by-other-worktree "$WT3B" "$A3" --allow-unregistered-target
 assert_not_contains "case 6: opt-out did not bypass the collision" \
