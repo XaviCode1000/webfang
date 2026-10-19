@@ -70,6 +70,12 @@ err() {
   ERRORS=$((ERRORS + 1))
 }
 
+# A NOTE is not a violation: it says the gate accepted something on purpose
+# and why, so the reader of the run does not have to guess.
+note() {
+  echo "::notice title=$ANNOTATION_TITLE::$*"
+}
+
 # ─── Declared scope: is the file internally coherent, and is its projection
 # ─── current? Neither question needs a single tag.
 
@@ -102,8 +108,20 @@ check_declared() {
   bad_minor="$(jq -r '.lines[] | select((.minor // "") | test("^[0-9]+\\.[0-9]+$") | not) | (.minor // "(null)")' "$SUPPORT_JSON")"
   [[ -z "$bad_minor" ]] || err "campo .minor inválido (se espera X.Y): $(echo "$bad_minor" | tr '\n' ' ')."
 
-  bad_latest="$(jq -r '.lines[] | select((.latest // "") | test("^[0-9]+\\.[0-9]+\\.[0-9]+$") | not) | "\(.minor)=\(.latest // "(null)")"' "$SUPPORT_JSON")"
-  [[ -z "$bad_latest" ]] || err "campo .latest inválido (se espera X.Y.Z): $(echo "$bad_latest" | tr '\n' ' ')."
+  # A jq scoping detail on purpose: inside `startswith(...)` the argument is
+  # evaluated with the PREVIOUS pipe stage's output (a string) as its input, so
+  # `.minor` there would try to index a string ("Cannot index string with
+  # string"). The `as $e` binding keeps the line object in scope for every
+  # subexpression.
+  bad_latest="$(jq -r '
+    .lines[]
+    | . as $e
+    | select(
+        (($e.latest // "") | test("^[0-9]+\\.[0-9]+\\.[0-9]+$") | not)
+        or (($e.latest // "") | startswith(($e.minor // "") + ".") | not)
+      )
+    | "\($e.minor)=\($e.latest // "(null)")"' "$SUPPORT_JSON")"
+  [[ -z "$bad_latest" ]] || err "campo .latest inválido (se espera X.Y.Z del árbol declarado, empieza por su propia minor): $(echo "$bad_latest" | tr '\n' ' ')."
 
   # `accepts` stays machine-checkable on purpose: it IS the routing table an
   # agent reads to decide whether a backport is allowed. Check it, do not prose.
@@ -112,7 +130,7 @@ check_declared() {
     | select(
         (.state == "STABLE"      and (.accepts // []) != ["bugfix", "security"])
         or (.state == "MAINTENANCE" and (.accepts // []) != ["security"])
-        or (.state == "EOL"       and (.accepts // empty) != empty)
+        or (.state == "EOL"       and ((.accepts // []) | length) > 0)
       )
     | "\(.minor)[\(.state)]=\((.accepts // null) | tostring)"' "$SUPPORT_JSON")"
   [[ -z "$bad_accepts" ]] || err "accepts incoherente con el estado (STABLE=bugfix+security, MAINTENANCE=security, EOL=sin accepts): $(echo "$bad_accepts" | tr '\n' ' ')."
@@ -122,6 +140,50 @@ check_declared() {
   elif ! "$RENDERER" --check; then
     err "SUPPORT.md no coincide con el render de $SUPPORT_JSON (corré $RENDERER y commiteá ambos archivos juntos)."
   fi
+}
+
+# pending_publication <line_minor> <declared> <newest_published>: true when
+# the declared `latest` is exactly ONE patch ahead of the newest published
+# patch of its own minor and has no tag of its own yet.
+#
+# This is the in-flight window of the sanctioned patch release. The bump
+# declares the patch it is about to publish BEFORE the tag exists, because
+# cut-patch-tag.yml is workflow_dispatch-only and refuses a branch whose
+# Cargo.toml does not carry the version — so the tag can only be cut AFTER
+# the bump commit merges. In that window the declared `latest` sits exactly
+# one patch above the newest publication of its line, and the enforcing gate
+# must accept it: this gate runs on EVERY pull_request, so a red verdict
+# there makes the bump PR unmergeable and the release contract impossible to
+# execute.
+#
+# The tolerance is as narrow as the state allows — one patch, same minor, no
+# tag of its own. Everything around it keeps failing exactly as before:
+#   - a declared `latest` BEHIND the published patch is the drift this gate
+#     exists to catch, and still fails;
+#   - a declaration more than one patch ahead is a lie, and still fails;
+#   - a line whose minor has no published patch at all has no fact to stand
+#     on, and still fails closed.
+#
+# The comparison is NUMERIC in base 10 (`10#`), so patch 9 -> 10 is a real
+# increment and a component with a leading zero is never read as octal.
+pending_publication() {
+  local line_minor="$1" declared="$2" newest="$3"
+  [[ "$declared" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  [[ "$newest"  =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  local v_major v_minor v_patch p_major p_minor p_patch
+  IFS='.' read -r v_major v_minor v_patch <<<"$declared"
+  IFS='.' read -r p_major p_minor p_patch <<<"$newest"
+  # Both the declared version and the published patch must belong to the
+  # DECLARED line's own minor: the tag glob `v<minor>.*` can match another
+  # minor's patches, and a line whose minor has no published patch at all
+  # must fail closed instead of riding on a neighbour's tag.
+  [[ "$v_major.$v_minor" == "$line_minor" ]] || return 1
+  [[ "$p_major.$p_minor" == "$line_minor" ]] || return 1
+  # Exactly ONE patch ahead, in base 10.
+  (( 10#$v_patch == 10#$p_patch + 1 )) || return 1
+  # A pending publication has no tag of its own yet.
+  [[ -z "$(git tag --list "v$declared")" ]] || return 1
+  return 0
 }
 
 # ─── Published scope: does the declaration match the published tags?
@@ -189,18 +251,72 @@ check_published() {
   # Every published minor at or above the floor must carry a declaration. An
   # unregistered minor is a published release whose support status nobody
   # stated — the hole this whole check exists to close.
+  #
+  # Membership by exact string equality (is_declared, same shape as
+  # rotate-stable.sh's #2062 fix), never `comm`: comm demands the LOCALE's
+  # collation order while both sides are version-sorted, so a tracked/declared
+  # pair crossing the 2.9/2.10 boundary aborted the whole gate with
+  # "input is not in sorted order" noise instead of the governance verdict.
   local unregistered
-  unregistered="$(comm -23 <(echo "$tracked") <(echo "$declared" | sort -V))"
+  unregistered="$(printf '%s\n' "$tracked" | awk -v declared="$(echo "$declared" | tr '\n' ' ')" "
+    function is_declared(v,  i) {
+      for (i = 1; i <= dn; i++) if (d[i] == v) return 1
+      return 0
+    }
+    BEGIN { dn = split(declared, d, \" \") }
+    { if (\$0 != \"\" && !is_declared(\$0)) print }
+  ")"
   UNREGISTERED="$unregistered"
   [[ -z "$unregistered" ]] || err "minors publicadas sin declarar en support.json: $(echo "$unregistered" | tr '\n' ' ') (registralas o marcalas EOL; crearlas es decisión del mantenedor con issue aprobada)."
 
-  # A declared `latest` must exist as a tag: it is a factual claim about what
-  # shipped, not an intention.
-  local phantom
-  phantom="$(jq -r '.lines[] | "v\(.latest)"' "$SUPPORT_JSON" 2>/dev/null | while read -r t; do
-    git tag --list "$t" | grep -qxF "$t" || echo "$t"
-  done)"
-  [[ -z "$phantom" ]] || err "líneas cuyo .latest no corresponde a ningún tag publicado: $(echo "$phantom" | tr '\n' ' ')."
+  # Every declared `latest` is a factual claim (B1, #2060): it must be the
+  # NEWEST published patch of its own line, not merely an existing tag. The
+  # per-line computation reuses the same filter chain as published_minors —
+  # strip `v`, exclude `-` (so a `-rc.N` prerelease never counts as a
+  # publication), keep only X.Y.Z, `sort -V`, newest last. A line whose minor
+  # has zero published patches fails too: then `latest` cannot be the newest
+  # patch, and the claim has nothing to stand on. Every state is covered —
+  # STABLE, MAINTENANCE and EOL alike.
+  #
+  # ONE tolerance, and it is the bump window: a declared `latest` exactly one
+  # patch above the newest published patch of its own minor, with no tag of
+  # its own yet, is a PENDING PUBLICATION (the bump declares the patch it is
+  # about to publish; the tag is cut after the bump merges). It is accepted
+  # with a note, because the gate runs on every pull_request and a red
+  # verdict in that window would make the bump PR unmergeable. A declaration
+  # BEHIND the published patch, a declaration more than one patch ahead and a
+  # line with no published patch at all all keep failing.
+  local stale_latest="" pending_latest=""
+  while IFS=$'\t' read -r m l; do
+    local newest_line
+    newest_line="$(git tag --list "v$m.*" | sed 's/^v//' | grep -v -- '-' \
+      | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
+    if [[ "$newest_line" == "$l" ]]; then
+      continue
+    fi
+    if [[ -n "$newest_line" ]] && pending_publication "$m" "$l" "$newest_line"; then
+      pending_latest+="v$m declara v$l: publicación pendiente (el parche published más nuevo de esa minor es v$newest_line)"$'\n'
+      continue
+    fi
+    if [[ -n "$newest_line" ]]; then
+      stale_latest+="v$m: declarado v$l, el parche published más nuevo es v$newest_line"$'\n'
+    else
+      stale_latest+="v$m: declarado v$l, sin ningún parche X.Y.Z publicado"$'\n'
+    fi
+  done < <(jq -r '.lines[] | "\(.minor)\t\(.latest // "(null)")"' "$SUPPORT_JSON" 2>/dev/null)
+  # The trailing separator is part of the message: `tr` turns every newline
+  # into a space, so the accumulated trailing newline yields the space before
+  # the closing period. Stripping it would change the annotation's bytes and
+  # the pre-R2-1 gate's output would no longer match byte for byte.
+  [[ -z "$stale_latest" ]] || err "líneas cuyo .latest no es el parche published más nuevo de su minor (sin tag o desactualizado): $(printf '%s' "$stale_latest" | tr '\n' ' ')."
+  if [[ -n "$pending_latest" ]]; then
+    local p
+    while IFS= read -r p; do
+      if [[ -n "$p" ]]; then
+        note "$p"
+      fi
+    done <<<"$pending_latest"
+  fi
 
   # MAINTENANCE is the minor immediately before STABLE, not "whatever was
   # registered last": when the chain breaks, the stale entry keeps a real

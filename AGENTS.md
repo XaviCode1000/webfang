@@ -847,7 +847,7 @@ Support window (structural, no calendar): at most 2 live lines. Publishing `vX.(
 | Scope | Asserts | Fail-closed on |
 | :--- | :--- | :--- |
 | `--scope=declared` | valid schema; `accepts` coherent with each line's state (STABLE `bugfix`+`security`, MAINTENANCE `security`, EOL none); **exactly one** STABLE, ≤1 MAINTENANCE, ≤2 live lines; `SUPPORT.md` matches a fresh render | unreadable/invalid JSON, unknown `state`, missing renderer |
-| `--scope=published` | declared STABLE is the newest published minor; every minor at or above the tracking floor is declared; MAINTENANCE is the immediately-previous published minor; every `latest` exists as a tag | shallow clone, no tags, unparseable `v*` tag |
+| `--scope=published` | declared STABLE is the newest published minor; every minor at or above the tracking floor is declared; MAINTENANCE is the immediately-previous published minor; every `latest` exists as a tag, or is exactly one patch above the newest published patch of its own minor (the in-flight bump window, declared before the tag is cut) | shallow clone, no tags, unparseable `v*` tag |
 
 The tracking floor is the **oldest declared line**: minors published before it (1.x) predate support tracking, the same fact 2.0 records as `eol_reason: "baseline: predates support tracking"`, and demanding they be declared would invent history. `-rc.N` tags are candidates, not publications, so they never move the window.
 
@@ -880,7 +880,7 @@ Run inside a `chore/support-*` branch (base `main`); mutations travel by normal 
 | `eol-line.sh X.Y` | Declare EOL (deletes branch remote+local, marks entry) |
 | `render-support-md.sh [--check]` | Regenerate `SUPPORT.md`, or verify it against a fresh render writing nothing (`--check` is the CI gate; the generator stays the single writer) |
 | `check_support_drift.sh [--scope=…]` | Read-only, fail-closed: `support.json` vs its tags and vs its own semantics (`--scope=published\|declared\|both`); `--scope=published` is a required merge gate inside `Validate PR metadata`, run post-merge by `support-drift.yml` |
-| `test_support_drift.sh` | Semantics harness for the two scripts above (26 cases: drift fails, consistency passes, blind spots fail closed) |
+| `test_support_drift.sh` | Semantics harness for the two scripts above (50 cases: drift fails, consistency passes, blind spots fail closed) |
 | `bump-support-patch.sh X.Y.Z [pr#]` | Manual patch bump with release-contract checks (see above) |
 | `check-topology.sh` | Head-prefix → base validation. **Required gate** — invoked as step `Validate branch topology (enforcing)` by `pr-validation.yml`; the script itself is policy-agnostic, so the enforcement lives entirely in that step |
 

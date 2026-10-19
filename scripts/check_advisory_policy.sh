@@ -407,14 +407,25 @@ collect_duplicates() {
             echo "::error::ADVISORY_POLICY_DENY_BANS_OUTPUT apunta a $ADVISORY_POLICY_DENY_BANS_OUTPUT, que no existe."
             return 1
         fi
-        cp "$ADVISORY_POLICY_DENY_BANS_OUTPUT" "$out"
+        if ! cp "$ADVISORY_POLICY_DENY_BANS_OUTPUT" "$out"; then
+            echo "::error::no se pudo copiar $ADVISORY_POLICY_DENY_BANS_OUTPUT a $out."
+            return 1
+        fi
         return 0
     fi
     if ! command -v cargo-deny >/dev/null 2>&1; then
         echo "::error::cargo-deny no está instalado y este guard NO se salta. Instálalo con: cargo install cargo-deny --locked"
         return 1
     fi
-    (cd "$ROOT" && cargo deny check bans) >"$out" 2>&1 || true
+    # No `|| true` here (#2057, S3). It collapsed "the tool failed" and "no
+    # duplicates found" into the same empty set, so the ratchet at the call
+    # site could never fire and a broken producer read as a clean tree.
+    # Duplicates are emitted as `warning[duplicate]` lines with exit 0, so a
+    # non-zero exit is a tool failure, not a finding.
+    if ! (cd "$ROOT" && cargo deny check bans) >"$out" 2>&1; then
+        echo "::error::cargo deny check bans falló; el ratchet de duplicados no es confiable."
+        return 1
+    fi
     return 0
 }
 
