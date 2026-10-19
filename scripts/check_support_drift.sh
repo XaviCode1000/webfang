@@ -201,8 +201,21 @@ check_published() {
   # Every published minor at or above the floor must carry a declaration. An
   # unregistered minor is a published release whose support status nobody
   # stated — the hole this whole check exists to close.
+  #
+  # Membership by exact string equality (is_declared, same shape as
+  # rotate-stable.sh's #2062 fix), never `comm`: comm demands the LOCALE's
+  # collation order while both sides are version-sorted, so a tracked/declared
+  # pair crossing the 2.9/2.10 boundary aborted the whole gate with
+  # "input is not in sorted order" noise instead of the governance verdict.
   local unregistered
-  unregistered="$(comm -23 <(echo "$tracked") <(echo "$declared" | sort -V))"
+  unregistered="$(printf '%s\n' "$tracked" | awk -v declared="$(echo "$declared" | tr '\n' ' ')" "
+    function is_declared(v,  i) {
+      for (i = 1; i <= dn; i++) if (d[i] == v) return 1
+      return 0
+    }
+    BEGIN { dn = split(declared, d, \" \") }
+    { if (\$0 != \"\" && !is_declared(\$0)) print }
+  ")"
   UNREGISTERED="$unregistered"
   [[ -z "$unregistered" ]] || err "minors publicadas sin declarar en support.json: $(echo "$unregistered" | tr '\n' ' ') (registralas o marcalas EOL; crearlas es decisión del mantenedor con issue aprobada)."
 

@@ -459,6 +459,54 @@ else
   fail "aceptó una rotación sin STABLE previa (degradaría nada)"
 fi
 
+# ─── The drift gate crosses the pair too (S13, #2054) ───────────────────────
+# check_support_drift.sh had the same comm/sort-V pairing in its
+# unregistered-minors check: `comm` demands the LOCALE's collation order while
+# both sides are version-sorted, so the first tracked/declared pair whose
+# published minors cross 2.9/2.10 aborts the whole gate with collation noise
+# instead of the governance verdict. Below, the red case diverges the sets
+# across that boundary (a genuinely unregistered 2.9 under a declared 2.8);
+# the green case is the healthy equal-set declaration ('#2062'-era
+# rotate-state clone) that must keep passing.
+echo "== el gate de drift cruza el par .9/.10 (donde comm abortaba) =="
+FX_GATE_TEN="$(new_fixture gate_minor10)"
+set_lines "$FX_GATE_TEN" '{
+  "schema_version": 1,
+  "lines": [
+    {"minor":"2.10","state":"STABLE","branch":null,"latest":"2.10.1","released_at":"2026-09-11T16:33:39+01:00","accepts":["bugfix","security"]},
+    {"minor":"2.8","state":"EOL","branch":null,"latest":"2.8.1","released_at":"2026-09-05T18:58:40+01:00","eol_at":"2026-09-14","eol_reason":"ventana rotada"}
+  ]
+}'
+add_tags "$FX_GATE_TEN" v2.8.0 v2.8.1 v2.9.0 v2.10.0 v2.10.1
+# NEGATION: pre-fix the unregistered-minors check ran `comm` over version-sorted
+# input; with the sets diverging across the .9/.10 pair comm aborted the gate
+# with 'input is not in sorted order' noise and rc=1 while producing the
+# collation error INSTEAD OF the governance verdict naming the unregistered
+# minor — the drift check never reached its own diagnosis.
+gate_rc=0
+gate_out="$( ( cd "$FX_GATE_TEN" && ./scripts/check_support_drift.sh --scope=published ) 2>&1 )" || gate_rc=$?
+if [[ $gate_rc -ne 0 ]] && grep -qF 'minors publicadas sin declarar en support.json: 2.9' <<<"$gate_out"; then
+  pass "marca 2.9 sin declarar cruzando el par .9/.10 con el veredicto de gobernanza"
+else
+  fail "el gate no dio el veredicto de gobernanza (rc=$gate_rc): $(tr '\n' ' ' <<<"$gate_out")"
+fi
+if ! grep -qF 'sorted order' <<<"$gate_out"; then
+  pass "el veredicto no es el ruido de comm (no hay 'not in sorted order')"
+else
+  fail "el diagnóstico sigue siendo el ruido de collation de comm"
+fi
+
+FX_GATE_HEALTHY="$(new_fixture gate_minor10_healthy)"
+set_lines "$FX_GATE_HEALTHY" '{
+  "schema_version": 1,
+  "lines": [
+    {"minor":"2.10","state":"STABLE","branch":null,"latest":"2.10.1","released_at":"2026-09-11T16:33:39+01:00","accepts":["bugfix","security"]},
+    {"minor":"2.9","state":"EOL","branch":null,"latest":"2.9.1","released_at":"2026-09-05T18:58:40+01:00","eol_at":"2026-09-14","eol_reason":"ventana rotada"}
+  ]
+}'
+add_tags "$FX_GATE_HEALTHY" v2.9.0 v2.9.1 v2.10.0 v2.10.1
+expect "$FX_GATE_HEALTHY" pass "la declaración sana de sets iguales cruza el par .9/.10 sin abortar" --scope=published
+
 # ─── The diagnosis must name the surface, not the job ────────────────────────
 # A required check is identified by its JOB name, so "Validate PR metadata"
 # failing says nothing about why. The annotation title and the step summary are
