@@ -4,13 +4,13 @@
 //! `adaptive-selectors` feature. It is re-exported by the parent module
 //! when the feature is enabled.
 
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use std::hash::{Hash, Hasher};
 
 use dashmap::DashMap;
 use tokio::sync::Semaphore;
-use tracing::{debug, event, info, instrument, warn};
+use tracing::{event, instrument, warn};
 
 use crate::domain::dom_inspector::{
     DomInspectorPort, RepairFailureDiagnostic, SelectorErrorKind, SelectorSuggestion,
@@ -247,29 +247,12 @@ impl AdaptiveSelectorEngine {
             .await
     }
 
-    /// Compute a structural hash from DOM tag counts for cache keying.
-    #[instrument(skip(self))]
-    fn structural_hash(&self, document: &scraper::Html) -> u64 {
-        use std::hash::{Hash, Hasher};
-
-        let report = self.inspector.inspect(document);
-        // Build a deterministic string from sorted tag counts and hash it
-        let mut tags: Vec<_> = report.tag_counts.iter().collect();
-        tags.sort_by_key(|(tag, _)| tag.as_str());
-        let mut combined = String::new();
-        for (tag, count) in &tags {
-            combined.push_str(tag);
-            combined.push(':');
-            combined.push_str(&count.to_string());
-            combined.push(',');
-        }
-        // Use a simple FNV-1a hash for determinism
-        let mut hasher = FnvHasher::default();
-        combined.hash(&mut hasher);
-        hasher.finish()
-    }
-
     /// Run the full cascade: Tier 1 → (optional) Tier 2.
+    ///
+    /// The cascade is decomposed into named helpers (`accept_tier1`,
+    /// `accept_tier2`, `tier1_fallback`) that each own one decision:
+    /// accepting a lexical match, accepting a semantic match, or falling
+    /// back to Tier 1 when Tier 2 is unavailable or unsuccessful.
     async fn cascade(
         &self,
         selector: &str,
@@ -282,83 +265,41 @@ impl AdaptiveSelectorEngine {
         let cache_key = self.cache_key(selector, structural_hash);
         if let Some(cached) = self.cache_get(cache_key) {
             let mut outcome = cached;
-            outcome.trace.as_mut().map(|t| t.cache_hit = true);
+            if let Some(trace) = outcome.trace.as_mut() {
+                trace.cache_hit = true;
+            }
             return Ok(outcome);
         }
 
         // Fast path: high confidence Tier 1 → return immediately
         if let Some(ref best) = best_tier1 {
             if best.score > self.options.lexical_threshold {
-                let trace = CascadeTrace {
-                    tier1_score,
-                    tier2_score: None,
-                    tier2_latency_ms: 0,
-                    cache_hit: false,
-                };
-                let outcome = AdaptiveRepairOutcome::repaired(best.clone(), trace);
-                self.cache_insert(cache_key, outcome.clone());
-                return Ok(outcome);
+                return Ok(self.accept_tier1(cache_key, best, tier1_score));
             }
         }
 
         // Tier 2: semantic (if available)
-        let semantic = match &self.semantic {
-            Some(s) => s,
-            None => {
-                // No semantic provider — fall back to Tier 1 best
-                let trace = CascadeTrace {
-                    tier1_score,
-                    tier2_score: None,
-                    tier2_latency_ms: 0,
-                    cache_hit: false,
-                };
-                let outcome = if let Some(best) = best_tier1 {
-                    AdaptiveRepairOutcome::repaired(best.clone(), trace)
-                } else {
-                    // No suggestions at all
-                    let trace = CascadeTrace {
-                        tier1_score: 0.0,
-                        tier2_score: None,
-                        tier2_latency_ms: 0,
-                        cache_hit: false,
-                    };
-return Err(SelectorErrorKind::RepairInconclusive(
-                        Box::new(RepairFailureDiagnostic {
-                            tier1_best: None,
-                            tier2_best: None,
-                            candidates_evaluated: 0,
-                            structural_hash,
-                        }),
-                    ));
-                };
-                self.cache_insert(cache_key, outcome.clone());
-                return Ok(outcome);
-            },
+        let Some(semantic) = &self.semantic else {
+            // No semantic provider — fall back to Tier 1 best
+            return self.tier1_fallback(
+                cache_key,
+                best_tier1.as_ref(),
+                tier1_score,
+                0,
+                structural_hash,
+            );
         };
 
         // Check Tier 2 availability — skip if inference pool is saturated
         let Some(_permit) = self.try_acquire_tier2().await else {
             // Pool saturated — fall back to Tier 1 best
-            let trace = CascadeTrace {
+            return self.tier1_fallback(
+                cache_key,
+                best_tier1.as_ref(),
                 tier1_score,
-                tier2_score: None,
-                tier2_latency_ms: 0,
-                cache_hit: false,
-            };
-            let outcome = if let Some(best) = best_tier1 {
-                AdaptiveRepairOutcome::repaired(best.clone(), trace)
-            } else {
-return Err(SelectorErrorKind::RepairInconclusive(
-                        Box::new(RepairFailureDiagnostic {
-                            tier1_best: None,
-                            tier2_best: None,
-                            candidates_evaluated: 0,
-                            structural_hash,
-                        }),
-                    ));
-            };
-            self.cache_insert(cache_key, outcome.clone());
-            return Ok(outcome);
+                0,
+                structural_hash,
+            );
         };
 
         // Run Tier 2 on the precomputed semantic context
@@ -368,77 +309,116 @@ return Err(SelectorErrorKind::RepairInconclusive(
 
         match tier2_result {
             Ok(Some(sem_match)) => {
-                let tier2_score = sem_match.confidence;
-                let suggestion = SelectorSuggestion {
-                    selector: sem_match.selector,
-                    score: tier2_score as f64,
-                };
-                let trace = CascadeTrace {
-                    tier1_score,
-                    tier2_score: Some(tier2_score),
-                    tier2_latency_ms,
-                    cache_hit: false,
-                };
-                let outcome = if tier2_score >= self.options.semantic_threshold {
-                    AdaptiveRepairOutcome::repaired(suggestion, trace)
-                } else {
-                    AdaptiveRepairOutcome {
-                        suggestion,
-                        status: RepairStatus::Degraded,
-                        trace: Some(trace),
-                    }
-                };
-                self.cache_insert(cache_key, outcome.clone());
-                Ok(outcome)
+                Ok(self.accept_tier2(cache_key, sem_match, tier1_score, tier2_latency_ms))
             },
             Ok(None) => {
                 // Tier 2 returned no match — fall back to Tier 1
-                let trace = CascadeTrace {
+                self.tier1_fallback(
+                    cache_key,
+                    best_tier1.as_ref(),
                     tier1_score,
-                    tier2_score: None,
                     tier2_latency_ms,
-                    cache_hit: false,
-                };
-                let outcome = if let Some(best) = best_tier1 {
-                    AdaptiveRepairOutcome::repaired(best.clone(), trace)
-                } else {
-                    return Err(SelectorErrorKind::RepairInconclusive(
-                        Box::new(RepairFailureDiagnostic {
-                            tier1_best: None,
-                            tier2_best: None,
-                            candidates_evaluated: 0,
-                            structural_hash,
-                        }),
-                    ));
-                };
-                self.cache_insert(cache_key, outcome.clone());
-                Ok(outcome)
+                    structural_hash,
+                )
             },
             Err(e) => {
                 warn!(error = ?e, "tier2 inference failed");
                 // Tier 2 failed — fall back to Tier 1
-                let trace = CascadeTrace {
+                self.tier1_fallback(
+                    cache_key,
+                    best_tier1.as_ref(),
                     tier1_score,
-                    tier2_score: None,
                     tier2_latency_ms,
-                    cache_hit: false,
-                };
-                let outcome = if let Some(best) = best_tier1 {
-                    AdaptiveRepairOutcome::repaired(best.clone(), trace)
-                } else {
-                    return Err(SelectorErrorKind::RepairInconclusive(
-                        Box::new(RepairFailureDiagnostic {
-                            tier1_best: None,
-                            tier2_best: None,
-                            candidates_evaluated: 0,
-                            structural_hash,
-                        }),
-                    ));
-                };
-                self.cache_insert(cache_key, outcome.clone());
-                Ok(outcome)
-            }
+                    structural_hash,
+                )
+            },
         }
+    }
+
+    /// Fast path: a high-confidence Tier 1 match short-circuits the cascade.
+    fn accept_tier1(
+        &self,
+        cache_key: u64,
+        best: &SelectorSuggestion,
+        tier1_score: f64,
+    ) -> AdaptiveRepairOutcome {
+        let trace = CascadeTrace {
+            tier1_score,
+            tier2_score: None,
+            tier2_latency_ms: 0,
+            cache_hit: false,
+        };
+        let outcome = AdaptiveRepairOutcome::repaired(best.clone(), trace);
+        self.cache_insert(cache_key, outcome.clone());
+        outcome
+    }
+
+    /// Build and persist the outcome for a successful Tier 2 match.
+    ///
+    /// A confidence at or above `semantic_threshold` is `Repaired`; below it
+    /// the outcome is `Degraded` but still carries the Tier 2 score.
+    fn accept_tier2(
+        &self,
+        cache_key: u64,
+        sem_match: SemanticMatch,
+        tier1_score: f64,
+        tier2_latency_ms: u64,
+    ) -> AdaptiveRepairOutcome {
+        let tier2_score = sem_match.confidence;
+        let suggestion = SelectorSuggestion {
+            selector: sem_match.selector,
+            score: tier2_score as f64,
+        };
+        let trace = CascadeTrace {
+            tier1_score,
+            tier2_score: Some(tier2_score),
+            tier2_latency_ms,
+            cache_hit: false,
+        };
+        let outcome = if tier2_score >= self.options.semantic_threshold {
+            AdaptiveRepairOutcome::repaired(suggestion, trace)
+        } else {
+            AdaptiveRepairOutcome {
+                suggestion,
+                status: RepairStatus::Degraded,
+                trace: Some(trace),
+            }
+        };
+        self.cache_insert(cache_key, outcome.clone());
+        outcome
+    }
+
+    /// Fall back to the best Tier 1 suggestion.
+    ///
+    /// Used when Tier 2 is unavailable, saturated, or unsuccessful. When Tier 1
+    /// has no suggestion either, the repair is inconclusive.
+    fn tier1_fallback(
+        &self,
+        cache_key: u64,
+        best_tier1: Option<&SelectorSuggestion>,
+        tier1_score: f64,
+        tier2_latency_ms: u64,
+        structural_hash: u64,
+    ) -> Result<AdaptiveRepairOutcome, SelectorErrorKind> {
+        let Some(best) = best_tier1 else {
+            return Err(SelectorErrorKind::RepairInconclusive(Box::new(
+                RepairFailureDiagnostic {
+                    tier1_best: None,
+                    tier2_best: None,
+                    candidates_evaluated: 0,
+                    structural_hash,
+                },
+            )));
+        };
+        let trace = CascadeTrace {
+            tier1_score,
+            tier2_score: None,
+            tier2_latency_ms,
+            cache_hit: false,
+        };
+        let outcome = AdaptiveRepairOutcome::repaired(best.clone(), trace);
+        self.cache_insert(cache_key, outcome.clone());
+        Ok(outcome)
     }
 
     /// Try to acquire a Tier 2 inference permit.
@@ -487,7 +467,6 @@ return Err(SelectorErrorKind::RepairInconclusive(
     }
 
     /// Get the number of cached entries (for monitoring).
-    #[allow(dead_code)]
     pub fn cache_len(&self) -> usize {
         self.cache.len()
     }
@@ -496,10 +475,13 @@ return Err(SelectorErrorKind::RepairInconclusive(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::dom_inspector::SelectorSuggestion;
-    use crate::domain::semantic_inspector::{SemanticContext, SemanticMatch, SemanticInspectorPort};
+    use crate::domain::dom_inspector::{DomStructureReport, SelectorSuggestion};
+    use crate::domain::semantic_inspector::{
+        BoxFuture, SemanticContext, SemanticInspectorPort, SemanticMatch, TierSource,
+    };
     use std::sync::Arc;
 
+    /// Mock DOM inspector — returns configurable suggestions.
     struct MockInspector {
         suggestions: Vec<SelectorSuggestion>,
     }
@@ -511,8 +493,8 @@ mod tests {
     }
 
     impl DomInspectorPort for MockInspector {
-        fn inspect(&self, _document: &scraper::Html) -> crate::domain::dom_inspector::DomStructureReport {
-            crate::domain::dom_inspector::DomStructureReport::default()
+        fn inspect(&self, _document: &scraper::Html) -> DomStructureReport {
+            DomStructureReport::default()
         }
 
         fn suggest(
@@ -524,61 +506,86 @@ mod tests {
         }
     }
 
-    struct MockSemanticNoMatch;
+    /// Mock semantic inspector — returns a configurable match.
+    struct MockSemanticInspector(Option<SemanticMatch>);
 
-    impl SemanticInspectorPort for MockSemanticNoMatch {
+    impl SemanticInspectorPort for MockSemanticInspector {
         fn find_semantic_match<'a>(
             &'a self,
             _ctx: SemanticContext,
-        ) -> crate::domain::semantic_inspector::BoxFuture<
-            'a,
-            Result<Option<SemanticMatch>, SelectorErrorKind>,
-        > {
-            Box::pin(async { Ok(None) })
+        ) -> BoxFuture<'a, Result<Option<SemanticMatch>, SelectorErrorKind>> {
+            let response = self.0.clone();
+            Box::pin(async { Ok(response) })
         }
+    }
+
+    /// Tier 2 provider that never matches.
+    fn semantic_no_match() -> Arc<MockSemanticInspector> {
+        Arc::new(MockSemanticInspector(None))
+    }
+
+    /// Tier 2 provider returning a single match for `selector` at `confidence`.
+    fn semantic_match(selector: &str, confidence: f32) -> Arc<MockSemanticInspector> {
+        Arc::new(MockSemanticInspector(Some(SemanticMatch {
+            selector: selector.to_owned(),
+            confidence,
+            source: TierSource::Semantic,
+        })))
+    }
+
+    /// Ambiguous Tier 1 inspector (score 0.65 ≤ 0.85) — the cascade must
+    /// escalate to Tier 2 instead of settling for the lexical suggestion.
+    fn ambiguous_tier1() -> Arc<MockInspector> {
+        Arc::new(MockInspector::new(vec![SelectorSuggestion {
+            selector: ".ambiguous".to_owned(),
+            score: 0.65,
+        }]))
     }
 
     #[tokio::test]
     async fn test_select_sync_aware_degraded_when_tier2_returns_none() {
         // Tier 1 returns low score (0.65 < 0.70 threshold), Tier 2 returns None
-        // → should return Degraded with Tier 1 best suggestion
-        let inspector = Arc::new(MockInspector {
-            suggestions: vec![SelectorSuggestion {
-                selector: ".low-score".to_owned(),
-                score: 0.65,
-            }],
-        });
-        let semantic = Arc::new(crate::domain::semantic_inspector::MockSemanticNoMatch);
+        // → the Tier 1 best suggestion is returned as the fallback
+        let inspector = Arc::new(MockInspector::new(vec![SelectorSuggestion {
+            selector: ".low-score".to_owned(),
+            score: 0.65,
+        }]));
+        let semantic = semantic_no_match();
 
-        let engine = crate::application::adaptive_engine::real::AdaptiveSelectorEngine::new(
+        let engine = AdaptiveSelectorEngine::new(
             inspector,
             Some(semantic),
-            crate::application::adaptive_engine::real::AdaptiveSelectorOptions::default(),
+            AdaptiveSelectorOptions::default(),
         );
         let html = "<div>Hello</div>".to_owned();
 
         let result = engine
             .select_sync_aware(html, ".missing".to_owned(), None)
             .await;
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            crate::domain::dom_inspector::SelectorErrorKind::RepairInconclusive(_) => {},
-            other => panic!("expected RepairInconclusive, got {other:?}"),
-        }
+        assert!(result.is_ok());
+        let outcome = result.unwrap();
+        // The Tier 1 best is returned as the fallback, so the status is
+        // `Repaired` (not `Degraded`) — `Degraded` is reserved for a Tier 2
+        // match whose confidence is below the semantic threshold.
+        assert_eq!(outcome.suggestion.selector, ".low-score");
+        assert_eq!(outcome.status, RepairStatus::Repaired);
+        let trace = outcome.trace.as_ref().expect("repair carries a trace");
+        assert!(
+            trace.tier2_score.is_none(),
+            "Tier 2 produced no match, so the trace carries no tier2 score"
+        );
     }
 
     #[tokio::test]
     async fn test_select_sync_aware_degraded_when_no_tier1_and_tier2_returns_none() {
         // Tier 1 returns empty, Tier 2 returns None → RepairInconclusive error
-        let inspector = Arc::new(crate::domain::dom_inspector::MockInspector {
-            suggestions: vec![],
-        });
-        let semantic = Arc::new(crate::domain::semantic_inspector::MockSemanticNoMatch);
+        let inspector = Arc::new(MockInspector::new(vec![]));
+        let semantic = semantic_no_match();
 
-        let engine = crate::application::adaptive_engine::real::AdaptiveSelectorEngine::new(
+        let engine = AdaptiveSelectorEngine::new(
             inspector,
             Some(semantic),
-            crate::application::adaptive_engine::real::AdaptiveSelectorOptions::default(),
+            AdaptiveSelectorOptions::default(),
         );
         let html = "<div>Hello</div>".to_owned();
 
@@ -587,7 +594,7 @@ mod tests {
             .await;
         assert!(result.is_err());
         match result.unwrap_err() {
-            crate::domain::dom_inspector::SelectorErrorKind::RepairInconclusive(_) => {},
+            SelectorErrorKind::RepairInconclusive(_) => {},
             other => panic!("expected RepairInconclusive, got {other:?}"),
         }
     }
@@ -595,18 +602,16 @@ mod tests {
     #[tokio::test]
     async fn test_select_sync_aware_tier1_high_score_returns_immediately() {
         // Tier 1 returns high score (0.9 > 0.85 threshold) → immediate return
-        let inspector = Arc::new(crate::domain::dom_inspector::MockInspector {
-            suggestions: vec![crate::domain::dom_inspector::SelectorSuggestion {
-                selector: ".high-score".to_owned(),
-                score: 0.9,
-            }],
-        });
-        let semantic = Arc::new(crate::domain::semantic_inspector::MockSemanticNoMatch);
+        let inspector = Arc::new(MockInspector::new(vec![SelectorSuggestion {
+            selector: ".high-score".to_owned(),
+            score: 0.9,
+        }]));
+        let semantic = semantic_no_match();
 
-        let engine = crate::application::adaptive_engine::real::AdaptiveSelectorEngine::new(
+        let engine = AdaptiveSelectorEngine::new(
             inspector,
-            Some(Arc::new(crate::domain::semantic_inspector::MockSemanticNoMatch)),
-            crate::application::adaptive_engine::real::AdaptiveSelectorOptions::default(),
+            Some(semantic),
+            AdaptiveSelectorOptions::default(),
         );
         let html = "<div>Hello</div>".to_owned();
 
@@ -615,39 +620,73 @@ mod tests {
             .await;
         assert!(result.is_ok());
         let outcome = result.unwrap();
-        assert_eq!(outcome.status, crate::application::adaptive_engine::real::RepairStatus::Repaired);
+        assert_eq!(outcome.status, RepairStatus::Repaired);
         assert_eq!(outcome.suggestion.selector, ".high-score");
     }
 
-    /// Mock semantic inspector that returns a single match for `selector` at `confidence`.
-    fn semantic_match(selector: &str, confidence: f32) -> Arc<crate::domain::semantic_inspector::MockSemanticMatch> {
-        Arc::new(crate::domain::semantic_inspector::MockSemanticMatch(Some(crate::domain::semantic_inspector::SemanticMatch {
-            selector: selector.to_owned(),
-            confidence,
-            source: crate::domain::semantic_inspector::TierSource::Semantic,
-        })))
+    /// The cache must be keyed by (selector, structural hash): a second call
+    /// with the same inputs is served from the cache instead of re-running the
+    /// cascade.
+    #[tokio::test]
+    async fn test_select_sync_aware_cache_hit_on_second_call() {
+        let inspector = Arc::new(MockInspector::new(vec![SelectorSuggestion {
+            selector: ".cached".to_owned(),
+            score: 0.9,
+        }]));
+        let semantic = semantic_no_match();
+
+        let engine = AdaptiveSelectorEngine::new(
+            inspector,
+            Some(semantic),
+            AdaptiveSelectorOptions::default(),
+        );
+        let html = "<div class='cached'>Hello</div>".to_owned();
+
+        // First call — populates the cache
+        let first = engine
+            .select_sync_aware(html.clone(), ".target".to_owned(), None)
+            .await
+            .expect("tier1 repair must succeed");
+        assert!(!first.trace.as_ref().expect("trace").cache_hit);
+        assert_eq!(
+            engine.cache_len(),
+            1,
+            "cache should hold one entry after the first call"
+        );
+
+        // Second call — served from the cache
+        let second = engine
+            .select_sync_aware(html, ".target".to_owned(), None)
+            .await
+            .expect("cached repair must succeed");
+        assert!(
+            second.trace.as_ref().expect("trace").cache_hit,
+            "second call with the same selector and DOM must hit the cache"
+        );
     }
 
-    /// Tier 2 returns a confident match → repaired via
-    /// method="tier2_semantic", trace carries the Tier 2 score.
+    /// Tier 2 returns a confident match → the repaired selector comes from
+    /// the semantic provider and the trace carries the Tier 2 score (the
+    /// marker that the semantic tier ran).
     #[tokio::test]
     async fn test_repair_resolves_via_tier2_when_confidence_above_threshold() {
         // Tier 1 stays ambiguous (0.65 ≤ 0.85) so the cascade escalates to Tier 2.
         let inspector = ambiguous_tier1();
         let semantic = semantic_match(".semantic-hit", 0.9); // above semantic_threshold (0.75)
 
-        let engine = crate::application::adaptive_engine::real::AdaptiveSelectorEngine::new(
+        let engine = AdaptiveSelectorEngine::new(
             inspector,
             Some(semantic),
-            crate::application::adaptive_engine::real::AdaptiveSelectorOptions::default(),
+            AdaptiveSelectorOptions::default(),
         );
-        let html = "<div class='semantic-hit'>Hello</div>";
-        let document = scraper::Html::parse_document(html);
+        let html = "<div class='semantic-hit'>Hello</div>".to_owned();
 
-        let result = engine.repair(&document, html, ".content", None).await;
+        let result = engine
+            .select_sync_aware(html, ".content".to_owned(), None)
+            .await;
         assert!(result.is_ok(), "tier2 repair should succeed");
         let outcome = result.unwrap();
-        assert_eq!(outcome.status, crate::application::adaptive_engine::real::RepairStatus::Repaired);
+        assert_eq!(outcome.status, RepairStatus::Repaired);
         assert_eq!(outcome.suggestion.selector, ".semantic-hit");
         let trace = outcome
             .trace
@@ -662,26 +701,27 @@ mod tests {
     }
 
     /// Tier 2 returns a low-confidence match → Degraded, but the Tier 2 score
-    /// must still be visible in the trace (tier2_semantic ran).
+    /// must still be visible in the trace (the semantic tier ran).
     #[tokio::test]
     async fn test_repair_degraded_when_tier2_confidence_below_threshold() {
         let inspector = ambiguous_tier1();
         let semantic = semantic_match(".semantic-weak", 0.6); // below semantic_threshold (0.75)
 
-        let engine = crate::application::adaptive_engine::real::AdaptiveSelectorEngine::new(
+        let engine = AdaptiveSelectorEngine::new(
             inspector,
             Some(semantic),
-            crate::application::adaptive_engine::real::AdaptiveSelectorOptions::default(),
+            AdaptiveSelectorOptions::default(),
         );
-        let html = "<div class='semantic-weak'>Hello</div>";
-        let document = scraper::Html::parse_document(html);
+        let html = "<div class='semantic-weak'>Hello</div>".to_owned();
 
-        let result = engine.repair(&document, html, ".content", None).await;
+        let result = engine
+            .select_sync_aware(html, ".content".to_owned(), None)
+            .await;
         assert!(result.is_ok(), "low-confidence tier2 still returns Ok");
         let outcome = result.unwrap();
         assert_eq!(
             outcome.status,
-            crate::application::adaptive_engine::real::RepairStatus::Degraded,
+            RepairStatus::Degraded,
             "confidence below 0.75 must mark the repair degraded"
         );
         assert_eq!(outcome.suggestion.selector, ".semantic-weak");
@@ -690,48 +730,26 @@ mod tests {
 
     #[test]
     fn has_semantic_provider_reflects_wiring() {
-        let inspector = Arc::new(crate::domain::dom_inspector::MockInspector {
-            suggestions: vec![],
-        });
+        let inspector = Arc::new(MockInspector::new(vec![]));
 
-        let tier1_only = crate::application::adaptive_engine::real::AdaptiveSelectorEngine::new(
+        let tier1_only = AdaptiveSelectorEngine::new(
             inspector.clone(),
             None,
-            crate::application::adaptive_engine::real::AdaptiveSelectorOptions::default(),
+            AdaptiveSelectorOptions::default(),
         );
         assert!(
             !tier1_only.has_semantic_provider(),
             "shared=None must leave a Tier-1-only engine"
         );
 
-        let wired = crate::application::adaptive_engine::real::AdaptiveSelectorEngine::new(
+        let wired = AdaptiveSelectorEngine::new(
             inspector,
-            Some(Arc::new(crate::domain::semantic_inspector::MockSemanticNoMatch)),
-            crate::application::adaptive_engine::real::AdaptiveSelectorOptions::default(),
+            Some(semantic_no_match()),
+            AdaptiveSelectorOptions::default(),
         );
         assert!(
             wired.has_semantic_provider(),
             "a semantic provider must be visible on the engine"
         );
-    }
-
-    /// Mock semantic inspector returning a single match for `selector` at `confidence`.
-    fn semantic_match(selector: &str, confidence: f32) -> Arc<crate::domain::semantic_inspector::MockSemanticMatch> {
-        Arc::new(crate::domain::semantic_inspector::MockSemanticMatch(Some(crate::domain::semantic_inspector::SemanticMatch {
-            selector: selector.to_owned(),
-            confidence,
-            source: crate::domain::semantic_inspector::TierSource::Semantic,
-        })))
-    }
-
-    /// Ambiguous Tier 1 engine (score 0.65 ≤ 0.85) — the cascade must escalate
-    /// to Tier 2 instead of settling for the lexical suggestion.
-    fn ambiguous_tier1() -> Arc<crate::domain::dom_inspector::MockInspector> {
-        Arc::new(crate::domain::dom_inspector::MockInspector {
-            suggestions: vec![SelectorSuggestion {
-                selector: ".ambiguous".to_owned(),
-                score: 0.65,
-            }],
-        })
     }
 }

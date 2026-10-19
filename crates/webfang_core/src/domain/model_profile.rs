@@ -18,9 +18,10 @@
 //! # What "verified" means here
 //!
 //! Every shipped profile is [`ProfileProvenance::RepoVerified`] and carries a
-//! [`ModelProfile::citation`] pointing at the file in this repo that pins its
-//! numbers. An override that changes the **audited identity** of the model
-//! (`dim`, `matryoshka`) drops the profile to
+//! [`ModelProfile::citation`] pointing at what pins its numbers: the ADR-0004
+//! profile authority, plus the recovery tag where the literals of the removed
+//! local inference stack live. An override that changes the **audited identity**
+//! of the model (`dim`, `matryoshka`) drops the profile to
 //! [`ProfileProvenance::OperatorOverride`] / `verified: false` while keeping
 //! the original citation for traceability. Budget fields (`batch_max`,
 //! `chars_per_token`, `context`, the prefixes) are operator choices and do not
@@ -56,11 +57,14 @@ pub const PROFILE_SCHEMA_VERSION: u32 = 1;
 
 /// Unified embedding dimension of the vault schema.
 ///
-/// Both Granite tiers produce 384-dimensional vectors after Matryoshka
-/// truncation (`cache_config.rs:35` — "Both produce 384-dimensional embeddings
-/// for unified storage schema", and `AiModel::output_dim()`), so 384 is the
-/// only effective width this repo currently stores. It is also the target a
-/// Matryoshka profile asks the remote runtime to truncate to.
+/// Both Granite tiers produced 384-dimensional vectors after Matryoshka
+/// truncation, so 384 is the width the vault schema stores. It is also the
+/// target a Matryoshka profile asks the remote runtime to truncate to.
+///
+/// The literals that pinned it (`AiModel::embedding_dim` → 384/768 and
+/// `AiModel::output_dim` → 384) lived in the local inference stack that
+/// ADR-0004 paso 6 deleted; `CITATION_DIMENSIONS` names the authority that
+/// survives and the tag where the original code is recoverable.
 pub const MATRYOSHKA_OUTPUT_DIM: usize = 384;
 
 /// Id of the default 97M-parameter Granite embedding profile.
@@ -69,30 +73,34 @@ pub const GRANITE_97M_PROFILE_ID: &str = "granite-97m";
 /// Id of the 311M-parameter Granite embedding profile (higher precision).
 pub const GRANITE_311M_PROFILE_ID: &str = "granite-311m";
 
-/// Repo source that pins the native dimensions and the Matryoshka behaviour of
-/// both Granite tiers.
+/// Repo authority that pins the native dimensions and the Matryoshka behaviour
+/// of both Granite tiers.
 ///
-/// It cites the **literals**, not the doc comments above them: `embedding_dim`
-/// returns `384` / `768` at `:80`/`:81`, and `output_dim` returns `384` at
-/// `:88`. The function names are part of the citation on purpose — a citation
-/// that names the symbol it pins cannot silently drift onto the neighbouring
-/// comment when the file is edited, which is the one failure a provenance
-/// record cannot afford.
+/// ADR-0004 §"Perfiles de modelo" is the authority that survives the removal
+/// of the local inference stack, and the recovery tag `onnx-tree/pre-step5`
+/// (commit `38ab6a31`) is where the deleted literals live: `AiModel::embedding_dim`
+/// returned `384` / `768` and `AiModel::output_dim` returned `384`.
 ///
-/// It lives in the `webfang_ai` crate today; ADR-0004 step 6 deletes that
-/// crate, at which point these literals become the primary source and the
-/// citation migrates with them.
-const CITATION_CACHE_CONFIG: &str =
-    "crates/webfang_ai/src/infrastructure_ai/cache_config.rs:80,81 (AiModel::embedding_dim), :88 \
-     (AiModel::output_dim)";
+/// Naming the tag is deliberate: after ADR-0004 paso 6 no file in this repo
+/// defines those numbers any more, so a citation pointing at a deleted path
+/// would be a dead link in the very output it exists to make auditable. The
+/// symbol names travel with the tag on purpose — a citation that names the
+/// symbol it pins cannot silently drift onto a neighbouring comment, which is
+/// the one failure a provenance record cannot afford.
+const CITATION_DIMENSIONS: &str =
+    "docs/adr/0004-onnx-local-removal.md:87-89 (ADR-0004 §Perfiles de modelo); \
+     tag `onnx-tree/pre-step5` (commit 38ab6a31): AiModel::embedding_dim (384/768), \
+     AiModel::output_dim (384)";
 
 /// Repo source that pins the 32 768-token sequence length
-/// (`webfang_ai::infrastructure_ai::tokenizer::DEFAULT_MAX_LENGTH` at `:40`).
-const CITATION_TOKENIZER: &str = "crates/webfang_ai/src/infrastructure_ai/tokenizer.rs:40";
+/// (`domain::options_spec::ai::DEFAULT_MAX_CHARS` = `32_768 * 3` at `:158`).
+const CITATION_CONTEXT: &str =
+    "crates/webfang_core/src/domain/options_spec/ai.rs:158 (DEFAULT_MAX_CHARS = 32_768 * 3)";
 
 /// Repo source that pins the default characters-per-token ratio
-/// (`domain::options_spec::ai::DEFAULT_CHARS_PER_TOKEN` at `:113`).
-const CITATION_CHARS_PER_TOKEN: &str = "crates/webfang_core/src/domain/options_spec/ai.rs:113";
+/// (`domain::options_spec::ai::DEFAULT_CHARS_PER_TOKEN` at `:148`).
+const CITATION_CHARS_PER_TOKEN: &str =
+    "crates/webfang_core/src/domain/options_spec/ai.rs:148 (DEFAULT_CHARS_PER_TOKEN)";
 
 /// Ids of the shipped profiles, in declaration order.
 const BUILTIN_IDS: [&str; 2] = [GRANITE_97M_PROFILE_ID, GRANITE_311M_PROFILE_ID];
@@ -377,8 +385,7 @@ impl ModelProfilesConfig {
 /// Matryoshka, and both land 384d in the vault.
 #[must_use]
 pub fn builtin_profiles() -> Vec<ModelProfile> {
-    let citation =
-        format!("{CITATION_CACHE_CONFIG}; {CITATION_TOKENIZER}; {CITATION_CHARS_PER_TOKEN}");
+    let citation = format!("{CITATION_DIMENSIONS}; {CITATION_CONTEXT}; {CITATION_CHARS_PER_TOKEN}");
     vec![
         ModelProfile {
             id: GRANITE_97M_PROFILE_ID.to_string(),

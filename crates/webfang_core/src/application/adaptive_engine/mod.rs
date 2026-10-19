@@ -1,9 +1,12 @@
 //! Adaptive CSS selector repair engine — 2-tier cascade with caching.
 //!
-//! Tier 1 (lexical, Jaro-Winkler) runs synchronously via [`DomInspectorPort`].
-//! Tier 2 (semantic, embeddings) runs asynchronously via [`SemanticInspectorPort`]
-//! only when Tier 1 confidence is ambiguous (0.70–0.85). A [`DashMap`] cache
-//! with TTL prevents redundant inference calls.
+//! Tier 1 (lexical, Jaro-Winkler) runs synchronously via
+//! [`DomInspectorPort`](crate::domain::dom_inspector::DomInspectorPort).
+//! Tier 2 (semantic, embeddings) runs asynchronously via
+//! [`SemanticInspectorPort`](crate::domain::semantic_inspector::SemanticInspectorPort)
+//! only when Tier 1 confidence is ambiguous (0.70–0.85). A
+//! [`DashMap`](dashmap::DashMap) cache with TTL prevents redundant inference
+//! calls.
 //!
 //! When the `adaptive-selectors` feature is enabled, this module re-exports the
 //! full implementation from the `real` submodule. When disabled, it provides a
@@ -48,20 +51,7 @@ pub mod cache;
 // Re-export the real implementation types when the feature is enabled
 #[cfg(feature = "adaptive-selectors")]
 pub use crate::application::adaptive_engine::real::{
-    AdaptiveRepairOutcome,
-    AdaptiveSelectorEngine as RealAdaptiveSelectorEngine,
-    AdaptiveSelectorOptions,
-    AdaptiveSelectorOptions as RealAdaptiveSelectorOptions,
-    CascadeTrace,
+    AdaptiveRepairOutcome, AdaptiveSelectorEngine as RealAdaptiveSelectorEngine,
+    AdaptiveSelectorOptions, AdaptiveSelectorOptions as RealAdaptiveSelectorOptions, CascadeTrace,
     RepairStatus,
-};
-
-// Re-export the real types with their original names for internal use
-#[cfg(feature = "adaptive-selectors")]
-pub(crate) use crate::application::adaptive_engine::real::{
-    AdaptiveRepairOutcome as InternalAdaptiveRepairOutcome,
-    AdaptiveSelectorEngine as InternalAdaptiveSelectorEngine,
-    AdaptiveSelectorOptions as InternalAdaptiveSelectorOptions,
-    CascadeTrace as InternalCascadeTrace,
-    RepairStatus as InternalRepairStatus,
 };

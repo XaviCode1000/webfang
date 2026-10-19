@@ -9,10 +9,10 @@
 //! answers "unexpected argument" (exit 64) on the other build, naming
 //! neither the capability nor how to get it. So `--clean-ai`,
 //! `--threshold`, `--offline` and `--ai-model` render in EVERY cargo
-//! configuration, and the build that cannot honor a requested capability says
-//! so by name — see `cli::preflight::check_clean_ai_feature` (exit 78),
-//! which is feature-independent by construction and still rejects
-//! `--clean-ai` on a non-AI build before any network I/O.
+//! configuration. Post-ADR-0004 paso 6 there is no local-ONNX build any
+//! more: a requested `--clean-ai` whose cleaner wiring failed surfaces at
+//! run time as the export flow's Spanish ConfigError naming
+//! `--embedding-provider` (exit 78).
 //!
 //! `threshold` is HONESTLY DEFERRED to a hand-built `clap::Arg` in
 //! `spec_command::ai_args` because its parser rejects out-of-range `f32`

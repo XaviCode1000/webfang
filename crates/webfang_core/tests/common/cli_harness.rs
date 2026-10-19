@@ -78,10 +78,17 @@ fn resolve_webfang_path() -> std::path::PathBuf {
     // child build compiles the same code with and without them. Note this list
     // is NOT the crate's whole feature set, and no `--no-default-features` is
     // passed: the child always builds on top of `webfang_cli`'s defaults.
+    //
+    // ADR-0004 paso 6: the `ai` arm is GONE too, and for a stronger reason
+    // than the two above. The `ai` feature gated the whole local-ONNX stack
+    // (`webfang_ai` + `ort` + `hf-hub`), and the src side of this branch is
+    // fully de-gated: the semantic cleaner runs over the remote
+    // `EmbeddingPort` in every configuration. Forwarding `ai` would make the
+    // child build depend on a feature the manifests are about to lose, and
+    // the test binary would then be the only thing keeping a dead
+    // configuration alive. The binary under test is therefore built WITHOUT
+    // `ai` — the same configuration a user gets.
     let mut active_features = Vec::new();
-    if cfg!(feature = "ai") {
-        active_features.push("ai");
-    }
     if cfg!(feature = "adaptive-selectors") {
         active_features.push("adaptive-selectors");
     }
@@ -205,9 +212,9 @@ pub(crate) fn strip_poisoned_env(cmd: &mut Command) {
 /// vars from a command so tests are hermetic even when CI bug-discovery
 /// workflows poison the environment, and point `XDG_CACHE_HOME` at a fresh
 /// per-invocation temp directory. The legacy `AI_MODEL_ID` is still
-/// honored by `webfang_ai::infrastructure_ai::compat::read_ai_model_id()`
-/// (the default-accesor wrapper over `read_ai_model_id_with`)
-/// (#980 slice 5b), so a poisoned run exercises that fallback.
+/// honored by the CLI — since ADR-0004 paso 6 the `webfang_ai` crate is
+/// gone, so `webfang_core::cli::args::ai::LEGACY_AI_MODEL_ENV` is the only
+/// reader left (#980 slice 5b) — so a poisoned run exercises that fallback.
 ///
 /// Hermetic cache: checkpointing is opt-in (F-01: default flags resolve to
 /// `Disabled`), but an explicit `--resume`/`--state-dir` run still loads

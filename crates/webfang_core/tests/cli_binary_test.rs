@@ -108,11 +108,15 @@ fn test_invalid_url_shows_error() {
 
 /// Test that --help contains scraper description
 /// Test that --help prints usage and exits with code 0.
-/// Only runs when both the `ai` and `adaptive-selectors` features are enabled,
-/// because the snapshot includes AI-specific flags (present only with
-/// `--features ai`) and the `--adaptive-selectors` flag (present only with
+/// Only runs when the `adaptive-selectors` feature is enabled, because the
+/// snapshot includes the `--adaptive-selectors` flag (present only with
 /// `--features adaptive-selectors`).
-#[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
+///
+/// The AI flags (`--clean-ai`, `--threshold`, `--max-chars`, `--max-tokens`,
+/// `--ai-model`, `--offline`) render in EVERY configuration since ADR-0004
+/// removed the `ai` Cargo feature, so they no longer discriminate the
+/// snapshot between two builds.
+#[cfg(feature = "adaptive-selectors")]
 #[test]
 fn test_help_contains_scraper() {
     let output = cmd().arg("--help").output().expect("run binary");
@@ -276,7 +280,7 @@ fn show_default_profile_renders_repo_verified_provenance_and_citation() {
         "the default profile is repo-verified, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("citation: crates/webfang_ai/src/infrastructure_ai/cache_config.rs"),
+        stdout.contains("citation: docs/adr/0004-onnx-local-removal.md"),
         "the profile must cite its repo source, got:\n{stdout}"
     );
     assert!(

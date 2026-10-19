@@ -385,7 +385,12 @@ impl OptionSpec {
     /// Unknown gates fail closed (inactive) until wired here.
     const fn gate_active(gate: &[u8]) -> bool {
         if Self::bytes_eq(gate, b"ai") {
-            return cfg!(feature = "ai");
+            // ADR-0004 paso 6: the `ai` Cargo feature is GONE, so this gate
+            // has a FIXED value. The decision recorded here is `false` — the
+            // value the default (feature-off) build already produced — so a
+            // spec that still names `ai` stays INACTIVE instead of silently
+            // activating a capability no configuration compiles any more.
+            return false;
         }
         if Self::bytes_eq(gate, b"adaptive-selectors") {
             return cfg!(feature = "adaptive-selectors");
@@ -777,10 +782,10 @@ mod tests {
         //
         // `CLEAN_AI` left this loop in ADR-0004 slice C: the semantic cleaner no
         // longer needs ONNX to exist, so `--clean-ai` is ungated and renders in
-        // every build. Its capability half is still enforced — by
-        // `preflight::check_clean_ai_feature`, exit 78 — so ungating it trades
-        // clap's "unexpected argument" (exit 64, naming neither the flag nor
-        // the capability) for a named, actionable rejection.
+        // every build. Its capability half has no cargo feature left to name
+        // (paso 6 removes the `ai` feature): a requested `--clean-ai` whose
+        // cleaner wiring failed surfaces at run time as the export flow's
+        // Spanish ConfigError naming `--embedding-provider` (exit 78).
         let gated: Vec<&'static super::OptionSpec> = crawler::GROUP
             .iter()
             .chain(ai::GROUP.iter())
@@ -806,7 +811,10 @@ mod tests {
             assert_eq!(
                 opt.active(),
                 match gate {
-                    "ai" => cfg!(feature = "ai"),
+                    // Same FIXED value as `gate_active` (ADR-0004 paso 6):
+                    // the `ai` feature no longer exists, so the gate is
+                    // inactive in EVERY configuration.
+                    "ai" => false,
                     "adaptive-selectors" => cfg!(feature = "adaptive-selectors"),
                     other => panic!(
                         "gated spec `{}` names unknown feature `{other}`; \

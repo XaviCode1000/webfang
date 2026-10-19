@@ -11,8 +11,8 @@
 /// by the hand-built `manual_threshold` slot in `cli::spec_command::ai_args`.
 ///
 /// NOT feature-gated: the flag is ungated by decision (ADR-0004, slice C), and
-/// the parser is pure `f32` range logic with no ONNX dependency, so a build
-/// without `ai` both parses and validates it identically.
+/// the parser is pure `f32` range logic with no ONNX dependency, so every
+/// build both parses and validates it identically.
 pub(crate) fn parse_threshold(s: &str) -> Result<f32, String> {
     let val: f32 = s
         .parse()
@@ -33,8 +33,8 @@ pub(crate) fn parse_threshold(s: &str) -> Result<f32, String> {
 /// function only converts the spec's `u64` into the `usize` the field holds,
 /// mirroring `args::crawler::parse_download_concurrency`.
 ///
-/// NOT feature-gated: the flag is ungated by decision, so a binary built
-/// without `ai` still parses (and validates) it.
+/// NOT feature-gated: the flag is ungated by decision, so every binary still
+/// parses (and validates) it.
 ///
 /// # Why `0` must be rejected (Zero Silent Loss)
 ///
@@ -111,11 +111,11 @@ pub(crate) fn parse_max_tokens(s: &str) -> Result<usize, String> {
 ///
 /// EVERY field is UNGATED (ADR-0004, slice C).
 ///
-/// This struct used to carry `#[cfg(feature = "ai")]` on `threshold`,
+/// This struct used to carry a cargo-feature gate on `threshold`,
 /// `offline` and `ai_model`, with `max_chars` and the deprecated
 /// `max_tokens` ungated. That split is gone: the semantic cleaner no longer
-/// needs ONNX to exist, so every flag here describes behavior a build
-/// without the `ai` feature can still honor — the cleaner runs over whatever
+/// needs ONNX to exist, so every flag here describes behavior every build
+/// can honor — the cleaner runs over whatever
 /// `EmbeddingPort` the run built, remote included. `ai_args` renders the same
 /// surface in every configuration, and this struct matches it field for
 /// field. `From<Args> for CrawlOptions` reflects that.
@@ -346,7 +346,20 @@ fn chosen_by_operator(m: &clap::ArgMatches, id: &str) -> bool {
 /// `compat::read_ai_model_id_with`, which `webfang_core` cannot see — so from
 /// argv it is invisible, and an operator whose only AI input is a stale
 /// `AI_MODEL_ID` in a systemd unit still needs the deprecation notice.
-const LEGACY_AI_MODEL_ENV: &str = "AI_MODEL_ID";
+///
+/// PUBLIC since ADR-0004 paso 6: `webfang_ai` is gone, so the CLI is now the
+/// only reader left, and it must spell the name the same way this module
+/// does.
+pub const LEGACY_AI_MODEL_ENV: &str = "AI_MODEL_ID";
+
+/// The name of the Cargo feature ADR-0004 removes.
+///
+/// ONE definition, because the removal is announced in two places that must
+/// not drift: the deprecation notice names it in prose, and the CLI's `warn!`
+/// event carries it as a structured field. Keeping the literal here (and not
+/// at the call sites) is what makes the announcement and the queryable event
+/// the same fact.
+pub const REMOVED_AI_FEATURE: &str = "ai";
 
 /// Engine-selection env var (`single` | `pool:<N>`), with no CLI flag at all.
 ///

@@ -1138,7 +1138,8 @@ async fn test_metrics_empty_state_honest_error() {
 /// embedding/note/chunker ports (the production wiring lives in the
 /// `mcp_server` example behind `WEBFANG_MCP_AI`, #433), so this asserts the
 /// permanent "ports absent → honest error" contract: never a false success,
-/// never a protocol error — independent of whether `--features ai` is compiled.
+/// never a protocol error — the tool is always registered, and it degrades to
+/// an honest error when no embedding provider is configured.
 #[tokio::test]
 async fn test_search_obsidian_not_implemented_is_honest_error() {
     let (base_url, _handle) = start_test_server().await;
@@ -1232,11 +1233,21 @@ async fn test_semantic_cleaner_without_cleaner_is_honest_error() {
     );
 }
 
-/// REQ-06: with the `ai` feature off, the MCP server still registers the AI
-/// tools (`semantic_cleaner` + `search_obsidian`). Registration is
-/// unconditional; the tools report honest errors when invoked without a cleaner.
+/// REQ-06 / REQ-MCP-AI-05: the MCP server registers the AI tools
+/// (`semantic_cleaner` + `search_obsidian`) in EVERY configuration.
+///
+/// Registration is unconditional, and since ADR-0004 paso 6 there is only ONE
+/// configuration: the `ai` Cargo feature and the whole local-ONNX stack are
+/// gone, so the daemon's AI tools can only ever degrade to an honest error.
+/// The tool LIST and the provenance wrapping are unchanged by that removal —
+/// and this test is what pins the list.
+///
+/// (A second test asserted the same thing under the name
+/// `mcp_ai_tools_registered_with_ai_off`; it was `#[ignore]`d behind a
+/// "requires cached ONNX model" reason it never needed. One test, one
+/// assertion.)
 #[tokio::test]
-async fn test_mcp_handler_construction_without_ai() {
+async fn mcp_ai_tools_are_registered_in_every_configuration() {
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
@@ -1266,40 +1277,145 @@ async fn test_mcp_handler_construction_without_ai() {
 
     assert!(
         names.contains(&"semantic_cleaner"),
-        "semantic_cleaner must be registered with ai off, got: {names:?}"
+        "semantic_cleaner must be registered, got: {names:?}"
     );
     assert!(
         names.contains(&"search_obsidian"),
-        "search_obsidian must be registered with ai off, got: {names:?}"
+        "search_obsidian must be registered, got: {names:?}"
     );
+}
+
+/// The AI tool DESCRIPTIONS must state the SAME requirement the honest error
+/// states: a configured remote embedding provider.
+///
+/// The daemon is read by agents, and an agent reads the description before it
+/// calls the tool. If the description names a build configuration nobody can
+/// produce (the Cargo feature the local ONNX stack needed) while the error the
+/// tool then returns names a remote provider, the daemon contradicts itself —
+/// and the agent has no way to tell which half is the truth.
+///
+/// This is the contract that replaced the feature-gated wording, so it is
+/// pinned: both descriptions name the provider AND the knob that resolves it,
+/// and neither names a Cargo feature.
+#[tokio::test]
+async fn mcp_ai_tool_descriptions_state_the_provider_requirement() {
+    let (base_url, _handle) = start_test_server().await;
+    let client = Client::new();
+    let session_id = init_session(&client, &base_url).await;
+
+    let body = mcp_request("tools/list", json!({}));
+    let resp = client
+        .post(format!("{base_url}/mcp"))
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json, text/event-stream")
+        .header("mcp-session-id", &session_id)
+        .json(&body)
+        .send()
+        .await
+        .expect("tools/list should succeed");
+    let text = resp.text().await.expect("read body");
+    let parsed = extract_json(&text).expect("tools/list must parse");
+
+    let tools = parsed
+        .get("result")
+        .and_then(|r| r.get("tools"))
+        .and_then(|t| t.as_array())
+        .unwrap_or_else(|| panic!("tools/list must return a tools array, got: {parsed}"));
+
+    for tool in ["semantic_cleaner", "search_obsidian"] {
+        let description = tools
+            .iter()
+            .find(|t| t.get("name").and_then(|n| n.as_str()) == Some(tool))
+            .and_then(|t| t.get("description"))
+            .and_then(|d| d.as_str())
+            .unwrap_or_else(|| panic!("{tool} must carry a description, got: {parsed}"));
+
+        assert!(
+            description.contains("--embedding-provider")
+                && description.contains("WEBFANG_EMBEDDING_PROVIDER"),
+            "{tool} must state the provider requirement and the knob that \
+             resolves it, got: {description}"
+        );
+        assert!(
+            !description.contains("--features ai"),
+            "{tool} must not name a Cargo feature nobody can build, got: {description}"
+        );
+    }
 }
 
 // ============================================================================
 // 7. MCP + AI — success + observability (issue #542, Phase 5)
 // ============================================================================
 
-/// Start a test MCP server whose `Container` carries a real AI semantic cleaner
-/// built from the local ONNX model cache (offline mode).
+/// Deterministic embedding port for the tests below.
 ///
-/// `#[cfg(feature = "ai")]` because the cleaner type (`SemanticCleanerImpl`)
-/// lives behind `webfang_ai`, which is an optional dependency of `webfang_mcp`.
-#[cfg(feature = "ai")]
-async fn start_test_server_with_ai() -> (String, tokio::task::JoinHandle<()>) {
+/// The cleaner under test is the ADR-0004 paso 6 one: it embeds through the
+/// domain `EmbeddingPort`, not through a local ONNX pool. So the port — not
+/// the model — is the only thing a test has to supply, and a constant vector
+/// is enough:
+///
+/// - the relevance filter computes the distance of every chunk to the
+///   mean-pooled centroid. A CONSTANT vector makes every distance exactly
+///   zero, hence every z-score exactly zero, hence every chunk survives.
+///   The filter is not what this file is about, and a random vector would
+///   make "how many chunks survive" a function of the sample size.
+/// - the vector is fixed, so the response is byte-stable across runs.
+struct FixedEmbeddingPort;
+
+impl webfang_core::domain::embedding_port::EmbeddingPort for FixedEmbeddingPort {
+    fn embed<'a>(
+        &'a self,
+        _text: &'a str,
+    ) -> webfang_core::domain::semantic_inspector::BoxFuture<
+        'a,
+        Result<Vec<f32>, webfang_core::error::SemanticError>,
+    > {
+        Box::pin(async { Ok(Self::vector()) })
+    }
+
+    fn embedding_dim(&self) -> usize {
+        Self::DIM
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+
+impl FixedEmbeddingPort {
+    /// Dimensionality of the fixture vector.
+    const DIM: usize = 384;
+
+    /// The fixed unit vector every text is embedded as.
+    fn vector() -> Vec<f32> {
+        let mut v = vec![0.0_f32; Self::DIM];
+        v[0] = 1.0;
+        v
+    }
+}
+
+/// Start a test MCP server whose `Container` carries a semantic cleaner.
+///
+/// The cleaner is `webfang_core::infrastructure::semantic_cleaner::SemanticCleanerImpl`
+/// — the one that survives ADR-0004 paso 6 — built over [`FixedEmbeddingPort`].
+/// No model, no cache, no network: the whole point of the port-based cleaner
+/// is that the embedding BACKEND is a pluggable collaborator.
+async fn start_test_server_with_cleaner() -> (String, tokio::task::JoinHandle<()>) {
     // Disable SSRF before building the router
     init_ssrf_disabled();
-
-    use webfang_ai::infrastructure_ai::{ModelConfig, SemanticCleanerImpl};
 
     let config = Config::default();
     let container = Container::new(config.crawler, config.scraper)
         .await
         .expect("container creation failed");
 
-    // Resolve the model from the local cache — no network access.
-    let model_config = ModelConfig::default().with_offline_mode(true);
-    let cleaner = SemanticCleanerImpl::new(model_config)
-        .await
-        .expect("cached ONNX model required");
+    // A permissive relevance threshold (0.0 → Z=3) keeps the fixture's
+    // constant-vector chunks from ever being filtered out.
+    let cleaner = webfang_core::infrastructure::semantic_cleaner::SemanticCleanerImpl::new(
+        std::sync::Arc::new(FixedEmbeddingPort),
+        98_304,
+        0.0,
+    );
 
     let container = container.with_cleaner(std::sync::Arc::new(cleaner));
     let state = McpState::new(container);
@@ -1348,13 +1464,17 @@ meaningful tokens to process during inference.</p>
 </body>
 </html>"#;
 
-/// REQ-MCP-AI-01: with the `ai` feature and the model cached, `tools/call
-/// semantic_cleaner` returns chunks with non-empty embeddings.
-#[cfg(feature = "ai")]
+/// REQ-MCP-AI-01: with a cleaner wired, `tools/call semantic_cleaner` returns
+/// chunks with non-empty embeddings.
+///
+/// The cleaner is the ADR-0004 paso 6 one (port-based, no ONNX), so this test
+/// needs neither a cached model nor a network: the embedding backend is a
+/// fixture. It is therefore NOT ignored any more — the reason it carried
+/// ("requires cached ONNX model") described a dependency that no longer
+/// exists.
 #[tokio::test]
-#[ignore = "requires cached ONNX model"]
 async fn semantic_cleaner_with_cleaner_success() {
-    let (base_url, _handle) = start_test_server_with_ai().await;
+    let (base_url, _handle) = start_test_server_with_cleaner().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -1416,8 +1536,11 @@ async fn semantic_cleaner_with_cleaner_success() {
 
 /// REQ-MCP-AI-02: `search_obsidian` without vault/index returns an honest
 /// `CallToolResult::error` (isError:true, Spanish).
+///
+/// Never needed a cached model — the daemon has no vault ports wired, so the
+/// tool degrades honestly. The `ignore` it carried described a dependency
+/// that does not exist, so it is gone.
 #[tokio::test]
-#[ignore = "requires cached ONNX model"]
 async fn search_obsidian_honest_error() {
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
@@ -1446,11 +1569,12 @@ async fn search_obsidian_honest_error() {
 /// REQ-MCP-AI-03: `semantic_cleaner` generates traceable spans (the handler is
 /// `#[instrument]`-annotated). Verifies the tool succeeds AND that the response
 /// carries traceable structure (URL echo, chunk count, embedding dim).
-#[cfg(feature = "ai")]
+///
+/// The cleaner is the port-based one (ADR-0004 paso 6), so no cached model is
+/// involved: the test runs.
 #[tokio::test]
-#[ignore = "requires cached ONNX model"]
 async fn mcp_ai_observability() {
-    let (base_url, _handle) = start_test_server_with_ai().await;
+    let (base_url, _handle) = start_test_server_with_cleaner().await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
@@ -1503,8 +1627,10 @@ async fn mcp_ai_observability() {
 
 /// REQ-MCP-AI-04: `semantic_cleaner` rejects a malformed URL with a JSON-RPC
 /// invalid-params error (-32602).
+///
+/// The rejection happens at the deserialization boundary, before the cleaner
+/// is ever consulted, so this case never needed a model.
 #[tokio::test]
-#[ignore = "requires cached ONNX model"]
 async fn semantic_cleaner_invalid_url_reject() {
     let (base_url, _handle) = start_test_server().await;
     let client = Client::new();
@@ -1535,49 +1661,6 @@ async fn semantic_cleaner_invalid_url_reject() {
     assert!(
         rejected_as_protocol_error || rejected_as_tool_error,
         "invalid URL must be rejected (protocol -32602 or tool isError), got: {resp}"
-    );
-}
-
-/// REQ-MCP-AI-05: with the `ai` feature off, the MCP server still registers the
-/// AI tools (`semantic_cleaner` + `search_obsidian`). Registration is
-/// unconditional; the tools report honest errors when invoked without a cleaner.
-#[tokio::test]
-#[ignore = "requires cached ONNX model"]
-async fn mcp_ai_tools_registered_with_ai_off() {
-    let (base_url, _handle) = start_test_server().await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
-    let body = mcp_request("tools/list", json!({}));
-    let resp = client
-        .post(format!("{base_url}/mcp"))
-        .header("Content-Type", "application/json")
-        .header("Accept", "application/json, text/event-stream")
-        .header("mcp-session-id", &session_id)
-        .json(&body)
-        .send()
-        .await
-        .expect("tools/list should succeed");
-    let text = resp.text().await.expect("read body");
-    let parsed = extract_json(&text).expect("tools/list must parse");
-
-    let tools = parsed
-        .get("result")
-        .and_then(|r| r.get("tools"))
-        .and_then(|t| t.as_array())
-        .unwrap_or_else(|| panic!("tools/list must return a tools array, got: {parsed}"));
-    let names: Vec<&str> = tools
-        .iter()
-        .filter_map(|t| t.get("name")?.as_str())
-        .collect();
-
-    assert!(
-        names.contains(&"semantic_cleaner"),
-        "semantic_cleaner must be registered with ai off, got: {names:?}"
-    );
-    assert!(
-        names.contains(&"search_obsidian"),
-        "search_obsidian must be registered with ai off, got: {names:?}"
     );
 }
 

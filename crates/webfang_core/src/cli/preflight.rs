@@ -1389,35 +1389,6 @@ pub fn check_db_path_requires_elastic(opts: &CrawlOptions) -> Result<(), CliExit
     Ok(())
 }
 
-/// Preflight: `--clean-ai` on a binary built WITHOUT the `ai` feature must
-/// fail before any network request (#761).
-///
-/// Previously the check lived only in the export flow, so a non-AI build
-/// downloaded and extracted the whole page before erroring out. This mirrors
-/// the #685 pattern: a build-configuration problem is a config error (exit 78)
-/// detected before the crawl starts.
-///
-/// # Errors
-///
-/// Returns [`crate::CliExit::ConfigError`] when `clean_ai` is requested and
-/// the `ai` feature is not compiled in.
-pub fn check_clean_ai_feature(opts: &CrawlOptions) -> Result<(), CliExit> {
-    check_clean_ai_feature_with(cfg!(feature = "ai"), opts)
-}
-
-/// Feature-injectable core of [`check_clean_ai_feature`] — `cfg!` cannot be
-/// toggled per test.
-fn check_clean_ai_feature_with(ai_enabled: bool, opts: &CrawlOptions) -> Result<(), CliExit> {
-    if !opts.ai || ai_enabled {
-        return Ok(());
-    }
-    Err(CliExit::ConfigError(
-        "--clean-ai requiere un binario compilado con la feature `ai`; \
-             recompilá con --features ai"
-            .into(),
-    ))
-}
-
 /// The single Spanish message every `--adaptive-selectors` capability
 /// rejection emits (#1813).
 ///
@@ -1448,8 +1419,8 @@ fn adaptive_selectors_unavailable(adaptive_enabled: bool, requested: bool) -> Re
 /// Preflight: `--adaptive-selectors` on a binary built WITHOUT the
 /// `adaptive-selectors` feature must fail before any network request (#1813).
 ///
-/// Direct sibling of [`check_clean_ai_feature`] (#761), and the same shape as
-/// the `--elastic`/`persistence` gate ([`check_elastic_sink`]): an explicitly
+/// Direct sibling of the `--elastic`/`persistence` gate
+/// ([`check_elastic_sink`]): an explicitly
 /// requested capability the binary was not compiled to honor is a
 /// build-configuration problem, never a silent no-op. Before this gate the
 /// flag survived argv parsing as the hidden compatibility placeholder built in
@@ -1545,44 +1516,38 @@ fn check_adaptive_selectors_capability_with(
 /// `--clean-ai` there are no embeddings, so the vector exporter would write an
 /// invalid `export.json` (`dimensions: null`, `model_name: null`, documents
 /// without `embeddings`) while still reporting success (exit 0). An explicit
-/// request the binary cannot honor is never a silent no-op: with the `ai`
-/// feature it is a data-format error (exit 65); on a non-AI build it is a
-/// build-configuration error (exit 78), matching the #761 fail-fast pattern
-/// of [`check_clean_ai_feature`]. `ExportFormat::Jsonl` (the default) and
+/// request the binary cannot honor is never a silent no-op: it is a
+/// data-format error (exit 65). `ExportFormat::Jsonl` (the default) and
 /// `ExportFormat::Auto` are never gated.
 ///
 /// # Errors
 ///
 /// Returns [`crate::CliExit::DataFormatError`] (exit 65) when the export
-/// format is `Vector`, `--clean-ai` was not given, and the `ai` feature is
-/// compiled in. Returns [`crate::CliExit::ConfigError`] (exit 78) when the
-/// binary was built without the `ai` feature.
+/// format is `Vector` and `--clean-ai` was not given.
+///
+/// # Why there is no longer a build-capability arm
+///
+/// This gate used to answer twice: once for a build that carried the local
+/// inference stack, once for a build that did not — the second arm told the
+/// operator to compile a configuration that no longer exists, an instruction
+/// nobody can follow. ADR-0004 paso 6 removed that local stack, so there is
+/// exactly ONE question left ("did the operator ask for vectors without
+/// asking for the thing that produces them?"), and the sibling gate
+/// (`orchestrator::output_vectors_gate`) has already answered it the same
+/// way: a data-format error, exit 65.
 pub fn check_export_format_vector(opts: &CrawlOptions) -> Result<(), CliExit> {
-    check_export_format_vector_with(cfg!(feature = "ai"), opts)
-}
-
-/// Feature-injectable core of [`check_export_format_vector`] — `cfg!` cannot
-/// be toggled per test.
-fn check_export_format_vector_with(ai_enabled: bool, opts: &CrawlOptions) -> Result<(), CliExit> {
     if opts.export.export_format != ExportFormat::Vector {
         return Ok(());
     }
-    if opts.ai && ai_enabled {
+    if opts.ai {
         return Ok(());
     }
 
-    if ai_enabled {
-        warn!("--export-format vector rejected without --clean-ai; no embeddings to export");
-        return Err(CliExit::DataFormatError(
-            "No hay vectores para exportar: '--export-format vector' requiere \
-             '--clean-ai' para generar embeddings"
-                .to_string(),
-        ));
-    }
-
-    warn!("--export-format vector rejected on a non-AI build; no embeddings to export");
-    Err(CliExit::ConfigError(
-        "Se requiere compilar con '--features ai' para usar --export-format vector".to_string(),
+    warn!("--export-format vector rejected without --clean-ai; no embeddings to export");
+    Err(CliExit::DataFormatError(
+        "No hay vectores para exportar: '--export-format vector' requiere \
+         '--clean-ai' para generar embeddings"
+            .to_string(),
     ))
 }
 
@@ -2313,39 +2278,6 @@ mod tests {
         assert!(check_elastic_sink(&opts).is_ok());
     }
 
-    // ========================================================================
-    // #761 — --clean-ai preflight feature check
-    // ========================================================================
-
-    /// `--clean-ai` without the `ai` feature: config error naming the
-    /// feature, before any network request (#761).
-    #[test]
-    fn clean_ai_without_feature_errors() {
-        let opts = CrawlOptions {
-            ai: true,
-            ..CrawlOptions::default()
-        };
-        let err = check_clean_ai_feature_with(false, &opts)
-            .expect_err("non-AI build must reject --clean-ai in preflight");
-        match err {
-            CliExit::ConfigError(msg) => assert!(
-                msg.contains("--clean-ai") && msg.contains("ai"),
-                "config error must name the flag and the feature, got: {msg}"
-            ),
-            other => panic!("expected ConfigError, got: {other:?}"),
-        }
-    }
-
-    /// `--clean-ai` with the `ai` feature compiled in: passes.
-    #[test]
-    fn clean_ai_with_feature_ok() {
-        let opts = CrawlOptions {
-            ai: true,
-            ..CrawlOptions::default()
-        };
-        assert!(check_clean_ai_feature_with(true, &opts).is_ok());
-    }
-
     #[test]
     fn db_path_without_elastic_is_rejected() {
         // #799: --db-path without --elastic is a silent no-op; reject it up
@@ -2361,13 +2293,6 @@ mod tests {
         opts.elastic.enabled = true;
         opts.elastic.db_path = Some(std::path::PathBuf::from("/tmp/test.db"));
         assert!(check_db_path_requires_elastic(&opts).is_ok());
-    }
-
-    /// No `--clean-ai`: passes regardless of the feature state.
-    #[test]
-    fn no_clean_ai_ok_without_feature() {
-        let opts = CrawlOptions::default();
-        assert!(check_clean_ai_feature_with(false, &opts).is_ok());
     }
 
     // ========================================================================
@@ -2408,19 +2333,6 @@ mod tests {
     #[test]
     fn no_adaptive_selectors_ok_without_feature() {
         assert!(check_adaptive_selectors_feature_with(false, &CrawlOptions::default()).is_ok());
-    }
-
-    /// The gate is a build-capability check, not a value check: `--clean-ai`
-    /// on the SAME non-adaptive build still resolves through its own #761 gate
-    /// and must not be swallowed by this one (#1813).
-    #[test]
-    fn adaptive_gate_does_not_shadow_the_clean_ai_gate() {
-        let opts = CrawlOptions {
-            ai: true,
-            ..adaptive_selectors_opts()
-        };
-        assert!(check_clean_ai_feature_with(true, &opts).is_ok());
-        assert!(check_adaptive_selectors_feature_with(false, &opts).is_err());
     }
 
     // ---- #1813 S1: the gate is reached from the SHARED staging pipeline ----
@@ -2504,38 +2416,19 @@ mod tests {
         opts
     }
 
-    /// `--export-format vector` on a non-AI build: config error naming the
-    /// feature, before any network request (#796).
-    #[test]
-    fn export_format_vector_without_ai_feature_errors() {
-        let opts = export_format_vector_opts(false);
-        let err = check_export_format_vector_with(false, &opts)
-            .expect_err("non-AI build must reject --export-format vector");
-        match err {
-            CliExit::ConfigError(msg) => assert!(
-                msg.contains("--export-format vector") && msg.contains("ai"),
-                "config error must name the flag and the feature, got: {msg}"
-            ),
-            other => panic!("expected ConfigError, got: {other:?}"),
-        }
-    }
-
-    /// `--export-format vector` with `--clean-ai` and the `ai` feature: the
-    /// embeddings will exist, so the gate passes.
-    #[test]
-    fn export_format_vector_with_clean_ai_ok() {
-        let opts = export_format_vector_opts(true);
-        assert!(check_export_format_vector_with(true, &opts).is_ok());
-    }
-
-    /// `--export-format vector` WITHOUT `--clean-ai` on an AI build: data
-    /// format error (exit 65) with the Spanish message — mirrors the
-    /// output-vectors gate (#796).
+    /// `--export-format vector` WITHOUT `--clean-ai`: data-format error
+    /// (exit 65) with the Spanish message — mirrors the output-vectors gate
+    /// (#796).
+    ///
+    /// The build-capability half of this gate disappeared with the `ai`
+    /// feature (ADR-0004 paso 6): there is no configuration left that cannot
+    /// produce embeddings, so the ONE remaining question is whether the
+    /// operator asked for vectors without asking for `--clean-ai`.
     #[test]
     fn export_format_vector_without_clean_ai_errors() {
         let opts = export_format_vector_opts(false);
-        let err = check_export_format_vector_with(true, &opts)
-            .expect_err("AI build must reject --export-format vector without --clean-ai");
+        let err = check_export_format_vector(&opts)
+            .expect_err("the gate must reject --export-format vector without --clean-ai");
         match err {
             CliExit::DataFormatError(msg) => assert!(
                 msg.contains("No hay vectores para exportar")
@@ -2546,13 +2439,20 @@ mod tests {
         }
     }
 
+    /// `--export-format vector` WITH `--clean-ai`: the embeddings will exist,
+    /// so the gate passes.
+    #[test]
+    fn export_format_vector_with_clean_ai_ok() {
+        let opts = export_format_vector_opts(true);
+        assert!(check_export_format_vector(&opts).is_ok());
+    }
+
     /// `--export-format jsonl` (the default): never gated.
     #[test]
     fn export_format_jsonl_not_gated() {
         let opts = CrawlOptions::default();
         assert_eq!(opts.export.export_format, ExportFormat::Jsonl);
-        assert!(check_export_format_vector_with(false, &opts).is_ok());
-        assert!(check_export_format_vector_with(true, &opts).is_ok());
+        assert!(check_export_format_vector(&opts).is_ok());
     }
 
     /// `--export-format auto`: never gated — it is not an explicit vector
@@ -2561,8 +2461,7 @@ mod tests {
     fn export_format_auto_not_gated() {
         let mut opts = CrawlOptions::default();
         opts.export.export_format = ExportFormat::Auto;
-        assert!(check_export_format_vector_with(false, &opts).is_ok());
-        assert!(check_export_format_vector_with(true, &opts).is_ok());
+        assert!(check_export_format_vector(&opts).is_ok());
     }
 
     // ---- XP-S-04 (#1608) — platform-independent PATH resolution ----------

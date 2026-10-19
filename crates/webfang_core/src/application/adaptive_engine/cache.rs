@@ -5,7 +5,6 @@
 //! is lazy: expired entries are purged only when the cache reaches its
 //! configured capacity.
 
-use std::hash::Hasher;
 use std::time::Instant;
 
 /// Cached repair entry with expiration.

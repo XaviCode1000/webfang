@@ -8,9 +8,8 @@
 //! returns `None` when the flag is off), and exited 0 having done nothing.
 //!
 //! The gate now lives where every sibling build-capability gate already lives:
-//! `preflight::check_adaptive_selectors_feature`, mirroring
-//! `check_clean_ai_feature` (#761) → `CliExit::ConfigError` → **exit 78**,
-//! before any network request.
+//! `preflight::check_adaptive_selectors_feature` → `CliExit::ConfigError` →
+//! **exit 78**, before any network request.
 //!
 //! ## Why the two tests are mutually `cfg`-gated
 //!
@@ -18,7 +17,7 @@
 //!
 //! - `#[cfg(not(feature = "adaptive-selectors"))]` — the rejection. Runs in
 //!   any lane without the feature, e.g.
-//!   `cargo nextest run -p webfang_core --features ai,persistence,console
+//!   `cargo nextest run -p webfang_core --features persistence,console
 //!   --test adaptive_selectors_gate_test`.
 //! - `#[cfg(feature = "adaptive-selectors")]` — the non-regression guard: on a
 //!   build WITH the feature the flag must keep working exactly as before.

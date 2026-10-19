@@ -10,9 +10,9 @@
 //!
 //! - **Not sealed**: unlike `SemanticCleaner`, this trait is open for
 //!   testing (mock embeddings) and future alternative backends.
-//! - **Always compiled**: the trait definition has no `#[cfg(feature = "ai")]`
-//!   guard. The Container stores `Option<Arc<dyn EmbeddingPort>>` which is
-//!   `None` when the `ai` feature is disabled.
+//! - **Always compiled**: the trait definition carries no `cfg` guard. The
+//!   Container stores `Option<Arc<dyn EmbeddingPort>>` which is `None` when
+//!   no embedding backend was wired.
 //! - **Separate from `SemanticCleaner`**: the cleaner is a sealed, HTML-only
 //!   pipeline. This port exposes the raw embedding primitive needed by vault
 //!   search (issue #386) and any future semantic feature.

@@ -24,7 +24,6 @@ use crate::infrastructure::output::file_saver::ObsidianOptions;
 
 pub use crate::cli::parse::handle_completions;
 
-#[cfg(feature = "ai")]
 use crate::domain::semantic_cleaner::SemanticCleaner;
 
 use crate::application::adaptive_engine::AdaptiveSelectorEngine;
@@ -41,30 +40,18 @@ use crate::application::adaptive_engine::AdaptiveSelectorEngine;
 ///
 /// - With the `ai` feature: `output_vectors && !opts.ai` → `DataFormatError`
 ///   (exit 65, `EX_DATA`) with a Spanish user-facing message.
-/// - Without it: the flag is unusable → `ConfigError` (exit 78) telling the
-///   user to rebuild with `--features ai`.
 ///
 /// Returns `Some(exit)` when the run must be aborted, `None` to proceed.
 pub(crate) fn output_vectors_gate(opts: &CrawlOptions) -> Option<CliExit> {
     opts.elastic.output_vectors.as_ref()?;
 
-    #[cfg(feature = "ai")]
-    {
-        if opts.ai {
-            return None;
-        }
-        warn!("--output-vectors refused without --clean-ai; no vectors to export");
-        Some(CliExit::DataFormatError(
-            "No hay vectores para exportar: '--output-vectors' requiere '--clean-ai' para generar embeddings".to_string(),
-        ))
+    if opts.ai {
+        return None;
     }
-
-    #[cfg(not(feature = "ai"))]
-    {
-        Some(CliExit::ConfigError(
-            "Se requiere compilar con '--features ai' para usar --output-vectors".to_string(),
-        ))
-    }
+    warn!("--output-vectors refused without --clean-ai; no vectors to export");
+    Some(CliExit::DataFormatError(
+        "No hay vectores para exportar: '--output-vectors' requiere '--clean-ai' para generar embeddings".to_string(),
+    ))
 }
 
 /// Main orchestration entry point.
@@ -86,7 +73,7 @@ pub(crate) fn output_vectors_gate(opts: &CrawlOptions) -> Option<CliExit> {
 )]
 pub async fn run(
     opts: CrawlOptions,
-    #[cfg(feature = "ai")] ai_cleaner: Option<std::sync::Arc<dyn SemanticCleaner>>,
+    ai_cleaner: Option<std::sync::Arc<dyn SemanticCleaner>>,
     #[cfg(feature = "adaptive-selectors")] adaptive_engine: Option<
         std::sync::Arc<AdaptiveSelectorEngine>,
     >,
@@ -155,7 +142,6 @@ pub async fn run(
         // to the batch run itself.
         let exit = run_batch(
             opts.clone(),
-            #[cfg(feature = "ai")]
             ai_cleaner,
             vault_ports,
             llm_port,
@@ -271,19 +257,11 @@ pub async fn run(
     // (some pages failed, some succeeded) and `export_phase` never ran — so a
     // partial-success crawl silently discarded all its content (exit 69 with an
     // empty output directory), unlike batch mode which always exports.
-    #[cfg(feature = "ai")]
     let export_exit = export_phase(
         std::sync::Arc::clone(&results),
         &opts,
         state_store.as_deref(),
         ai_cleaner,
-    )
-    .await;
-    #[cfg(not(feature = "ai"))]
-    let export_exit = export_phase(
-        std::sync::Arc::clone(&results),
-        &opts,
-        state_store.as_deref(),
     )
     .await;
 
@@ -399,7 +377,7 @@ pub(crate) async fn export_phase(
     results: std::sync::Arc<[domain::ScrapedContent]>,
     opts: &CrawlOptions,
     state_store: Option<&dyn StateStorePort>,
-    #[cfg(feature = "ai")] ai_cleaner: Option<std::sync::Arc<dyn SemanticCleaner>>,
+    ai_cleaner: Option<std::sync::Arc<dyn SemanticCleaner>>,
 ) -> CliExit {
     if opts.export.output_dir == std::path::Path::new("-") {
         return CliExit::UsageError(
@@ -464,10 +442,7 @@ pub(crate) async fn export_phase(
         ai_model: opts.ai_config.model.clone(),
     };
 
-    #[cfg(feature = "ai")]
     let export_result = run_export(export_config, ai_cleaner).await;
-    #[cfg(not(feature = "ai"))]
-    let export_result = run_export(export_config).await;
 
     match export_result {
         Ok(processed_urls) => {
@@ -873,14 +848,7 @@ mod tests {
 
         let results: std::sync::Arc<[crate::domain::ScrapedContent]> =
             std::sync::Arc::from(Vec::new());
-        let exit = export_phase(
-            results,
-            &opts,
-            None,
-            #[cfg(feature = "ai")]
-            None,
-        )
-        .await;
+        let exit = export_phase(results, &opts, None, None).await;
 
         assert!(
             matches!(exit, CliExit::UsageError(_)),
@@ -923,14 +891,7 @@ mod tests {
 
         let results: std::sync::Arc<[crate::domain::ScrapedContent]> =
             std::sync::Arc::from(Vec::new());
-        let exit = export_phase(
-            results,
-            &opts,
-            None,
-            #[cfg(feature = "ai")]
-            None,
-        )
-        .await;
+        let exit = export_phase(results, &opts, None, None).await;
 
         // Restore permissions so the TempDir can clean up.
         let _ = std::fs::set_permissions(&vault, std::fs::Permissions::from_mode(0o700));
@@ -1037,42 +998,8 @@ mod tests {
         );
     }
 
-    // ===== output_vectors without ai feature (#652) =====
+    // ===== output_vectors without clean-ai flag (#652, #703) =====
 
-    #[cfg(not(feature = "ai"))]
-    #[tokio::test]
-    async fn run_returns_config_error_when_output_vectors_without_ai() {
-        let mut opts = CrawlOptions::default();
-        opts.elastic.output_vectors = Some("vectors.jsonl".to_string());
-
-        // The cfg-gated `adaptive_engine` parameter makes the arity depend on
-        // the feature combo — dispatch the call exactly like `build_and_run`
-        // does in webfang_cli/src/main.rs.
-        #[cfg(feature = "adaptive-selectors")]
-        let exit = run(
-            opts,
-            None,
-            crate::application::container::VaultAiPorts::default(),
-            None,
-        )
-        .await;
-        #[cfg(not(feature = "adaptive-selectors"))]
-        let exit = run(
-            opts,
-            crate::application::container::VaultAiPorts::default(),
-            None,
-        )
-        .await;
-
-        assert!(
-            matches!(exit, CliExit::ConfigError(_)),
-            "expected CliExit::ConfigError, got {exit:?}"
-        );
-    }
-
-    // ===== output_vectors without clean-ai flag (ai feature on, #703) =====
-
-    #[cfg(feature = "ai")]
     #[tokio::test]
     async fn run_returns_data_error_when_output_vectors_without_clean_ai() {
         let mut opts = CrawlOptions::default();
@@ -1137,7 +1064,6 @@ mod tests {
             runtime.block_on(async {
                 let exit = run(
                     opts,
-                    #[cfg(feature = "ai")]
                     None,
                     #[cfg(feature = "adaptive-selectors")]
                     None,

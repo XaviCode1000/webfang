@@ -118,11 +118,10 @@ pub struct Container {
     pub elastic_ingestion: Option<Arc<ElasticIngestion<DynVectorRepository>>>,
 
     // --- Optional domain ports (injected post-construction) ---
-    /// AI semantic cleaner (optional). Unset when the `ai` feature is off or
-    /// no cleaner has been injected yet; MCP tools map this absence to an
-    /// honest error. Stored as `Arc<dyn SemanticCleaner>` — the trait is a
-    /// domain port like `HttpClientPort`, always compiled
-    /// (no `#[cfg(feature = "ai")]`).
+    /// AI semantic cleaner (optional). Unset when no cleaner has been injected
+    /// yet; MCP tools map this absence to an honest error. Stored as
+    /// `Arc<dyn SemanticCleaner>` — the trait is a domain port like
+    /// `HttpClientPort`, always compiled.
     ///
     /// Held in a [`OnceCell`] so the injection is OBSERVABLE through a shared
     /// `&Container` (lazy post-construction wiring, #759): the MCP binaries
@@ -954,17 +953,16 @@ impl Container {
     }
 
     /// Build an [`ElasticIngestion`] and attach the AI semantic cleaner when
-    /// present under the `ai` feature. Shared by [`Self::with_elastic_ingestion`]
+    /// present. Shared by [`Self::with_elastic_ingestion`]
     /// so the injection logic lives in exactly one place.
     fn build_ingestion(
         repository: DynVectorRepository,
         config: &ElasticConfig,
-        _cleaner: Option<Arc<dyn SemanticCleaner>>,
+        cleaner: Option<Arc<dyn SemanticCleaner>>,
     ) -> Result<ElasticIngestion<DynVectorRepository>, Box<dyn std::error::Error + Send + Sync>>
     {
         let ingestion = Self::build_elastic(repository, config)?;
-        #[cfg(feature = "ai")]
-        let ingestion = if let Some(cleaner) = _cleaner {
+        let ingestion = if let Some(cleaner) = cleaner {
             ingestion.with_cleaner(cleaner)
         } else {
             ingestion

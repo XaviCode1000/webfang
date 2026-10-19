@@ -3,7 +3,7 @@
 use crate::cmd;
 use predicates::prelude::*;
 
-#[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
+#[cfg(feature = "adaptive-selectors")]
 use crate::assert_snapshot_plain;
 
 // ---------------------------------------------------------------------------
@@ -215,13 +215,17 @@ fn removed_tui_flag_is_rejected_with_usage_error() {
 
 // ---------------------------------------------------------------------------
 // --help output snapshot (deterministic, network-free)
-// Only runs when both the `ai` and `adaptive-selectors` features are enabled,
-// because the snapshot includes AI-specific flags (--clean-ai, --threshold,
-// --max-tokens, etc.; present only with `--features ai`) and the
-// `--adaptive-selectors` flag (present only with `--features adaptive-selectors`).
+// Only runs when the `adaptive-selectors` feature is enabled, because the
+// snapshot includes the `--adaptive-selectors` flag (present only with
+// `--features adaptive-selectors`).
+//
+// The AI flags (--clean-ai, --threshold, --max-chars, --max-tokens,
+// --ai-model, --offline) render in EVERY configuration since ADR-0004 removed
+// the `ai` Cargo feature, so they no longer discriminate the snapshot between
+// two builds.
 // ---------------------------------------------------------------------------
 
-#[cfg(all(feature = "ai", feature = "adaptive-selectors"))]
+#[cfg(feature = "adaptive-selectors")]
 #[test]
 fn help_output_snapshot() {
     let output = cmd().arg("--help").output().expect("run binary");

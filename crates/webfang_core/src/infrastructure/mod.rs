@@ -27,6 +27,9 @@ pub mod output;
 // source and the UTF-8 console code page (#1808 — XP-S-02 / XP-K-03).
 pub mod platform;
 pub mod scraper;
+// Semantic cleaner over the erased `EmbeddingPort` (ADR-0004 paso 6) — replaces
+// the ONNX-tied implementation that lived in `webfang_ai`.
+pub mod semantic_cleaner;
 // Pure SSRF IP validation + redirect policy guard (#703). Shared by the MCP
 // entry-point validator and the `wreq` redirect callbacks.
 pub mod ssrf;

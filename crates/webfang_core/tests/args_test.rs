@@ -325,7 +325,14 @@ fn test_args_to_crawl_options_full_parity() {
 // AiConfig parity tests (Scenario 2.3.S1, 2.3.S3)
 // ========================================================================
 
-#[cfg(feature = "ai")]
+/// EVERY AI flag reaches `AiConfig` in EVERY cargo configuration.
+///
+/// ADR-0004 paso 6 removed the `ai` Cargo feature and the whole local-ONNX
+/// stack with it, so there is no configuration left where the semantic
+/// cleaner is unreachable: the cleaner runs over whatever `EmbeddingPort` the
+/// run built, remote included. The `AiConfig` projection is therefore ONE
+/// reader, not a `cfg`-gated pair, and this test pins the projection in the
+/// only configuration that exists.
 #[test]
 fn test_ai_config_parity_with_flags() {
     clean_env();
@@ -359,7 +366,13 @@ fn test_ai_config_parity_with_flags() {
     );
 }
 
-#[cfg(feature = "ai")]
+/// The default `AiConfig` — the values the runtime actually runs with.
+///
+/// This replaces the pair the `ai` feature used to split the world into
+/// (`test_ai_config_parity_no_flags` for an `ai` build, and
+/// `test_ai_config_defaults_without_ai_feature` for a non-`ai` one): the two
+/// asserted the SAME numbers, because the `AiConfig` projection stopped being
+/// `cfg`-dependent. One test, one set of numbers.
 #[test]
 fn test_ai_config_parity_no_flags() {
     clean_env();
@@ -387,38 +400,30 @@ fn test_ai_config_parity_no_flags() {
             model: String::new(),
         }
     );
-}
-
-#[cfg(not(feature = "ai"))]
-#[test]
-fn test_ai_config_defaults_without_ai_feature() {
-    clean_env();
-    use webfang_core::application::crawl_options::AiConfig;
-
-    let args = Args::try_parse_from(["webfang"]).expect("minimal parse must succeed");
-    let opts = webfang_core::application::crawl_options::CrawlOptions::from(args);
-
-    // Without AI feature, ai_config should always be Default
-    assert_eq!(opts.ai_config, AiConfig::default());
+    assert_eq!(
+        opts.ai_config,
+        AiConfig::default(),
+        "the spec defaults and `AiConfig::default()` must agree — a divergence \
+         would mean the runtime runs with values the spec never advertised"
+    );
 }
 
 /// `--max-chars` renders in EVERY cargo configuration (ADR-0004), so its value
 /// is carried in every configuration: a flag that parses and is then dropped
 /// would be exactly the silent loss the deprecation of `--max-tokens` was meant
 /// to avoid.
-#[cfg(not(feature = "ai"))]
 #[test]
-fn max_chars_reaches_ai_config_without_the_ai_feature() {
+fn max_chars_reaches_ai_config() {
     clean_env();
     let _guard = webfang_test_utils::EnvGuard::clean(&["WEBFANG_MAX_CHARS", "WEBFANG_MAX_TOKENS"]);
 
     let args = Args::try_parse_from(["webfang", "--max-chars", "2048"])
-        .expect("the ungated flag must parse without the ai feature");
+        .expect("the ungated flag must parse");
     let opts = webfang_core::application::crawl_options::CrawlOptions::from(args);
 
     assert_eq!(
         opts.ai_config.max_chars, 2048,
-        "--max-chars must reach AiConfig.max_chars even without the ai feature"
+        "--max-chars must reach AiConfig.max_chars"
     );
 }
 
@@ -476,16 +481,15 @@ fn deprecated_max_tokens_env_is_converted() {
 // #827 — poisoned AI_MODEL_ID / WEBFANG_AI_MODEL_ID must not break
 // unrelated CLI paths (slice 5b / #980). The canary must cover BOTH the
 // canonical (read by clap via the spec env-fallback) and the legacy
-// (read by `webfang_ai::infrastructure_ai::compat::read_ai_model_id_with` via
-// the default `std_env_var` accessor — see #992 for the snapshot-based
-// test refactor).
+// (read by the CLI itself, via
+// `webfang_core::cli::args::ai::LEGACY_AI_MODEL_ENV` — the `webfang_ai`
+// reader is gone since ADR-0004 paso 6).
 // ========================================================================
 
 /// A poisoned canonical `WEBFANG_AI_MODEL_ID` (read by clap via the spec
 /// env-fallback on `--ai-model`) must not make every invocation fail
-/// with `InvalidValue`: model validation is deferred to the AI init path
-/// (#827, #980 slice 5b).
-#[cfg(feature = "ai")]
+/// with `InvalidValue`: the value is carried as a raw string and IGNORED
+/// (#827, #980 slice 5b, ADR-0004 paso 6).
 #[test]
 fn test_poisoned_webfang_ai_model_id_env_parses_valid_scrape_command() {
     clean_env();
@@ -549,11 +553,10 @@ fn non_http_seed_url_is_rejected_at_the_boundary() {
     );
 }
 
-/// Legacy `AI_MODEL_ID` is no longer read by clap, but
-/// `webfang_ai::infrastructure_ai::compat::read_ai_model_id_with` (via
-/// `read_ai_model_id`) still honors it. A poisoned legacy value must not
-/// break arg parsing either (#827, #980 slice 5b).
-#[cfg(feature = "ai")]
+/// Legacy `AI_MODEL_ID` is no longer read by clap, but the CLI still honors
+/// it (via `webfang_core::cli::args::ai::LEGACY_AI_MODEL_ENV`, the only
+/// reader left since ADR-0004 paso 6 removed `webfang_ai`). A poisoned legacy
+/// value must not break arg parsing either (#827, #980 slice 5b).
 #[test]
 fn test_poisoned_ai_model_id_legacy_env_parses_valid_scrape_command() {
     clean_env();
@@ -568,18 +571,71 @@ fn test_poisoned_ai_model_id_legacy_env_parses_valid_scrape_command() {
     );
 }
 
-/// An explicitly invalid `--ai-model` value must be accepted as a raw
-/// string by clap and rejected later, inside the AI initialization path,
-/// where the error surfaces as a Spanish usage message (#827).
-#[cfg(feature = "ai")]
+/// An explicitly invalid `--ai-model` value must be accepted as a raw string
+/// by clap and IGNORED by the runtime.
+///
+/// ADR-0004 paso 6 changed the shape of this contract. The value used to name
+/// a local ONNX model, so it was validated later, inside the AI
+/// initialization path, and rejected there with a Spanish usage message
+/// (#827). The local model is GONE: the shim now names nothing, the runtime
+/// ignores the value, and the CLI emits the ONE migration notice that points
+/// at `--embedding-provider`. So the value must still PARSE (a clap error
+/// would break every invocation that merely exported the variable) and it must
+/// still be CARRIED (the notice reports the requested model).
 #[test]
-fn test_invalid_ai_model_value_defers_validation_to_ai_init_path() {
+fn test_invalid_ai_model_value_is_carried_as_a_raw_string() {
     clean_env();
 
     let args = Args::try_parse_from(["webfang", "--ai-model", "bogus"])
-        .expect("raw --ai-model must parse; validation belongs to the AI init path");
+        .expect("raw --ai-model must parse; the value is ignored, not rejected");
 
     assert_eq!(args.ai.ai_model.as_deref(), Some("bogus"));
+}
+
+/// The canonical env var reaches the runtime through the same slot the flag
+/// uses.
+///
+/// `WEBFANG_AI_MODEL_ID` is bound by clap to the `--ai-model` slot, so it
+/// lands in `AiConfig.model` — which is what `emit_ai_model_shim_notice`
+/// reads to report the requested model. The bare `AI_MODEL_ID` is NOT
+/// clap-bound (the spec exposes `AI_MODEL_ID` as a hidden long ALIAS of the
+/// flag, and the bare variable is read by the CLI directly), so it never
+/// reaches `AiConfig` — but the operator still gets the notice, because the
+/// notice reads that variable itself.
+#[test]
+fn webfang_ai_model_id_env_reaches_the_ai_config_model_slot() {
+    clean_env();
+    let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_AI_MODEL_ID", "granite-311m")]);
+
+    let args = Args::try_parse_from(["webfang"]).expect("minimal parse must succeed");
+    let opts = webfang_core::application::crawl_options::CrawlOptions::from(args);
+
+    assert_eq!(
+        opts.ai_config.model, "granite-311m",
+        "WEBFANG_AI_MODEL_ID must reach AiConfig.model — that slot is what the \
+         ONE migration notice reports"
+    );
+}
+
+/// The legacy bare `AI_MODEL_ID` must NOT reach `AiConfig`: it is not
+/// clap-bound, and the CLI reads it directly when it emits the notice.
+///
+/// This is the precedence ADR-0004 pins: `WEBFANG_AI_MODEL_ID` (canonical,
+/// clap-bound) reaches the options; `AI_MODEL_ID` (legacy) is invisible from
+/// argv and is honored by the notice emitter alone.
+#[test]
+fn legacy_ai_model_id_env_does_not_reach_the_ai_config_model_slot() {
+    clean_env();
+    let _guard = webfang_test_utils::EnvGuard::with(&[("AI_MODEL_ID", "granite-311m")]);
+
+    let args = Args::try_parse_from(["webfang"]).expect("minimal parse must succeed");
+    let opts = webfang_core::application::crawl_options::CrawlOptions::from(args);
+
+    assert_eq!(
+        opts.ai_config.model, "",
+        "the legacy bare AI_MODEL_ID is not clap-bound: it must not leak into \
+         AiConfig.model"
+    );
 }
 
 // ========================================================================
@@ -635,7 +691,8 @@ fn test_dom_preprune_false() {
 fn test_dom_preprune_env_var_true() {
     // clean_env() unsets WEBFANG_AI_MODEL_ID (clap env fallback on
     // --ai-model would reject a poisoned value) AND AI_MODEL_ID (legacy
-    // path exercised by `webfang_ai::infrastructure_ai::compat`); see
+    // path read by the CLI via
+    // `webfang_core::cli::args::ai::LEGACY_AI_MODEL_ENV`); see
     // #980 slice 5b. EnvGuard::with then sets only the flag under test.
     // Two EnvGuards cannot be nested (ENV_LOCK deadlock).
     clean_env();
