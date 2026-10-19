@@ -26,6 +26,13 @@ fail() { FAIL=$((FAIL + 1)); echo "FAIL $1"; }
 
 # fake_cargo <exit-code> [stdout]
 # A PATH entry with a `cargo` that answers `deny check bans` without cargo.
+# The prefix also carries DEFAULT stubs for the standalone binaries, so the
+# guard's two tool gates (`command -v cargo-deny`, `command -v cargo-audit`)
+# resolve to the sandbox and the guard reaches the fake `cargo` on EVERY
+# machine. Without them, a runner with neither binary installed fails at the
+# tool gate — showing the fail-closed refusal instead of driving the fake
+# producer — the exact mismatch observed on the first CI run of this step. Silent no-ops: the guard invokes the standalone binaries
+# nowhere; all tool output travels through `cargo deny` / `cargo audit`.
 fake_cargo() { # name exit-code body
   local dir="$SCRATCH/$1"
   mkdir -p "$dir/bin"
@@ -35,6 +42,9 @@ fake_cargo() { # name exit-code body
     printf 'exit %s\n' "$2"
   } > "$dir/bin/cargo"
   chmod +x "$dir/bin/cargo"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$dir/bin/cargo-deny"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$dir/bin/cargo-audit"
+  chmod +x "$dir/bin/cargo-deny" "$dir/bin/cargo-audit"
   printf '%s\n' "$dir/bin"
 }
 
