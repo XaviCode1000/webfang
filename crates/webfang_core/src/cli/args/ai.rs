@@ -394,6 +394,14 @@ fn touches_ai_surface(m: &clap::ArgMatches) -> bool {
 /// through, so the notices are feature-independent by construction: an operator
 /// on a non-`ai` binary is exactly the one who most needs to hear the feature
 /// is going away.
+///
+/// The trigger is deliberately NOT narrowed to the shims now that the removal
+/// shipped. `--clean-ai` still fires the notice, and that is bounded rather
+/// than permanent: the notice is deleted together with the shims in 3.2.0.
+/// Narrowing it now would change a contract the behavioral tests pin
+/// (`onnx_deprecation_notice_fires_once_when_clean_ai_is_used`) inside the
+/// change that has to declare a breaking release, and the notice is true for a
+/// `--clean-ai` operator either way.
 fn pending_notices(
     m: &clap::ArgMatches,
     threshold: f32,
