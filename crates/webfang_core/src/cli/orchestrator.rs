@@ -27,12 +27,7 @@ pub use crate::cli::parse::handle_completions;
 #[cfg(feature = "ai")]
 use crate::domain::semantic_cleaner::SemanticCleaner;
 
-#[cfg(feature = "adaptive-selectors")]
 use crate::application::adaptive_engine::AdaptiveSelectorEngine;
-
-/// Placeholder when `adaptive-selectors` feature is disabled.
-#[cfg(not(feature = "adaptive-selectors"))]
-type AdaptiveSelectorEngine = ();
 
 /// Pre-flight gate for `--output-vectors` (#703, #652).
 ///

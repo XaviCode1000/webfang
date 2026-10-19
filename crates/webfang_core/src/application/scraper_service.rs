@@ -26,14 +26,9 @@ use crate::infrastructure::observability::log_scrape_error;
 use futures::stream::{self, StreamExt};
 use tracing::{debug, info, instrument, warn};
 
-#[cfg(feature = "adaptive-selectors")]
 use crate::application::adaptive_engine::AdaptiveSelectorEngine;
 #[cfg(feature = "adaptive-selectors")]
 use crate::application::extraction::adaptive_selector_repair;
-
-/// Placeholder when `adaptive-selectors` feature is disabled.
-#[cfg(not(feature = "adaptive-selectors"))]
-type AdaptiveSelectorEngine = ();
 
 // Re-exports preserve the historical `scraper_service::*` public paths after
 // the #443 decomposition into focused application modules. Callers (MCP

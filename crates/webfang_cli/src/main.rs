@@ -1317,33 +1317,9 @@ async fn build_and_run(opts: CrawlOptions) -> CliExit {
     }
     #[cfg(not(feature = "adaptive-selectors"))]
     {
-        // AdaptiveSelectorOptions is gated behind adaptive-selectors feature.
-        // Define the default inline for when the feature is disabled.
-        use std::time::Duration;
-        #[allow(dead_code)]
-        struct EngineOptions {
-            pub lexical_threshold: f64,
-            pub escalation_lower_bound: f64,
-            pub semantic_threshold: f32,
-            pub cache_ttl: Duration,
-            pub max_cache_entries: usize,
-            pub max_concurrent_inference: usize,
-        }
-        impl Default for EngineOptions {
-            fn default() -> Self {
-                Self {
-                    lexical_threshold: 0.85,
-                    escalation_lower_bound: 0.70,
-                    semantic_threshold: 0.75,
-                    cache_ttl: Duration::from_secs(30 * 60),
-                    max_cache_entries: 10_000,
-                    max_concurrent_inference: 4,
-                }
-            }
-        }
-        let _engine_options = EngineOptions::default();
-        // No adaptive engine to feed — keep the shared assets from becoming an
-        // unused binding on the ai-only combo.
+        // No adaptive engine to feed — call orchestrator without it.
+        // The `adaptive-selectors` feature gates the `AdaptiveSelectorOptions` type,
+        // so we don't define a local copy here anymore.
         #[cfg(all(feature = "ai", not(feature = "adaptive-selectors")))]
         let _ = shared;
 
