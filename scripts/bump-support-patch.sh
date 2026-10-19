@@ -20,13 +20,44 @@ cd "$(git rev-parse --show-toplevel)"
 NEW_VERSION="${1:?usage: bump-support-patch.sh X.Y.Z [hotfix-pr-number]}"
 PR_REF="${2:-}"
 [[ "$NEW_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "versión $NEW_VERSION no es X.Y.Z" >&2; exit 1; }
+MINOR="${NEW_VERSION%.*}"
+
+# --- B2 (#2060): the patch bump is bound to its support branch ---
+# The bump lives on the branch whose minor line it serves; a bump from any
+# other branch (or a detached HEAD, printed by git as "HEAD") would create a
+# version that no support line captures. Refused before ANY mutation, before
+# any cargo invocation.
+BRANCH_NOW="$(git rev-parse --abbrev-ref HEAD)"
+if [[ "$BRANCH_NOW" != "support/${MINOR}" ]]; then
+  echo "bump bloqueado: estás en la rama '$BRANCH_NOW' y el patch de la línea $MINOR se commitea en 'support/${MINOR}' (un checkout detached tampoco vale: git lo reporta como HEAD)" >&2
+  exit 1
+fi
+
+# --- B2 (#2060): semver monotonicity ---
+# The requested version is never BELOW the version already in the root
+# Cargo.toml: a patch release never walks the workspace backwards. EQUALITY
+# is the documented idempotent re-run path and must keep working. CURRENT is
+# read here, BEFORE the bump block, so the check does not depend on the
+# mutation's ordering.
+CURRENT="$(grep -m1 '^version' Cargo.toml | sed -E 's/version = "(.*)"/\1/')"
+if [[ ! "$CURRENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "no se pudo leer una versión X.Y.Z del Cargo.toml raíz (leído: '$CURRENT')" >&2
+  exit 1
+fi
+IFS='.' read -r -a NEW_SEM <<< "$NEW_VERSION"
+IFS='.' read -r -a CUR_SEM <<< "$CURRENT"
+if (( NEW_SEM[0] < CUR_SEM[0] )) \
+   || (( NEW_SEM[0] == CUR_SEM[0] && NEW_SEM[1] < CUR_SEM[1] )) \
+   || (( NEW_SEM[0] == CUR_SEM[0] && NEW_SEM[1] == CUR_SEM[1] && NEW_SEM[2] < CUR_SEM[2] )); then
+  echo "bump bloqueado: v${NEW_VERSION} es anterior a la versión actual del árbol (v${CURRENT}); un patch release nunca retrocede" >&2
+  exit 1
+fi
 
 # --- Release contract (mechanical, no judgment) ---
 # 1. Tag uniqueness.
 git fetch --tags origin >/dev/null 2>&1 || true
 git rev-parse "v${NEW_VERSION}" >/dev/null 2>&1 && { echo "tag v${NEW_VERSION} ya existe" >&2; exit 1; }
 # 2. The X.Y line must exist and must accept changes (STABLE or MAINTENANCE).
-MINOR="${NEW_VERSION%.*}"
 LINE_JSON="$(git show origin/main:.github/support.json 2>/dev/null || cat .github/support.json 2>/dev/null || true)"
 if [[ -n "$LINE_JSON" ]]; then
   STATE="$(printf '%s' "$LINE_JSON" | jq -r --arg m "$MINOR" '.lines[] | select(.minor==$m) | .state // empty')"

@@ -102,8 +102,20 @@ check_declared() {
   bad_minor="$(jq -r '.lines[] | select((.minor // "") | test("^[0-9]+\\.[0-9]+$") | not) | (.minor // "(null)")' "$SUPPORT_JSON")"
   [[ -z "$bad_minor" ]] || err "campo .minor inválido (se espera X.Y): $(echo "$bad_minor" | tr '\n' ' ')."
 
-  bad_latest="$(jq -r '.lines[] | select((.latest // "") | test("^[0-9]+\\.[0-9]+\\.[0-9]+$") | not) | "\(.minor)=\(.latest // "(null)")"' "$SUPPORT_JSON")"
-  [[ -z "$bad_latest" ]] || err "campo .latest inválido (se espera X.Y.Z): $(echo "$bad_latest" | tr '\n' ' ')."
+  # A jq scoping detail on purpose: inside `startswith(...)` the argument is
+  # evaluated with the PREVIOUS pipe stage's output (a string) as its input, so
+  # `.minor` there would try to index a string ("Cannot index string with
+  # string"). The `as $e` binding keeps the line object in scope for every
+  # subexpression.
+  bad_latest="$(jq -r '
+    .lines[]
+    | . as $e
+    | select(
+        (($e.latest // "") | test("^[0-9]+\\.[0-9]+\\.[0-9]+$") | not)
+        or (($e.latest // "") | startswith(($e.minor // "") + ".") | not)
+      )
+    | "\($e.minor)=\($e.latest // "(null)")"' "$SUPPORT_JSON")"
+  [[ -z "$bad_latest" ]] || err "campo .latest inválido (se espera X.Y.Z del árbol declarado, empieza por su propia minor): $(echo "$bad_latest" | tr '\n' ' ')."
 
   # `accepts` stays machine-checkable on purpose: it IS the routing table an
   # agent reads to decide whether a backport is allowed. Check it, do not prose.
@@ -194,13 +206,27 @@ check_published() {
   UNREGISTERED="$unregistered"
   [[ -z "$unregistered" ]] || err "minors publicadas sin declarar en support.json: $(echo "$unregistered" | tr '\n' ' ') (registralas o marcalas EOL; crearlas es decisión del mantenedor con issue aprobada)."
 
-  # A declared `latest` must exist as a tag: it is a factual claim about what
-  # shipped, not an intention.
-  local phantom
-  phantom="$(jq -r '.lines[] | "v\(.latest)"' "$SUPPORT_JSON" 2>/dev/null | while read -r t; do
-    git tag --list "$t" | grep -qxF "$t" || echo "$t"
+  # Every declared `latest` is a factual claim (B1, #2060): it must be the
+  # NEWEST published patch of its own line, not merely an existing tag. The
+  # per-line computation reuses the same filter chain as published_minors —
+  # strip `v`, exclude `-` (so a `-rc.N` prerelease never counts as a
+  # publication), keep only X.Y.Z, `sort -V`, newest last. A line whose minor
+  # has zero published patches fails too: then `latest` cannot be the newest
+  # patch, and the claim has nothing to stand on. Every state is covered —
+  # STABLE, MAINTENANCE and EOL alike.
+  local stale_latest
+  stale_latest="$(jq -r '.lines[] | "\(.minor)\t\(.latest // "(null)")"' "$SUPPORT_JSON" 2>/dev/null | while IFS=$'\t' read -r m l; do
+    newest_line="$(git tag --list "v$m.*" | sed 's/^v//' | grep -v -- '-' \
+      | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
+    if [[ "$newest_line" != "$l" ]]; then
+      if [[ -n "$newest_line" ]]; then
+        echo "v$m: declarado v$l, el parche published más nuevo es v$newest_line"
+      else
+        echo "v$m: declarado v$l, sin ningún parche X.Y.Z publicado"
+      fi
+    fi
   done)"
-  [[ -z "$phantom" ]] || err "líneas cuyo .latest no corresponde a ningún tag publicado: $(echo "$phantom" | tr '\n' ' ')."
+  [[ -z "$stale_latest" ]] || err "líneas cuyo .latest no es el parche published más nuevo de su minor (sin tag o desactualizado): $(echo "$stale_latest" | tr '\n' ' ')."
 
   # MAINTENANCE is the minor immediately before STABLE, not "whatever was
   # registered last": when the chain breaks, the stale entry keeps a real

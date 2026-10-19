@@ -42,4 +42,3 @@ no-marker scripts/test_ignored_guard.sh               marker retrofit lands with
 no-marker scripts/test_nextest_invocation_lint.sh     marker retrofit lands with that harness's own task (T3-T7)
 no-marker scripts/test_no_ai_attribution.sh           marker retrofit lands with that harness's own task (T3-T7)
 no-marker scripts/test_release_provenance.sh          marker retrofit lands with that harness's own task (T3-T7)
-no-marker scripts/test_support_drift.sh               marker retrofit lands with that harness's own task (T3-T7)

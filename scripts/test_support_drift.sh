@@ -133,7 +133,11 @@ echo "== la deriva que la issue describe: la debe FALLAR =="
 FX_DRIFT="$(new_fixture drift)"
 set_lines "$FX_DRIFT" "$CONSISTENT"
 add_tags "$FX_DRIFT" "${BASELINE_TAGS[@]}" v2.2.0 v2.3.0 v2.3.1 v2.4.0 v2.4.1
+# NEGATION: pre-#1676 no gate read support.json at all, so a STABLE three
+# minors behind the newest tag passed CI; this case is the drift the gate exists to catch.
 expect "$FX_DRIFT" fail "STABLE tres minors atrás del tag más nuevo" --scope=published
+# NEGATION: pre-#1676 an unregistered published minor never failed anything —
+# the hole the whole gate was filed to close.
 expect "$FX_DRIFT" fail "minors publicadas sin declarar" --scope=published
 expect "$FX_DRIFT" pass "pero el archivo sigue internamente coherente" --scope=declared
 
@@ -141,6 +145,8 @@ echo "== cada falla individual =="
 FX_ONE="$(new_fixture one)"
 set_lines "$FX_ONE" "$CONSISTENT"
 add_tags "$FX_ONE" "${BASELINE_TAGS[@]}" v2.2.0
+# NEGATION: pre-#1676 a single unregistered minor sailed through; the case
+# pins that one is already a failure, not a threshold of several.
 expect "$FX_ONE" fail "una minor publicada sin declarar" --scope=published
 
 FX_STALE="$(new_fixture stale_maint)"
@@ -153,6 +159,9 @@ set_lines "$FX_STALE" '{
   ]
 }'
 add_tags "$FX_STALE" v2.0.0 v2.1.0 v2.1.1 v2.2.0
+# NEGATION: pre-#2054-adjacent rotation era, a MAINTENANCE not adjacent to
+# STABLE was never compared; the chain-break that keeps a dead line looking
+# supported was invisible.
 expect "$FX_STALE" fail "MAINTENANCE que no es la minor publicada anterior" --scope=published
 
 FX_PHANTOM="$(new_fixture phantom)"
@@ -165,7 +174,69 @@ set_lines "$FX_PHANTOM" '{
   ]
 }'
 add_tags "$FX_PHANTOM" v2.0.0 v2.1.0 v2.1.1 v2.2.0
+# NEGATION: the phantom check existed, but as a bare tag-existence assert (B1) —
+# pre-T6 nothing demanded .latest be the NEWEST patch of its line; still a negation
+# case for the tag-existence half the strengthened check retains.
 expect "$FX_PHANTOM" fail "campo latest sin tag que lo respalde" --scope=published
+
+echo "== el .latest declarado es un hecho, no una intención (S11/B1, #2060) =="
+# The verbatim acceptance case: a 2.13 line declaring "latest": "2.12.0" must
+# fail. Both scopes notice — binding (.latest starts with the line's minor) in
+# the declared scope, newest-patch in the published scope.
+FX_CROSS_MINOR="$(new_fixture cross_minor)"
+set_lines "$FX_CROSS_MINOR" '{
+  "schema_version": 1,
+  "lines": [
+    {"minor":"2.13","state":"STABLE","branch":null,"latest":"2.12.0","accepts":["bugfix","security"]},
+    {"minor":"2.12","state":"MAINTENANCE","branch":null,"latest":"2.12.0","accepts":["security"]}
+  ]
+}'
+add_tags "$FX_CROSS_MINOR" v2.12.0 v2.13.0
+expect "$FX_CROSS_MINOR" fail "2.13 declarando latest 2.12.0 falla published (aceptación S11 verbatim)" --scope=published
+expect "$FX_CROSS_MINOR" fail "el .latest de una línea empieza por su propia minor" --scope=declared
+
+# The latest lags its OWN line: a real patch was published after the one
+# declared. Pre-T6 the bare tag-existence phantom check approved this.
+FX_LAG="$(new_fixture lag)"
+set_lines "$FX_LAG" '{
+  "schema_version": 1,
+  "lines": [
+    {"minor":"2.2","state":"STABLE","branch":null,"latest":"2.2.0","accepts":["bugfix","security"]},
+    {"minor":"2.1","state":"MAINTENANCE","branch":null,"latest":"2.1.1","accepts":["security"]},
+    {"minor":"2.0","state":"EOL","branch":null,"latest":"2.0.0","eol_at":"2026-09-14","eol_reason":"baseline"}
+  ]
+}'
+add_tags "$FX_LAG" v2.0.0 v2.1.0 v2.1.1 v2.2.0 v2.2.1
+expect "$FX_LAG" fail "latest declarado detrás del parche published de su propia línea" --scope=published
+
+# Zero published patches for a line's minor is also a newest-patch failure:
+# without any v2.4.* tag there is nothing to be the newest, so the declared
+# fact has nothing to stand on (covers every state: STABLE here, others below).
+FX_NOTAG_LINE="$(new_fixture notag_line)"
+set_lines "$FX_NOTAG_LINE" '{
+  "schema_version": 1,
+  "lines": [
+    {"minor":"2.2","state":"STABLE","branch":null,"latest":"2.2.0","accepts":["bugfix","security"]},
+    {"minor":"2.1","state":"MAINTENANCE","branch":null,"latest":"2.1.1","accepts":["security"]},
+    {"minor":"2.4","state":"EOL","branch":null,"latest":"2.4.0","eol_at":"2026-10-01","eol_reason":"fixture"}
+  ]
+}'
+add_tags "$FX_NOTAG_LINE" v2.1.0 v2.1.1 v2.2.0
+expect "$FX_NOTAG_LINE" fail "línea minor sin ningún parche publicado (el .latest declarado no puede ser el más nuevo)" --scope=published
+
+# Positive control that keeps "-rc.N" out of the published set: an rc tag for a
+# newer patch must NOT make the check demand it; the case still fails only if
+# a real X.Y.Z tag is missing. Here v2.2.1 is the newest publication and passes.
+FX_PREREL="$(new_fixture prerel)"
+set_lines "$FX_PREREL" '{
+  "schema_version": 1,
+  "lines": [
+    {"minor":"2.2","state":"STABLE","branch":null,"latest":"2.2.1","accepts":["bugfix","security"]},
+    {"minor":"2.1","state":"MAINTENANCE","branch":null,"latest":"2.1.1","accepts":["security"]}
+  ]
+}'
+add_tags "$FX_PREREL" v2.1.0 v2.1.1 v2.2.0 v2.2.1 v2.2.2-rc.1
+expect "$FX_PREREL" pass "un -rc.N nunca es un parche publicado (v2.2.1 sigue siendo el más nuevo)" --scope=published
 
 FX_WINDOW="$(new_fixture window)"
 set_lines "$FX_WINDOW" '{
@@ -177,6 +248,8 @@ set_lines "$FX_WINDOW" '{
   ]
 }'
 add_tags "$FX_WINDOW" v2.0.0 v2.1.0 v2.2.0 v2.3.0
+# NEGATION: pre-#1676 the two-live-lines window was prose in AGENTS.md, not a
+# check; three live lines passed and the support routing table lied.
 expect "$FX_WINDOW" fail "tres líneas vivas (el máximo es dos)" --scope=declared
 
 # Everything EOL is internally consistent — valid schema, no `accepts`, correct
@@ -191,6 +264,8 @@ set_lines "$FX_NOSTABLE" '{
   ]
 }'
 add_tags "$FX_NOSTABLE" v2.0.0 v2.1.0 v2.1.1
+# NEGATION: pre-#1676-review (R4-NO-ACTIVE-STABLE) an all-EOL declaration passed
+# the declared scope even though it states nothing is supported at all.
 expect "$FX_NOSTABLE" fail "ninguna línea STABLE declarada (nada soportado)" --scope=declared
 
 FX_ACCEPTS="$(new_fixture accepts)"
@@ -202,6 +277,8 @@ set_lines "$FX_ACCEPTS" '{
   ]
 }'
 add_tags "$FX_ACCEPTS" v2.0.0 v2.1.0 v2.1.1
+# NEGATION: pre-#2003 the accepts table was never machine-checked against the
+# state, so MAINTENANCE (security-only) carrying bugfix passed uncontested.
 expect "$FX_ACCEPTS" fail "MAINTENANCE que acepta bugfix (security-only)" --scope=declared
 
 # An EOL line is not allowed to carry `accepts` at all: the audit (A4) found the
@@ -218,16 +295,24 @@ set_lines "$FX_EOL_ACCEPTS" '{
   ]
 }'
 add_tags "$FX_EOL_ACCEPTS" v2.0.0 v2.1.0 v2.1.1
+# NEGATION: pre-fix of the S6/A4 audit finding the EOL-accepts branch was a jq
+# predicate producing zero outputs (dead), so `accepts` on an EOL line always passed.
 expect "$FX_EOL_ACCEPTS" fail "EOL que declara accepts (la rama muerta debe encender)" --scope=declared
 
 echo "== fail-closed: lo que el gate no puede ver no lo aprueba =="
 FX_BAD="$(new_fixture badjson)"
 printf '{ not json\n' > "$FX_BAD/.github/support.json"
+# NEGATION: pre-#1676 the gate early-returned rc=0 on unreadable JSON — the
+# "skip when blind" shape the fail-closed header exists to forbid.
 expect "$FX_BAD" fail "JSON ilegible" --scope=declared
+# NEGATION: sibling of the declared-scope case — the published scope must reject
+# unreadable JSON too, never approve a claim it could not parse.
 expect "$FX_BAD" fail "JSON ilegible también en published" --scope=published
 
 FX_NOTAGS="$(new_fixture notags)"
 set_lines "$FX_NOTAGS" "$CONSISTENT"
+# NEGATION: pre-#1676 an empty tag list silently approved whatever the
+# declaration claimed (a tagless repo is unverifiable, not verified).
 expect "$FX_NOTAGS" fail "repo sin tags publicados" --scope=published
 
 FX_SHALLOW="$(new_fixture shallow)"
@@ -235,6 +320,8 @@ set_lines "$FX_SHALLOW" "$CONSISTENT"
 add_tags "$FX_SHALLOW" "${BASELINE_TAGS[@]}"
 CLONE="$WORK/shallow-clone"
 git clone -q --depth 1 "file://$FX_SHALLOW" "$CLONE"
+# NEGATION: pre-#1676 a shallow clone (fetch-depth: 0 missing) reported green on
+# tags it could not see — the CI default, so the gate was blind exactly where it ran.
 expect "$CLONE" fail "clone shallow (no puede ver los tags)" --scope=published
 
 echo "== el gate no escribe: la proyección tiene un solo escritor =="
