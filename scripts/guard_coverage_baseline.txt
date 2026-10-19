@@ -34,7 +34,6 @@ unwired-guard check_regression_naming.sh  only scripts/ci_fast_gate.sh invokes i
 no-marker scripts/tests/test_check_compatibility.sh   marker retrofit lands with that harness's own task (T3-T7)
 no-marker scripts/test_concurrency_lints.sh           marker retrofit lands with that harness's own task (T3-T7)
 no-marker scripts/test_dependency_direction.sh        marker retrofit lands with that harness's own task (T3-T7)
-no-marker scripts/test_docs_version_pins.sh           marker retrofit lands with that harness's own task (T3-T7)
 no-marker scripts/test_ignored_guard.sh               marker retrofit lands with that harness's own task (T3-T7)
 no-marker scripts/test_nextest_invocation_lint.sh     marker retrofit lands with that harness's own task (T3-T7)
 no-marker scripts/test_no_ai_attribution.sh           marker retrofit lands with that harness's own task (T3-T7)
