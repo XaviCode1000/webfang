@@ -153,7 +153,53 @@ pub(crate) const SPAWN_LATENCY_BUDGET: Duration = Duration::from_secs(20);
 ///
 /// The abandoned thread outlives the budget but not the test: nextest gives
 /// each test its own process, so whatever is still blocked dies with it.
+///
+/// The retry loop itself lives in [`run_under_budget`], so the budget property
+/// can be asserted on the waits THIS harness measured rather than on a caller's
+/// wall clock — see [`SpawnOutcome`] (#2063).
 pub(crate) fn assert_spawn_within<F>(budget: Duration, what: &str, attempt: F)
+where
+    F: Fn() -> Result<(), String> + Send + Sync + 'static,
+{
+    match run_under_budget(budget, attempt) {
+        SpawnOutcome::Passed => {},
+        SpawnOutcome::Reported(failure) => panic!("{what}: {failure}"),
+        SpawnOutcome::Disconnected(attempt_no) => {
+            panic!("{what}: the attempt ended without a verdict (attempt {attempt_no})")
+        },
+        SpawnOutcome::Overran(overruns) => panic!(
+            "{what}: exceeded its {budget:?} budget on 2 consecutive attempts \
+             (latencies {overruns:?}). A regression would overrun every attempt, \
+             so this failure is real — see #1697 for the windows-latest flake this \
+             budget exists to bound."
+        ),
+    }
+}
+
+/// Sealed verdict of [`run_under_budget`], which [`assert_spawn_within`] turns
+/// into a panic.
+///
+/// The budget loop is its own function so the budget property can be asserted
+/// on the waits the harness MEASURED, instead of on a caller's wall clock: the
+/// clock also pays for two thread spawns, the panic hook, backtrace
+/// symbolization and unwinding. On `windows-latest` that overhead measured
+/// 398 ms against 211 ms of real waits, so a bound derived from the waits alone
+/// failed while every wait was inside its budget (#2063).
+#[derive(Debug)]
+enum SpawnOutcome {
+    /// The attempt reported success inside its budget.
+    Passed,
+    /// The attempt produced its own failure verdict.
+    Reported(String),
+    /// The attempt ended without a verdict (its sender was dropped).
+    Disconnected(u8),
+    /// Both attempts overran, carrying each attempt's measured wait.
+    Overran(Vec<Duration>),
+}
+
+/// Run `attempt` up to twice under a wall-clock budget, abandoning each
+/// overrunning attempt and recording how long it was allowed to run.
+fn run_under_budget<F>(budget: Duration, attempt: F) -> SpawnOutcome
 where
     F: Fn() -> Result<(), String> + Send + Sync + 'static,
 {
@@ -173,20 +219,15 @@ where
             let _ = tx.send(worker());
         });
         match rx.recv_timeout(budget) {
-            Ok(Ok(())) => return,
-            Ok(Err(failure)) => panic!("{what}: {failure}"),
+            Ok(Ok(())) => return SpawnOutcome::Passed,
+            Ok(Err(failure)) => return SpawnOutcome::Reported(failure),
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => overruns.push(started.elapsed()),
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                panic!("{what}: the attempt ended without a verdict (attempt {attempt_no})")
+                return SpawnOutcome::Disconnected(attempt_no)
             },
         }
     }
-    panic!(
-        "{what}: exceeded its {budget:?} budget on 2 consecutive attempts \
-         (latencies {overruns:?}). A regression would overrun every attempt, \
-         so this failure is real — see #1697 for the windows-latest flake this \
-         budget exists to bound."
-    );
+    SpawnOutcome::Overran(overruns)
 }
 
 /// Strip `WEBFANG_*` / `AI_MODEL_ID` from a spawned binary command so runs
@@ -518,40 +559,69 @@ pub(crate) fn assert_snapshot_plain(name: &str, value: impl Into<String>) {
 
 #[cfg(test)]
 mod spawn_latency_budget {
-    use super::{assert_spawn_within, SPAWN_LATENCY_BUDGET};
+    use super::{assert_spawn_within, run_under_budget, SpawnOutcome, SPAWN_LATENCY_BUDGET};
     use std::time::{Duration, Instant};
 
-    /// The property #1697 needs and that the Windows lane cannot show on a
-    /// healthy runner: an overrunning attempt is ABANDONED at its budget, not
-    /// allowed to run to completion. A closure sleeping 10x the budget must
-    /// therefore cost ~2x the budget (two attempts), not ~20x. Without this
-    /// the helper could silently degrade back into "wait for whatever the
-    /// child does", which is exactly the 180 s burn it was written to stop.
+    /// The property #1697 needs and that a healthy runner does not show by
+    /// itself: an overrunning attempt is ABANDONED at its budget, not allowed
+    /// to run to completion. A closure sleeping 20x the budget must therefore
+    /// be waited on for ~1x the budget per attempt, not ~20x. Without this the
+    /// helper could silently degrade back into "wait for whatever the child
+    /// does", which is exactly the 180 s burn it was written to stop.
     ///
-    /// The 5x bound is deliberately loose: it still separates ~200 ms from
-    /// ~2 s by an order of magnitude while leaving room for a loaded runner.
+    /// Asserted on the waits the harness ITSELF measured, never on this test's
+    /// wall clock. The clock additionally pays for thread spawn, the panic
+    /// hook, backtrace symbolization and unwinding; on `windows-latest` that
+    /// overhead measured 398 ms against 211 ms of real waits, which tripped the
+    /// old `elapsed < budget * 5` bound while EVERY wait was inside its budget
+    /// (#2063). The waits are the property; the machinery is not.
+    ///
+    /// The 5x upper bound is deliberately loose — the counterexample is 20x —
+    /// so a loaded runner's `recv_timeout` overshoot still fits. Worst observed
+    /// overshoot is 247 ms against a 100 ms budget on `macos-latest`.
     #[test]
     fn an_overrunning_attempt_is_abandoned_at_its_budget() {
-        // Warm the binary resolution the same way `assert_spawn_within` does,
-        // so a cold target directory's `cargo build` is not charged to this
-        // test's clock — that charge belongs to whichever test warms first,
-        // and asserting on it here would make the pin depend on test order.
-        let _ = super::webfang_path();
+        let budget = Duration::from_millis(100);
+        let sleep_ms = 20 * budget.as_millis() as u64;
+        let outcome = run_under_budget(budget, move || {
+            std::thread::sleep(Duration::from_millis(sleep_ms));
+            Ok(())
+        });
+        let overruns = match outcome {
+            SpawnOutcome::Overran(overruns) => overruns,
+            other => {
+                panic!("a closure outliving its budget must overrun both attempts, got {other:?}")
+            },
+        };
+        assert_eq!(
+            overruns.len(),
+            2,
+            "the helper retries once, so both attempts must be abandoned"
+        );
+        for latency in &overruns {
+            assert!(
+                *latency >= budget,
+                "an abandonment cannot precede its budget, measured {latency:?}"
+            );
+            assert!(
+                *latency < budget * 5,
+                "the attempt sleeps {sleep_ms}ms, so an abandonment after \
+                 {latency:?} means the budget is not bounding the wait"
+            );
+        }
+    }
+
+    /// The user-visible half of the same contract: an overrunning attempt must
+    /// FAIL the caller with its budget and both measured latencies, not return.
+    #[test]
+    #[should_panic(expected = "stuck_spawn: exceeded its 100ms budget on 2 consecutive attempts")]
+    fn issue_2063_an_overrunning_attempt_fails_the_test_naming_its_budget() {
         let budget = Duration::from_millis(100);
         let sleep_ms = 10 * budget.as_millis() as u64;
-        let started = Instant::now();
-        let result = std::panic::catch_unwind(|| {
-            assert_spawn_within(budget, "stuck_spawn", move || {
-                std::thread::sleep(Duration::from_millis(sleep_ms));
-                Ok(())
-            });
+        assert_spawn_within(budget, "stuck_spawn", move || {
+            std::thread::sleep(Duration::from_millis(sleep_ms));
+            Ok(())
         });
-        let elapsed = started.elapsed();
-        assert!(result.is_err(), "a stuck attempt must fail the test");
-        assert!(
-            elapsed < budget * 5,
-            "two abandoned attempts should cost about 2x the budget, took {elapsed:?}"
-        );
     }
 
     /// The counterpart: a healthy attempt returns immediately and never pays
@@ -584,6 +654,17 @@ mod spawn_latency_budget {
         assert_spawn_within(SPAWN_LATENCY_BUDGET, "wrong_code", || {
             Err("expected code 64, got 0".to_owned())
         });
+    }
+
+    /// The third way an attempt can end: the worker dies before sending, so its
+    /// sender drops and no verdict can ever arrive. The caller must be told
+    /// which attempt was lost instead of waiting out a budget for an answer
+    /// that is already impossible — an independent verifier found this arm
+    /// reachable but unpinned when the retry loop was extracted (#2063).
+    #[test]
+    #[should_panic(expected = "gone_spawn: the attempt ended without a verdict (attempt 1)")]
+    fn issue_2063_a_disconnected_attempt_reports_the_attempt_number() {
+        assert_spawn_within(SPAWN_LATENCY_BUDGET, "gone_spawn", || panic!("worker died"));
     }
 }
 
