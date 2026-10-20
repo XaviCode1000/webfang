@@ -238,6 +238,33 @@ fi
 ROOT_CANON="$(_canon "$ROOT" "uncanonicalizable-root")" || exit 2
 cd "$ROOT_CANON" || exit 2
 
+# --- the non-interactive remedy --------------------------------------------------
+# The direnv hook fires through PROMPT_COMMAND, which never runs in a
+# non-interactive shell (`bash -c`, agents, cron). So the documented bootstrap —
+# write .envrc, `direnv allow` — reaches an agent's shell only if the agent
+# evaluates the tree's environment itself.
+#
+# Measured 2026-10-20: inside an authorised worktree, `bash -c 'echo
+# $CARGO_TARGET_DIR'` resolved to MAIN's target, and this guard answered
+# `target-owned-by-other-worktree` while prescribing exactly the step that
+# could not reach that shell. The caller was stuck in a loop it could not leave
+# by following the instruction.
+#
+# A correct verdict paired with an unexecutable remediation is not a pass — that
+# is the same argument #1770 made about the `sed` recipe this guard used to
+# hand out. The remedy belongs in the message, and in EVERY refusal that asks
+# for an environment change, not only in the one that was measured.
+_noninteractive_remedy() {
+  cat <<'REMEDY'
+  a non-interactive shell never applies .envrc (the direnv hook fires through
+  PROMPT_COMMAND), so either
+        eval "$(direnv export bash)"          # loads THIS tree's .envrc
+  or inline the values in the same command:
+        env CARGO_TARGET_DIR=… CARGO_INCREMENTAL=0 RUSTC_WRAPPER= PATH=…/mbx/bin:$PATH <cmd>
+  See AGENTS.md § Git Worktree Isolation → Worktree lifecycle.
+REMEDY
+}
+
 # --- 1. unset target ------------------------------------------------------------
 # Strictly UNSET, not empty: a set-but-empty value is a value that cannot be
 # canonicalised, and it is step 2's job to say so precisely.
@@ -246,6 +273,7 @@ if [[ -z "${CARGO_TARGET_DIR+x}" ]]; then
     echo "error: CARGO_TARGET_DIR is not set — direnv is not loaded for this tree."
     echo "  fix: run 'direnv allow' once per worktree (see AGENTS.md § worktree bootstrap),"
     echo "  then re-run this gate from a direnv-loaded shell."
+    _noninteractive_remedy
     echo "reason=target-unset"
   } >&2
   exit 2
@@ -272,6 +300,7 @@ if [[ "$TGT_CANON" == "$SEEDS_CANON" || "$TGT_CANON" == "$SEEDS_CANON"/* ]]; the
     echo "  worktree's seed."
     echo "  fix: give this worktree its own target dir, e.g."
     echo "        $HOME/.cache/cargo-target/$(basename "$ROOT_CANON")"
+    _noninteractive_remedy
     echo "reason=seed-store-target"
   } >&2
   exit 2
@@ -290,6 +319,7 @@ if [[ "$TGT_CANON" == "$QUARANTINE_CANON" || "$TGT_CANON" == "$QUARANTINE_CANON"
     echo "  Building into one puts that state back into an active path."
     echo "  fix: give this worktree its own target dir, e.g."
     echo "        $HOME/.cache/cargo-target/$(basename "$ROOT_CANON")"
+    _noninteractive_remedy
     echo "reason=quarantine-store-target"
   } >&2
   exit 2
@@ -334,6 +364,7 @@ if [[ "$ROOT_CANON" != "$MAIN_ROOT_CANON" ]]; then
       echo "        cd $MAIN_ROOT_CANON"
       echo "        # create .envrc per AGENTS.md § worktree bootstrap, then:"
       echo "        direnv allow"
+      _noninteractive_remedy
       echo "reason=main-unbootstrapped"
     } >&2
     exit 2
@@ -443,6 +474,7 @@ if [[ -n "$OWNER_TREE" ]]; then
     echo "  .envrc per the worktree bootstrap documented in AGENTS.md" >&2
     echo "  (§ Git Worktree Isolation → Worktree lifecycle) for '$ROOT_CANON'," >&2
     echo "  then direnv allow." >&2
+    _noninteractive_remedy >&2
     echo "reason=target-owned-by-other-worktree" >&2
   } >&2
   exit 2
@@ -497,6 +529,7 @@ fi
   echo "    - direnv allow" >&2
   echo "  (or, for this invocation only, re-run with --allow-unregistered-target" >&2
   echo "   to accept an unregistered target explicitly)" >&2
+  _noninteractive_remedy >&2
   echo "reason=unregistered-target" >&2
   echo "override=--allow-unregistered-target" >&2
 } >&2
