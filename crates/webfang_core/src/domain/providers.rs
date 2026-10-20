@@ -27,14 +27,18 @@ pub use crate::domain::model_profile::{
 ///
 /// The binary layer `match`es on this to select the concrete adapter; adding
 /// a variant is a compile-time-visible change, never a runtime lookup.
+///
+/// `local_onnx` used to be the second variant. ADR-0004 paso 6 removed the
+/// ONNX pool, so the kind had no adapter left to select — it resolved to
+/// nothing while `doctor` still reported it as serving the slot. It was
+/// removed in 3.0.0: a config that still declares it now fails to load
+/// instead of running without embeddings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
     /// OpenAI-compatible chat/completions API (OpenAI, OpenRouter, Groq,
     /// Together, Ollama, FreeLLM…).
     OpenAiCompatible,
-    /// Local ONNX inference pool (embeddings via `InferencePool`).
-    LocalOnnx,
 }
 
 /// Capability a provider offers.
@@ -311,14 +315,15 @@ impl ProviderRegistry {
     ///
     /// This is the slot the embedding wiring uses when the operator does not
     /// name a provider explicitly (`--embedding-provider` absent). The kind
-    /// match happens in the binary layer: `LocalOnnx` serves the local pool
-    /// adapter (no probe), `OpenAiCompatible` builds the remote adapter.
+    /// match happens in the binary layer: `OpenAiCompatible` builds the remote
+    /// adapter and probes it. There is no local arm left to match on —
+    /// ADR-0004 paso 6 removed the ONNX pool and the `local_onnx` kind with it.
     ///
     /// # Errors
     ///
     /// [`RegistryError::ProviderNotFound`] (`<default>`) when no provider
-    /// declares `Embedding` — the caller falls back to local-only, never to
-    /// a silent `None` that resurfaces as a late failure.
+    /// declares `Embedding` — the caller reports an empty slot, never a
+    /// silent `None` that resurfaces as a late failure.
     pub fn resolve_default_embedding(&self) -> Result<&ProviderConfig, RegistryError> {
         self.resolve_default_by_capability(Capability::Embedding)
     }

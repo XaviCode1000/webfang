@@ -9,9 +9,9 @@
 //!
 //! The embedding slot (#1462) mirrors the completion path: resolve the
 //! selected (or default embedding-capable) provider, construct the remote
-//! adapter only for `OpenAiCompatible`, and verify the served dimension with
-//! a startup probe. `LocalOnnx` — explicit or default — serves the local
-//! pool adapter with no network I/O.
+//! adapter, and verify the served dimension with a startup probe. Every
+//! resolved embedding provider is remote — ADR-0004 paso 6 removed the local
+//! ONNX pool, and with it the `local_onnx` kind.
 
 use std::sync::Arc;
 
@@ -41,8 +41,6 @@ use crate::CliExit;
 /// [`CliExit::ConfigError`] (exit 78) when:
 /// - no provider with the `completion` capability is configured,
 /// - `--llm-provider` names an id that is unknown or lacks the capability,
-/// - the provider kind has no CLI adapter yet (`LocalOnnx` is the embedding
-///   pool, not an LLM completion source),
 /// - the credential does not resolve at startup.
 pub fn build_llm_provider(
     opts: &CrawlOptions,
@@ -75,22 +73,16 @@ pub fn build_llm_provider(
             );
             Ok(Some(Arc::new(provider)))
         },
-        ProviderKind::LocalOnnx => Err(CliExit::ConfigError(
-            "'--extract-with-llm' requiere un provider remoto (kind = \
-             `open_ai_compatible`); `local_onnx` es el pool de embeddings \
-             local, no una fuente de completions"
-                .to_string(),
-        )),
     }
 }
 
 /// Resolve the embedding slot to a remote provider config (#1462).
 ///
-/// Sync and probe-free: returns `Ok(None)` when the local pool serves —
-/// no `--embedding-provider` and no (or a `LocalOnnx`) default, or an
-/// explicit `LocalOnnx` id — and `Ok(Some(config))` when an
-/// `OpenAiCompatible` provider must be constructed + probed by
-/// [`build_embedding_provider`].
+/// Sync and probe-free: returns `Ok(None)` only when no embedding provider is
+/// configured at all, and `Ok(Some(config))` when an `OpenAiCompatible`
+/// provider must be constructed + probed by [`build_embedding_provider`].
+/// There is no local arm: ADR-0004 paso 6 removed the ONNX pool, and the
+/// `local_onnx` kind with it.
 ///
 /// # Errors
 ///
@@ -121,7 +113,6 @@ pub fn resolve_embedding_config(
         },
     };
     match config.kind {
-        ProviderKind::LocalOnnx => Ok(None),
         ProviderKind::OpenAiCompatible => Ok(Some(config.clone())),
     }
 }
@@ -233,10 +224,14 @@ pub async fn build_tier2_embedding_provider(
         embedding_provider: Some(id.to_string()),
         ..Default::default()
     };
-    // An explicit `LocalOnnx` id serves the local pool, so no consent is owed.
-    let Some(_remote) = resolve_embedding_config(&resolve_opts, providers)? else {
-        return build_embedding_provider(&resolve_opts, providers, offline).await;
-    };
+    // Resolution only, no I/O. An explicit id that resolves is a remote
+    // endpoint by construction: ADR-0004 paso 6 removed the local pool, so
+    // there is no arm left that could serve this slot without egress.
+    if resolve_embedding_config(&resolve_opts, providers)?.is_none() {
+        return Err(CliExit::ConfigError(format!(
+            "el provider de embeddings '{id}' no se resolvió a un endpoint remoto"
+        )));
+    }
     if !consent {
         return Err(CliExit::ConfigError(
             "Tier 2 remoto requiere consentimiento explícito: use --tier2-consent o WEBFANG_TIER2_CONSENT=1".to_string(),
@@ -311,28 +306,6 @@ mod tests {
             Ok(_) => panic!("unknown id must fail"),
         };
         assert!(matches!(err, CliExit::ConfigError(_)));
-    }
-
-    #[test]
-    fn flag_on_with_local_onnx_kind_is_config_error() {
-        let opts = opts_with_llm(true, Some("local"));
-        let providers = ProvidersConfig {
-            providers: vec![provider(
-                "local",
-                ProviderKind::LocalOnnx,
-                AuthSource::Env {
-                    var: "WEBFANG_TEST_KEY".to_string(),
-                },
-            )],
-        };
-        let err = match build_llm_provider(&opts, &providers) {
-            Err(e) => e,
-            Ok(_) => panic!("local kind must fail"),
-        };
-        match err {
-            CliExit::ConfigError(msg) => assert!(msg.contains("local_onnx")),
-            other => panic!("expected ConfigError, got {other:?}"),
-        }
     }
 
     /// Startup resolution: an Env credential whose variable is unset fails at
@@ -483,8 +456,8 @@ mod tests {
         let providers = ProvidersConfig {
             providers: vec![
                 emb_provider(
-                    "local-embeddings",
-                    ProviderKind::LocalOnnx,
+                    "first-embeddings",
+                    ProviderKind::OpenAiCompatible,
                     AuthSource::Env {
                         var: "WEBFANG_TEST_EMB_UNUSED".to_string(),
                     },
@@ -498,9 +471,11 @@ mod tests {
                 ),
             ],
         };
-        // First config-order embedding provider is local → local pool serves.
+        // First config-order embedding provider wins, and resolution alone
+        // proves it: nothing here builds a client or dials.
         let out = resolve_embedding_config(&opts, &providers).expect("resolves");
-        assert!(out.is_none());
+        let config = out.expect("an embedding-capable provider resolves to a remote config");
+        assert_eq!(config.id, "first-embeddings");
     }
 
     #[test]
@@ -543,22 +518,6 @@ mod tests {
             Ok(_) => panic!("completion-only provider must fail the embedding slot"),
         };
         assert!(matches!(err, CliExit::ConfigError(_)));
-    }
-
-    #[test]
-    fn embedding_explicit_local_onnx_returns_none() {
-        let opts = opts_with_embedding(Some("local-embeddings"));
-        let providers = ProvidersConfig {
-            providers: vec![emb_provider(
-                "local-embeddings",
-                ProviderKind::LocalOnnx,
-                AuthSource::Env {
-                    var: "WEBFANG_TEST_EMB_UNUSED".to_string(),
-                },
-            )],
-        };
-        let out = resolve_embedding_config(&opts, &providers).expect("local resolves");
-        assert!(out.is_none(), "explicit local means the pool serves");
     }
 
     // Async preflight: the resolved remote reaches the constructor + probe.
@@ -709,26 +668,6 @@ mod tests {
             1,
             "the probe is the one request consent authorized"
         );
-    }
-
-    /// The gate must not over-block: a local Tier 2 slot owes no consent and
-    /// must still serve, because nothing leaves the machine.
-    #[tokio::test]
-    async fn tier2_local_slot_needs_no_consent() {
-        let providers = ProvidersConfig {
-            providers: vec![emb_provider(
-                "local-embeddings",
-                ProviderKind::LocalOnnx,
-                AuthSource::Env {
-                    var: "WEBFANG_TEST_EMB_UNUSED".to_string(),
-                },
-            )],
-        };
-        let out =
-            build_tier2_embedding_provider(Some("local-embeddings"), false, &providers, false)
-                .await
-                .expect("a local Tier 2 slot resolves");
-        assert!(out.is_none(), "local pool serves Tier 2 without consent");
     }
 
     #[cfg_attr(

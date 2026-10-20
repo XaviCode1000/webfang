@@ -111,16 +111,16 @@ pub struct CrawlOptions {
     /// first provider declaring the `completion` capability.
     pub llm_provider: Option<String>,
     /// Provider id selected for the embedding slot (`--embedding-provider`).
-    /// `None` picks the first provider declaring the `embedding` capability;
-    /// `LocalOnnx` (or no embedding provider at all) serves the local pool
-    /// adapter with no network probe (#1462).
+    /// `None` picks the first provider declaring the `embedding` capability.
+    /// With no embedding provider at all the slot stays empty: ADR-0004 paso 6
+    /// removed the local pool adapter that used to fill it (#1462).
     pub embedding_provider: Option<String>,
     /// Provider id selected for the Tier 2 semantic inspector embedding slot
-    /// (`--tier2-embedding-provider`). `None` serves the local pool adapter
-    /// with no network probe — it deliberately does NOT fall back to the first
-    /// provider declaring the `embedding` capability, so the vault-search
-    /// provider is never adopted for DOM inspection (issue #1977, #1981). An
-    /// explicit `local_onnx` id also serves the local pool. Separate from
+    /// (`--tier2-embedding-provider`). `None` leaves the slot empty — it
+    /// deliberately does NOT fall back to the first provider declaring the
+    /// `embedding` capability, so the vault-search provider is never adopted
+    /// for DOM inspection (issue #1977, #1981), and ADR-0004 paso 6 removed
+    /// the local pool that used to serve it. Separate from
     /// `embedding_provider` on purpose: distinct privacy domains.
     pub tier2_embedding_provider: Option<String>,
     /// Explicit consent for Tier 2 remote embeddings egress

@@ -25,22 +25,23 @@ pub struct LlmArgs {
     /// Provider id to use for the embedding slot (vault search, #1462).
     ///
     /// `None` selects the first provider declaring the `embedding`
-    /// capability (config order); `local_onnx` serves the local pool.
+    /// capability (config order).
     pub embedding_provider: Option<String>,
 
     /// Provider id to use for the Tier 2 semantic inspector embedding slot (ADR-0004).
     ///
-    /// `None` selects the first provider declaring the `embedding`
-    /// capability (config order); `local_onnx` serves the local pool.
+    /// `None` leaves the slot empty: Tier 2 does not fall back to the
+    /// vault-search provider, and there is no local pool left to serve it
+    /// (ADR-0004 paso 6).
     /// Separate from `embedding_provider` on purpose: vault search and
     /// Tier 2 repair are distinct privacy domains (issue #1977).
     pub tier2_embedding_provider: Option<String>,
 
     /// Explicit consent for Tier 2 remote embeddings egress (ADR-0004).
     ///
-    /// Required when `--tier2-embedding-provider` resolves to a remote
-    /// endpoint (not `local_onnx`). A hash of `provider_id|base_url` is
-    /// logged at consent time for auditability.
+    /// Required when `--tier2-embedding-provider` is set: every resolved
+    /// Tier 2 embedding provider is remote. A hash of `provider_id|base_url`
+    /// is logged at consent time for auditability.
     pub tier2_consent: bool,
 }
 

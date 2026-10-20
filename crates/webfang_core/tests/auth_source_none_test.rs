@@ -479,47 +479,6 @@ fn completion_provider_with_auth_none_yields_the_anonymous_variant_not_auth_fail
     );
 }
 
-/// Ruta 2 — **la segunda ruta de error del mismo escenario**, medida: si el
-/// provider anónimo declara `kind: local_onnx`, la resolución del slot de
-/// completion **pasa** (tiene capability `completion`) y el fallo ocurre
-/// después, por kind. Es un mensaje distinto y con otra causa, así que
-/// necesita su propia fila: sin ella, un cambio que moviera el orden de
-/// estas dos comprobaciones pasaría inadvertido.
-#[test]
-fn completion_onnx_kind_with_auth_none_fails_with_the_kind_message_not_the_auth_one() {
-    let raw = r#"{
-      "providers": [
-        {
-          "id": "anon-pool",
-          "display_name": "Pool anónimo",
-          "kind": "local_onnx",
-          "base_url": "http://127.0.0.1:11434/v1",
-          "auth": { "source": "none" },
-          "capabilities": ["completion"],
-          "model": "local"
-        }
-      ]
-    }"#;
-    let providers: ProvidersConfig = serde_json::from_str(raw).expect("parsea");
-
-    let err = match build_llm_provider(&llm_opts("anon-pool"), &providers) {
-        Err(e) => e,
-        Ok(_) => panic!("local_onnx no es una fuente de completions"),
-    };
-    let msg = match &err {
-        CliExit::ConfigError(msg) => msg,
-        other => panic!("debe ser ConfigError (exit 78), no: {other:?}"),
-    };
-    assert!(
-        msg.contains("local_onnx"),
-        "esta ruta falla por kind: {msg}"
-    );
-    assert!(
-        !msg.contains("anónimo"),
-        "el mensaje no debe atribuir el fallo a la auth cuando la causa es el kind: {msg}"
-    );
-}
-
 // ---------------------------------------------------------------------------
 // 6. Loopback y offline: no se rompen
 // ---------------------------------------------------------------------------
