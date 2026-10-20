@@ -477,6 +477,16 @@ jobs:
             exit 0
           fi
           bash scripts/check_mcp_public_surface.sh --base "$BASE"
+      # Breaking-marker guard harness (#2081). `merge-when-green.sh` is the
+      # integration mechanism, and its squash path silently destroyed a breaking
+      # declaration twice while closing ADR-0004 paso 6: #2072 wrote the marker in
+      # the wrong position, #2078 had it in the PR title and the squash subject
+      # came out without it. Both shipped as patches. The guard refuses that merge
+      # now, and this harness pins the refusal — including the negation that
+      # matters (title marker + --squash must NOT merge). Offline: fake `gh`, no
+      # network, no cargo, mktemp fixtures only.
+      - name: Breaking-marker guard semantics harness
+        run: bash scripts/test_merge_when_green_breaking.sh
       # Regression guard for #836: block-scalar nesting bugs in workflow YAML
       # (steps swallowed into a `run: |` block) stay valid YAML and only fail
       # at runtime post-merge (#833→#835). actionlint + shellcheck catch them

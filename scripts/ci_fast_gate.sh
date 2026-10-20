@@ -509,6 +509,18 @@ EOF
   else
     skip_step "mcp surface wiring" "no mcp surface guard files changed"
   fi
+  # Breaking-marker guard harness (#2081): the squash path silently destroyed a
+  # breaking declaration twice (ADR-0004 paso 6, #2072 and #2078), and both
+  # shipped as patches. `merge-when-green.sh` now refuses that merge; this
+  # harness pins the refusal AND its negation (title marker + --squash must not
+  # merge). Triggered by the script or its harness, both `scripts/**` — a PR
+  # touching only one of them still lands in this lane. Offline fake `gh`,
+  # mktemp fixtures, no cargo, <1s.
+  if grep -Eq '^(scripts/merge-when-green\.sh|scripts/test_merge_when_green_breaking\.sh)$' "$UNION_TMP" 2>/dev/null; then
+    run_step "breaking-marker guard semantics (offline)" bash scripts/test_merge_when_green_breaking.sh
+  else
+    skip_step "breaking-marker guard semantics" "no merge-when-green files changed"
+  fi
 }
 
 # run_pinned_lint_changed_scope: degraded local equivalent of CI's
