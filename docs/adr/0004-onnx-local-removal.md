@@ -172,9 +172,20 @@ Sin esa revisión el huérfano se vuelve permanente, que es exactamente lo que e
 
 ### Follow-up: la ventana de shims no cierra con este ADR
 
-Este ADR cierra el **borrado**. Los shims (`--ai-model`, `--max-tokens`, `WEBFANG_MAX_TOKENS`, `AI_MODEL_ID` / `WEBFANG_AI_MODEL_ID`, `WEBFANG_AI_ENGINE`) siguen vivos y su retiro es un slice propio, con su marker de ruptura y su issue.
+Este ADR cierra el **borrado**. Los shims (`--ai-model`, `--max-tokens`, `WEBFANG_MAX_TOKENS`, `AI_MODEL_ID` / `WEBFANG_AI_MODEL_ID`, `WEBFANG_AI_ENGINE`) siguen vivos y su retiro es un slice propio, con su marker de ruptura y su issue: **#2119** (2026-10-20).
 
 El ancla es **3.2.0**. La ventana del §Compatibilidad pedía "≥2 releases minor" desde el anuncio de v2.12.0: pasó 2.13.0 (minor) y 3.0.0 (major, el borrado). Contarlas como las dos releases de la ventana es la lectura que mantiene la promesa hecha al usuario sin estirarla a un tercer release.
+
+### Residuo del borrado (2026-10-20)
+
+El paso 6 cerró cuando el motor dejó de existir, no cuando el árbol quedó prolijo. La auditoría local posterior al release encontró cuatro unidades de residuo; una ya se cerró y tres siguen abiertas:
+
+- **#2104 (cerrada, #2108)** — `SemanticError` conservaba seis variantes sin productor (`ModelLoad`, `Download`, `CacheValidation`, `OfflineMode`, `InvalidThreshold`, `InvalidCharsPerToken`) e `Inference` se renderizaba como "Error ejecutando inferencia ONNX". Retiradas.
+- **#2105 (abierta)** — `LocalEmbeddingPort` y `Tier2EmbeddingPort::Local` no se construyen en producción.
+- **#2106 (abierta)** — `show` y `doctor` todavía imprimen `granite-97m`, un modelo local retirado.
+- **#2107 (abierta)** — comentarios que afirman que la feature Cargo `ai` existe.
+
+Ninguna es criterio de aceptación de este ADR, y por eso no bloquean su cierre. Se registran acá para que "ADR-0004 cerrado" no se lea como "no queda rastro de ONNX en el árbol".
 
 ### Nota de proceso: la revisión nativa no cubrió el paso 6
 
