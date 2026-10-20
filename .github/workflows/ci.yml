@@ -488,6 +488,14 @@ jobs:
         run: bash scripts/test_apply_release_pins.sh
       - name: Release pins wiring harness
         run: bash scripts/test_release_pins_wiring.sh
+      # The pending-publication declaration is the release-plz path's half of
+      # the support contract (#2144). Its harness pins the whole flow offline:
+      # a declared line becomes a pending publication, an undeclared line is
+      # NOT invented, the write is idempotent, and the orchestrator lands the
+      # declaration on the RELEASE branch (never on main) with the bot
+      # identity. Without a CI entry point the harness would be inert.
+      - name: Pending publication declaration semantics harness
+        run: bash scripts/test_declare_pending_publication.sh
       # Edges of the MCP version-marker gate below (#2038): the guard runs with
       # the event's base, `repo-guards` stays unfiltered, and `gate` waits on it
       # in both scopes. Offline, pure text plus one local `git` call: no cargo,

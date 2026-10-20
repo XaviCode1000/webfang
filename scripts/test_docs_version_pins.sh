@@ -217,5 +217,49 @@ else
   fail "árbol consistente con tres pines pasa"
 fi
 
+# ─── 12. a MISSING docs tree is not a silent pass (B12) ────────────────────
+# The discovery ran `find docs/src -name '*.md' -type f 2>/dev/null`, so a
+# MISSING tree yielded an empty list with no error at all. The non-empty
+# guard still passed (README.md was in the list) and EVERY docs version pin
+# went unchecked while the gate reported green.
+# NEGATION: pre-fix a missing docs/src produced an empty find result, the
+# non-empty guard passed on README.md alone, and the gate reported OK with
+# the whole docs tree unchecked.
+D="$(new_fixture docs-ausente 2.11.0)"
+rm -rf "$D/docs"
+printf 'VERSION=v2.11.0\n' > "$D/README.md"
+if run_gate "$D"; then
+  fail "un árbol docs/src ausente no pasa en silencio"
+else
+  if grep -q 'docs/src' "$WORK/stderr"; then
+    pass "un árbol docs/src ausente falla y nombra la ruta ausente"
+  else
+    fail "el fallo no nombró la ruta ausente: $(cat "$WORK/stderr")"
+  fi
+fi
+
+# ─── 13. an EMPTY docs tree is not a silent pass either ───────────────────
+# A tree that exists but holds no .md is a different state from a tree that
+# does not exist, and neither of them is a state the gate can pass in
+# silence: there is no narrative to check.
+D="$(new_fixture docs-vacio 2.11.0)"
+rm -f "$D/docs/src"/*.md
+printf 'VERSION=v2.11.0\n' > "$D/README.md"
+if run_gate "$D"; then
+  fail "un árbol docs/src sin ningún .md no pasa en silencio"
+else
+  pass "un árbol docs/src sin ningún .md falla cerrado"
+fi
+
+# ─── 14. control: a normal docs tree still passes ─────────────────────────
+D="$(new_fixture docs-control 2.11.0)"
+printf 'VERSION=v2.11.0\n' > "$D/README.md"
+printf '# Chapter\n\nPin: v2.11.0\n' > "$D/docs/src/a.md"
+if run_gate "$D"; then
+  pass "control: un árbol de documentación normal pasa"
+else
+  fail "control: un árbol de documentación normal pasó mal ($(cat "$WORK/stderr"))"
+fi
+
 printf '\nharness: %d ok, %d fail\n' "$PASSED" "$FAILED"
 [[ $FAILED -eq 0 ]]

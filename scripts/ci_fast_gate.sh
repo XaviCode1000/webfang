@@ -529,10 +529,11 @@ EOF
   # lane; `lane_docs` never runs for a `scripts/**` change, which is the only
   # kind of change that can break them. Offline: mktemp fixtures, a local bare
   # git repo and a fake `gh` on PATH — no cargo, no network.
-  if grep -Eq '^(scripts/(bump_docs_version_pins|test_bump_docs_version_pins|apply_release_pins|test_apply_release_pins|test_release_pins_wiring)\.sh|\.github/workflows/(release-plz|ci)\.yml)$' "$UNION_TMP" 2>/dev/null; then
+  if grep -Eq '^(scripts/(bump_docs_version_pins|test_bump_docs_version_pins|apply_release_pins|test_apply_release_pins|test_release_pins_wiring|declare_pending_publication|test_declare_pending_publication)\.sh|\.github/workflows/(release-plz|ci)\.yml)$' "$UNION_TMP" 2>/dev/null; then
     run_step "docs pins writer semantics (offline)" bash scripts/test_bump_docs_version_pins.sh
     run_step "release pins orchestrator semantics (offline)" bash scripts/test_apply_release_pins.sh
     run_step "release pins wiring (offline)" bash scripts/test_release_pins_wiring.sh
+    run_step "pending publication declaration semantics (offline)" bash scripts/test_declare_pending_publication.sh
   else
     skip_step "release pins harnesses" "no release pins files changed"
   fi

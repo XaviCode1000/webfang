@@ -62,10 +62,27 @@ PIN_ERE="v${VER_ERE}"
 
 ALLOW_MARKER='<!-- version-stale:allow -->'
 
+# The document set is discovered, NOT assumed (audit B12, the same defect the
+# reader in check_docs_version_pins.sh had): `find docs/src ... 2>/dev/null`
+# turned a MISSING docs tree into an empty list with no error, the non-empty
+# guard still passed (README.md was in the list), and the writer then rewrote
+# ONLY README.md and reported success — every docs version pin left stale
+# while the writer said it had done its job. This writer runs FIRST in the
+# Release PR flow ("Own the docs version pins"), so its blind spot hides the
+# reader's too.
+DOCS_DIR="docs/src"
+[[ -d "$DOCS_DIR" ]] \
+  || err "no se encontró el árbol de documentación '$DOCS_DIR' en $ROOT — no hay narrativa que reescribir y un árbol ausente no se reporta como limpio."
+if ! DOC_LIST="$(find "$DOCS_DIR" -name '*.md' -type f | sort)"; then
+  err "no se pudo recorrer el árbol de documentación '$DOCS_DIR' en $ROOT — la reescritura no puede ejecutarse (fail closed)."
+fi
+[[ -n "$DOC_LIST" ]] \
+  || err "el árbol de documentación '$DOCS_DIR' existe pero no contiene ningún archivo .md — no hay narrativa que reescribir (fail closed)."
+
 mapfile -t FILES < <(
   {
     [[ -f README.md ]] && printf '%s\n' README.md
-    find docs/src -name '*.md' -type f 2>/dev/null
+    printf '%s\n' "$DOC_LIST"
   } | sort
 )
 
