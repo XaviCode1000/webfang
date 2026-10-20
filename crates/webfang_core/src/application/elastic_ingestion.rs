@@ -64,7 +64,7 @@ pub struct ElasticIngestion<R: VectorRepository + Send + Sync> {
     /// `None` → `embedding = None`.
     ///
     /// Deviation from Decision 1's exact 4-field struct: this 5th field is
-    /// feature-gated and unavoidable — `SemanticCleaner::clean()` is async, so
+    /// unavoidable — `SemanticCleaner::clean()` is async, so
     /// embeddings cannot run in the sync Rayon bridge closure and must live in
     /// the orchestrator's async context. See PR5 apply-progress for the full
     /// rationale.
