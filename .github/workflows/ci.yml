@@ -428,6 +428,27 @@ jobs:
       # Offline, pure text over the checked-out tree: no cargo, no network.
       - name: Docs version pins wiring harness
         run: bash scripts/test_docs_version_pins_wiring.sh
+      # The release flow OWNS the docs version pins (#2028), and these three
+      # harnesses pin the pieces that make that ownership real: the WRITER
+      # (scripts/bump_docs_version_pins.sh — the exact inverse of the gate
+      # above), the ORCHESTRATOR (scripts/apply_release_pins.sh — the step the
+      # release workflow invokes) and the WIRING of both into that workflow.
+      #
+      # They run on EVERY PR, with no `paths:` filter, for the same reason the
+      # gate above does: the drift starts on the Cargo.toml side, so a change
+      # that touches no markdown still has to be able to break them. They live
+      # in `repo-guards` — a job with no filter, already a `needs:` of `gate`
+      # in both scopes — so a regression reds the required `CI Gate` instead of
+      # passing unnoticed.
+      #
+      # Offline: mktemp fixtures, a local bare git repo and a fake `gh` on
+      # PATH. No cargo, no network, no repo state touched.
+      - name: Docs version pins writer semantics harness
+        run: bash scripts/test_bump_docs_version_pins.sh
+      - name: Release pins orchestrator semantics harness
+        run: bash scripts/test_apply_release_pins.sh
+      - name: Release pins wiring harness
+        run: bash scripts/test_release_pins_wiring.sh
       # Edges of the MCP version-marker gate below (#2038): the guard runs with
       # the event's base, `repo-guards` stays unfiltered, and `gate` waits on it
       # in both scopes. Offline, pure text plus one local `git` call: no cargo,

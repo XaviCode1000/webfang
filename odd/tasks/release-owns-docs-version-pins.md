@@ -266,11 +266,11 @@ release (`check_release_dispatch.sh`, `verify-release-tag.sh`).
 
 | ID | Specs | Ruta | Entrega | Commit |
 | --- | --- | --- | --- | --- |
-| T1 | S6 | delegada (worker) | `scripts/bump_docs_version_pins.sh` + `scripts/test_bump_docs_version_pins.sh` | work unit 1 |
-| T2 | S4, S5, S8 | delegada (worker) | `scripts/apply_release_pins.sh` + `scripts/test_apply_release_pins.sh` | work unit 1 |
-| T3 | S1, S8 | delegada (worker) | `.github/workflows/release-plz.yml` | work unit 2 |
-| T4 | S7 | delegada (worker) | `scripts/test_release_pins_wiring.sh` + `ci.yml` + `ci_fast_gate.sh` | work unit 2 |
-| T5 | S2, S9 | delegada (worker) | `AGENTS.md` + header de `check_docs_version_pins.sh` | work unit 2 |
+| T1 | S6 | delegada (worker) | `scripts/bump_docs_version_pins.sh` + `scripts/test_bump_docs_version_pins.sh` | `96aaa5b4` |
+| T2 | S4, S5, S8 | delegada (worker) | `scripts/apply_release_pins.sh` + `scripts/test_apply_release_pins.sh` | `8a309aa9` |
+| T3 | S1, S8 | delegada (worker) | `.github/workflows/release-plz.yml` | work unit 3 |
+| T4 | S7 | delegada (worker) | `scripts/test_release_pins_wiring.sh` + `ci.yml` + `ci_fast_gate.sh` | work unit 3 |
+| T5 | S2, S9 | delegada (worker) | `AGENTS.md` + header de `check_docs_version_pins.sh` | work unit 3 |
 | T6 | S1..S9 | inline (padre) | verificación, commits por work unit, assessment de riesgo | — |
 
 **Orden dentro del writer**: T1 → T2 → T3 → T4 → T5 (T4 y T5 necesitan que T1/T2
@@ -310,3 +310,40 @@ existan para poder referenciarlos).
   version-stale:allow -->` → historia, se salta) y
   `docs/src/installation.md:198` (`$Version = "v3.0.0"`). El escritor debe ser
   no-op sobre este árbol.
+- **L7** (2026-10-20, worker) — RED→GREEN observado, por harness:
+  `test_bump_docs_version_pins.sh` RED `harness: 0 ok, 1 fail` → GREEN
+  `harness: 14 ok, 0 fail`; `test_apply_release_pins.sh` RED `0 ok, 1 fail` →
+  GREEN `11 ok, 0 fail`; `test_release_pins_wiring.sh` RED `FAILED: 5/7 casos`
+  → GREEN `OK: 7/7`. El caso de reintento se probó por mutación
+  (`max_attempts=2→1` → `10 ok, 1 fail`) y se restauró con sha256 idéntico.
+- **L8** (2026-10-20, padre) — Verificación independiente del padre (spot check
+  sobre lo reportado por el worker), en el worktree:
+  `test_bump_docs_version_pins.sh` → `14 ok, 0 fail`;
+  `test_apply_release_pins.sh` → `11 ok, 0 fail`;
+  `test_release_pins_wiring.sh` → `7/7`;
+  `check_docs_version_pins.sh` → `OK: 3 líneas … 11 documentos` (exit 0);
+  `check_release_dispatch.sh` → `OK: single native-push hand-off intact` (exit 0);
+  `bash -n` y `shellcheck -x --exclude=SC2010,SC2012,SC2027,SC2034,SC2046,SC2086,SC2126,SC2129`
+  sobre los 5 scripts nuevos → 0 findings;
+  `scripts/ci_fast_gate.sh` → `fast-gate summary: PASS=13 FAIL=0 SKIP=7` /
+  `fast-gate: GREEN` (lane CI-only, **0 invocaciones de cargo**).
+- **L9** (2026-10-20, padre) — Prueba end-to-end del defecto y del fix, sobre una
+  copia del árbol con el workspace en `3.0.1` (simula el bump de release-plz):
+  1) el gate **falla** (`README.md:39` y `docs/src/installation.md:198` en
+  `v3.0.0` contra workspace `v3.0.1`) → el defecto #2028 reproducido;
+  2) el escritor actualiza esas 2 líneas y **no** toca la línea de historia
+  (`installation.md:67`, `v2.11.0` con el marker);
+  3) el gate **pasa** sobre el mismo árbol;
+  4) `CHANGELOG.md` byte-idéntico (md5 antes/después);
+  5) segunda corrida → `OK: los pines ya declaraban v3.0.1 (sin cambios)`.
+- **L10** (2026-10-20, padre) — La rama se renombró a `fix/release-pins` (de
+  `fix/release-owns-docs-version-pins`) para que el proxy directorio↔rama del
+  AGENTS.md pase: el directorio del worktree es `fix-release-pins` y el proxy
+  exige que sea **la rama completa** con `/` → `-`. La rama era local (nunca
+  pusheada), así que el rename no desincroniza nada.
+- **L11** (2026-10-20, padre) — El `.envrc` del worktree se escribió con `$TREE`
+  literal (no sustituido) y el guard de aislamiento de targets lo rechazaba con
+  `reason=unregistered-target`, making the fast gate exit 2 before any lane. El
+  guard expande `$HOME` pero no `$TREE`: el bootstrap correcto lo sustituye al
+  escribir. Corregido a `export CARGO_TARGET_DIR=$HOME/.cache/cargo-target/fix-release-pins`
+  (con `$HOME` literal) → el fast gate cae en la lane CI-only y da GREEN.
