@@ -162,20 +162,45 @@ fi
 
 # --- Release contract (mechanical, no judgment) ---
 # 1. Tag uniqueness.
-git fetch --tags origin >/dev/null 2>&1 || true
-git rev-parse "v${NEW_VERSION}" >/dev/null 2>&1 && { echo "tag v${NEW_VERSION} ya existe" >&2; exit 1; }
-# 2. The X.Y line must exist and must accept changes (STABLE or MAINTENANCE).
-LINE_JSON="$(git show "origin/main:${SUPPORT_JSON}" 2>/dev/null || cat "$SUPPORT_JSON" 2>/dev/null || true)"
-if [[ -n "$LINE_JSON" ]]; then
-  STATE="$(printf '%s' "$LINE_JSON" | jq -r --arg m "$MINOR" '.lines[] | select(.minor==$m) | .state // empty')"
-  [[ -z "$STATE" ]] && STATE="MISSING"
-  case "$STATE" in
-    STABLE|MAINTENANCE) ;;
-    *) echo "línea $MINOR en estado $STATE: bump bloqueado (requiere excepción aprobada)" >&2; exit 1 ;;
-  esac
-else
-  echo "tip: support.json no disponible, se omite el check de estado (revisar a mano)" >&2
+#    The tag set that decides uniqueness is the REMOTE's. The fetch that
+#    brings it into the local view is NOT optional, and its failure is NOT
+#    swallowed: a failed fetch leaves the local view as the only one
+#    available, and a uniqueness check on a degraded view is not a
+#    uniqueness check — it is a guard that read as a pass because it could
+#    not see. So the failure is named and the bump refuses.
+if ! git remote get-url origin >/dev/null 2>&1; then
+  echo "bump bloqueado: no hay remote 'origin' — la unicidad del tag v${NEW_VERSION} no se puede establecer contra el remoto (fail closed)" >&2
+  exit 1
 fi
+if ! FETCH_ERR="$(git fetch --tags origin 2>&1 >/dev/null)"; then
+  echo "bump bloqueado: 'git fetch --tags origin' falló — la unicidad del tag v${NEW_VERSION} se comprobaría sobre una vista degradada (fail closed); restaurá la conectividad del remoto y reintentá." >&2
+  [[ -n "$FETCH_ERR" ]] && echo "  git: $FETCH_ERR" >&2
+  exit 1
+fi
+if git rev-parse "v${NEW_VERSION}" >/dev/null 2>&1; then
+  echo "tag v${NEW_VERSION} ya existe" >&2
+  exit 1
+fi
+# 2. The X.Y line must exist and must accept changes (STABLE or MAINTENANCE).
+#    An UNAVAILABLE line state is not a passed gate. The state is a clause of
+#    the release contract, so a state that could not be read leaves the
+#    contract UNEVALUATED — and a contract that was never evaluated must
+#    never be reported as a satisfied one. The refusal names the missing
+#    state instead of degrading to a "tip".
+LINE_JSON="$(git show "origin/main:${SUPPORT_JSON}" 2>/dev/null || cat "$SUPPORT_JSON" 2>/dev/null || true)"
+if [[ -z "$LINE_JSON" ]]; then
+  echo "bump bloqueado: no se pudo leer $SUPPORT_JSON (ni desde 'origin/main' ni desde el árbol de trabajo) — el estado de la línea $MINOR no se puede establecer y el contrato de release no se puede evaluar (fail closed)" >&2
+  exit 1
+fi
+if ! STATE="$(printf '%s' "$LINE_JSON" | jq -r --arg m "$MINOR" '.lines[] | select(.minor==$m) | .state // empty' 2>/dev/null)"; then
+  echo "bump bloqueado: $SUPPORT_JSON no se pudo interpretar (JSON inválido) — el estado de la línea $MINOR no se puede establecer (fail closed)" >&2
+  exit 1
+fi
+[[ -z "$STATE" ]] && STATE="MISSING"
+case "$STATE" in
+  STABLE|MAINTENANCE) ;;
+  *) echo "línea $MINOR en estado $STATE: bump bloqueado (requiere excepción aprobada)" >&2; exit 1 ;;
+esac
 
 # --- ID-1: the declaration of the line follows the patch this bump produces ---
 # `latest` is a FACT about the published tags, and the enforcing gate
@@ -191,7 +216,13 @@ fi
 if [[ -f "$SUPPORT_JSON" ]]; then
   "$REPO_ROOT/scripts/refresh_support_latest.sh" --set "${MINOR}=${NEW_VERSION}"
 else
-  echo "tip: $SUPPORT_JSON no disponible, se omite el refresh de la declaración de soporte" >&2
+  # The declaration follows the patch this bump produces; a bump that skips
+  # the refresh leaves the declaration stale and turns the enforcing gate
+  # red for EVERY later PR, with no sanctioned writer to repair it. So the
+  # skip is a refusal, not a tip: the contract is not satisfied by a
+  # declaration nobody updated.
+  echo "bump bloqueado: $SUPPORT_JSON no existe en este árbol — la declaración de la línea $MINOR no puede seguir al parche que este bump produce (fail closed)" >&2
+  exit 1
 fi
 
 # --- Bump (root workspace only; crates inherit via version.workspace = true,
