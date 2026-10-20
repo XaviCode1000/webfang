@@ -2,9 +2,9 @@
 //!
 //! Implements [`EmbeddingPort`] for
 //! [`ProviderKind::OpenAiCompatible`](crate::domain::providers::ProviderKind)
-//! so vault search works without the `ai` feature and with non-384d dims.
-//! Default stays local ONNX; this adapter is strictly opt-in through the
-//! embedding provider slot (`--embedding-provider` / default resolution).
+//! so vault search works with non-384d dims. Since ADR-0004 paso 6 it is the
+//! only embedding adapter with a production producer: it is selected through
+//! the embedding provider slot (`--embedding-provider` / default resolution).
 //!
 //! Wire contract (`fixtures/remote_embedding/`):
 //! - request `{model, input}` to `{base_url}/embeddings`, con cabecera

@@ -3,9 +3,9 @@
 //! Parsing stays derive-driven (`FromArgMatches`); command assembly is
 //! spec-built (ADR-002 slice 3); see `cli::spec_command`.
 //!
-//! This group is **not** gated by the `ai` cargo feature: the `ai` feature is
-//! the local ONNX stack, while the remote provider port lives in
-//! `webfang_core` unconditionally.
+//! This group is **not** feature-gated: the remote provider port lives in
+//! `webfang_core` unconditionally, and ADR-0004 paso 6 removed the local ONNX
+//! stack that the old `ai` feature used to gate.
 
 /// LLM extraction arguments.
 #[derive(Debug, Default)]

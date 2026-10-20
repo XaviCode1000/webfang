@@ -137,8 +137,8 @@ impl AdaptiveSelectorEngine {
     /// Whether a semantic (Tier 2) provider is wired into this engine.
     ///
     /// `false` means the engine degrades to Tier 1 (lexical) repair only —
-    /// the expected state when the `ai` feature is off or no ONNX assets are
-    /// available (`shared=None`).
+    /// the expected state when no semantic provider was injected
+    /// (`semantic=None`).
     #[must_use]
     pub fn has_semantic_provider(&self) -> bool {
         self.semantic.is_some()

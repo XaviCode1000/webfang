@@ -74,7 +74,8 @@ pub struct CrawlOptions {
     pub verbosity: u8,
     /// Quiet mode — suppress info/debug output.
     pub quiet: bool,
-    /// Enable AI-powered semantic cleaning (semantic_cleaner / ONNX, requires `ai` feature).
+    /// Enable AI-powered semantic cleaning (semantic_cleaner over the configured
+    /// remote embedding provider).
     pub ai: bool,
     /// Enable adaptive CSS selector repair (2-tier cascade).
     pub adaptive_selectors: bool,
