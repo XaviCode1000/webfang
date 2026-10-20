@@ -203,53 +203,43 @@ pub enum ScraperError {
     SitemapNotFound(String),
 }
 
-/// Semantic cleaning errors (AI/ML operations)
+/// Semantic cleaning errors
 ///
-/// These errors occur during AI-powered semantic cleaning operations:
-/// - Model loading from cache
-/// - Tokenization of input text
-/// - ONNX inference
-/// - Model download from HuggingFace Hub
+/// These errors occur while the semantic cleaner produces embeddings and
+/// filters chunks. Since ADR-0004 paso 6 the cleaner talks to a remote
+/// embedding endpoint, so there is no model to load, download or cache — the
+/// variants that described those failures were removed in 4.0.0 rather than
+/// left behind as dead surface.
 ///
 /// # Examples
 ///
 /// ```
 /// use webfang_core::error::SemanticError;
-/// use std::io;
 ///
-/// let io_err = io::Error::new(io::ErrorKind::NotFound, "model file missing");
-/// let semantic_err = SemanticError::ModelLoad(io_err);
-/// assert!(semantic_err.to_string().contains("modelo"));
+/// let semantic_err = SemanticError::ChunkTooLarge {
+///     chunk_id: "chunk-1".to_string(),
+///     chars: 600,
+///     max: 512,
+/// };
+/// assert!(semantic_err.to_string().contains("600"));
 /// ```
 #[derive(Error, Debug)]
 pub enum SemanticError {
-    /// Failed to load ONNX model from cache
+    /// Text could not be turned into a chunk
     ///
-    /// This occurs when:
-    /// - Model file doesn't exist in cache
-    /// - Model file is corrupted
-    /// - Memory mapping failed (disk full, permissions)
-    #[error("Error cargando modelo ONNX: {0}")]
-    ModelLoad(#[from] std::io::Error),
-
-    /// Tokenization failed
-    ///
-    /// This occurs when:
-    /// - Input text contains invalid UTF-8
-    /// - Text exceeds model's maximum token limit
-    /// - Special characters break tokenizer
-    /// - Tokenizer file not found
+    /// Raised by the chunker for input it cannot segment — today the only
+    /// producer is an empty text. There is no tokenizer to fail: the cleaner
+    /// budgets in characters (ADR-0004).
     #[error("Error tokenizando texto: {0}")]
     Tokenize(String),
 
-    /// ONNX inference failed
+    /// The embedding pipeline failed
     ///
-    /// This occurs when:
-    /// - Model graph execution failed
-    /// - Input tensor shape mismatch
-    /// - Output tensor extraction failed
-    /// - Tensor creation failed
-    #[error("Error ejecutando inferencia ONNX: {0}")]
+    /// Covers both halves of the pipeline, and the payload says which one
+    /// failed:
+    /// - the remote endpoint (status, degenerate body, vector count, dimension)
+    /// - the local consistency checks (chunks vs vectors, relevance filter)
+    #[error("Error del pipeline de embeddings: {0}")]
     Inference(String),
 
     /// Content chunk exceeds the configured character budget
@@ -273,72 +263,6 @@ pub enum SemanticError {
         chars: usize,
         /// Maximum allowed characters per chunk
         max: usize,
-    },
-
-    /// Model download failed from HuggingFace Hub
-    ///
-    /// This occurs when:
-    /// - Network error during download
-    /// - Repository doesn't exist or is private
-    /// - Authentication required
-    /// - SHA256 validation failed after download
-    #[error("Error descargando modelo '{repo}': {cause}")]
-    Download {
-        /// HuggingFace repository (e.g., "sentence-transformers/all-MiniLM-L6-v2")
-        repo: String,
-        /// Underlying error cause
-        cause: String,
-    },
-
-    /// Cache validation failed (SHA256 mismatch)
-    ///
-    /// This occurs when:
-    /// - Downloaded file is corrupted
-    /// - Cache was modified externally
-    /// - Incomplete download
-    #[error("Validación de caché falló para '{repo}': SHA256 inválido (esperado: {expected}, obtenido: {actual})")]
-    CacheValidation {
-        /// HuggingFace repository
-        repo: String,
-        /// Expected SHA256 hash
-        expected: String,
-        /// Actual SHA256 hash of downloaded file
-        actual: String,
-    },
-
-    /// Offline mode: model not available in cache
-    ///
-    /// This occurs when:
-    /// - Application is in offline mode
-    /// - Model is not cached
-    /// - Cannot download from HuggingFace Hub
-    #[error("Modo offline: modelo '{repo}' no está en caché")]
-    OfflineMode {
-        /// HuggingFace repository
-        repo: String,
-    },
-
-    /// Relevance threshold out of valid range [0.0, 1.0]
-    ///
-    /// This occurs when:
-    /// - User provides a threshold outside the valid range
-    /// - Programmatic API receives an invalid threshold value
-    #[error("Umbral de relevancia inválido: {value} (rango válido: 0.0 a 1.0)")]
-    InvalidThreshold {
-        /// The invalid threshold value provided
-        value: f32,
-    },
-
-    /// Characters-per-token ratio out of valid range (must be > 0)
-    ///
-    /// The ratio translates a retired `--max-tokens` budget into the
-    /// character budget that replaced it. A non-positive ratio would yield a
-    /// zero or negative character budget — a guard that rejects every chunk
-    /// while looking configured.
-    #[error("Ratio de caracteres por token inválido: {value} (debe ser > 0)")]
-    InvalidCharsPerToken {
-        /// The invalid ratio provided
-        value: f32,
     },
 }
 
@@ -712,15 +636,8 @@ impl SemanticError {
     #[must_use]
     pub const fn classify(&self) -> ErrorClass {
         match self {
-            Self::ModelLoad(_)
-            | Self::Inference(_)
-            | Self::InvalidThreshold { .. }
-            | Self::InvalidCharsPerToken { .. } => ErrorClass::InternalFatal,
-            Self::ChunkTooLarge { .. }
-            | Self::Tokenize(_)
-            | Self::Download { .. }
-            | Self::CacheValidation { .. }
-            | Self::OfflineMode { .. } => ErrorClass::DomainRecoverable,
+            Self::Inference(_) => ErrorClass::InternalFatal,
+            Self::ChunkTooLarge { .. } | Self::Tokenize(_) => ErrorClass::DomainRecoverable,
         }
     }
 }
@@ -1034,16 +951,6 @@ mod tests {
     }
 
     #[test]
-    fn test_semantic_error_model_load() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "model file missing");
-        let err = SemanticError::ModelLoad(io_err);
-        assert!(
-            matches!(err, SemanticError::ModelLoad(_)),
-            "ModelLoad variant must be preserved"
-        );
-    }
-
-    #[test]
     fn test_semantic_error_chunk_too_large() {
         let err = SemanticError::ChunkTooLarge {
             chunk_id: "chunk-123".to_string(),
@@ -1065,32 +972,26 @@ mod tests {
     }
 
     #[test]
-    fn test_semantic_error_download() {
-        let err = SemanticError::Download {
-            repo: "sentence-transformers/all-MiniLM-L6-v2".to_string(),
-            cause: "network timeout".to_string(),
-        };
-        assert!(
-            matches!(
-                err,
-                SemanticError::Download { repo, cause }
-                if repo == "sentence-transformers/all-MiniLM-L6-v2" && cause == "network timeout"
-            ),
-            "Download fields must be preserved"
-        );
-    }
-
-    #[test]
     fn test_scraper_error_from_semantic() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::NotFound, "model missing");
-        let semantic_err = SemanticError::ModelLoad(io_err);
+        let semantic_err = SemanticError::Tokenize("empty text".to_string());
         let scraper_err: ScraperError = semantic_err.into();
         assert!(
             matches!(
                 scraper_err,
-                ScraperError::Semantic(SemanticError::ModelLoad(_))
+                ScraperError::Semantic(SemanticError::Tokenize(_))
             ),
-            "SemanticError::ModelLoad must convert to ScraperError::Semantic(ModelLoad)"
+            "SemanticError must convert to ScraperError::Semantic"
+        );
+    }
+
+    /// The message must name what failed, not a runtime the crate no longer has.
+    #[test]
+    fn inference_message_does_not_name_onnx() {
+        let msg = SemanticError::Inference("HTTP 503".to_string()).to_string();
+        assert!(!msg.contains("ONNX"), "the message still names ONNX: {msg}");
+        assert!(
+            msg.contains("embeddings"),
+            "the message must name the pipeline that failed: {msg}"
         );
     }
 
