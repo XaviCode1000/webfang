@@ -487,10 +487,13 @@ fi
 # ── 9. A15: a DELETED script must not fail the syntax steps ───────────────────
 # NEGATION: pre-fix the changed-scripts list came straight from the changed-file
 # union, and `git diff --name-only` reports DELETED paths too. `bash -n` and
-# shellcheck were then handed a file that is not on disk: retiring one script
+# the linter were then handed a file that is not on disk: retiring one script
 # made the local gate fail twice with "No such file or directory" — a
 # legitimate deletion reported as a defect, blocking the pre-push. Measured
 # 2026-10-20. A path that is gone is not a script to lint.
+#
+# (A comment line that BEGINS with "shellcheck" is read as a directive, not as
+# prose — this one used to start that way and CI rejected it with SC1072.)
 D="$(make_fixture a15-deleted main real)"
 printf '#!/usr/bin/env bash\ntrue\n' >"$D/scripts/keep.sh"
 printf '#!/usr/bin/env bash\ntrue\n' >"$D/scripts/doomed.sh"
