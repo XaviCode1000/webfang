@@ -193,8 +193,29 @@ Corolario operativo: este repo squash-mergea, así que un footer `BREAKING CHANG
 ### Entrega
 
 - **Implementación:** PR #2072 → `e9b7217a` (squash), 2026-10-19.
-- **Release:** **v3.0.0**, tag sobre `63d912ae` (2026-10-20). Es 3.0.0 y no 2.14.0 porque la retirada es una ruptura; el número llegó ahí por un commit de declaración explícito (#2077, `chore(release)!:` mergeado con `--merge`), no por el commit del borrado: el squash descarta el `!` del título del PR y release-plz ignora el footer `BREAKING CHANGE:` para el cálculo de versión, aunque git-cliff sí lo lea para agrupar el CHANGELOG. La clase de fallo queda abierta en #2081.
+- **Release:** **v3.0.0**, tag sobre `63d912ae` (2026-10-20). Es 3.0.0 y no 2.14.0 porque la retirada es una ruptura; el número llegó ahí por un commit de declaración explícito (#2077, `chore(release)!:` mergeado con `--merge`), no por el commit del borrado: el squash descarta el `!` del título del PR y release-plz ignora el footer `BREAKING CHANGE:` para el cálculo de versión, aunque git-cliff sí lo lea para agrupar el CHANGELOG. La clase de fallo quedó registrada en #2081 y cerrada en #2085.
 - **Ventana de soporte:** rotada en #2082 — 3.0 STABLE, 2.13 MAINTENANCE, 2.12 EOL.
+
+### Desviación: el major salió sin `release/3.0` y sin RC
+
+Este addendum cuenta la entrega; también tiene que contar lo que **no** se hizo, porque el registro limpio de arriba sugiere un camino que no fue el que se recorrió.
+
+`AGENTS.md` pide dos cosas al cortar un MAJOR, y son de naturaleza distinta:
+
+- **`release/X.Y` es regla dura, sin condición:** "MAJOR → always cuts `release/X.Y`". **No se cortó.** Es una desviación.
+- **El RC es discrecional, pero de este caso:** "`vX.Y.0-rc.N` ... only when the maintainer declares a stabilization window (state migrations, export format, major AI (embedding-provider) changes)". La retirada del proveedor de embeddings es exactamente uno de los casos listados, y nadie declaró ventana. No es una regla incumplida: es una decisión que no se tomó.
+
+Por qué ocurrió, en orden:
+
+1. `release-plz` estaba roto desde #2072 —`release-plz.toml` seguía nombrando el crate borrado—, así que no había ningún tag posible hasta #2077.
+2. El número 3.0.0 no salió del commit del borrado sino de un commit de declaración mergeado con `--merge` (#2077): el squash descarta el `!` y release-plz ignora el footer `BREAKING CHANGE:` para calcular versión (#2081).
+3. La rotación de `support.json` debe ocurrir inmediatamente después del tag: cualquier otra PR entre el tag y la rotación falla `Validate PR metadata`. Cortar `release/3.0` como paso previo exigía meter una PR exactamente en la ventana que no la admite.
+
+**Consecuencia real:** el major no tuvo *soak*. La primera build publicada de 3.0.0 fue la definitiva. Lo que sí se verificó antes de anunciarla: `Release-plz release` en verde y los 14 assets del GitHub Release presentes — evidencia de que la release se publicó completa, no de que el major fuera estable.
+
+**Qué es reversible y qué no.** `release/3.0` todavía se puede cortar desde el tag si en algún momento hace falta una línea de mantenimiento para 3.0. Un `v3.0.0-rc.N` **no** se puede retrofitear: el soak sólo sirve antes de publicar.
+
+**Causa raíz del punto 2, cerrada:** #2085 hace que `merge-when-green.sh` se niegue a squash-ear cuando el título o un commit declara ruptura. La próxima declaración de major no depende de que quien mergea se acuerde de pasar `--merge`.
 
 ## Glosario de referencias (IDs opacos)
 
