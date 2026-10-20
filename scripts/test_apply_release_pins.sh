@@ -73,6 +73,23 @@ emit() { # emit <json> [<jq-expr>]
   if [[ -n "${2:-}" ]]; then printf '%s' "$1" | jq -r "$2"; else printf '%s\n' "$1"; fi
 }
 
+# expose_requested <json> <fields>: gh exposes ONLY the fields requested with
+# --json to the --jq expression. A field that was not requested evaluates to
+# null, and gh does NOT error — it just yields nothing (measured against gh
+# 2.x: `--json number --jq 'select(.isCrossRepository == false)'` exits 0 with
+# empty output). Emulating that is what keeps this harness honest about the
+# field set the orchestrator asks for: a regression that stops requesting a
+# field it reads has to fail here, not in production.
+expose_requested() {
+  local json="$1" fields="$2"
+  local requested
+  requested="$(printf '%s' "$fields" | tr ',' '\n' | jq -Rsc 'split("\n") | map(select(length > 0))')"
+  printf '%s' "$json" | jq -c --argjson req "$requested" \
+    'if type == "array"
+     then [.[] | with_entries(select(.key as $k | $req | index($k)))]
+     else with_entries(select(.key as $k | $req | index($k))) end'
+}
+
 case "${1:-}" in
   pr)
     sub="${2:-}"
@@ -98,13 +115,17 @@ case "${1:-}" in
           json="$(printf '%s' "$json" | jq -c --arg s "$state_filter" \
             '[.[] | select((.state | ascii_downcase) == ($s | ascii_downcase))]')"
         fi
-        if [[ -n $jqexpr ]]; then printf '%s' "$json" | jq -r "$jqexpr"; else printf '%s\n' "$json"; fi
+        if [[ -n $jqexpr ]]; then
+          printf '%s' "$(expose_requested "$json" "$fields")" | jq -r "$jqexpr"
+        else
+          printf '%s\n' "$json"
+        fi
         ;;
       view)
         [[ -f "$state/prs.json" ]] || { echo "fake gh: missing prs.json fixture" >&2; exit 99; }
         pr_state="$(jq -r --argjson n "${pr_number:-0}" \
           '[.[] | select(.number == $n)][0].state // "OPEN"' "$state/prs.json")"
-        emit "{\"number\":${pr_number:-0},\"state\":\"$pr_state\"}" "$jqexpr"
+        emit "$(expose_requested "{\"number\":${pr_number:-0},\"state\":\"$pr_state\"}" "$fields")" "$jqexpr"
         ;;
       *) echo "fake gh: unhandled pr $sub" >&2; exit 99 ;;
     esac
@@ -229,7 +250,7 @@ remote_commit_count() {
 # human committed the pins — and release-plz deleted that commit on the next
 # push to `main`, so the PR came back red every time.
 D="$(setup_release_repo happy 3.0.1 3.0.0)"
-write_prs '[{"number":42,"headRefName":"chore/release-3.0.1","updatedAt":"2026-10-20T10:00:00Z","state":"OPEN"}]'
+write_prs '[{"number":42,"headRefName":"chore/release-3.0.1","updatedAt":"2026-10-20T10:00:00Z","isCrossRepository":false,"state":"OPEN"}]'
 BEFORE_SHA="$(remote_branch_sha "$D" 3.0.1)"
 BEFORE_COUNT="$(remote_commit_count "$D" 3.0.1)"
 if run_orchestrator "$D"; then
@@ -281,7 +302,7 @@ fi
 # outcome; a flow that treated it as an error would red every push to `main`
 # that carries no version bump.
 D="$(setup_release_repo no-pr 3.0.1 3.0.0)"
-write_prs '[{"number":42,"headRefName":"chore/release-3.0.1","updatedAt":"2026-10-20T10:00:00Z","state":"CLOSED"}]'
+write_prs '[{"number":42,"headRefName":"chore/release-3.0.1","updatedAt":"2026-10-20T10:00:00Z","isCrossRepository":false,"state":"CLOSED"}]'
 BEFORE_SHA="$(remote_branch_sha "$D" 3.0.1)"
 if run_orchestrator "$D"; then
   if [[ "$(remote_branch_sha "$D" 3.0.1)" == "$BEFORE_SHA" ]]; then
@@ -297,7 +318,7 @@ fi
 # NEGATION: pre-fix a half-applied bump was indistinguishable from a good
 # one; the branch must stay untouched when the writer cannot decide.
 D="$(setup_release_repo ambiguous 3.0.1 3.0.0 yes)"
-write_prs '[{"number":42,"headRefName":"chore/release-3.0.1","updatedAt":"2026-10-20T10:00:00Z","state":"OPEN"}]'
+write_prs '[{"number":42,"headRefName":"chore/release-3.0.1","updatedAt":"2026-10-20T10:00:00Z","isCrossRepository":false,"state":"OPEN"}]'
 BEFORE_SHA="$(remote_branch_sha "$D" 3.0.1)"
 BEFORE_COUNT="$(remote_commit_count "$D" 3.0.1)"
 if run_orchestrator "$D"; then
@@ -317,8 +338,8 @@ fi
 # NEGATION: pre-fix nothing selected a Release PR at all; picking the first
 # match would rewrite a branch that is not the release being prepared.
 D="$(setup_release_repo pick-latest 3.0.1 3.0.0)"
-write_prs '[{"number":41,"headRefName":"chore/release-3.0.1","updatedAt":"2026-10-19T10:00:00Z","state":"OPEN"},
-           {"number":42,"headRefName":"chore/release-3.0.1","updatedAt":"2026-10-20T10:00:00Z","state":"OPEN"}]'
+write_prs '[{"number":41,"headRefName":"chore/release-3.0.1","updatedAt":"2026-10-19T10:00:00Z","isCrossRepository":false,"state":"OPEN"},
+           {"number":42,"headRefName":"chore/release-3.0.1","updatedAt":"2026-10-20T10:00:00Z","isCrossRepository":false,"state":"OPEN"}]'
 if run_orchestrator "$D"; then
   if grep -q '#42' "$WORK/stdout" "$WORK/stderr"; then
     pass "(e) the most recently updated Release PR is the one that gets bumped"
@@ -335,7 +356,7 @@ fi
 # NEGATION: pre-fix nothing re-read the PR before pushing; a push to a merged
 # branch reopens a release that was already done.
 D="$(setup_release_repo closed-pr 3.0.1 3.0.0)"
-write_prs '[{"number":42,"headRefName":"chore/release-3.0.1","updatedAt":"2026-10-20T10:00:00Z","state":"MERGED"}]'
+write_prs '[{"number":42,"headRefName":"chore/release-3.0.1","updatedAt":"2026-10-20T10:00:00Z","isCrossRepository":false,"state":"MERGED"}]'
 BEFORE_SHA="$(remote_branch_sha "$D" 3.0.1)"
 if run_orchestrator "$D"; then
   if [[ "$(remote_branch_sha "$D" 3.0.1)" == "$BEFORE_SHA" ]]; then
@@ -357,7 +378,7 @@ fi
 # after every rejection; the flow has to absorb the race itself.
 D="$(setup_release_repo retry-once 3.0.1 3.0.0)"
 install_reject_hook "$D" once
-write_prs '[{"number":42,"headRefName":"chore/release-3.0.1","updatedAt":"2026-10-20T10:00:00Z","state":"OPEN"}]'
+write_prs '[{"number":42,"headRefName":"chore/release-3.0.1","updatedAt":"2026-10-20T10:00:00Z","isCrossRepository":false,"state":"OPEN"}]'
 BEFORE_COUNT="$(remote_commit_count "$D" 3.0.1)"
 if run_orchestrator "$D"; then
   README_PIN="$(git -C "$D/remote.git" show "refs/heads/chore/release-3.0.1:README.md")"
@@ -381,7 +402,7 @@ fi
 # the failure has to name itself inside the flow.
 D="$(setup_release_repo retry-twice 3.0.1 3.0.0)"
 install_reject_hook "$D" always
-write_prs '[{"number":42,"headRefName":"chore/release-3.0.1","updatedAt":"2026-10-20T10:00:00Z","state":"OPEN"}]'
+write_prs '[{"number":42,"headRefName":"chore/release-3.0.1","updatedAt":"2026-10-20T10:00:00Z","isCrossRepository":false,"state":"OPEN"}]'
 BEFORE_SHA="$(remote_branch_sha "$D" 3.0.1)"
 if run_orchestrator "$D"; then
   fail "(h) a push rejected twice exits non-zero"
@@ -403,7 +424,7 @@ fi
 # writing the token into the remote URL or into `.git/config` would leak it
 # into every later git invocation of that runner.
 D="$(setup_release_repo auth-hygiene 3.0.1 3.0.0 no file)"
-write_prs '[{"number":42,"headRefName":"chore/release-3.0.1","updatedAt":"2026-10-20T10:00:00Z","state":"OPEN"}]'
+write_prs '[{"number":42,"headRefName":"chore/release-3.0.1","updatedAt":"2026-10-20T10:00:00Z","isCrossRepository":false,"state":"OPEN"}]'
 TOKEN="ghs_LEAKCHECK_TOKEN_abc123"
 if run_orchestrator "$D" "$TOKEN"; then
   PUSH_URL="$(git -C "$D/clone" remote get-url --push origin)"
@@ -435,7 +456,7 @@ fi
 # NEGATION: pre-fix nothing authenticated at all; a silent skip would leave
 # the Release PR red with no clue why.
 D="$(setup_release_repo no-token 3.0.1 3.0.0 no file)"
-write_prs '[{"number":42,"headRefName":"chore/release-3.0.1","updatedAt":"2026-10-20T10:00:00Z","state":"OPEN"}]'
+write_prs '[{"number":42,"headRefName":"chore/release-3.0.1","updatedAt":"2026-10-20T10:00:00Z","isCrossRepository":false,"state":"OPEN"}]'
 BEFORE_SHA="$(remote_branch_sha "$D" 3.0.1)"
 if run_orchestrator "$D" ""; then
   fail "(j) a remote that is not local without a token exits non-zero"
@@ -446,6 +467,54 @@ else
   else
     fail "(j) a remote that is not local without a token fails closed naming the reason ($(cat "$WORK/stderr"))"
   fi
+fi
+
+# ─── (k) a fork pull request cannot hijack the Release PR branch ─────────────
+# `gh pr list` returns the pull requests opened AGAINST this repository, and
+# that includes the ones whose head lives in a FORK. A fork branch named
+# `chore/release-*` wins the most-recently-updated comparison, and its ref
+# does not exist in our remote: the fetch fails, the script exits through the
+# fail-closed path and the release job dies on EVERY run while that pull
+# request stays open — and the real Release PR never gets its pins, so the
+# defect this flow exists to remove comes back.
+# NEGATION: pre-fix the selection ignored where the head branch lived.
+D="$(setup_release_repo fork-pr 3.0.1 3.0.0)"
+write_prs '[{"number":42,"headRefName":"chore/release-3.0.1","updatedAt":"2026-10-20T10:00:00Z","isCrossRepository":false,"state":"OPEN"},
+           {"number":77,"headRefName":"chore/release-fork","updatedAt":"2026-10-20T12:00:00Z","isCrossRepository":true,"state":"OPEN"}]'
+BEFORE_SHA="$(remote_branch_sha "$D" 3.0.1)"
+if run_orchestrator "$D"; then
+  README_PIN="$(git -C "$D/remote.git" show "refs/heads/chore/release-3.0.1:README.md")"
+  if [[ "$README_PIN" == *"VERSION=v3.0.1"* \
+    && "$(remote_branch_sha "$D" 3.0.1)" != "$BEFORE_SHA" ]]; then
+    pass "(k) the branch of THIS repository gets the pins even when a fork PR carries the prefix"
+  else
+    fail "(k) the branch of THIS repository gets the pins even when a fork PR carries the prefix ($README_PIN)"
+  fi
+  if grep -qE 'Release PR #42' "$WORK/stdout" && ! grep -qE 'Release PR #77' "$WORK/stdout"; then
+    pass "(k) the fork pull request is never the one that gets bumped"
+  else
+    fail "(k) the fork pull request is never the one that gets bumped ($(cat "$WORK/stdout"))"
+  fi
+else
+  fail "(k) the branch of THIS repository gets the pins even when a fork PR carries the prefix ($(cat "$WORK/stderr"))"
+fi
+
+# ─── (l) a head branch whose repository cannot be verified is not touched ───
+# The field that says where the head lives is what keeps a fork out. If it
+# cannot be read, the selection must not guess: an unverifiable branch is not
+# bumped, and the flow says so instead of failing silently.
+# NEGATION: pre-fix an unverifiable head would have been bumped like any other.
+D="$(setup_release_repo unknown-head 3.0.1 3.0.0)"
+write_prs '[{"number":42,"headRefName":"chore/release-3.0.1","updatedAt":"2026-10-20T10:00:00Z","isCrossRepository":null,"state":"OPEN"}]'
+BEFORE_SHA="$(remote_branch_sha "$D" 3.0.1)"
+if run_orchestrator "$D"; then
+  if [[ "$(remote_branch_sha "$D" 3.0.1)" == "$BEFORE_SHA" ]]; then
+    pass "(l) an unverifiable head repository leaves the branch untouched"
+  else
+    fail "(l) an unverifiable head repository leaves the branch untouched"
+  fi
+else
+  fail "(l) an unverifiable head repository leaves the branch untouched ($(cat "$WORK/stderr"))"
 fi
 
 printf '\nharness: %d ok, %d fail\n' "$PASSED" "$FAILED"
