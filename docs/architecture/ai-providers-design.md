@@ -50,7 +50,7 @@
 Enum que describe de dónde se obtiene la API key de un provider:
 
 ```rust
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(tag = "source", rename_all = "snake_case")]
 pub enum AuthSource {
     /// Credencial en keyring del sistema (libsecret / macOS keychain / Windows Credential Manager)
@@ -59,14 +59,27 @@ pub enum AuthSource {
     EncryptedFile { path: PathBuf },
     /// Credencial en variable de entorno (legacy, solo CI o desarrollo)
     Env { var: String },
+    /// Sin credencial: el endpoint es anónimo por diseño (B1).
+    ///
+    /// Existe para que un endpoint local sin key (Ollama, LM Studio, un
+    /// servidor de embeddings propio) sea expresable.
+    None,
 }
 ```
 
+Implementado en `crates/webfang_core/src/domain/auth_source.rs:58`; la variante `None`
+está en `:102`.
+
 **Decisiones de diseño:**
 
-- **`Default::Keyring`** — el default es keyring, no env. Esto evita que los usuarios nuevos inherited el hábito de "poner la key en una variable de entorno" como práctica canónica.
+- **`None` es una fuente declarada, no una ausencia.** El campo `auth` sigue siendo
+  obligatorio en el fichero de configuración: `{"source": "none"}` es una afirmación
+  explícita, y su ausencia sigue siendo un error de parseo. Antes de esta variante,
+  `resolve()` no tenía retorno "sin credencial", y un endpoint anónimo era
+  inexpresable por construcción.
 - **Sin `Inline` en v1** — escribir la key literalmente en un archivo de config (aunque sea TOML cifrado con age) es un riesgo de seguridad que no tenemos mitigación real para (un warning de log es absolución, no mitigación; alguien apurado lo ignorará). Si en el futuro se justifica, entrará con `SecretString` y discusión propia.
 - **Sin fallback implícito** — un `AuthSource::Keyring` fallando NO intenta `EncryptedFile` ni `Env`. El usuario tiene que configurar explícitamente qué fuente usar, y si esa fuente falla, falla explícitamente con el error de esa fuente. Esto es intencional: un fallback silencioso `Keyring → EncryptedFile → Env` significaría que un usuario cree estar usando keyring y termina en env var sin saberlo, heredando una vulnerabilidad.
+- **Sin `Default` implementado** — `AuthSource` no implementa `Default`: el fichero de configuración exige un bloque `auth` explícito. Lo que existe es una *recomendación* de setup (`DetectedStore::recommendation`, `crates/webfang_core/src/domain/local_secret_store.rs:37`): `EncryptedFile` (age) en Linux siempre —el keyring del kernel es solo en memoria y se pierde al reiniciar— y `Keyring` en macOS/Windows cuando el almacén está disponible. La variable de entorno nunca es la recomendación, precisamente para no instalar el hábito de "poner la key en una variable de entorno" como práctica canónica.
 
 ### 2. `AuthError` — errores de resolución de credencial
 
@@ -77,8 +90,16 @@ pub enum AuthError {
     KeyringUnavailable,
     #[error("no se encontró credencial para {service}/{account}")]
     CredentialNotFound { service: String, account: String },
+    #[error("error del keyring: {0}")]
+    KeyringFailure(String),
     #[error("archivo de credenciales no encontrado: {0}")]
     FileNotFound(PathBuf),
+    #[error("no se pudo leer el archivo de credenciales {0}: {1}")]
+    FileRead(PathBuf, String),
+    #[error("no se pudo descifrar el archivo de credenciales {0}: {1}")]
+    Decrypt(PathBuf, String),
+    #[error("formato de credencial inválido en {0}")]
+    FileFormat(PathBuf),
     #[error("variable de entorno {0} no configurada")]
     EnvNotSet(String),
     #[error("credencial inválida: {0}")]
@@ -86,65 +107,101 @@ pub enum AuthError {
 }
 ```
 
+Implementado en `crates/webfang_core/src/domain/auth_source.rs`: los cuatro fallos
+`FileNotFound`/`FileRead`/`Decrypt`/`FileFormat` son del mismo archivo cifrado, pero son
+errores distintos y se reportan por separado: "no existe" no es "no se pudo leer" ni "no
+se pudo descifrar".
+
 ### 3. `AuthSource::resolve()` — obtener la credencial
 
 ```rust
 impl AuthSource {
-    pub fn resolve(&self) -> Result<ApiKey, AuthError> {
+    pub fn resolve(&self) -> Result<Option<ApiKey>, AuthError> {
         match self {
-            Self::Keyring { service, account } => resolve_keyring(*service, *account),
-            Self::EncryptedFile { path } => resolve_encrypted_file(path),
-            Self::Env { var } => resolve_env(var),
+            Self::None => Ok(None),
+            Self::Keyring { service, account } => resolve_keyring(service, account).map(Some),
+            Self::EncryptedFile { path } => resolve_encrypted_file(path).map(Some),
+            Self::Env { var } => resolve_env(var).map(Some),
         }
     }
 }
 ```
+
+Firma real: `pub fn resolve(&self) -> Result<Option<ApiKey>, AuthError>`
+(`crates/webfang_core/src/domain/auth_source.rs:118`). El `Option` del retorno es
+load-bearing: `Ok(None)` significa **"este endpoint es anónimo"** y solo la variante
+`None` lo produce; `Err` significa que había una credencial configurada y no se pudo
+resolver. Nunca se sintetiza una cabecera `Authorization` vacía —la ausencia de
+credencial se expresa como ausencia de cabecera.
 
 Cada variante maneja su propia lógica de resolución y retorna `AuthError` específico si falla. No hay orchestrator que intente la siguiente fuente.
 
 ### 4. `ProvidersConfig` — configuración de proveedores
 
 ```rust
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct ProvidersConfig {
     pub providers: Vec<ProviderConfig>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ProviderConfig {
     pub id: String,
+    pub display_name: String,          // nombre legible del provider
     pub kind: ProviderKind,
     pub base_url: Url,
     pub auth: AuthSource,
     pub capabilities: Vec<Capability>,
-    pub model: Option<String>,       // modelo por defecto para este provider
-    pub embedding_dim: Option<usize>, // dimensión explícita (si difiere del modelo por defecto)
+    pub model: Option<String>,         // modelo por defecto para este provider
+    #[serde(default, deserialize_with = "deserialize_dim_no_null")]
+    pub embedding_dim: Option<usize>,  // dimensión explícita (si difiere del modelo por defecto)
+    #[serde(default)]
+    pub allow_loopback: bool,          // habilita dials a loopback (127.0.0.1 / ::1)
+    #[serde(default)]
+    pub network_policy: NetworkPolicy, // allowlist por CIDR/host (mode: "allowlist")
 }
 ```
+
+Implementado en `crates/webfang_core/src/domain/providers.rs:79`. Los `#[serde(default)]`
+no son decorativos: `allow_loopback` y `network_policy` son opcionales en el fichero, así
+que ausentes significan `false` y la política por defecto (`NetworkPolicyMode::Restricted`:
+solo endpoints públicos, con el loopback gobernado únicamente por `allow_loopback`), y un
+`null` explícito es un error de deserialización, nunca un "adopta el valor por defecto"
+silencioso. `embedding_dim` lleva además `deserialize_with = "deserialize_dim_no_null"`
+por el mismo motivo. `allow_loopback` **no** tiene flag de CLI a propósito —los flags se
+filtran a la lista de procesos y relajarían una protección SSRF—: la decisión viaja por
+cliente, nunca como estado del registry.
 
 Donde:
 
 ```rust
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ProviderKind {
     OpenAiCompatible,   // OpenAI-compatible API (OpenAI, OpenRouter, FreeLLM, Groq, Together, Ollama)
     // NOTA ADR-0004 paso 6: la variante LocalOnnx propuesta aquí quedó sin base
-    // (no queda `InferencePool` que reutilizar); si el registro aterriza, llega
-    // sin la variante local o con un ADR nuevo.
+    // (no queda `InferencePool` que reutilizar); se eliminó del código en el
+    // mismo paso que borró el crate `webfang_ai`.
 }
 
-#[derive(Debug, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Capability {
     Embedding,
     Completion,
 }
 ```
 
+El `rename_all = "snake_case"` no es cosmético: es lo que produce las claves
+`open_ai_compatible` y `embedding` en el fichero de configuración. Sin él, el mismo
+código serializa con otro casing y la config deja de parsear.
+
 ### 5. `ProviderRegistry` — registro de proveedores por ID
 
 ```rust
 pub struct ProviderRegistry {
-    providers: Vec<ProviderConfig>,
+    config: ProvidersConfig,
 }
 ```
 
@@ -166,13 +223,13 @@ impl ProviderRegistry {
 }
 ```
 
-Verificado en `crates/webfang_core/src/domain/providers.rs:251` (companions en `:305` y `:322`), con `RegistryError::ProviderNotFound` en `:58` y `RegistryError::CapabilityMismatch` en `:64`.
+Verificado en `crates/webfang_core/src/domain/providers.rs:255` (companions en `:309` y `:327`), con `RegistryError::ProviderNotFound` en `:62` y `RegistryError::CapabilityMismatch` en `:68`.
 
 **El registry devuelve una referencia a la config, no un port.** La construcción del adapter —y por tanto el `Arc<dyn EmbeddingPort>` / `Arc<dyn LlmPort>`— ocurre en la capa de binario, no aquí: `build_llm_provider` / `build_embedding_provider` en `crates/webfang_core/src/cli/llm_wire.rs`. Esa separación es deliberada: el dominio no sabe qué adapter concreto implementa cada `ProviderKind`.
 
-Las capacidades no necesitan un método propio: se leen de `ProviderConfig.capabilities` (`Vec<Capability>`, `providers.rs:87`), y `resolve()` valida contra esa lista antes de devolver la config. El diseño no incluye un accessor de capacidades separado.
+Las capacidades no necesitan un método propio: se leen de `ProviderConfig.capabilities` (`Vec<Capability>`, `providers.rs:91`), y `resolve()` valida contra esa lista antes de devolver la config. El diseño no incluye un accessor de capacidades separado.
 
-Esto permite que un caller existente (ej. `VaultSearchService`) resuelva embeddings directamente sin pasar por un handle genérico que debe ser desechado en el uso correcto.
+Esto permite que un caller resuelva un provider por slot (capabilidad) sin pasar por un handle genérico. Los consumidores reales del registry son la resolución de la config de embeddings (`crates/webfang_core/src/cli/llm_wire.rs:97` y `:103`) y el diagnóstico de `webfang doctor` (`crates/webfang_core/src/cli/commands/doctor.rs:59` y `:70`). `VaultSearchService` **no** es uno de ellos: recibe su `Arc<dyn EmbeddingPort>` por inyección al construirse (`crates/webfang_core/src/application/vault_search.rs:65`) y nunca consulta el registry — citarlo como consumidor del registry sería falso.
 
 ### 6. `TenantAiContext` — contexto multi-tenant
 
@@ -193,8 +250,14 @@ pub struct DetectedStore {
     pub keyring_available: bool,
     pub encrypted_file_path: Option<PathBuf>,
     pub env_vars_detected: Vec<String>,
+    pub recommendation: AuthSource, // fuente recomendada para guardar la próxima credencial
 }
 ```
+
+`recommendation` (`crates/webfang_core/src/domain/local_secret_store.rs:37`) es la fuente
+que el setup sugiere al usuario: `EncryptedFile` (age) en Linux siempre —el keyring del
+kernel es solo en memoria y se pierde al reiniciar— y `Keyring` en macOS/Windows cuando el
+almacén del sistema está disponible.
 
 **No es un runtime resolver.** Durante la ejecución normal, `AuthSource::resolve()` es quien obtiene las credenciales. `DetectedStore::detect()` solo se usa en el wizard de setup inicial para guiar al usuario.
 
