@@ -115,12 +115,18 @@ FAKE
 chmod +x "$BIN/gh"
 
 # ─── Fixtures ───────────────────────────────────────────────────────────────
-# setup_release_repo <name> <workspace-version> <stale-pin> [ambiguous]
+# setup_release_repo <name> <workspace-version> <stale-pin> [ambiguous] [remote-style]
 # Builds a bare remote plus a clone whose `chore/release-*` branch carries a
 # BUMPED workspace version and a STALE pin — the exact state a Release PR is in
 # right after release-plz regenerates it.
+#
+# `remote-style` is `path` (default) or `file`. The distinction is not
+# cosmetic: a bare path is a LOCAL remote (no credentials needed), while a
+# `file://` URL is a network-shaped remote, so the orchestrator takes the
+# credentialed path — the one that has to authenticate and therefore the one
+# where a token could leak.
 setup_release_repo() {
-  local name="$1" version="$2" pin="$3" ambiguous="${4:-no}"
+  local name="$1" version="$2" pin="$3" ambiguous="${4:-no}" remote_style="${5:-path}"
   local dir="$WORK/$name"
 
   mkdir -p "$dir/clone/scripts" "$dir/clone/docs/src"
@@ -147,7 +153,11 @@ EOF
 
   git init -q --bare "$dir/remote.git"
   git init -q -b main "$dir/clone"
-  git -C "$dir/clone" remote add origin "$dir/remote.git"
+  if [[ "$remote_style" == "file" ]]; then
+    git -C "$dir/clone" remote add origin "file://$dir/remote.git"
+  else
+    git -C "$dir/clone" remote add origin "$dir/remote.git"
+  fi
   git -C "$dir/clone" add -A
   git -C "$dir/clone" -c user.name=seed -c user.email=seed@example.com \
     -c commit.gpgsign=false commit -q -m "seed: release branch with a bumped workspace version"
@@ -187,9 +197,11 @@ HOOK
   chmod +x "$dir/remote.git/hooks/pre-receive"
 }
 
-# run_orchestrator <clone-dir>: the orchestrator, offline, against the fixture.
+# run_orchestrator <clone-dir> [token]: the orchestrator, offline, against the
+# fixture. The token is the credential the real flow uses (the App token); it
+# is passed empty to exercise the "no credential" path.
 run_orchestrator() {
-  local dir="$1"
+  local dir="$1" token="${2:-}"
   (
     cd "$dir" || exit 1
     PATH="$BIN:$PATH" \
@@ -197,6 +209,7 @@ run_orchestrator() {
       RELEASE_PINS_REPO_ROOT="$dir/clone" \
       RELEASE_PINS_BRANCH_PREFIX="chore/release-" \
       RELEASE_PINS_REMOTE="origin" \
+      GITHUB_TOKEN="$token" \
       bash "$dir/clone/scripts/apply_release_pins.sh" >"$WORK/stdout" 2>"$WORK/stderr"
   )
 }
@@ -377,6 +390,61 @@ else
     pass "(h) a push rejected twice exits non-zero and the branch is untouched"
   else
     fail "(h) a push rejected twice exits non-zero and the branch is untouched"
+  fi
+fi
+
+# ─── (i) the token never lands in the repo ──────────────────────────────────
+# The credential travels in a per-invocation `http.extraheader`, so it must
+# not survive the push: not in the remote URL, not in `.git/config`, and not
+# anywhere under `.git/`. A leak here is invisible in the log — the whole
+# point of the per-invocation header is that nothing persists — so the only
+# way to know is to look for the token AFTER a successful push.
+# NEGATION: pre-fix there was no push at all; a flow that authenticated by
+# writing the token into the remote URL or into `.git/config` would leak it
+# into every later git invocation of that runner.
+D="$(setup_release_repo auth-hygiene 3.0.1 3.0.0 no file)"
+write_prs '[{"number":42,"headRefName":"chore/release-3.0.1","updatedAt":"2026-10-20T10:00:00Z","state":"OPEN"}]'
+TOKEN="ghs_LEAKCHECK_TOKEN_abc123"
+if run_orchestrator "$D" "$TOKEN"; then
+  PUSH_URL="$(git -C "$D/clone" remote get-url --push origin)"
+  PERSISTED_HEADER="$(git -C "$D/clone" config --get-all http.extraheader 2>/dev/null || true)"
+  LEAKS="$(grep -rlF "$TOKEN" "$D/clone/.git" 2>/dev/null || true)"
+  if [[ "$PUSH_URL" != *"$TOKEN"* && -z $PERSISTED_HEADER && -z $LEAKS ]]; then
+    pass "(i) the token reaches neither the remote URL nor .git/config nor .git/"
+  else
+    fail "(i) the token reaches neither the remote URL nor .git/config nor .git/ (url=$PUSH_URL header=$PERSISTED_HEADER leaked=${LEAKS:-none})"
+  fi
+  # The throwaway worktree must not survive the run: a leftover one keeps a
+  # checkout of the release branch on the runner and shows up in
+  # `git worktree list` for every later job on that runner.
+  WORKTREE_COUNT="$(git -C "$D/clone" worktree list | wc -l)"
+  if [[ "$WORKTREE_COUNT" -eq 1 ]]; then
+    pass "(i) no temporary worktree survives the run"
+  else
+    fail "(i) no temporary worktree survives the run (worktrees=$WORKTREE_COUNT)"
+  fi
+else
+  fail "(i) the credentialed path exits 0 ($(cat "$WORK/stderr"))"
+fi
+
+# ─── (j) a network-shaped remote without a token fails closed ──────────────
+# The App token is not optional: a push without it would not deliver the
+# `pull_request` event, so the Release PR head SHA would sit without checks
+# and branch protection would block the merge. The failure has to name
+# itself instead of pushing an unauthenticated branch.
+# NEGATION: pre-fix nothing authenticated at all; a silent skip would leave
+# the Release PR red with no clue why.
+D="$(setup_release_repo no-token 3.0.1 3.0.0 no file)"
+write_prs '[{"number":42,"headRefName":"chore/release-3.0.1","updatedAt":"2026-10-20T10:00:00Z","state":"OPEN"}]'
+BEFORE_SHA="$(remote_branch_sha "$D" 3.0.1)"
+if run_orchestrator "$D" ""; then
+  fail "(j) a remote that is not local without a token exits non-zero"
+else
+  if grep -qF "GITHUB_TOKEN is empty" "$WORK/stderr" \
+    && [[ "$(remote_branch_sha "$D" 3.0.1)" == "$BEFORE_SHA" ]]; then
+    pass "(j) a remote that is not local without a token fails closed naming the reason"
+  else
+    fail "(j) a remote that is not local without a token fails closed naming the reason ($(cat "$WORK/stderr"))"
   fi
 fi
 

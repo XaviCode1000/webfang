@@ -347,3 +347,24 @@ existan para poder referenciarlos).
   guard expande `$HOME` pero no `$TREE`: el bootstrap correcto lo sustituye al
   escribir. Corregido a `export CARGO_TARGET_DIR=$HOME/.cache/cargo-target/fix-release-pins`
   (con `$HOME` literal) → el fast gate cae en la lane CI-only y da GREEN.
+- **L12** (2026-10-20, verificador independiente) — Verificación independiente
+  (read-only, `gentle-ai-verify`): **0 blockers**. S1–S9 MET. Evidencia propia
+  del verificador: el gate reproduce el defecto #2028 también en el baseline
+  `3e315e64`; el escritor deja byte-idéntico el árbol cuando aborta por línea
+  ambigua; el hash md5 de 1024 archivos sólo cambia en `README.md` y
+  `docs/src/installation.md`; **0 fugas de token** (URL del remote, `.git/config`
+  y barrido de `.git/`); el cuerpo ejecutable de `check_docs_version_pins.sh`
+  tiene sha256 idéntico al baseline (`293c5d87…`) — sólo cambió el header; y
+  **8 mutaciones propias** del wiring (paso borrado, token cambiado, paso
+  reordenado antes de `Run release-plz`, harness borrado, `paths:`, `if:`,
+  trigger angosto, `run_step` borrado) hacen fallar el harness de wiring.
+  Un advisory: la higiene del token y la ausencia de worktree residual **no
+  estaban pineadas por ningún harness** (el verificador las comprobó a mano).
+- **L13** (2026-10-20, padre) — Advisory cerrado: el harness del orquestador
+  (`scripts/test_apply_release_pins.sh`) suma tres casos — (i) el token no
+  llega a la URL del remote ni a `.git/config` ni a `.git/`, y no queda
+  worktree temporal registrado; (j) un remote con forma de red sin token falla
+  cerrado nombrando el motivo. No-vacuidad verificada por mutación: header
+  persistido en `.git/config` → falla (i); worktree no borrado → falla (i);
+  chequeo de token vacío eliminado → falla (j); control sin mutación → verde.
+  Harness: `14 ok, 0 fail`.
