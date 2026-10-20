@@ -164,14 +164,37 @@ case "$SUBCOMMAND" in
     fi
 
     # ========================================================================
-    # L1.2 Version — root Cargo.toml version must equal tag version.
+    # L1.2 Version — root Cargo.toml version must equal the tag version EXACTLY.
+    #
+    # Invariant: tag version == Cargo.toml version, both taken VERBATIM, with no
+    # suffix stripped or normalized on either side. release-plz owns the tag and
+    # emits v{version} verbatim (release-plz.toml: git_tag_name = "v{{ version }}"),
+    # so a tag and its manifest always carry the SAME full semver, prerelease
+    # suffix included. A tag therefore validates exactly ONE manifest.
+    #
+    # The old comparison stripped -rc.* from the TAG only and compared base
+    # versions. That asymmetry was wrong in BOTH directions (audit B5, 2026-10-18):
+    #   * vX.Y.Z-rc.N against its CORRECT manifest X.Y.Z-rc.N was REJECTED
+    #     (false reject — blocked every legitimate RC release), and
+    #   * vX.Y.Z-rc.N against a STABLE manifest X.Y.Z was ACCEPTED (false accept —
+    #     a release candidate certified a stable build, then published as an RC
+    #     release of a version the manifest never declared).
+    # Exact equality is the control; there is no "close enough" version.
     # ========================================================================
     cargo_version="$(grep -m1 '^version' "$REPO_ROOT/Cargo.toml" | sed -E 's/version = "(.*)"/\1/')"
     tag_version="${PROV_TAG#v}"
-    tag_version="${tag_version%-rc.*}"
 
     if [[ "$tag_version" != "$cargo_version" ]]; then
-      echo "::error::L1.2 Version: tag '$PROV_TAG' version '$tag_version' != Cargo.toml '$cargo_version'" >&2
+      # Name the grammar divergence when either side is an RC: it is the failure
+      # the old asymmetric strip hid, and a bare "version mismatch" would not tell
+      # that operator that the suffix itself is the problem.
+      if [[ "$PROV_TAG" =~ -rc\.[0-9]+$ ]]; then
+        echo "::error::L1.2 Version: tag '$PROV_TAG' is a release candidate but Cargo.toml says '$cargo_version' — RC/stable divergence: release-plz tags v{version} verbatim, so tag and manifest must carry the same full semver and an RC tag must never validate a stable manifest" >&2
+      elif [[ "$cargo_version" =~ -rc\.[0-9]+$ ]]; then
+        echo "::error::L1.2 Version: tag '$PROV_TAG' is stable but Cargo.toml says '$cargo_version' — RC/stable divergence: tag and manifest must carry the same full semver and a stable tag must never validate a release-candidate manifest" >&2
+      else
+        echo "::error::L1.2 Version: tag '$PROV_TAG' version '$tag_version' != Cargo.toml '$cargo_version'" >&2
+      fi
       exit 1
     fi
 

@@ -36,13 +36,46 @@ BIN="$WORK/bin"
 STATE="$WORK/state"
 mkdir -p "$BIN" "$STATE"
 
-COMPLETE_ASSETS_LINES=(
-  webfang-x86_64-unknown-linux-gnu.tar.gz
-  webfang-aarch64-unknown-linux-gnu.tar.gz
-  webfang-aarch64-apple-darwin.tar.gz
-  webfang-x86_64-pc-windows-msvc.zip
-  SHA256SUMS.txt
-)
+# Asset fixtures are the raw REST shape the completeness probe consumes.
+# ensure-release.sh reads .../releases/<id>/assets and parses it with jq itself
+# (its fake-`gh` arm below cats the fixture verbatim — it does NOT implement
+# --jq), so the fixture must be a JSON array of {name, size} objects.
+# Audit B8: name + size are BOTH load-bearing — an asset present at size 0 is a
+# corrupt upload, not a complete release — and every asset needs its cosign
+# <asset>.sigstore.json bundle, so "complete" is the 7 canonical assets PLUS
+# their 7 bundles. A list of bare names cannot express any of that.
+# write_assets <file> name:size [name:size ...]
+write_assets() {
+  local f="$1"; shift
+  local out="[" first=1 pair n s
+  for pair in "$@"; do
+    n="${pair%:*}"; s="${pair#*:}"
+    (( first )) || out+=",
+  "
+    out+="{\"name\":\"$n\",\"size\":$s}"
+    first=0
+  done
+  printf '%s]\n' "$out" >"$f"
+}
+# The full inventory: the canonical list + every asset's sigstore bundle.
+write_complete_assets() {
+  local f="$1"
+  write_assets "$f" \
+    webfang-x86_64-unknown-linux-gnu.tar.gz:1234 \
+    webfang-x86_64-unknown-linux-gnu.tar.gz.sigstore.json:567 \
+    webfang-aarch64-unknown-linux-gnu.tar.gz:2345 \
+    webfang-aarch64-unknown-linux-gnu.tar.gz.sigstore.json:567 \
+    webfang-aarch64-apple-darwin.tar.gz:3456 \
+    webfang-aarch64-apple-darwin.tar.gz.sigstore.json:567 \
+    webfang-x86_64-pc-windows-msvc.zip:4567 \
+    webfang-x86_64-pc-windows-msvc.zip.sigstore.json:567 \
+    SHA256SUMS.txt:89 \
+    SHA256SUMS.txt.sigstore.json:567 \
+    webfang.spdx.json:1011 \
+    webfang.spdx.json.sigstore.json:567 \
+    THIRD_PARTY_NOTICES.txt:1213 \
+    THIRD_PARTY_NOTICES.txt.sigstore.json:567
+}
 
 # ─── Fake `gh` ───────────────────────────────────────────────────────────────
 # Same contract as the fake in test_release_reconcile.sh (and for the same
@@ -219,7 +252,7 @@ run_reconciler() {
     RELEASE_DISPATCH_BACKOFF_SECONDS=0 \
     bash scripts/reconcile-releases.sh 2>&1 )"
 }
-mark_complete() { printf '%s\n' "${COMPLETE_ASSETS_LINES[@]}" >"$STATE/assets-$1"; }
+mark_complete() { write_complete_assets "$STATE/assets-$1"; }
 dispatched() { [[ -f "$STATE/dispatched" ]] && cat "$STATE/dispatched" || true; }
 dispatched_sha() { [[ -f "$STATE/dispatched_sha" ]] && cat "$STATE/dispatched_sha" || true; }
 summary_text() { cat "$SUMMARY" 2>/dev/null || true; }

@@ -177,15 +177,45 @@ cp "$REPO_ROOT/scripts/release-plz-tags.sh" \
    "$REPO_ROOT/scripts/reconcile-releases.sh" "$FIXTURE/scripts/"
 
 COMPLETE_ASSETS="$STATE/assets-v9.9.9"
-cat >"$COMPLETE_ASSETS" <<'ASSETS'
-webfang-x86_64-unknown-linux-gnu.tar.gz
-webfang-aarch64-unknown-linux-gnu.tar.gz
-webfang-aarch64-apple-darwin.tar.gz
-webfang-x86_64-pc-windows-msvc.zip
-SHA256SUMS.txt
-ASSETS
 
-# ─── Harness ─────────────────────────────────────────────────────────────────
+# Asset fixtures are the raw REST shape the completeness probe consumes
+# (audit B8: name + size are BOTH load-bearing — an asset present at size 0
+# is a corrupt upload, and every asset needs its sigstore bundle).
+# write_assets <file> name:size [name:size ...]
+write_assets() {
+  local f="$1"; shift
+  local out="[" first=1 pair n s
+  for pair in "$@"; do
+    n="${pair%:*}"; s="${pair#*:}"
+    (( first )) || out+=",
+  "
+    out+="{\"name\":\"$n\",\"size\":$s}"
+    first=0
+  done
+  printf '%s]\n' "$out" >"$f"
+}
+# The full inventory: the canonical list + every asset's sigstore bundle.
+write_complete_assets() {
+  local f="$1"
+  write_assets "$f" \
+    webfang-x86_64-unknown-linux-gnu.tar.gz:1234 \
+    webfang-x86_64-unknown-linux-gnu.tar.gz.sigstore.json:567 \
+    webfang-aarch64-unknown-linux-gnu.tar.gz:2345 \
+    webfang-aarch64-unknown-linux-gnu.tar.gz.sigstore.json:567 \
+    webfang-aarch64-apple-darwin.tar.gz:3456 \
+    webfang-aarch64-apple-darwin.tar.gz.sigstore.json:567 \
+    webfang-x86_64-pc-windows-msvc.zip:4567 \
+    webfang-x86_64-pc-windows-msvc.zip.sigstore.json:567 \
+    SHA256SUMS.txt:89 \
+    SHA256SUMS.txt.sigstore.json:567 \
+    webfang.spdx.json:1011 \
+    webfang.spdx.json.sigstore.json:567 \
+    THIRD_PARTY_NOTICES.txt:1213 \
+    THIRD_PARTY_NOTICES.txt.sigstore.json:567
+}
+write_complete_assets "$COMPLETE_ASSETS"
+
+# ─── Harness ──────────────────────────────────────────────────────────────────
 PASS=0
 FAIL=0
 check() {
@@ -236,7 +266,7 @@ check "complete Release -> no dispatch" "" "$(dispatched | tr '\n' ' ' | sed 's/
 # 3. An incomplete Release with two transient failures must still end green after
 #    the retry — and the retry must be observable as three attempts.
 reset_state
-printf '%s\n' "webfang-x86_64-unknown-linux-gnu.tar.gz" >"$COMPLETE_ASSETS"
+write_assets "$COMPLETE_ASSETS" webfang-x86_64-unknown-linux-gnu.tar.gz:1234 webfang-x86_64-unknown-linux-gnu.tar.gz.sigstore.json:567
 printf '2' >"$STATE/fail_remaining"
 if run_fixture ensure-release.sh v9.9.9 >/dev/null 2>&1; then rc=0; else rc=$?; fi
 check "transient failures -> retried to success (exit 0)" "0" "$rc"
@@ -281,16 +311,10 @@ check "sweep -> dispatch carries expected_sha (L1.1 Shape 2)" \
 # 6. The sweep must be idempotent: a second pass over a now-complete Release
 #    dispatches nothing.
 reset_state
-printf '%s\n' "webfang-x86_64-unknown-linux-gnu.tar.gz" >"$COMPLETE_ASSETS"
+write_assets "$COMPLETE_ASSETS" webfang-x86_64-unknown-linux-gnu.tar.gz:1234
 run_fixture reconcile-releases.sh >/dev/null 2>&1 || true
 before="$(dispatched | grep -c . || true)"
-cat >"$COMPLETE_ASSETS" <<'ASSETS'
-webfang-x86_64-unknown-linux-gnu.tar.gz
-webfang-aarch64-unknown-linux-gnu.tar.gz
-webfang-aarch64-apple-darwin.tar.gz
-webfang-x86_64-pc-windows-msvc.zip
-SHA256SUMS.txt
-ASSETS
+write_complete_assets "$COMPLETE_ASSETS"
 run_fixture reconcile-releases.sh >/dev/null 2>&1 || true
 after="$(dispatched | grep -c . || true)"
 check "sweep is idempotent once complete (no new dispatch)" "$before" "$after"
@@ -333,22 +357,56 @@ cp "$REPO_ROOT/scripts/release-tag-trust.sh" "$FIXTURE/scripts/"
 #    fake really models the incident-time asymmetry. Then the behavioural pin:
 #    by-tag empty + by-id complete -> exit 0 and NO dispatch.
 reset_state
-cat >"$COMPLETE_ASSETS" <<'ASSETS'
-webfang-x86_64-unknown-linux-gnu.tar.gz
-webfang-aarch64-unknown-linux-gnu.tar.gz
-webfang-aarch64-apple-darwin.tar.gz
-webfang-x86_64-pc-windows-msvc.zip
-SHA256SUMS.txt
-ASSETS
+write_complete_assets "$COMPLETE_ASSETS"
 bytag_view="$(PATH="$BIN:$PATH" FAKE_STATE="$STATE" \
   gh api repos/owner/repo/releases/tags/v9.9.9 --jq '.assets[].name')"
 check "fixture: by-tag embedded assets empty (incident 394502300)" "" "$bytag_view"
 byid_view="$(PATH="$BIN:$PATH" FAKE_STATE="$STATE" \
   gh api repos/owner/repo/releases/fixture-v9.9.9/assets --jq '.[].name')"
-check "fixture: by-id assets complete (5)" "5" "$(grep -c . <<<"$byid_view" || true)"
+check "fixture: by-id assets complete (7 assets + 7 bundles, sizes > 0)" "14" "$(jq -r 'length' <<<"$byid_view")"
+check "fixture: every by-id asset has size > 0" "0" "$(jq '[.[]|select(.size<=0)]|length' <<<"$byid_view")"
 if run_fixture ensure-release.sh v9.9.9 >/dev/null 2>&1; then rc=0; else rc=$?; fi
 check "by-tag empty + by-id complete -> exit 0" "0" "$rc"
 check "by-tag empty + by-id complete -> no dispatch" "" "$(dispatched | tr '\n' ' ' | sed 's/ $//')"
+
+# ─── New B8 rows: completeness equals the FULL inventory, size included ───
+#    Audit B8: "already complete" used to be gated on the 5 base names alone,
+#    so a release carrying just those — no SBOM, no notices, no bundles —
+#    reported complete with rc 0, and a zero-size dist counted as shipped.
+#    These rows pin the three new incomplete shapes as DISPATCH-worthy.
+
+reset_state
+write_complete_assets "$COMPLETE_ASSETS"
+# drop the SBOM + its bundle from the fixture
+jq 'map(select(.name != "webfang.spdx.json" and .name != "webfang.spdx.json.sigstore.json"))' "$COMPLETE_ASSETS" >"$COMPLETE_ASSETS.tmp" && mv "$COMPLETE_ASSETS.tmp" "$COMPLETE_ASSETS"
+if run_fixture ensure-release.sh v9.9.9 >/dev/null 2>&1; then rc=0; else rc=$?; fi
+check "complete minus spdx (+bundle) -> dispatched (not complete)" "v9.9.9" "$(dispatched | tr '\n' ' ' | sed 's/ $//')"
+check "complete minus spdx -> rc 0 via dispatch" "0" "$rc"
+
+reset_state
+write_complete_assets "$COMPLETE_ASSETS"
+jq '(.[] | select(.name=="webfang-x86_64-unknown-linux-gnu.tar.gz")).size = 0' "$COMPLETE_ASSETS" >"$COMPLETE_ASSETS.tmp" && mv "$COMPLETE_ASSETS.tmp" "$COMPLETE_ASSETS"
+if run_fixture ensure-release.sh v9.9.9 >/dev/null 2>&1; then rc=0; else rc=$?; fi
+check "zero-size dist -> dispatched (not complete)" "v9.9.9" "$(dispatched | tr '\n' ' ' | sed 's/ $//')"
+
+reset_state
+write_complete_assets "$COMPLETE_ASSETS"
+jq 'map(select(.name != "webfang.spdx.json.sigstore.json"))' "$COMPLETE_ASSETS" >"$COMPLETE_ASSETS.tmp" && mv "$COMPLETE_ASSETS.tmp" "$COMPLETE_ASSETS"
+if run_fixture ensure-release.sh v9.9.9 >/dev/null 2>&1; then rc=0; else rc=$?; fi
+check "asset bundle missing -> dispatch (attestation surface incomplete)" "v9.9.9" "$(dispatched | tr '\n' ' ' | sed 's/ $//')"
+
+reset_state
+# The API answer must be validated: a payload jq cannot parse is data loss
+# masquerading as an inventory answer.
+printf 'not-json-at-all\n' >"$COMPLETE_ASSETS"
+if err="$(run_fixture ensure-release.sh v9.9.9 2>&1 >/dev/null)"; then rc=0; else rc=$?; fi
+check "unparseable asset payload -> exit 1" "1" "$rc"
+case "$err" in
+  *"not parseable JSON"*) check "unparseable payload -> named, not guessed" "yes" "yes" ;;
+  *) check "unparseable payload -> named, not guessed" "yes" "no" ;;
+esac
+reset_state
+write_complete_assets "$COMPLETE_ASSETS" # restore for later sections
 
 # 9. Bug A (webfang#1535): release-plz creates the annotated tag via the
 #    GitHub API (POST /git/refs) AFTER actions/checkout ran with
@@ -402,6 +460,16 @@ case "$out" in
   *"Nothing to release"*) check "verify: failed fetch never green-lights 'nothing to release'" "absent" "present" ;;
   *) check "verify: failed fetch never green-lights 'nothing to release'" "absent" "absent" ;;
 esac
+
+# ─── Wiring: the workflow inventory and the completeness probe must agree ───
+#    The single definition of "complete" lives twice on purpose: the workflow
+#    checklists (sign/verify/publish) and this probe (push path + sweep). If
+#    they ever drift, one side requires an asset the other stops counting —
+#    the same silent-shrink class B7 closed. Diff them as text.
+WF_LIST="$(awk '/RELEASE_EXPECTED_ASSETS: \|/{f=1;next} f&&/^[A-Za-z.#-]/{exit} f&&/^[[:space:]]*$/{next} f&&/^    /{sub(/^    /,"");print}' "$REPO_ROOT/.github/workflows/release.yml" | grep . | sort)"
+SC_LIST="$(sed -n '/^EXPECTED_ASSETS=(/,/^)/p' "$REPO_ROOT/scripts/ensure-release.sh" | grep -E '^  [a-zA-Z0-9]' | tr -d ' "' | sort)"
+check "wiring: release.yml inventory == ensure-release.sh inventory" "" "$(diff <(printf '%s\n' "$WF_LIST") <(printf '%s\n' "$SC_LIST") | grep . || true)"
+check "wiring: inventory is not empty on either side" "7 7" "$(printf '%s\n' "$WF_LIST" | grep -c .) $(printf '%s\n' "$SC_LIST" | grep -c .)"
 
 echo "test_release_reconcile: PASS=$PASS FAIL=$FAIL"
 if (( FAIL > 0 )); then
