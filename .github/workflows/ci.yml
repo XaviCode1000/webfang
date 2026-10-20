@@ -428,6 +428,39 @@ jobs:
       # Offline, pure text over the checked-out tree: no cargo, no network.
       - name: Docs version pins wiring harness
         run: bash scripts/test_docs_version_pins_wiring.sh
+      # AI providers doc drift gate (#2136): docs/architecture/ai-providers-design.md
+      # is a NORMATIVE spec cited by 13 code files, and it lives OUTSIDE the
+      # mdBook — so no gate read it. That is how a signature that did not
+      # compile survived months (#2136). This step runs the guard that compares
+      # the doc's claims against the real code, and it runs in `repo-guards`: a
+      # job with no `paths:` filter, already a `needs:` of `gate` in both
+      # scopes — the only place from which a guard can reach the required
+      # `CI Gate`. A workflow behind `paths:` can never be a required context.
+      #
+      # PHASE 1 (advisory): the guard itself is FAIL-CLOSED (it exits 1 on
+      # drift) and `continue-on-error: true` is what absorbs that failure, so
+      # the step shows red on a drifting PR while `repo-guards` — and with it
+      # the required `CI Gate` — stays green. The real verdict stays visible
+      # instead of being swallowed by an `--advisory` flag.
+      #
+      # PHASE 2 (promotion to required — the owner's call, not a mechanical
+      # consequence of this PR): in THIS step, replace `continue-on-error: true`
+      # with the marker `# guard-required`. That is the whole promotion: one
+      # line, and the phase stays legible by machine from the file itself.
+      # The criterion is already met: the semantics harness below proves the
+      # FAIL-CLOSED behaviour of every check, so a promoted guard blocks only
+      # on real drift.
+      - name: AI providers doc drift gate (advisory, #2136)
+        continue-on-error: true
+        run: bash scripts/check_ai_providers_doc.sh
+      # Semantics harness for the gate above — BLOCKING, unlike the gate step
+      # itself. It is the proof that the guard can still fail: a guard that
+      # stopped recognising drift would leave the advisory step permanently
+      # green, which is indistinguishable from not having a guard at all. Same
+      # argument, and the same blocking status, as the docs version pins
+      # harness above. Offline, mktemp fixtures only, no cargo and no network.
+      - name: AI providers doc drift semantics harness
+        run: bash scripts/test_ai_providers_doc.sh
       # The release flow OWNS the docs version pins (#2028), and these three
       # harnesses pin the pieces that make that ownership real: the WRITER
       # (scripts/bump_docs_version_pins.sh — the exact inverse of the gate

@@ -385,6 +385,13 @@ EOF
   # the same guard in lane_fmt_and_guards.
   run_guard "docs version pins gate (#2017)" scripts/check_docs_version_pins.sh \
     bash scripts/check_docs_version_pins.sh
+  # AI providers doc drift (#2136): docs/architecture/ai-providers-design.md is
+  # a normative spec cited by 13 code files and it lives OUTSIDE the mdBook —
+  # no gate read it, and that is how a signature that did not compile survived
+  # months. Advisory in phase 1: the findings are printed and the lane stays
+  # green. This lane is the DOC side of the drift; the CODE side is covered by
+  # the same guard in lane_fmt_and_guards.
+  run_advisory_guard "ai providers doc drift gate (#2136)" scripts/check_ai_providers_doc.sh
 }
 
 # --- lane: ci-only (NO cargo) ----------------------------------------------------
@@ -504,6 +511,12 @@ EOF
   else
     skip_step "docs version pins semantics" "no docs version pins files changed"
   fi
+  # AI providers doc drift (#2136): the same advisory mirror the other two
+  # lanes run, here for the lane that fires when `scripts/**` changed. A
+  # `scripts/**` change can move the code the doc cites, so this lane sees the
+  # CODE side of the drift. Advisory: findings are printed, the lane stays
+  # green.
+  run_advisory_guard "ai providers doc drift gate (#2136)" scripts/check_ai_providers_doc.sh
   # Release-pins harnesses (#2028): the release flow owns the bump of the docs
   # version pins, and these three pin the pieces that make that ownership real
   # — the WRITER (the exact inverse of the gate above), the ORCHESTRATOR (the
@@ -640,6 +653,23 @@ run_guard() {
   fi
 }
 
+# run_advisory_guard <name> <script>: a guard whose findings are REPORTED but
+# never turn the lane red. Phase-1 mirrors of a CI guard: the verdict has to
+# stay visible (an advisory nobody sees is an advisory nobody reads), while a
+# false positive must not block a local run. Same shape as the regression
+# naming check further down: an echo, the script, and `|| true`. The guard is
+# invoked with `--advisory` so it reports the same findings and exits 0.
+# Readability, NOT executability, for the same reason as run_guard above.
+run_advisory_guard() {
+  local name="$1" script="$2"
+  echo "fast-gate: $name (advisory, never red)"
+  if [[ -r "$script" ]]; then
+    bash "$script" --advisory || true
+  else
+    echo "fast-gate: $name — script absent or unreadable ($script)"
+  fi
+}
+
 lane_fmt_and_guards() {
   run_step "cargo fmt --check" cargo fmt --all -- --check
   run_guard "dead test detection" scripts/check_dead_tests.sh \
@@ -682,6 +712,13 @@ lane_fmt_and_guards() {
   # step of ci.yml, like every other guard in this function.
   run_guard "docs version pins gate (#2017)" scripts/check_docs_version_pins.sh \
     bash scripts/check_docs_version_pins.sh
+  # AI providers doc drift (#2136): the same guard the docs lane runs, and it
+  # has to run here too — the drift has TWO trigger surfaces (the doc and the
+  # code), so a lane that only sees one of them would leave half the drift
+  # invisible: a code PR that moves a cited signature changes no markdown and
+  # never reaches lane_docs. Advisory in phase 1: the findings are printed and
+  # the lane stays green.
+  run_advisory_guard "ai providers doc drift gate (#2136)" scripts/check_ai_providers_doc.sh
   # Issue #1614: the version-marker half of the MCP public-surface policy. The
   # other half (live schema vs the committed fixture) is a test and runs in the
   # cargo lanes; this one needs the base commit, which a test cannot see.
