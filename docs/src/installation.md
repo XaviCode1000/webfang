@@ -195,7 +195,7 @@ network policy — a remote public endpoint is rejected under `--offline`
 
 ```powershell
 # 1. Download (PowerShell 5.1+)
-$Version = "v3.0.0"
+$Version = "v3.0.1"
 $Asset   = "webfang-x86_64-pc-windows-msvc.zip"
 Invoke-WebRequest "https://github.com/XaviCode1000/webfang/releases/download/$Version/$Asset" -OutFile $Asset
 Invoke-WebRequest "https://github.com/XaviCode1000/webfang/releases/download/$Version/SHA256SUMS.txt" -OutFile SHA256SUMS.txt
