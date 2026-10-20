@@ -484,6 +484,40 @@ else
   bad "resource: $FIXTURE_TARGETS fixture(s) grew a target dir"
 fi
 
+# ── 9. A15: a DELETED script must not fail the syntax steps ───────────────────
+# NEGATION: pre-fix the changed-scripts list came straight from the changed-file
+# union, and `git diff --name-only` reports DELETED paths too. `bash -n` and
+# the linter were then handed a file that is not on disk: retiring one script
+# made the local gate fail twice with "No such file or directory" — a
+# legitimate deletion reported as a defect, blocking the pre-push. Measured
+# 2026-10-20. A path that is gone is not a script to lint.
+#
+# (A comment line that BEGINS with "shellcheck" is read as a directive, not as
+# prose — this one used to start that way and CI rejected it with SC1072.)
+D="$(make_fixture a15-deleted main real)"
+printf '#!/usr/bin/env bash\ntrue\n' >"$D/scripts/keep.sh"
+printf '#!/usr/bin/env bash\ntrue\n' >"$D/scripts/doomed.sh"
+fixture_git "$D" add -A
+fixture_git "$D" commit -q -m "fixture: two scripts, one of them about to be retired"
+# The survivor is edited (so it is in the union AND on disk) and the other is
+# deleted (so it is in the union and NOT on disk).
+printf '# edited\n' >>"$D/scripts/keep.sh"
+rm "$D/scripts/doomed.sh"
+run_gate "$D" --base-ref HEAD --head-ref HEAD
+if [ "$GATE_RC" -eq 0 ]; then
+  ok "A15: retiring a script leaves the gate GREEN"
+else
+  bad "A15: retiring a script failed the gate (rc=$GATE_RC): $(tail -3 "$GATE_OUT")"
+fi
+has "$GATE_OUT" "PASS: bash syntax (changed scripts)" \
+  "A15: the syntax step ran on the surviving script and passed"
+has "$GATE_OUT" "PASS: shellcheck (changed scripts" \
+  "A15: the shellcheck step ran on the surviving script and passed"
+lacks "$GATE_OUT" "::error::FAIL: bash syntax" \
+  "A15: the deleted script did not fail the syntax step"
+lacks "$GATE_OUT" "::error::FAIL: shellcheck" \
+  "A15: the deleted script did not fail the shellcheck step"
+
 ELAPSED=$(( $(date +%s) - START_SECONDS ))
 if [ "$ELAPSED" -lt 60 ]; then
   ok "resource: the harness finished in ${ELAPSED}s (ceiling: 60s)"

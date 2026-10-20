@@ -399,8 +399,14 @@ lane_ci() {
   # scripts/ is matched at any depth: scripts/githooks/ and scripts/tests/ hold
   # real shell that CI's repo-guards job lints, so a top-level-only glob left
   # nested scripts unlinted locally (#1635).
-  mapfile -t script_files < <(grep -E '^scripts/.*\.sh$' "$UNION_TMP" || true) || true
-  mapfile -t workflow_files < <(grep -E '^\.github/workflows/[^/]*\.ya?ml$' "$UNION_TMP" || true) || true
+  # The union lists DELETED paths too (git diff --name-only reports them), and a
+  # deleted file is not something `bash -n` or shellcheck can read. Measured
+  # 2026-10-20: retiring one script made BOTH steps fail with "No such file or
+  # directory" — a legitimate deletion reported as a defect, which blocks the
+  # local gate and with it the pre-push. A path that is gone is not a script to
+  # lint; only the ones still on disk are.
+  mapfile -t script_files < <(grep -E '^scripts/.*\.sh$' "$UNION_TMP" | while read -r f; do [ -f "$f" ] && printf '%s\n' "$f"; done) || true
+  mapfile -t workflow_files < <(grep -E '^\.github/workflows/[^/]*\.ya?ml$' "$UNION_TMP" | while read -r f; do [ -f "$f" ] && printf '%s\n' "$f"; done) || true
   if [[ ${#script_files[@]} -gt 0 ]]; then
     run_step "bash syntax (changed scripts)" bash -n "${script_files[@]}"
     if command -v shellcheck >/dev/null 2>&1; then
@@ -538,8 +544,14 @@ run_pinned_lint_changed_scope() {
   local -a workflow_files=()
   # mapfile returns non-zero on empty input, hence `|| true` under `set -u`.
   # Any depth under scripts/, for the same reason as lane_ci (#1635).
-  mapfile -t script_files < <(grep -E '^scripts/.*\.sh$' "$UNION_TMP" || true) || true
-  mapfile -t workflow_files < <(grep -E '^\.github/workflows/[^/]*\.ya?ml$' "$UNION_TMP" || true) || true
+  # The union lists DELETED paths too (git diff --name-only reports them), and a
+  # deleted file is not something `bash -n` or shellcheck can read. Measured
+  # 2026-10-20: retiring one script made BOTH steps fail with "No such file or
+  # directory" — a legitimate deletion reported as a defect, which blocks the
+  # local gate and with it the pre-push. A path that is gone is not a script to
+  # lint; only the ones still on disk are.
+  mapfile -t script_files < <(grep -E '^scripts/.*\.sh$' "$UNION_TMP" | while read -r f; do [ -f "$f" ] && printf '%s\n' "$f"; done) || true
+  mapfile -t workflow_files < <(grep -E '^\.github/workflows/[^/]*\.ya?ml$' "$UNION_TMP" | while read -r f; do [ -f "$f" ] && printf '%s\n' "$f"; done) || true
   if [[ ${#script_files[@]} -eq 0 && ${#workflow_files[@]} -eq 0 ]]; then
     skip_step "pinned lint (changed scope)" "no changed scripts/workflows"
     return 0

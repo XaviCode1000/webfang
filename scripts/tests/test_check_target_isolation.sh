@@ -8,6 +8,15 @@
 # .envrc written by the fixture), so every branch of the target policy is
 # exercised in milliseconds without cargo, a network, or the real stores.
 #
+# This file is the ONE harness for this guard. Its predecessor,
+# scripts/test_seed_target_guard.sh, was retired on 2026-10-20 (#2093): it was
+# wired to nothing, and on a bootstrapped machine it was permanently red
+# (8 failures, all stale expectations about the pre-#1679 semantics) while CI
+# skipped it. Nothing was lost with it — the semantics are pinned here, and the
+# REAL environment is checked by the guard itself, which ci_fast_gate.sh runs
+# against the real stores and the real registry before any lane
+# (ci_fast_gate.sh:182-194, fail-closed, no dry-run carve-out).
+#
 # Isolation guarantees:
 #   - WEBFANG_SEEDS_ROOT / WEBFANG_QUARANTINE_ROOT always point into the
 #     sandbox, so the real seed and quarantine stores are never touched;
