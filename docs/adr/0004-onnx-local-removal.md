@@ -1,6 +1,6 @@
 # ADR 0004: Retirada de ONNX local; embeddings remotos como única vía AI
 
-- **Status:** Accepted
+- **Status:** Accepted — implemented and shipped. La retirada se mergeó en #2072 (`e9b7217a`) y se publicó como **v3.0.0** (tag sobre `63d912ae`, 2026-10-20). El *Addendum 2026-10-19* al final registra el desenlace 6a, la decisión del umbral y el follow-up de shims.
 - **Date:** 2026-10-08 (revisado 2026-10-09: mecanismo de arbitraje del paso 6 y resolución de Q6 — precisión de mecanismo, la decisión (a) con refugio (c) no cambia; revisado 2026-10-11: corrección factual — el 0.75 de Tier 2 son dos números con roles opuestos — y registro de la condición 2 resuelta como migrar, #1975; revisado 2026-10-16: el marker de ruptura se mueve del paso 5 al paso 6 — leer *Enmienda 2026-10-16* en *Compatibilidad* —, `--clean-ai` queda atado a `--embedding-provider`, la etiqueta de recuperación y el canal de objeción pasan a ser concretas, #1998)
 - **Deciders:** Project owner
 - **Supersedes:** ADR 0003 §5 ("Local ONNX goes dormant, not deleted")
@@ -189,6 +189,12 @@ La salvedad de esa enmienda pedía verificar la regla del bump "al cortar el min
 - **La enmienda no cae.** La regla del repo (un marker de ruptura produce major) se cumple; lo que estaba mal era la forma del marker, no la regla.
 
 Corolario operativo: este repo squash-mergea, así que un footer `BREAKING CHANGE:` escrito en un commit de rama queda enterrado en el cuerpo del commit squash. El marker que sobrevive es el del **título del PR**.
+
+### Entrega
+
+- **Implementación:** PR #2072 → `e9b7217a` (squash), 2026-10-19.
+- **Release:** **v3.0.0**, tag sobre `63d912ae` (2026-10-20). Es 3.0.0 y no 2.14.0 porque la retirada es una ruptura; el número llegó ahí por un commit de declaración explícito (#2077, `chore(release)!:` mergeado con `--merge`), no por el commit del borrado: el squash descarta el `!` del título del PR y release-plz ignora el footer `BREAKING CHANGE:` para el cálculo de versión, aunque git-cliff sí lo lea para agrupar el CHANGELOG. La clase de fallo queda abierta en #2081.
+- **Ventana de soporte:** rotada en #2082 — 3.0 STABLE, 2.13 MAINTENANCE, 2.12 EOL.
 
 ## Glosario de referencias (IDs opacos)
 
