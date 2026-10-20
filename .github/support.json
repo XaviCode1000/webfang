@@ -5,7 +5,7 @@
       "minor": "3.0",
       "state": "STABLE",
       "branch": null,
-      "latest": "3.0.0",
+      "latest": "3.0.1",
       "released_at": "2026-10-20T01:18:55+01:00",
       "accepts": [
         "bugfix",
