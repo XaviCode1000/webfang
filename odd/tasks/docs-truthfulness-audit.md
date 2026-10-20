@@ -39,6 +39,19 @@ verificado, no de una hipótesis.
 - **S8** — Ninguna afirmación de seguridad en la narrativa contradice lo que el release
   publica. Medido: `installation.md` afirmaba "checksums, not GitHub attestations"
   mientras cada asset de `v2.11.0` trae una atestación SLSA verificable.
+- **S9** — El doc normativo `docs/architecture/ai-providers-design.md` (spec citada por
+  13 archivos de código fuente por número de `§`) no afirma nada que el código
+  contradiga. Alcance exacto, de la issue **#2019**: (1) §1 — el enum `AuthSource`
+  incluye la variante `None`, con una frase que explique por qué existe (endpoint
+  anónimo); (2) §3 — la firma es `Result<Option<ApiKey>, AuthError>` y el bloque
+  referencia `auth_source.rs:118`; (3) §4 — el bloque de `ProviderConfig` incluye los
+  tres campos implementados que hoy omite (`display_name`, `allow_loopback`,
+  `network_policy`); (4) §5 — `VaultSearchService` no puede quedar citado como
+  consumidor del registry; (5) §7 — el bloque de `DetectedStore` incluye
+  `recommendation: AuthSource`. Criterio general que se adopta para las secciones
+  normativas (§1–§5, §7): **un bloque de código de este doc compila igual que el
+  código que describe** — el lector que lo copia obtiene el mismo tipo, con los
+  mismos atributos `serde`.
 
 ## Contexto verificado
 
@@ -376,6 +389,45 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
       los call sites eliminada con extracción en `awk` puro. 5 casos nuevos (10-14) con RED
       observado antes del cambio. Evidencia en L18.
 
+- [x] **T10 (S9)** — Cerrar las 5 afirmaciones falsas de `docs/architecture/ai-providers-design.md`
+      (issue **#2019**, con `status:approved` añadido por autorización explícita del owner
+      el 2026-10-20). Ruta: inline (un solo archivo, cinco regiones, cambio puramente
+      documental). Riesgo: ítem 3 (spec que otros consumen) → verificación independiente
+      + los tres gates de mdBook.
+      Las 5 de la issue, más 5 defectos **de la misma clase en las mismas secciones** que
+      la verificación contra el código descubrió y que no estaban en el inventario de
+      #2019 (se corrigen aquí y se listan en el Log): §1 afirmaba un `Default::Keyring`
+      que no existe (no hay `impl Default for AuthSource`); §2 mostraba 5 de las 9
+      variantes reales de `AuthError`; §4 mostraba derives y `serde` attrs que no son los
+      reales (omitir `#[serde(default)]` haría `network_policy` obligatorio en el fichero
+      y `rename_all` ausente cambiaría el casing de las claves); §5 mostraba
+      `ProviderRegistry { providers: Vec<ProviderConfig> }` cuando el campo real es
+      `config: ProvidersConfig`, y citaba líneas desfasadas (`:251`, `:305`, `:322`,
+      `:58`, `:64`, `:87` → las reales `:255`, `:309`, `:327`, `:62`, `:68`, `:91`).
+      Verificación: `mdbook build docs` / `mdbook test docs` / `mdbook-linkcheck --standalone docs`
+      → exit 0 los tres; y un chequeo diferencial **doc↔código** (29 aserciones: cada
+      línea normativa del doc existe tal cual en el código, cada cita `archivo:línea`
+      apunta a lo que dice, y toda cita `§` del código resuelve a una sección existente)
+      → **29/29 OK**. Evidencia en L22.
+
+- [x] **T11** — Higiene del propio logbook: IDs de entrada duplicados y orden de fechas.
+      Las entradas del **2026-10-18** sobre la review de #2012 y la verificación de las 4
+      advisories de T9 compartían los IDs **L9/L10** con las entradas del **2026-10-17**
+      (T5 y el slice lychee-keyless), y quedaban fechadas por delante de ellas: el log
+      tenía dos "L9" y dos "L10", y ninguna referencia podía resolverse a una entrada
+      única. Fix: las dos entradas del 2026-10-18 se renumeran **L20/L21** y se mueven al
+      final del log; las del 2026-10-17 conservan **L9/L10** (las que las referencias
+      vigentes apuntan: L11 y L12 citan "L10" = el slice lychee-keyless); y el puntero
+      de L13 ("las otras dos fechas futuras de L9/L10 siguen pendientes") se actualiza.
+      No se reescribe el contenido de ninguna entrada previa. Además, `## Next steps`
+      se corrige: daba por pendientes dos advisories de la review de #2025
+      (`R2-version-grammar-message`, `R2-counter-semantics`) que **ya están cerradas y
+      fijadas por el harness** (`scripts/test_docs_version_pins.sh`, 11/11 verde: casos
+      "versión con formato inesperado falla cerrado", "pin prerelease contra workspace
+      stable falla", "workspace prerelease es chequeable" y "la línea de éxito cuenta
+      líneas con pines (3), no documentos (2)"). Ese texto era prosa vieja, escrita
+      antes de que #2017 cerrara; el código manda.
+
 ## Log
 
 - **L1 (2026-10-17)** — Usuario reporta preocupación por documentación con datos falsos
@@ -413,24 +465,6 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
   cobertura; y `installation.md` afirmaba que el release no publica atestaciones cuando
   cada asset de `v2.11.0` trae una verificable. Ese último es el hallazgo más grave de
   toda la auditoría y no estaba en el inventario.
-- **L9 (2026-10-18)** — Revisión delegada de #2012 encontró un blocker en T3: mover
-  `ai-providers-design.md` NO corrigió la mentira de la línea 4 ("Implementación a
-  desarrollar en el worktree `feat/ai-providers`") pese a que `infrastructure/llm/` ya
-  existe. El rename fue puro. Corregido en esta rama: línea 4 y la nota de estado
-  (línea 308) ahora dicen que la implementación vive en
-  `crates/webfang_core/src/infrastructure/llm/`. T3 se des-chequea hasta que el fix de
-  prosa se mergee y confirme. La revisión también dejó 4 advisories sobre
-  `check_docs_version_pins.sh` (gate no cableado, asimetría RC, harness no testea
-  versiones bien-formadas desparejadas, `$checked` muerto / línea de éxito miente) →
-  falta tarea que los rastree.
-- **L10 (2026-10-18)** — El parent verificó las 4 advisories de T9 contra el código y el
-  harness (no se tomaron por fe: se leyó `check_docs_version_pins.sh`,
-  `test_docs_version_pins.sh`, y se corrió el harness + 2 fixtures RC). Confirmadas (1)
-  gate no cableado (0 refs en `.github/`), (2) asimetría RC (doc `v2.11.0-rc.1` pasa,
-  workspace `2.11.0-rc.1` aborta), (4) `$checked` muerto / éxito miente. La (3) es
-  imprecisa: el harness SÍ prueba mismatch bien-formado plano (v2.4.0 vs 2.11.0). La
-  brecha real es falta de caso prerelease. Creada T9 para rastrearlas.
-
 - **L9 (2026-10-17)** — T5 implementado en `chore/lint-declaration` (rama nueva desde
   `origin/main`, para no inflar el PR #2012 de T2+T3). Hallazgo clave: en rustc 1.88 los
   3 lints `allow-by-default` están renombrados a namespace `rustdoc::` y `-D warnings`
@@ -515,7 +549,9 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
   gatear. No se tocó
   `AGENTS.md` (precedente consistente: ningún step de `repo-guards` se documenta ahí) ni
   `CHANGELOG.md`. Corregida de paso la fecha futura en la cabecera del bloque T9 (`2026-10-18` →
-  `2026-10-17`, hoy); las otras dos fechas futuras de L9/L10 siguen pendientes.
+  `2026-10-17`, hoy); las otras dos fechas futuras de L9/L10 siguen pendientes
+  (resuelto en L20/L21 y L22: las dos entradas duplicadas se renumeraron y movieron al
+  final del log).
 
 - **L14 (2026-10-17)** — T9.2: harness de cableado del gate de pines, en `ci/docs-pins-hardening`
   sobre `main @ 8395ccf3` (post-merge de #2026). El harness se escribió primero y se corrió
@@ -719,18 +755,94 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
   un defecto); y un token con cabeza vacía (`--=x`) no matchea ningún clasificador y se descarta en
   silencio, **igual que en el baseline** → follow-up, no se toca acá (fuera del alcance del issue).
 
+- **L20 (2026-10-18)** — Revisión delegada de #2012 encontró un blocker en T3: mover
+  `ai-providers-design.md` NO corrigió la mentira de la línea 4 ("Implementación a
+  desarrollar en el worktree `feat/ai-providers`") pese a que `infrastructure/llm/` ya
+  existe. El rename fue puro. Corregido en esta rama: línea 4 y la nota de estado
+  (línea 308) ahora dicen que la implementación vive en
+  `crates/webfang_core/src/infrastructure/llm/`. T3 se des-chequea hasta que el fix de
+  prosa se mergee y confirme. La revisión también dejó 4 advisories sobre
+  `check_docs_version_pins.sh` (gate no cableado, asimetría RC, harness no testea
+  versiones bien-formadas desparejadas, `$checked` muerto / línea de éxito miente) →
+  falta tarea que los rastree.
+
+- **L21 (2026-10-18)** — El parent verificó las 4 advisories de T9 contra el código y el
+  harness (no se tomaron por fe: se leyó `check_docs_version_pins.sh`,
+  `test_docs_version_pins.sh`, y se corrió el harness + 2 fixtures RC). Confirmadas (1)
+  gate no cableado (0 refs en `.github/`), (2) asimetría RC (doc `v2.11.0-rc.1` pasa,
+  workspace `2.11.0-rc.1` aborta), (4) `$checked` muerto / éxito miente. La (3) es
+  imprecisa: el harness SÍ prueba mismatch bien-formado plano (v2.4.0 vs 2.11.0). La
+  brecha real es falta de caso prerelease. Creada T9 para rastrearlas.
+
+- **L22 (2026-10-20)** — El owner pregunta si este plan estaba al 100%. Auditoría del
+  estado real: **11/11 tasks `[x]` y todas las issues del plan cerradas, pero el plan NO
+  estaba al 100%**: (a) la issue **#2019** seguía OPEN con 5 afirmaciones falsas de
+  `docs/architecture/ai-providers-design.md` — verificadas una por una contra el código
+  y **todas seguían falsas** ese día; (b) el propio logbook tenía **L9 y L10
+  duplicados** y fechas fuera de orden (la misma clase de defecto que la misión
+  corrigió, en el documento que debía ser truthful); (c) `## Next steps` daba por
+  pendientes dos advisories de la review de #2025 que **ya estaban cerradas** — prose
+  vieja, escrita antes de que #2017 cerrara.
+  El owner autorizó explícitamente añadir `status:approved` a #2019 (tenía sólo
+  `type:docs`, y `pr-validation.yml` rechaza cualquier PR que enlace una issue sin ese
+  label); aplicado el 2026-10-20.
+  **T10** ejecutado en `docs/ai-providers-design-truth` (worktree
+  `~/Projects/Rust/webfang-worktrees/docs-ai-providers-design-truth`, base `main @
+  e666aed6`). Método: cada afirmación se contrastó contra el código con **CodeGraph
+  `explore`** y **CodeDB `context`** usando la ruta ABSOLUTA del worktree (ambos
+  índices bootstrapeados en el worktree, nunca el del checkout principal); la prosa del
+  doc nunca se tomó como evidencia. Se corrigieron las 5 de #2019 **más 5 defectos de
+  la misma clase en las mismas secciones** que la verificación contra el código
+  descubrió y que el inventario de la issue no listaba: §1 afirmaba un
+  `Default::Keyring` inexistente (no hay `impl Default for AuthSource`); §2 mostraba 5
+  de las 9 variantes reales de `AuthError`; §4 mostraba derives y atributos `serde`
+  que no son los reales (omitir `#[serde(default)]` haría `network_policy` obligatorio
+  en el fichero; sin `rename_all` las claves cambian de casing); §5 mostraba
+  `ProviderRegistry { providers: Vec<ProviderConfig> }` cuando el campo real es
+  `config: ProvidersConfig`, y citaba 6 líneas desfasadas (`:251`/`:305`/`:322`/`:58`/
+  `:64`/`:87` → `:255`/`:309`/`:327`/`:62`/`:68`/`:91`).
+  **Verificación**: `mdbook build docs`, `mdbook test docs` y `mdbook-linkcheck
+  --standalone docs` → exit 0 los tres; más un chequeo diferencial **doc↔código** de 29
+  aserciones (cada línea normativa del doc existe tal cual en el código, cada cita
+  `archivo:línea` apunta a lo que dice, y toda cita `§` del código resuelve a una
+  sección existente) → **29/29 OK**. El harness de pines (`scripts/test_docs_version_pins.sh`)
+  corrió **11/11 verde**, lo que permitió corregir el `## Next steps` obsoleto en vez de
+  abrir una issue por advisories ya cerradas.
+  **Hallazgo estructural (follow-up, no cerrado aquí)**: el doc vive en
+  `docs/architecture/`, **fuera** del libro (`docs/book.toml` → `src = "src"`) y sin
+  entrada en `SUMMARY.md`, así que `mdbook build`, `mdbook test` y `mdbook-linkcheck`
+  **nunca lo ven** — que es exactamente por qué una firma que no compilaba pudo
+  sobrevivir desde que se escribió el diseño. Por eso los tres gates de mdBook de este
+  slice están verdes **y** el doc estaba en mentira: los gates no lo cubren. El
+  guard que falta (mover el doc al libro con los fences marcados, o un `check_*` de
+  drift doc↔código cableado en CI) se trackea aparte.
+
 ## Next steps
 
 1. Advisories de la review de #2026 sobre el cableado (R3-1, R3-2, R3-3, R4-1, R4-2): sin
-   texto recuperable (ver L14) → los re-deriva la review de T9.2. Advisories de la review de
-   #2025 sobre `check_docs_version_pins.sh` (R2-version-grammar-message,
-   R2-counter-semantics/R3-3, R3-2, R3-1): reportables como trabajo aparte, ninguno está en el
-   AC de #2017. Los dos advisories de la review de #2027 sobre el harness
+   texto recuperable (ver L14) → los re-deriva la review de T9.2. Los dos advisories de la
+   review de #2027 sobre el harness
    (`R2-lane-ci-comment-gap`, `R3-002`, ambos en el bucle de `lane_ci`): cerrados en el follow-up
    de L15 con el caso 12. T9, T9.1 y T9.2 cerrados.
+   ~~Advisories de la review de #2025 sobre `check_docs_version_pins.sh`
+   (`R2-version-grammar-message`, `R2-counter-semantics/R3-3`, `R3-2`, `R3-1`): reportables
+   como trabajo aparte~~ → **cerrados**: así decía esta prosa el 2026-10-18, pero #2017
+   los cerró después (grammar compartido `VER_ERE`, RC en ambas direcciones, `$checked`
+   en uso y el mensaje de éxito contando líneas). Verificado el 2026-10-20 contra el
+   código y el harness: `scripts/test_docs_version_pins.sh` **11/11 verde**, con los
+   casos "versión con formato inesperado falla cerrado", "pin prerelease contra workspace
+   stable falla", "workspace prerelease es chequeable" y "la línea de éxito cuenta líneas
+   con pines (3), no documentos (2)".
 2. ~~T6: migrar samples de `docs/src/` a `{{#include}}`~~ — cerrado (L17,
    PR #2044).
 3. `cargo fmt --all -- --check`, clippy strict y rustdoc verdes antes de cada commit.
 4. ~~T8 residual (issue #2020)~~ — cerrado (L18, rama `chore/external-link-harness`).
 5. Follow-ups de la review de #2049 sobre el harness (A1/R1-001, R1-002/R3-1, R3-2): tratados en
    L19, issue #2050, rama `fix/external-link-harness-findings`.
+6. **Guard ausente para los docs normativos fuera del libro** (abierto el 2026-10-20,
+   ver L22): `docs/architecture/ai-providers-design.md` —y cualquier otro doc normativo
+   bajo `docs/` que no esté enlazado desde `docs/src/SUMMARY.md`— no lo ve ningún gate
+   de mdBook. Las tres opciones (mover el doc al libro con los fences marcados como
+   `ignore`/`text`, un `scripts/check_*` de drift doc↔código, o enlazarlo desde
+   `SUMMARY.md` como capítulo) son decisiones del owner: tocan `.github/` o la
+   estructura del libro. **No cerrado por este slice.**
