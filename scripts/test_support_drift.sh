@@ -673,6 +673,187 @@ else
   fail "un run verde escribió summary: $(tr '\n' ' ' < "$SUM_OK")"
 fi
 
+# ─── A minor is declared EXACTLY ONCE (B13) ─────────────────────────────────
+# The declared scope validated the COUNTS, the states and the grammars of
+# .lines[], but never the UNIQUENESS of .minor: a declaration naming the same
+# line twice passed the scope untouched, and the rendered projection carried
+# two rows for one line. Every lookup by minor (the STABLE one, the tracking
+# floor) would then have two answers and no rule to pick one.
+echo "== una minor se declara UNA sola vez (B13) =="
+FX_DUP="$(new_fixture duplicate_minor)"
+set_lines "$FX_DUP" '{
+  "schema_version": 1,
+  "lines": [
+    {"minor":"2.1","state":"STABLE","branch":null,"latest":"2.1.1","accepts":["bugfix","security"]},
+    {"minor":"2.1","state":"EOL","branch":null,"latest":"2.1.0","eol_at":"2026-10-01","eol_reason":"fixture"}
+  ]
+}'
+run_gate "$FX_DUP" --scope=declared
+if [[ "$GATE_RC" -ne 0 ]] && grep -qF 'minor declarada más de una vez' <<<"$GATE_OUT" \
+   && grep -qF '2.1' <<<"$GATE_OUT"; then
+  pass "una minor declarada dos veces falla el scope declared nombrando la minor"
+else
+  fail "una minor declarada dos veces pasó el scope declared (rc=$GATE_RC): $(tr '\n' ' ' <<<"$GATE_OUT")"
+fi
+
+# Control: the same shape with DISTINCT minors is a legal declaration.
+FX_DISTINCT="$(new_fixture distinct_minor)"
+set_lines "$FX_DISTINCT" "$CONSISTENT"
+expect "$FX_DISTINCT" pass "control: minors distintas pasan el scope declared" --scope=declared
+
+# The published scope is the REQUIRED check in CI (pr-validation.yml), so a
+# duplicated minor must not survive it either: the declaration it verifies is
+# the same file.
+FX_DUP_PUB="$(new_fixture duplicate_minor_published)"
+set_lines "$FX_DUP_PUB" '{
+  "schema_version": 1,
+  "lines": [
+    {"minor":"2.1","state":"STABLE","branch":null,"latest":"2.1.1","accepts":["bugfix","security"]},
+    {"minor":"2.1","state":"EOL","branch":null,"latest":"2.1.1","eol_at":"2026-10-01","eol_reason":"fixture"}
+  ]
+}'
+add_tags "$FX_DUP_PUB" v2.1.0 v2.1.1
+run_gate "$FX_DUP_PUB" --scope=published
+if [[ "$GATE_RC" -ne 0 ]] && grep -qF 'minor declarada más de una vez' <<<"$GATE_OUT"; then
+  pass "una minor declarada dos veces falla también el scope published (el gate requerido)"
+else
+  fail "una minor declarada dos veces pasó el scope published (rc=$GATE_RC): $(tr '\n' ' ' <<<"$GATE_OUT")"
+fi
+
+# ─── The producer of the declared minors (B14) ─────────────────────────────
+# The producer used to be `jq -r '.lines[].minor' ... || sort -V || true`.
+# `||` binds left to right, so `sort` only ran when jq FAILED — and then it
+# read EMPTY stdin: a file that could not be read produced an EMPTY list with
+# exit 0, and the correctness was supplied further down by a re-sort that
+# masked the producer's own bug. The producer must be right AT THE SOURCE:
+# sorted on success, a FAILURE on a file it cannot read.
+echo "== el productor de minors declaradas: ordenado en el origen y fail-closed (B14) =="
+
+# The producer is a named function in the shipped script, and the harness
+# evaluates THAT function — the file that ships, not a paraphrase of it. The
+# script cannot be sourced as a whole because sourcing it RUNS the gate.
+# An empty extraction means the producer is gone: the row then fails loudly
+# instead of passing on an undefined function.
+producer_source() {
+  sed -n '/^declared_minors()/,/^}/p' "$REPO_ROOT/scripts/check_support_drift.sh"
+}
+run_producer() {
+  local dir="$1"
+  (
+    cd "$dir" || exit 1
+    SUPPORT_JSON=".github/support.json"
+    eval "$(producer_source)"
+    declared_minors
+  )
+}
+
+# The declaration lists its minors in a shape where the two orders disagree:
+# version order is 2.9, 3.0, 10.0; lexicographic order is 10.0, 2.9, 3.0.
+FX_PROD="$(new_fixture producer_order)"
+set_lines "$FX_PROD" '{
+  "schema_version": 1,
+  "lines": [
+    {"minor":"10.0","state":"STABLE","branch":null,"latest":"10.0.0","accepts":["bugfix","security"]},
+    {"minor":"3.0","state":"MAINTENANCE","branch":null,"latest":"3.0.0","accepts":["security"]},
+    {"minor":"2.9","state":"EOL","branch":null,"latest":"2.9.0","eol_at":"2026-10-01","eol_reason":"fixture"}
+  ]
+}'
+producer_rc=0
+producer_out="$(run_producer "$FX_PROD")" || producer_rc=$?
+if [[ -n "$(producer_source)" ]] && [[ $producer_rc -eq 0 ]] \
+   && [[ "$producer_out" == $'2.9\n3.0\n10.0' ]]; then
+  pass "el productor entrega las minors declaradas en orden de versión (2.9, 3.0, 10.0)"
+else
+  fail "el productor no entrega la lista en orden de versión (rc=$producer_rc): $(tr '\n' ' ' <<<"$producer_out")"
+fi
+
+# The same producer against a file it cannot read: the answer must be a
+# FAILURE, never an empty list that looks like "this declaration declares
+# nothing".
+FX_PROD_BAD="$(new_fixture producer_unreadable)"
+printf '{ not json\n' > "$FX_PROD_BAD/.github/support.json"
+producer_rc=0
+producer_out="$(run_producer "$FX_PROD_BAD")" || producer_rc=$?
+if [[ -n "$(producer_source)" ]] && [[ $producer_rc -ne 0 ]]; then
+  pass "el productor falla (no devuelve una lista vacía) ante un support.json ilegible"
+else
+  fail "el productor devolvió una lista vacía con éxito ante un support.json ilegible (rc=$producer_rc)"
+fi
+
+# The gate must SAY that it could not read the declaration, instead of
+# approving it on the strength of an empty list (or blaming the STABLE line
+# for a file nobody could parse).
+run_gate "$FX_BAD" --scope=published
+if [[ "$GATE_RC" -ne 0 ]] && grep -qF 'no se pudo leer la lista de minors declaradas' <<<"$GATE_OUT" \
+   && ! grep -qF 'no hay ninguna línea STABLE declarada' <<<"$GATE_OUT"; then
+  pass "el scope published falla ruidosamente ante un support.json ilegible"
+else
+  fail "el scope published no falló ruidosamente ante un support.json ilegible (rc=$GATE_RC): $(tr '\n' ' ' <<<"$GATE_OUT")"
+fi
+
+# The tracking floor is the OLDEST declared minor, and the producer hands the
+# declared minors in version order, so the floor is the producer's FIRST
+# element. With a lexicographic producer ("10.0" before "2.0") the floor
+# would be 10.0 and the published 9.0 would fall BELOW it, escaping the rule
+# that every tracked minor must be declared. The re-sort that used to live
+# next to the floor was the mask that hid the producer's bug; it is gone, so
+# this row pins the producer's order where it actually decides something.
+FX_FLOOR="$(new_fixture floor_order)"
+set_lines "$FX_FLOOR" '{
+  "schema_version": 1,
+  "lines": [
+    {"minor":"10.0","state":"STABLE","branch":null,"latest":"10.0.0","accepts":["bugfix","security"]},
+    {"minor":"2.0","state":"EOL","branch":null,"latest":"2.0.0","eol_at":"2026-10-01","eol_reason":"fixture"}
+  ]
+}'
+add_tags "$FX_FLOOR" v2.0.0 v9.0.0 v10.0.0
+run_gate "$FX_FLOOR" --scope=published
+if [[ "$GATE_RC" -ne 0 ]] && grep -qF 'minors publicadas sin declarar en support.json: 9.0' <<<"$GATE_OUT"; then
+  pass "el piso de tracking usa el orden de versión del productor (9.0 no escapa del piso 2.0)"
+else
+  fail "el piso de tracking no usa el orden de versión del productor (rc=$GATE_RC): $(tr '\n' ' ' <<<"$GATE_OUT")"
+fi
+
+# ─── A malformed tag is REPORTED, a candidate is not (B15) ─────────────────
+# The unparseable computation pre-filtered the hyphens — the filter that
+# excludes CANDIDATES (-rc.N) from the published set — so a malformed tag
+# such as v2-14-0 was dropped before it could ever reach the report. The two
+# filters carry OPPOSITE intents: one excludes candidates from the published
+# set, the other reports what is not a well-formed tag at all.
+echo "== un tag malformado se REPORTA; un candidato -rc.N no (B15) =="
+FX_MALFORMED="$(new_fixture malformed_tag)"
+set_lines "$FX_MALFORMED" '{
+  "schema_version": 1,
+  "lines": [
+    {"minor":"2.13","state":"STABLE","branch":null,"latest":"2.13.0","accepts":["bugfix","security"]}
+  ]
+}'
+add_tags "$FX_MALFORMED" v2.13.0 v2.14.0-rc.1 v2-14-0
+run_gate "$FX_MALFORMED" --scope=published
+if [[ "$GATE_RC" -ne 0 ]] && grep -qF 'v2-14-0' <<<"$GATE_OUT"; then
+  pass "un tag malformado (v2-14-0) aparece en el reporte de tags con formato inesperado"
+else
+  fail "un tag malformado no fue reportado (rc=$GATE_RC): $(tr '\n' ' ' <<<"$GATE_OUT")"
+fi
+if ! grep -qF 'v2.14.0-rc.1' <<<"$GATE_OUT"; then
+  pass "un candidato -rc.N no se reporta como tag malformado"
+else
+  fail "un candidato -rc.N se reportó como tag malformado: $(tr '\n' ' ' <<<"$GATE_OUT")"
+fi
+
+# Control: the same candidate WITHOUT the malformed tag. The candidate must
+# not count as a published patch either — if it did, the newest published
+# minor would be 2.14 and the declaration (STABLE 2.13) would drift.
+FX_RC_ONLY="$(new_fixture rc_only)"
+set_lines "$FX_RC_ONLY" '{
+  "schema_version": 1,
+  "lines": [
+    {"minor":"2.13","state":"STABLE","branch":null,"latest":"2.13.0","accepts":["bugfix","security"]}
+  ]
+}'
+add_tags "$FX_RC_ONLY" v2.13.0 v2.14.0-rc.1
+expect "$FX_RC_ONLY" pass "un candidato -rc.N no es una publicación (v2.13.0 sigue siendo la más nueva)" --scope=published
+
 echo
 echo "harness: $PASSED ok, $FAILED fail"
 [[ "$FAILED" -eq 0 ]]
