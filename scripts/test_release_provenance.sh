@@ -274,9 +274,16 @@ git -C "$FIXTURE" -c user.name='Maintainer' -c user.email='maintainer@example.co
 # Lightweight tag — for I.6
 git -C "$FIXTURE" tag v1.5.0 "$COMMIT_A"
 
-# RC tag (trusted) — for I.10
+# RC tag (trusted) — for I.10 / I.10b
+# No -rc suffix is stripped anywhere in L1.2: this tag validates ONLY a manifest
+# that says 2.2.0-rc.1, and v2.2.0 (below) validates ONLY a manifest that says 2.2.0.
 git -C "$FIXTURE" -c user.name='github-actions[bot]' -c user.email='bot@github.com' \
   tag -a v2.2.0-rc.1 -m "chore: Release package webfang_core version 2.2.0-rc.1"
+
+# Stable tag at the SAME base version as the RC above (trusted) — for I.10c.
+# Its purpose is to prove a stable tag cannot certify an RC manifest.
+git -C "$FIXTURE" -c user.name='github-actions[bot]' -c user.email='bot@github.com' \
+  tag -a v2.2.0 -m "chore: Release package webfang_core version 2.2.0"
 
 # Malformed tags — for I.9
 git -C "$FIXTURE" tag v2.1 "$COMMIT_A"                    # missing patch
@@ -599,8 +606,10 @@ check "I.9b malformed RC -> L1.2 Version clause" "L1.2 Version" "$clause"
 # I.10: RC tag vX.Y.Z-rc.N, trusted, correct SHA, Cargo matches -> PROCEED,
 #        prerelease=true written to GITHUB_OUTPUT
 # ═══════════════════════════════════════════════════════════════════════════════
-# Need Cargo.toml version to match RC base version (2.2.0)
-sed -i 's/version = "2.1.0"/version = "2.2.0"/' "$FIXTURE/Cargo.toml"
+# Audit B5 control: the manifest of an RC tag is its FULL semver (release-plz
+# tags v{version} verbatim), NOT its base. This bump also lets I.9's pre-existing
+# 'Cargo matches' shape stay meaningful: no -rc suffix is stripped on either side.
+sed -i 's/version = "2.1.0"/version = "2.2.0-rc.1"/' "$FIXTURE/Cargo.toml"
 reset_state
 out_rc="$(run_gate_capture preflight \
   PROV_EVENT_NAME=push \
@@ -619,6 +628,40 @@ else
   check "I.10 GITHUB_OUTPUT written" "yes" "no"
 fi
 rm -f "$GITHUB_OUT"
+# ═════════════════════════════════════════════════════════════════════════
+# I.10c (audit B5, mirror): the STABLE tag v2.2.0 must not certify the RC
+# manifest either — same asymmetry, opposite direction.
+# ═══════════════════════════════════════════════════════════════════════════
+out_rc="$(run_gate_capture preflight \
+  PROV_EVENT_NAME=push \
+  PROV_EVENT_SHA="$(git -C "$FIXTURE" rev-parse 'refs/tags/v2.2.0^{commit}')" \
+  PROV_TAG=v2.2.0)"
+out="$(head -n -1 <<<"$out_rc")"
+rc="$(tail -1 <<<"$out_rc")"
+check "I.10c stable tag + RC manifest -> exit 1" "1" "$rc"
+clause="$(extract_clause "$out")"
+check "I.10c stable tag + RC manifest -> L1.2 Version clause" "L1.2 Version" "$clause"
+rm -f "$GITHUB_OUT"
+
+# I.10b (audit B5 original): with the manifest back at the stable base, the RC
+# tag must NOT validate it — the old strip made this a green pass.
+sed -i 's/version = "2.2.0-rc.1"/version = "2.2.0"/' "$FIXTURE/Cargo.toml"
+reset_state
+out_rc="$(run_gate_capture preflight \
+  PROV_EVENT_NAME=push \
+  PROV_EVENT_SHA="$(git -C "$FIXTURE" rev-parse 'refs/tags/v2.2.0-rc.1^{commit}')" \
+  PROV_TAG=v2.2.0-rc.1)"
+out="$(head -n -1 <<<"$out_rc")"
+rc="$(tail -1 <<<"$out_rc")"
+check "I.10b RC tag + stable manifest -> exit 1" "1" "$rc"
+clause="$(extract_clause "$out")"
+check "I.10b RC tag + stable manifest -> L1.2 Version clause" "L1.2 Version" "$clause"
+case "$out" in
+  *"RC/stable divergence"*) check "I.10b names the RC/stable divergence" "yes" "yes" ;;
+  *) check "I.10b names the RC/stable divergence" "yes" "no" ;;
+esac
+rm -f "$GITHUB_OUT"
+
 # Restore Cargo.toml
 sed -i 's/version = "2.2.0"/version = "2.1.0"/' "$FIXTURE/Cargo.toml"
 

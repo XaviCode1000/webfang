@@ -56,16 +56,30 @@ if [[ -z "$TAG" ]]; then
   exit 2
 fi
 
-# The assets release.yml must publish for a release to count as complete (its
-# build matrix plus SHA256SUMS.txt). This list is the single definition of
-# "complete": the push path and the sweep cannot disagree about it.
+# The assets release.yml must publish for a release to count as complete: the
+# build matrix, the checksums manifest, the SBOM and the third-party notices
+# bundle (RELEASE_EXPECTED_ASSETS in .github/workflows/release.yml is the same
+# inventory, transcribed once there for the sign/verify/publish checklists).
+# This list is the single definition of "complete": the push path and the sweep
+# cannot disagree about it — and its wiring is enforced by the harness in
+# scripts/test_release_reconcile.sh, which diffs both lists.
 EXPECTED_ASSETS=(
   webfang-x86_64-unknown-linux-gnu.tar.gz
   webfang-aarch64-unknown-linux-gnu.tar.gz
   webfang-aarch64-apple-darwin.tar.gz
   webfang-x86_64-pc-windows-msvc.zip
   SHA256SUMS.txt
+  webfang.spdx.json
+  THIRD_PARTY_NOTICES.txt
 )
+# Every asset's cosign bundle is part of the attestation surface (release.yml
+# signs each asset and uploads <asset>.sigstore.json — audit B8): a release with
+# assets but no bundles is not complete either. Derived, never transcribed.
+required_asset_names() {
+  for a in "${EXPECTED_ASSETS[@]}"; do
+    printf '%s\n%s\n' "$a" "$a.sigstore.json"
+  done
+}
 
 # Capture the existence probe's stderr, so a 404 can be told apart from any
 # other API failure: 404 means "no release" (dispatch path), anything else is
@@ -83,20 +97,39 @@ if release_id="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${TAG}" \
   fi
   # The release exists. Read its assets BY ID — never from the by-tag object,
   # whose embedded .assets were measured empty while this endpoint returned 5.
-  if ! present="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" \
-        --jq '.[].name' 2>"$API_ERR")"; then
+  # The response is consumed as raw JSON and parsed with jq in two passes: one
+  # for presence, one for sizes (audit B8 — an asset present with size 0 is
+  # a corrupt upload, not a complete release). A response that jq cannot
+  # parse is an unreadable API state, fail-closed like any other.
+  assets_json=""
+  if ! assets_json="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${release_id}/assets" 2>"$API_ERR")"; then
     echo "::error::release $TAG exists (id $release_id) but its assets could not be read ($(tr '\n' ' ' <"$API_ERR")) - failing closed instead of guessing: calling it 'incomplete' is the spurious dispatch of run 35844323775, calling it 'complete' would hide missing binaries." >&2
     exit 1
   fi
-  missing=()
-  for asset in "${EXPECTED_ASSETS[@]}"; do
-    grep -qxF "$asset" <<<"$present" || missing+=("$asset")
-  done
-  if [[ "${#missing[@]}" -eq 0 ]]; then
+  if ! present_sizes="$(printf '%s' "$assets_json" | jq -e -r 'map("\(.name)\t\(.size)") | join("\n")' 2>"$API_ERR")"; then
+    echo "::error::release $TAG exists (id $release_id) but its asset payload is not parseable JSON (jq: $(tr '\n' ' ' <"$API_ERR")) - failing closed instead of guessing whether the inventory is complete." >&2
+    exit 1
+  fi
+  declare -A asset_size=()
+  while IFS=$'\t' read -r name size; do
+    asset_size["$name"]="$size"
+  done <<<"$present_sizes"
+  missing=(); empty=()
+  while IFS= read -r req; do
+    if [[ -z "${asset_size[$req]:-}" ]]; then
+      missing+=("$req")
+    elif [ "${asset_size[$req]}" -eq 0 ] 2>/dev/null; then
+      empty+=("$req")
+    fi
+  done < <(required_asset_names)
+  if [[ "${#missing[@]}" -gt 0 ]]; then
+    echo "Release $TAG exists but is incomplete; missing: ${missing[*]}"
+  elif [[ "${#empty[@]}" -gt 0 ]]; then
+    echo "Release $TAG exists but is incomplete; present with size 0: ${empty[*]}"
+  else
     echo "Release $TAG is already complete; nothing to do."
     exit 0
   fi
-  echo "Release $TAG exists but is incomplete; missing: ${missing[*]}"
 elif grep -q 'HTTP 404' "$API_ERR"; then
   echo "Release $TAG does not exist yet."
 else

@@ -49,6 +49,25 @@ env:
   CARGO_PROFILE_RELEASE_LTO: "fat"
   CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "1"
 
+  # The canonical inventory of every asset a finished release MUST carry: the
+  # build matrix (4 archives), the checksums manifest, the SBOM and the notices
+  # bundle. The sign/verify/publish steps each check it explicitly before they
+  # trust a glob-derived list — every `ls -1` output here is a list of what
+  # EXISTS, so an asset that failed to build or download vanishes from the
+  # checklist instead of failing it (audit B7: a release without
+  # webfang.spdx.json signed, verified and published green).
+  # Keep in sync with EXPECTED_ASSETS in scripts/ensure-release.sh — the
+  # completeness probe must require exactly this set (the wiring harness in
+  # scripts/test_release_reconcile.sh diffs both lists).
+  RELEASE_EXPECTED_ASSETS: |
+    webfang-x86_64-unknown-linux-gnu.tar.gz
+    webfang-aarch64-unknown-linux-gnu.tar.gz
+    webfang-aarch64-apple-darwin.tar.gz
+    webfang-x86_64-pc-windows-msvc.zip
+    SHA256SUMS.txt
+    webfang.spdx.json
+    THIRD_PARTY_NOTICES.txt
+
 # All `run:` steps execute in bash on every OS. Without this, GitHub runs
 # Windows steps in pwsh by default (docs: workflow-syntax#shell), and every
 # bash-idiom step on the Windows path (Derive SOURCE_DATE_EPOCH, deterministic
@@ -560,6 +579,16 @@ jobs:
       - name: Sign every asset
         run: |
           set -euo pipefail
+          # Audit B7: verify the REQUIRED inventory explicitly — the glob below
+          # reports what exists, so a missing asset has to be caught here and
+          # named, not silently absent from the list.
+          while IFS= read -r expected; do
+            if [[ -z "$expected" ]]; then continue; fi   # trailing-newline tail-safety
+            if [[ ! -f "artifacts/$expected" ]]; then
+              echo "::error::falta el artefacto requerido artifacts/$expected — una release con inventario incompleto es exactamente el hueco que este paso cierra" >&2
+              exit 1
+            fi
+          done <<<"$RELEASE_EXPECTED_ASSETS"
           # Sorted so the signing order is a property of the file names, not of
           # readdir, and so a partially-signed run is reproducible from the log.
           mapfile -t assets < <(
@@ -639,15 +668,21 @@ jobs:
           RELEASE_CERT_IDENTITY_REGEXP: '^https://github\.com/XaviCode1000/webfang/\.github/workflows/release\.yml@refs/tags/v[0-9].*$'
         run: |
           set -euo pipefail
+          # Audit B7: verify the REQUIRED inventory explicitly — the glob that
+          # builds the :code list reports what exists, so a missing asset is
+          # caught-and-named here, not silently absent from the list.
+          while IFS= read -r expected; do
+            if [[ -z "$expected" ]]; then continue; fi   # trailing-newline tail-safety
+            if [[ ! -f "artifacts/$expected" ]]; then
+              echo "::error::falta el artefacto requerido artifacts/$expected — no se verifica una firma de la que nunca se firmó: el conjunto completo debe estar en la lista" >&2
+              exit 1
+            fi
+          done <<<"$RELEASE_EXPECTED_ASSETS"
           mapfile -t assets < <(
             cd artifacts
             ls -1 webfang-*.tar.gz webfang-*.zip SHA256SUMS.txt webfang.spdx.json THIRD_PARTY_NOTICES.txt 2>/dev/null \
               | LC_ALL=C sort
           )
-          if [ "${#assets[@]}" -eq 0 ]; then
-            echo "::error::no hay assets que verificar antes de publicar" >&2
-            exit 1
-          fi
           # Every published asset is verified — not a hand-picked subset. The
           # list is derived from the same glob the release notes and
           # scripts/ensure-release.sh use, so an asset that ships is an asset
@@ -765,7 +800,18 @@ jobs:
           # exists only in one place is a name that silently stops shipping.
           # `*.sigstore.json` is deliberately NOT in the main list — the bundles
           # are uploaded in the second call below, so the primary asset list
-          # never contains a signature for itself.
+          # never contains a signature for itself. The REQUIRED inventory is
+          # then checked explicitly (audit B7): every expected asset must
+          # exist before anything is uploaded.
+          expected_missing=()
+          while IFS= read -r expected; do
+            if [[ -z "$expected" ]]; then continue; fi   # trailing-newline tail-safety
+            [[ -f "artifacts/$expected" ]] || expected_missing+=("$expected")
+          done <<<"$RELEASE_EXPECTED_ASSETS"
+          if [ "${#expected_missing[@]}" -gt 0 ]; then
+            echo "::error::faltan artefactos requeridos para publicar: ${expected_missing[*]}" >&2
+            exit 1
+          fi
           mapfile -t assets < <(
             cd artifacts
             ls -1 webfang-*.tar.gz webfang-*.zip SHA256SUMS.txt webfang.spdx.json THIRD_PARTY_NOTICES.txt 2>/dev/null \
