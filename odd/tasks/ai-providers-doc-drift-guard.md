@@ -65,16 +65,21 @@ faltante → 1; `shape` con miembro de más → 1; `impl` con firma que no está
 manifiesto ausente → 1; `--advisory` sobre árbol con drift → exit 0 con hallazgos
 impresos.
 
-**S7.** Cableado **advisory** (fase 1): paso en el job `repo-guards` de
-`.github/workflows/ci.yml` con `continue-on-error: true`, y paso advisory en
-`scripts/ci_fast_gate.sh` (nunca rojo en local; los hallazgos se imprimen). La promoción a
-required es **reemplazar** `continue-on-error: true` por el marcador `# guard-required` en
-el mismo paso — una edición, y la fase queda legible por máquina. Quitar el flag sin dejar
-el marcador deja el paso sin fase declarada, y el harness lo rechaza. Las aserciones de
-wiring comprueban que el guard está invocado desde `ci.yml` y desde el fast gate, y que la
-fase advisory está declarada **exactamente una vez**: `continue-on-error: true` y
-`# guard-required` juntos es una promoción falsa (el paso seguiría siendo advisory) y
-ninguno de los dos es un paso sin fase.
+**S7.** Cableado. La fase del guard se declara **exactamente una vez** en el paso del job
+`repo-guards` de `.github/workflows/ci.yml`: `continue-on-error: true` (advisory) **o** el
+marcador `# guard-required` (required). Las dos a la vez es una promoción falsa —el paso
+seguiría siendo advisory mientras el harness lo certificaría como bloqueante— y ninguna
+es un paso sin fase declarada. **Fase actual: required** (decidida por el owner; L19). La
+promoción desde advisory fue **reemplazar** el flag por el marcador: una edición, y la
+fase queda legible por máquina en el propio archivo.
+
+El **espejo local** (`scripts/ci_fast_gate.sh`, las tres lanes) tiene que coincidir con la
+fase: required ⇒ el guard bloquea la lane local; advisory ⇒ corre con `--advisory` y la
+lane nunca se pone roja. Un guard que bloquea en CI y no localmente miente: el dev ve la
+lane verde y se encuentra con el CI rojo. El harness rechaza las dos incoherencias.
+
+Las aserciones de wiring comprueban, además, que el guard esté invocado desde `ci.yml` y
+desde el fast gate, y que su harness esté cableado en el mismo job.
 
 **S8.** El doc se corrige donde hoy miente. El guard, al construirse, tiene que encontrar
 las citas desfasadas que quedan vivas (ej. `providers.rs:83` y `providers.rs:251`, que ya
@@ -179,7 +184,36 @@ el árbol esté limpio.
 **L12 (2026-10-20, promoción — una sola edición mecánica):** fase 2 = reemplazar
 `continue-on-error: true` por el marcador `# guard-required` en el paso de `ci.yml`. El
 criterio de promoción ya está cumplido (el harness prueba el fallo cerrado de cada check y
-el meta-guard prueba la no-vacuidad). La decisión es del owner.
+el meta-guard prueba la no-vacuidad). La decisión es del owner. → **ejecutada en L19**.
+
+**L19 (2026-10-20, promoción ejecutada — el owner decidió "ahora", sin esperar el mes de
+datos de falsos positivos):** el paso de `ci.yml` pasó a required (marcador
+`# guard-required`, sin `continue-on-error`), las tres lanes del fast gate pasaron a
+bloqueante con la forma de la casa (`run_guard … bash scripts/check_ai_providers_doc.sh`,
+igual que el guard de pines), y el helper `run_advisory_guard` —que quedaba sin uso— se
+eliminó.
+
+El harness ganó el **invariante fase ↔ espejo local**: la fase del CI y el modo del
+espejo son dos caras del mismo estado, y el harness rechaza las dos incoherencias (fase
+required con espejo advisory, y fase advisory con espejo bloqueante). Eso obligó a
+cambiar la mecánica de las variantes: `phase_variant` (que muta la fase en `ci.yml`) tiene
+ahora su gemelo `mirror_variant` (que muta el modo en el fast gate), porque derivar una
+cara sin la otra produce un rechazo por el motivo equivocado —y un caso rojo que pasa por
+otro camino no probó lo que dice probar. El harness pasó de 45 a **49 casos**.
+
+Un detalle que salió del trabajo y que conviene no olvidar: el bloque efectivo del paso,
+para el detector de fase, incluye el comentario que **sigue** al paso, no el que lo
+precede. La prosa de la fase tiene que esquivar las dos formas regex (`continue-on-error:
+true` y `# guard-required`) en posición de inicio de línea, o el harness la cuenta como
+fase.
+
+**L20 (2026-10-20, el CI rojo de #2146 NO es de este cambio):** `Security Audit` falla con
+`RUSTSEC-2026-0383` (webpki-root-certs 1.0.9 vía `wreq`; la raíz emSign ECC G3, cuya clave
+privada es de dominio público). El `Cargo.lock` de la rama es **idéntico** al de `main`, y
+un run disparado sobre `main` (0ccedd9d, la base exacta) falla igual. El advisory tiene
+fix real (`cargo update -p webpki-root-certs` → 1.0.10 elimina la raíz), así que
+corresponde un PR `fix(deps)` separado y no una entrada de ignore en `deny.toml` — el
+precedente es #1984.
 
 **L13 (2026-10-20, T4 — la verificación independiente y lo que encontró):** verificador
 independiente, 9/9 specs cumplidas, cero bloqueantes caused-by-change. Sus 7 advisories

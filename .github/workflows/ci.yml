@@ -437,26 +437,32 @@ jobs:
       # scopes — the only place from which a guard can reach the required
       # `CI Gate`. A workflow behind `paths:` can never be a required context.
       #
-      # PHASE 1 (advisory): the guard itself is FAIL-CLOSED (it exits 1 on
-      # drift) and `continue-on-error: true` is what absorbs that failure, so
-      # the step shows red on a drifting PR while `repo-guards` — and with it
-      # the required `CI Gate` — stays green. The real verdict stays visible
-      # instead of being swallowed by an `--advisory` flag.
+      # PHASE 2 (required): the guard itself is FAIL-CLOSED (it exits 1 on
+      # drift) and the step no longer absorbs that failure — so a drifting PR
+      # reds `repo-guards`, and with it the required `CI Gate`, and the merge
+      # is BLOCKED. The marker line below is what declares the phase in a form
+      # a machine can read: the semantics harness below requires the phase to
+      # be declared EXACTLY once, either as the `continue-on-error: true` flag
+      # (advisory) or as the `# guard-required` marker (required). Both at once
+      # is a FALSE PROMOTION (the step would still be advisory while the
+      # harness certified it as blocking); neither is a step with no phase at
+      # all.
       #
-      # PHASE 2 (promotion to required — the owner's call, not a mechanical
-      # consequence of this PR): in THIS step, replace `continue-on-error: true`
-      # with the marker `# guard-required`. That is the whole promotion: one
-      # line, and the phase stays legible by machine from the file itself.
-      # The criterion is already met: the semantics harness below proves the
-      # FAIL-CLOSED behaviour of every check, so a promoted guard blocks only
-      # on real drift.
-      - name: AI providers doc drift gate (advisory, #2136)
-        continue-on-error: true
+      # The promotion is the OWNER's call, not a mechanical consequence of the
+      # guard's existence: the criterion was already met — the semantics
+      # harness below proves the FAIL-CLOSED behaviour of every check, so a
+      # promoted guard blocks only on real drift. The local mirror
+      # (scripts/ci_fast_gate.sh) runs the same guard in the same, blocking
+      # mode, and the harness rejects a mirror whose mode disagrees with the
+      # phase declared here: a guard that blocks in CI and not locally is a
+      # lie the developer only discovers in the CI run.
+      - name: AI providers doc drift gate (required, #2136)
+        # guard-required
         run: bash scripts/check_ai_providers_doc.sh
-      # Semantics harness for the gate above — BLOCKING, unlike the gate step
+      # Semantics harness for the gate above — BLOCKING, like the gate step
       # itself. It is the proof that the guard can still fail: a guard that
-      # stopped recognising drift would leave the advisory step permanently
-      # green, which is indistinguishable from not having a guard at all. Same
+      # stopped recognising drift would leave the gate step permanently green,
+      # which is indistinguishable from not having a guard at all. Same
       # argument, and the same blocking status, as the docs version pins
       # harness above. Offline, mktemp fixtures only, no cargo and no network.
       - name: AI providers doc drift semantics harness

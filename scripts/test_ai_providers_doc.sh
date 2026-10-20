@@ -11,7 +11,8 @@
 #
 #   1. SEMÁNTICA — un caso por check del guard, sobre fixtures en mktemp -d.
 #   2. WIRING   — la EDGE: que el guard esté invocado desde ci.yml y desde el
-#      fast gate, y que su fase advisory esté declarada.
+#      fast gate, que su fase esté declarada exactamente una vez, y que el
+#      MODO del espejo local coincida con la fase declarada.
 #
 # La sección de wiring vive AQUÍ y no en un `test_ai_providers_doc_wiring.sh`
 # aparte, a propósito: el meta-guard (scripts/test_guard_coverage.sh) sólo
@@ -453,6 +454,18 @@ fi
 # PROMOCIÓN FALSA (el paso seguiría siendo advisory mientras el harness lo
 # certificaría como bloqueante). Las dos se rechazan.
 #
+# Y el MODO del espejo local tiene que COINCIDIR con la fase declarada:
+#
+#   fase required ⇒ las tres lanes lo invocan BLOQUEANTE (sin `--advisory`,
+#                   sin `run_advisory_guard`)
+#   fase advisory ⇒ las tres lanes lo invocan en modo ADVISORY (`--advisory`
+#                   o `run_advisory_guard`)
+#
+# Un guard que bloquea en CI y no bloquea localmente miente: el dev ve la lane
+# verde y se encuentra con el CI rojo. La incoherencia inversa (local
+# bloqueante, CI advisory) rompe la promesa del fase 1 y pone la lane roja
+# por un guard que CI tolera. Las dos se rechazan, y cada una por SU motivo.
+#
 # NEGATION: pre-fix no existía ninguna conexión — el doc normativo vivía fuera
 # del libro mdBook, así que ningún gate lo leía y una firma que no compilaba
 # sobrevivió meses sin que nadie se enterara.
@@ -492,6 +505,49 @@ lane_block() {
   ' "$1"
 }
 
+# guard_phase <step-file>: "required" | "advisory" | "both" | "none".
+# La fase se lee de las LÍNEAS EFECTIVAS del paso, no de su prosa: un
+# comentario que menciona el flag al explicar la promoción no declara la
+# fase — y sin esta distinción, la prosa del propio ci.yml la declararía dos
+# veces.
+guard_phase() {
+  local step="$1" adv=0 req=0
+  if grep -qE '^[[:space:]]*continue-on-error:[[:space:]]*true([[:space:]]|$)' <<< "$step"; then
+    adv=1
+  fi
+  if grep -qE '^[[:space:]]*#[[:space:]]*guard-required([[:space:]]|$)' <<< "$step"; then
+    req=1
+  fi
+  if [[ $adv -eq 1 && $req -eq 1 ]]; then
+    printf 'both'
+  elif [[ $adv -eq 1 ]]; then
+    printf 'advisory'
+  elif [[ $req -eq 1 ]]; then
+    printf 'required'
+  else
+    printf 'none'
+  fi
+}
+
+# lane_mirror_mode <lane-file>: "required" | "advisory" | "none".
+# El modo de la INVOCACIÓN se lee del texto de las líneas que nombran el
+# guard (los comentarios fuera): el modo advisory puede venir del flag
+# `--advisory` o del helper `run_advisory_guard`, y el modo bloqueante no
+# lleva ninguno de los dos. Se lee sobre el bloque entero de la invocación
+# porque la forma bloqueante de la casa ocupa dos líneas (el `run_guard` y el
+# comando), y el flag vive en la segunda.
+lane_mirror_mode() {
+  local body
+  body="$(grep -vE '^[[:space:]]*#' "$1" | grep -F "$GUARD_REL" || true)"
+  if [[ -z "$body" ]]; then
+    printf 'none'
+  elif grep -qF -- '--advisory' <<< "$body" || grep -qF 'run_advisory_guard' <<< "$body"; then
+    printf 'advisory'
+  else
+    printf 'required'
+  fi
+}
+
 # strip_guard_step <workflow>: el workflow SIN el paso del guard.
 # El ancla es la línea `run:` del paso, nunca su `name:` — la promoción a
 # required renombra el paso, y un control negativo anclado en el nombre dejaría
@@ -516,7 +572,7 @@ strip_guard_step() {
 # check_wiring <ci-yml> <fast-gate>: sale distinto de 0 cuando el guard no está
 # conectado a sus dos bordes (CI y fast gate local), una línea por motivo.
 check_wiring() {
-  local wf="$1" fg="$2" bad=0 lane step
+  local wf="$1" fg="$2" bad=0 lane step phase="" mirror_mode="" mirror_mixed=0 m
   local job="$WORK/wire-repo-guards.yml"
   local guard_esc="${GUARD_REL//./\\.}"
   local harness_esc="${HARNESS_REL//./\\.}"
@@ -535,23 +591,15 @@ check_wiring() {
   else
     # (d) la fase está declarada EXACTAMENTE UNA VEZ (S7). La fase se lee de
     # las LÍNEAS EFECTIVAS del paso, no de su prosa: un comentario que
-    # menciona `continue-on-error: true` al explicar la promoción no declara
-    # la fase — y sin esta distinción, la prosa del propio ci.yml la
-    # declararía dos veces.
-    adv=0
-    req=0
-    if grep -qE '^[[:space:]]*continue-on-error:[[:space:]]*true([[:space:]]|$)' <<< "$step"; then
-      adv=1
-    fi
-    if grep -qE '^[[:space:]]*#[[:space:]]*guard-required([[:space:]]|$)' <<< "$step"; then
-      req=1
-    fi
-    if [[ $adv -eq 1 && $req -eq 1 ]]; then
+    # menciona el flag al explicar la promoción no declara la fase — y sin
+    # esta distinción, la prosa del propio ci.yml la declararía dos veces.
+    phase="$(guard_phase "$step")"
+    if [[ "$phase" == "both" ]]; then
       # Falso: el paso conserva `continue-on-error: true`, así que sigue siendo
       # advisory — pero el harness lo certificaría como bloqueante.
       echo "the guard step declares both phases ('continue-on-error: true' AND '# guard-required'): a false promotion — the step would still be advisory"
       bad=1
-    elif [[ $adv -eq 0 && $req -eq 0 ]]; then
+    elif [[ "$phase" == "none" ]]; then
       # Un paso sin fase no dice si su fallo bloquea o no.
       echo "the guard step declares no phase: it needs 'continue-on-error: true' (advisory) or the '# guard-required' marker (required) — exactly one"
       bad=1
@@ -578,8 +626,36 @@ check_wiring() {
       | grep -qE "run_advisory_guard .*${guard_esc}|bash ${guard_esc}"; then
       echo "lane '$lane' does not run $GUARD_REL: a doc or code change would pass locally with the drift unnamed"
       bad=1
+      continue
+    fi
+    # El MODO del espejo local, por lane: las tres tienen que coincidir entre
+    # sí y con la fase declarada más abajo.
+    m="$(lane_mirror_mode "$WORK/wire-$lane.sh")"
+    if [[ -z "$mirror_mode" ]]; then
+      mirror_mode="$m"
+    elif [[ "$mirror_mode" != "$m" ]]; then
+      mirror_mixed=1
     fi
   done
+
+  # (e) el MODO del espejo local tiene que COINCIDIR con la fase declarada en
+  # CI. Fase required ⇒ las tres lanes invocan el guard bloqueante; fase
+  # advisory ⇒ lo invocan en modo advisory. Un guard que bloquea en CI y no
+  # localmente miente (el dev ve la lane verde y encuentra el CI rojo); el
+  # caso inverso rompe la promesa del fase 1. Cada incoherencia se rechaza
+  # por SU motivo, para que un control negativo no pueda pasar por otro.
+  if [[ $mirror_mixed -eq 1 ]]; then
+    echo "the local mirror disagrees with itself: the three lanes do not all invoke $GUARD_REL in the same mode"
+    bad=1
+  elif [[ -n "$phase" && "$phase" != "none" && "$phase" != "both" && -n "$mirror_mode" ]]; then
+    if [[ "$phase" == "required" && "$mirror_mode" != "required" ]]; then
+      echo "the CI step declares the required phase but the local mirror is advisory: CI blocks the merge and the local lane stays green"
+      bad=1
+    elif [[ "$phase" == "advisory" && "$mirror_mode" != "advisory" ]]; then
+      echo "the CI step declares the advisory phase but the local mirror is blocking: the local lane reds on a guard the CI step tolerates"
+      bad=1
+    fi
+  fi
 
   [[ $bad -eq 0 ]]
 }
@@ -652,6 +728,88 @@ phase_variant() {
   ' "$src" > "$dst"
 }
 
+# mirror_variant <src> <dst> <required|advisory|advisory-flag>: copia de <src>
+# con el MODO de la invocación del guard en las tres lanes cambiado.
+#
+# Es la contraparte de `phase_variant` del lado del espejo local: la fase vive
+# en ci.yml, el modo del espejo vive en el fast gate, y el invariante exige
+# que los dos COINCIDAN. Por eso las variantes tienen que ser RELATIVAS AL
+# ESTADO COMPLETO: derivar la fase sin derivar el espejo produce una
+# incoherencia, y el caso se pondría rojo por el motivo equivocado — la
+# incoherencia, no la fase que el caso dice comprobar.
+#
+#   required       la invocación bloqueante: `run_guard "<name>" <script>` +
+#                  `bash <script>` — sin `--advisory`
+#   advisory       la invocación advisory: `run_advisory_guard "<name>" <script>`
+#   advisory-flag  la invocación advisory con el flag: `run_guard "<name>"
+#                  <script>` + `bash <script> --advisory`
+#
+# La mutación es RELATIVA AL MODO, como la de `phase_variant`: la variante se
+# puede derivar de cualquier base —incluida una revisión ya mutada— y el
+# caso sigue significando lo mismo.
+mirror_variant() {
+  local src="$1" dst="$2" mode="$3"
+  awk -v mode="$mode" '
+    function indent(s) { match(s, /^[[:space:]]*/); return substr(s, 1, RLENGTH) }
+    function quoted(s) { if (match(s, /"[^"]*"/)) return substr(s, RSTART + 1, RLENGTH - 2); return "ai providers doc drift gate (#2136)" }
+    /^[[:space:]]*#/ { print; next }
+    /run_advisory_guard/ && /check_ai_providers_doc\.sh/ {
+      if (mode == "required") {
+        print indent($0) "run_guard \"" quoted($0) "\" scripts/check_ai_providers_doc.sh \\"
+        print indent($0) "  bash scripts/check_ai_providers_doc.sh"
+      } else if (mode == "advisory-flag") {
+        print indent($0) "run_guard \"" quoted($0) "\" scripts/check_ai_providers_doc.sh \\"
+        print indent($0) "  bash scripts/check_ai_providers_doc.sh --advisory"
+      } else {
+        print
+      }
+      next
+    }
+    /run_guard/ && /check_ai_providers_doc\.sh/ {
+      if (mode == "advisory") {
+        print indent($0) "run_advisory_guard \"" quoted($0) "\" scripts/check_ai_providers_doc.sh"
+        skip = ($0 ~ /\\[ \t]*$/)
+        next
+      }
+      print
+      next
+    }
+    skip { skip = 0; next }
+    /bash[ \t]+scripts\/check_ai_providers_doc\.sh/ {
+      if (mode == "advisory-flag" && $0 !~ /--advisory/) { print $0 " --advisory"; next }
+      if (mode == "required") { gsub(/[ \t]+--advisory/, ""); print; next }
+      print
+      next
+    }
+    { print }
+  ' "$src" > "$dst"
+}
+
+# variants_applied <base1> <var1> <base2> <var2>: 0 si al menos UNA de las dos
+# revisiones derivadas difiere de su base. Sin esta comprobación, un control
+# negativo puede quedarse verde por una derivación que no aplicó nada — el
+# caso pasaría sin haber mirado el input que dice comprobar.
+variants_applied() {
+  if cmp -s "$1" "$2"; then
+    cmp -s "$3" "$4" && return 1
+  fi
+  return 0
+}
+
+# ─── bases derivados: las dos fases, con el espejo en la misma fase ─────────
+# La fase (ci.yml) y el modo del espejo local (fast gate) se derivan JUNTOS:
+# son las dos caras del mismo estado, y el invariante las ata. Derivar una
+# sin la otra produce una incoherencia — y el caso se pondría rojo por el
+# motivo equivocado.
+phase_variant "$CI_YML" "$WORK/base-ci-advisory.yml" advisory \
+  || fail "no se pudo derivar la base de fase advisory"
+mirror_variant "$FAST_GATE" "$WORK/base-fg-advisory.sh" advisory \
+  || fail "no se pudo derivar el espejo advisory"
+phase_variant "$CI_YML" "$WORK/base-ci-required.yml" required \
+  || fail "no se pudo derivar la base de fase required"
+mirror_variant "$FAST_GATE" "$WORK/base-fg-required.sh" required \
+  || fail "no se pudo derivar el espejo required"
+
 # ─── W1. el wiring comiteado está completo ─────────────────────────────────
 expect_wiring ok "wiring: ci.yml ejecuta el guard y el harness, el fast gate lo refleja" \
   "$CI_YML" "$FAST_GATE"
@@ -678,24 +836,39 @@ else
     "$CI_YML" "$WORK/wire-fg-no-ref.sh"
 fi
 
-# ─── W4. la fase advisory sola es una fase válida ──────────────────────────
-# La primera mitad de "exactamente una vez": el estado comiteado (advisory)
-# declara su fase con `continue-on-error: true` y nada más.
-if phase_variant "$CI_YML" "$WORK/wire-ci-advisory.yml" advisory; then
-  expect_wiring ok "fase advisory sola ('continue-on-error: true'): válida" \
-    "$WORK/wire-ci-advisory.yml" "$FAST_GATE"
-else
-  fail "fase advisory sola: no se pudo generar la revisión — el caso no probó nada"
-fi
+# ─── W4. fase advisory + espejo advisory: un estado coherente es válido ─────
+# NEGATION: pre-fix el harness sólo miraba la fase del paso de CI: un espejo
+# local en el modo equivocado pasaba el harness y la incoherencia sólo
+# aparecía en la lane del dev.
+expect_wiring ok "fase advisory + espejo advisory: estado coherente" \
+  "$WORK/base-ci-advisory.yml" "$WORK/base-fg-advisory.sh"
 
-# ─── W5. la promoción a required: el flag REEMPLAZADO por el marcador ──────
+# ─── W4b. el modo advisory del espejo también se reconoce por el flag ───────
+# El modo advisory tiene dos formas legítimas: el helper `run_advisory_guard`
+# y el flag `--advisory` sobre la invocación normal. Las dos tienen que
+# valer como espejo advisory de una fase advisory.
+mirror_variant "$FAST_GATE" "$WORK/base-fg-advisory-flag.sh" advisory-flag
+expect_wiring ok "fase advisory + espejo advisory por flag ('--advisory'): estado coherente" \
+  "$WORK/base-ci-advisory.yml" "$WORK/base-fg-advisory-flag.sh"
+
+# ─── W5. la promoción a required: fase Y espejo promovidos ─────────────────
 # NEGATION: pre-fix la receta de promoción era ambigua: la spec decía "quitar
 # continue-on-error: true" y el harness exigía "advisory O required" — dos
 # recetas incompatibles, y la primera dejaba el harness en rojo. La receta
 # corregida es REEMPLAZAR, y ésta es la fase 2 tal como queda.
-if phase_variant "$CI_YML" "$WORK/wire-ci-required.yml" required; then
-  expect_wiring ok "fase required sola ('# guard-required'): la promoción es válida" \
-    "$WORK/wire-ci-required.yml" "$FAST_GATE"
+#
+# La promoción es de las DOS caras: el paso de CI pasa a required Y el espejo
+# local pasa a bloqueante. Promover sólo una deja un estado incoherente — y
+# ese estado es exactamente lo que W8 y W9 rechazan.
+if phase_variant "$WORK/base-ci-advisory.yml" "$WORK/wire-ci-promoted.yml" required \
+  && mirror_variant "$WORK/base-fg-advisory.sh" "$WORK/wire-fg-promoted.sh" required; then
+  if ! variants_applied "$WORK/base-ci-advisory.yml" "$WORK/wire-ci-promoted.yml" \
+    "$WORK/base-fg-advisory.sh" "$WORK/wire-fg-promoted.sh"; then
+    fail "promoción a required: la mutación no aplicó — el caso no probó nada"
+  else
+    expect_wiring ok "promoción a required (fase + espejo): la promoción es válida" \
+      "$WORK/wire-ci-promoted.yml" "$WORK/wire-fg-promoted.sh"
+  fi
 else
   fail "promoción a required: no se pudo generar la revisión — el caso no probó nada"
 fi
@@ -728,6 +901,45 @@ if phase_variant "$CI_YML" "$WORK/wire-ci-neither.yml" neither; then
   fi
 else
   fail "control negativo del paso sin fase: no se pudo generar la revisión — el caso no probó nada"
+fi
+
+# ─── W8. control negativo: fase required + espejo advisory ─────────────────
+# NEGATION: pre-fix la incoherencia que convierte "CI bloquea, local no" en
+# un surprise en la lane del dev no estaba pineada: el harness certificaba
+# una fase required con un espejo que se quedaba verde. La fase se declara
+# required y las tres lanes invocan el guard en modo advisory → se rechaza,
+# y se rechaza POR ESE MOTIVO (no por otro).
+if variants_applied "$CI_YML" "$WORK/base-ci-required.yml" \
+  "$FAST_GATE" "$WORK/base-fg-advisory.sh"; then
+  expect_wiring red "control negativo: fase required con espejo advisory se rechaza" \
+    "$WORK/base-ci-required.yml" "$WORK/base-fg-advisory.sh" "the local mirror is advisory"
+else
+  fail "control negativo del espejo advisory: la mutación no aplicó — el caso no probó nada"
+fi
+
+# ─── W9. control negativo: fase advisory + espejo bloqueante ───────────────
+# La incoherencia inversa: el local pone la lane roja por un guard que el
+# paso de CI tolera. Se rechaza por SU motivo, no por el del caso W8.
+if variants_applied "$CI_YML" "$WORK/base-ci-advisory.yml" \
+  "$FAST_GATE" "$WORK/base-fg-required.sh"; then
+  expect_wiring red "control negativo: fase advisory con espejo bloqueante se rechaza" \
+    "$WORK/base-ci-advisory.yml" "$WORK/base-fg-required.sh" "the local mirror is blocking"
+else
+  fail "control negativo del espejo bloqueante: la mutación no aplicó — el caso no probó nada"
+fi
+
+# ─── W10. control negativo: el flag advisory también cuenta como advisory ──
+# El mismo rechazo de W8, con la segunda forma del modo advisory: si el
+# detector del espejo sólo reconociera el helper `run_advisory_guard`, esta
+# variante se clasificaría como bloqueante y el harness la certificaría
+# — la incoherencia real (una lane que se queda verde mientras CI bloquea)
+# quedaría sin cubrir.
+if variants_applied "$CI_YML" "$WORK/base-ci-required.yml" \
+  "$FAST_GATE" "$WORK/base-fg-advisory-flag.sh"; then
+  expect_wiring red "control negativo: fase required con espejo advisory por flag se rechaza" \
+    "$WORK/base-ci-required.yml" "$WORK/base-fg-advisory-flag.sh" "the local mirror is advisory"
+else
+  fail "control negativo del espejo advisory por flag: la mutación no aplicó — el caso no probó nada"
 fi
 
 printf '\nharness: %d ok, %d fail\n' "$PASSED" "$FAILED"
