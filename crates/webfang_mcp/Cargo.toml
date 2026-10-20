@@ -11,7 +11,9 @@ homepage.workspace = true
 
 [features]
 mcp = ["webfang_core/mcp"]
-# Vault search (#433): ONNX embedding adapter + Markdown chunker.
+# Vault search (#433). The local ONNX embedding adapter is gone (ADR-0004
+# paso 6): the embedding endpoint is remote and resolved by
+# `--embedding-provider`.
 # Note: the SQLite note repository requires `persistence` SEPARATELY —
 # the consumer (CLI binary, MCP example) opts in with `--features persistence`.
 persistence = ["webfang_core/persistence"]
