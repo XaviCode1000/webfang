@@ -29,9 +29,7 @@ use crate::domain::model_profile::{
 };
 use crate::domain::network_policy::NetworkPolicyMode;
 use crate::domain::options_spec::ai::{DEFAULT_CHARS_PER_TOKEN, DEFAULT_MAX_CHARS};
-use crate::domain::providers::{
-    Capability, ProviderConfig, ProviderKind, ProviderRegistry, ProvidersConfig,
-};
+use crate::domain::providers::{Capability, ProviderConfig, ProviderRegistry, ProvidersConfig};
 
 /// Run the diagnosis against the providers declared in `config_path`.
 ///
@@ -183,21 +181,11 @@ async fn diagnose_reachability(provider: &ProviderConfig) -> CliExit {
             CliExit::Success
         },
         Ok(None) => {
-            // `Ok(None)` is not one verdict — `llm_wire::resolve_embedding_config`
-            // returns it to mean "the local ONNX pool serves this slot", and the
-            // run dials nothing. Reporting a `ConfigError` there told the
-            // operator their working provider was broken. Every OTHER kind
-            // reaching `Ok(None)` would mean the resolution produced no remote
-            // endpoint at all, which is still a config error.
-            if provider.kind == ProviderKind::LocalOnnx {
-                println!("Conexión: sin endpoint remoto que sondear");
-                println!(
-                    "  El provider '{}' resuelve al pool local de ONNX, que es el que \
-                     sirve el slot de embeddings; no hay endpoint remoto que sondear",
-                    provider.id
-                );
-                return CliExit::Success;
-            }
+            // `Ok(None)` means the slot produced no remote endpoint at all.
+            // It used to also mean "the local ONNX pool serves this provider",
+            // and that reading is what made `doctor` exit 0 for a backend that
+            // no longer existed (ADR-0004 paso 6). With the `local_onnx` kind
+            // gone, an explicit id that resolves to nothing is a config error.
             println!("Conexión: el provider no se resolvió como endpoint remoto de embeddings");
             CliExit::ConfigError(format!(
                 "el provider '{}' no es un endpoint remoto de embeddings",

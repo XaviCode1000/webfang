@@ -221,17 +221,16 @@ fn test_issue_1933_doctor_budget_discloses_the_tramo_d_boundary() {
     );
 }
 
-/// `webfang --embedding-provider <local-onnx-id> doctor` must NOT hard-fail:
-/// `llm_wire::build_embedding_provider` maps `ProviderKind::LocalOnnx` to
-/// `Ok(None)` precisely to mean "the local ONNX pool serves this slot" — the
-/// same provider a run uses happily. Reporting a `ConfigError` there was a
-/// false diagnostic an operator would act on.
+/// A config that still declares the removed `local_onnx` kind must fail to
+/// load, naming the value.
 ///
-/// Deliberately NOT an insta snapshot and NOT feature-gated: the contract is
-/// the exit code plus the Spanish sentence that explains what the local pool
-/// means, both of which are stable and worth asserting directly.
+/// This replaces the contract that made the problem invisible: until 3.0.0 the
+/// binary exited 0 here, because `ProviderKind::LocalOnnx` mapped to
+/// `Ok(None)` and `doctor` read that as "the local pool serves". ADR-0004
+/// paso 6 removed the pool, so the same input must now be a hard failure —
+/// never a run without embeddings, never a green diagnostic.
 #[test]
-fn test_doctor_reports_a_local_onnx_provider_as_served_by_the_local_pool() {
+fn issue_2099_config_with_the_removed_local_onnx_kind_is_rejected() {
     let (_dir, config) = seeded_config(
         "[[providers]]\nid = \"local\"\ndisplay_name = \"Local\"\n\
          kind = \"local_onnx\"\nbase_url = \"http://127.0.0.1:8080/\"\n\
@@ -239,16 +238,17 @@ fn test_doctor_reports_a_local_onnx_provider_as_served_by_the_local_pool() {
     );
 
     let output = run_with_config(&["--embedding-provider", "local", "doctor"], &config);
-    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
 
-    assert_eq!(
+    assert_ne!(
         output.status.code(),
         Some(0),
-        "a local-ONNX provider serves the slot; doctor must exit 0, got:\n{stdout}"
+        "a removed provider kind must not load, got stdout:\n{}",
+        String::from_utf8_lossy(&output.stdout)
     );
     assert!(
-        stdout.contains("pool local"),
-        "doctor must say the local ONNX pool serves this provider, got:\n{stdout}"
+        stderr.contains("local_onnx"),
+        "the error must name the rejected value, got:\n{stderr}"
     );
 }
 

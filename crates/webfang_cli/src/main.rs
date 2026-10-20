@@ -1056,7 +1056,7 @@ async fn resolve_remote_embedding(
 /// `None` with no config load and no probe — plain runs never dial an
 /// embeddings endpoint for Tier 2.
 ///
-/// Consent check: if the resolved provider is remote (not `local_onnx`),
+/// Consent check: every resolved Tier 2 provider is remote, so
 /// `--tier2-consent` / `WEBFANG_TIER2_CONSENT` MUST be set. A hash of
 /// `provider_id|base_url` is logged for auditability.
 ///
@@ -1087,7 +1087,8 @@ async fn resolve_tier2_remote_embedding(
     )
     .await?;
 
-    // If adapter is Some, it's a remote provider (local_onnx returns None)
+    // An adapter means the slot resolved to a remote endpoint and consent was
+    // granted before the dial.
     if let Some(ref remote) = adapter {
         // Log consent hash for auditability
         let consent_hash = compute_consent_hash(remote.id(), remote.base_url());
