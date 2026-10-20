@@ -364,6 +364,20 @@ jobs:
       # never reads or writes this repository.
       - name: Path classifier semantics harness
         run: bash scripts/ci_path_classifier_test.sh
+      # Semantics harness for the fast gate's lane decision (A1, A2, B45).
+      # The gate decides HOW MUCH to verify, and three of the fixes that make
+      # that decision fail-closed shipped with no test at all: the path
+      # classifier's exit status was ignored (a crash fell through to the cheap
+      # docs+CI lanes — green gate, nothing verified), the docs-only
+      # re-assertion's pattern was over-escaped and matched nothing, and an
+      # unresolvable base ref fell back to HEAD~1, narrowing the check where it
+      # had to widen. The harness drives the REAL gate against synthetic
+      # fixture repos and asserts on its exit code, the lane it selected and
+      # the error it printed. Every tool the gate can invoke is STUBBED on
+      # PATH, so the suite compiles nothing: pure bash over mktemp fixtures,
+      # no cargo, no network, and it never reads or writes this repository.
+      - name: Fast gate semantics harness
+        run: bash scripts/test_ci_fast_gate.sh
       # Semantics harness for the compatibility harness (#1635, #1698): proves
       # on stub cargo/webfang binaries that the per-combo probes stay
       # fail-closed AND resolve the binary through CARGO_TARGET_DIR. The
