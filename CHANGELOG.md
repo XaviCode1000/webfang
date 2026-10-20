@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.0.1] - 2026-10-20
+
+
+### 🔧 Other
+
+- Cerrar las referencias muertas al stack ONNX en codecov y mcp ([#2096](https://github.com/XaviCode1000/webfang/pull/2096))
 ## [3.0.0] - 2026-10-19
 
 ### ⚠️ Breaking Changes
