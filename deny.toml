@@ -132,6 +132,17 @@ ignore = [
     # Expires: 2027-03-20
     { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 2.0.1 unmaintained; via i18n-embed-fl 0.9.4 <- age 0.11.5 non-optional wizard identity encryption, compile-time diagnostics only and no safe upgrade available" },
 
+    # RUSTSEC-2026-0374 (basic-toml 0.1.10, severity: unmaintained)
+    # Same family as RUSTSEC-2026-0173 above: via i18n-embed-fl 0.9.4 and
+    # i18n-embed-impl 0.8.4 (both proc-macro crates) <- i18n-config 0.4.8
+    # <- age 0.11.5. Compile-time codegen only, never linked into the binary.
+    # Upstream archived the repository the day after the last release, and the
+    # advisory reports no safe upgrade available; the only real alternative is
+    # replacing i18n-embed-fl, which is out of scope here.
+    # Tracking: https://rustsec.org/advisories/RUSTSEC-2026-0374
+    # Expires: 2027-01-20
+    { id = "RUSTSEC-2026-0374", reason = "basic-toml 0.1.10 unmaintained; via i18n-embed-fl 0.9.4 and i18n-embed-impl 0.8.4 proc-macro crates <- i18n-config 0.4.8 <- age 0.11.5, compile-time codegen only and never linked into the binary; no safe upgrade available" },
+
     # RUSTSEC-2026-0221 (event-listener 5.4.1, severity: unsound)
     # `!Send` tags can cross thread boundaries via `StackSlot`. Transitive
     # via async-lock/async-process <- async-std <- chromiumoxide 0.7 (same
