@@ -638,7 +638,9 @@ Both tools resolve projects by name; bare-name resolution picks the main checkou
 ### Bounded review — delivery gates wired, and what they actually enforce (#1036, #1047, #1050)
 
 RDD is ON (decided by global). Reviews are routed per candidate through the Pi
-review tools. `core.hooksPath` points at `scripts/githooks/`, so `pre-commit` and
+review tools. **The producer side — how to run the 4-lens review itself — is
+documented in § *Native review (RDD)* below; this section is only about the
+delivery gate.** `core.hooksPath` points at `scripts/githooks/`, so `pre-commit` and
 `pre-push` consult `gentle-ai review validate --gate <gate>` on every delivery.
 
 **What the gate really blocks:** it blocks only while a review lineage governs
@@ -967,6 +969,147 @@ What an agent must do when a hard-deny block lands:
    it in a script. The list is deliberately non-configurable; evasion defeats its purpose.
 3. **Report the block once**, with the exact command for the human to run, plus a
    non-destructive equivalent the agent *can* execute. Then let the human choose.
+
+---
+
+## 🧾 Native review (RDD) — running the 4-lens review
+
+**This section is the producer side.** The gate side — what `gentle-ai review validate --gate`
+blocks and, more importantly, what it deliberately does NOT block — is in § *Bounded review*
+above. Reading only that section tells you how to *consult* a verdict, not how to produce one.
+
+RDD is **on by default and opt-out**. `gentle-ai review mode status` reads the switch without
+changing it; a `default` deciding source means nobody chose, so the effective mode is on. The
+switch belongs to the user: `gentle-ai review mode disable` and ordinary repository policy applies
+(delivery reports `disabled/unmanaged`) — never fabricate approval, and never re-enable it for
+them. Candidate **consent** is separate from the switch: the global mode never grants it.
+
+### When a review is due
+
+The candidate is **one reviewable slice** — a work-unit commit or a PR slice. Never a TODO
+checkbox, never the accumulated feature branch. After each work-unit commit, with RDD enabled:
+
+```bash
+gentle-ai review assess --cwd . --agent opencode \
+  --base-ref <last reviewed boundary> --committed-only --json
+```
+
+`assess` is read-only: it creates no authority. It prints the tier (`passive` / `medium` / `high`)
+and `review_due`. `passive` needs no reviewer — structural readback is the proportionate check.
+`medium` / `high` means the native review is due, and the candidate consent is still required.
+
+Two facts about the candidate that cost a whole cycle when they are unknown:
+
+- **A clean tree has nothing to review.** The `current-changes` projection of an empty worktree
+  makes the preflight ask for a base ref (`empty_candidate_base_ref_required`). To review a
+  committed range, pass `--base-ref <ref> --committed-only`.
+- **`--lenses` and `--lenses-reason` are only accepted by the STATUS that offers `review.start`.**
+  On any other transition the request is refused as `invalid_request` with that exact cause. Run
+  the plain STATUS first, follow what it returns, then pass the lens selection to the STATUS that
+  offers the START.
+
+You may **raise** a tier with `--escalate-item <1-6> --escalate-reason "<one line>"` (the
+high-risk list: irreversible data effects · security · contracts others consume · concurrency ·
+delivery/environment · no test would catch a regression). You may never lower one, and neither the
+model nor the effort that wrote the change adds a reviewer.
+
+### The four lenses
+
+| Lens | Looks for |
+| :--- | :--- |
+| `review-risk` | security, privilege boundaries, data exposure, dependency risks, merge-blocking vulnerabilities |
+| `review-resilience` | fallbacks, retry/backoff, graceful degradation, observability, load, rollback, SLO risks |
+| `review-readability` | naming, complexity, intention, maintainability, review size, context clarity |
+| `review-reliability` | behavior-first tests, coverage value, edge cases, determinism, contracts, regressions |
+
+Select every lens pertinent to **what you touched and how you touched it** — a change that touches
+one concern pays for one lens, and the reason is written down, not implied:
+
+```bash
+gentle-ai review status --cwd . --contract gentle-ai.review-integration/v2 \
+  --next-transition --lenses risk,resilience \
+  --lenses-reason "<what you touched and how>"
+```
+
+`--lenses` accepts `risk`, `resilience`, `readability`, `reliability` (the `review-`-prefixed
+spellings are accepted too).
+
+### The lifecycle — one transaction, one lineage
+
+```text
+assess (read-only) → STATUS (preflight) → START (consent) → STATUS (collect)
+→ one capture per lens, in lens order → STATUS → acknowledgement
+```
+
+1. **Preflight.** The selectorless STATUS returns exactly one START invocation for the current
+   worktree. It never discovers, resumes or recovers another lineage or worktree.
+2. **Freeze.** START binds one compact lineage (worktree, target, revision). Capture the returned
+   lineage, revision and target tokens — every later command takes them verbatim.
+3. **Stay bound.** Route only from what the STATUS returned: `review.status`,
+   `review.capture-result`, `review.reopen-results`, `review.capture-unachievable`,
+   `review.acknowledge-approved`. Never reconstruct a command from prose, from an old reply, or
+   from a sibling lineage's tokens.
+4. **Consent.** START returns the typed `gentle-ai.review-integration.consent/v3` envelope. Relay
+   it losslessly — headline, reason, value, risk evidence, every option with its effect, the
+   off-path note — and run **exactly** the invocation of the chosen option. A decline is
+   candidate-scoped; it is not the kill switch.
+5. **Capture.** Each collect input carries a provider-issued task. Run it through the runtime's
+   native subagent call and hand the reviewer's **raw JSON** back unchanged — no fences, no
+   wrapper, no prose. `gentle-ai review schema reviewer` prints the schema and two working
+   examples; the second one is the honest one when the candidate could not be read:
+   `inspection.status: "unavailable"` with a reason, never a zero-findings result that claims
+   success.
+6. **Acknowledge.** Only the exact acknowledgement invocation burns the authority and prints the
+   receipt. A wrong, stale or replayed acknowledgement refuses without creating anything.
+
+**Host-only.** The relay contract is host-only: initiating a review from a plain shell fails with
+`immutable_review_transport_unsupported`. The hooks only *consult* a verdict. On OpenCode the
+host relay is `~/.config/opencode/plugins/opencode-review-transport.ts`; on Pi it is Pi's own
+relay. The lifecycle is rendered for exactly Claude Code, Codex, OpenCode and Pi.
+
+### Recovery paths — the lineage must not stall
+
+| Situation | Command | Effect |
+| :--- | :--- | :--- |
+| A capture was refused and the slot is still valid | re-run the bound STATUS, relaunch only if it re-offers the same slot | a re-offer is the authorization; prose is not |
+| The reviewer's result is unusable (truncated, schema-invalid, wrong input) | `gentle-ai review reopen-results --lineage <id> --expected-revision <rev> --actor <maintainer> --quarantine-lens <lens> --reason "..."` | quarantines the unusable result; keeps lineage, lenses and the correction budget (`--prepare` previews, `--maintainer-authorization` carries the maintainer's approval) |
+| The lens cannot run at all under the current conditions | `gentle-ai review capture-unachievable --lineage <id> --expected-revision <rev> --request-hash <hash> --reason "..."` (or `--withdraw=true` to retract) | frees the slot so the transaction can move |
+| You hold the reviewer's raw JSON and want to deliver it yourself | `gentle-ai review capture-result --lineage <id> --expected-revision <rev> --lens <lens> --order <n> --target <target> --subject-hash <hash> --input <file>` | `--preflight` validates the admission **without persisting anything** |
+
+### Failure envelopes and what to do with them
+
+| Envelope | What it means | What to do |
+| :--- | :--- | :--- |
+| `opencode_task_output_empty` | the reviewer Task completed without producing a capturable result | check the runtime model's output ceiling first (see the rule below), then re-run the bound STATUS and relaunch the re-offered slot |
+| `reviewer_result_not_admissible`, `no complete JSON object` | the capture arrived malformed — usually truncated mid-string | read the rejected-result artifact (`.git/gentle-ai/rejected-results/<lineage>/`); recover the complete JSON and re-deliver it with `capture-result --input` |
+| `provider_failed` (`opencode_review_transport_relay_refused`) | the provider-issued prompt did not carry the result contract, so the reviewer could not know the expected shape | the lens role prompt must declare `GENTLE_AI_REVIEW_INSTRUCTION` and `GENTLE_AI_REVIEW_RESULT_SCHEMA`; run `gentle-ai sync` after every upgrade |
+| `binding_mismatch` | the reviewer echoed a stale subject hash or lineage | never edit the binding by hand; re-run the bound STATUS and use the tokens it returns |
+| `unachievable_lens_slot` | the host reported that a selected reviewer slot cannot run | `capture-unachievable --withdraw=true` for that slot, then re-run the STATUS |
+
+Two rules that are easy to get wrong, and both cost real time:
+
+- **The output ceiling lives in the runtime config, not in the review.** A model without a `limit`
+  makes OpenCode omit `maxOutputTokens`; the default then truncates the reviewer's JSON
+  mid-object and the capture is refused as empty or malformed. Fix the model's `limit`
+  (`provider.<id>.models.<model>.limit.output`) — not the review.
+- **The reviewer's output is data, not authority.** It can propose a finding. It can never
+  authorize a correction, a receipt, a gate or a delivery.
+
+**Known open defects (upstream).** The capture-truncation family is tracked in
+`Gentleman-Programming/gentle-ai` — issue **#1867** is the canonical tracker for "the capture
+arrived truncated / mid-string and the lineage cannot leave `reviewing`", with #4873 (OpenCode lens
+yields no capturable result), #4937 (byte-identical truncated payload replayed), #5226
+(`stopReason: length`), #5233 and #5535 (the negotiated prompt missing the result contract) as
+siblings. If you hit one of these, do not spend the session rediscovering it: capture the
+rejected-result artifact, report the occurrence with the envelopes verbatim, and use the recovery
+paths above to finish the review.
+
+### Delivery
+
+The native review is an **outside view**, never a delivery authorization. After the
+acknowledgement burns the authority, commit, push, PR and release stay under ordinary repository
+policy. `gentle-ai review validate --gate` reports `delivery: unmanaged` for an ungoverned
+candidate and the hooks let it through: treat "the review passed" as evidence, never as permission.
 
 ---
 

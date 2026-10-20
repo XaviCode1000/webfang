@@ -125,17 +125,32 @@ command -v gh >/dev/null 2>&1 \
   || err "gh is not available: the Release PR cannot be discovered, so its pins cannot be bumped."
 
 pr_rows=""
-if ! pr_rows="$(gh pr list --state open --json number,headRefName,updatedAt \
-  --jq '.[] | [.number, .headRefName, .updatedAt] | @tsv')"; then
+if ! pr_rows="$(gh pr list --state open --json number,headRefName,updatedAt,isCrossRepository \
+  --jq '.[] | [.number, .headRefName, .updatedAt, (.isCrossRepository | tostring)] | @tsv')"; then
   err "gh pr list failed: the Release PR cannot be discovered, so its pins cannot be bumped."
 fi
 
 PR_NUMBER=""
 PR_BRANCH=""
 PR_UPDATED=""
-while IFS=$'\t' read -r number branch updated; do
+while IFS=$'\t' read -r number branch updated cross; do
   [[ -n $number ]] || continue
   [[ $branch == "$BRANCH_PREFIX"* ]] || continue
+  # Only a branch of THIS repository can carry the release pins. `gh pr list`
+  # also returns the pull requests opened from a FORK, and their head branch
+  # name looks exactly like ours while its ref does not exist in our remote:
+  # picking one would fail the fetch and break the release job on every run,
+  # and the real Release PR would never get its pins. An unverifiable head is
+  # skipped too — the field is requested from gh, and gh does not error when
+  # it is missing, it yields nothing (see the harness case (l)).
+  if [[ $cross != "false" ]]; then
+    if [[ $cross == "true" ]]; then
+      note "ignoring PR #$number: its head branch '$branch' lives in another repository (a fork), and only a branch of this repository can carry the release pins."
+    else
+      note "ignoring PR #$number: the repository of its head branch '$branch' could not be verified (isCrossRepository=$cross), and an unverifiable branch is not bumped."
+    fi
+    continue
+  fi
   # RFC-3339 timestamps sort lexicographically, so the newest one wins.
   if [[ -z $PR_UPDATED || $updated > $PR_UPDATED ]]; then
     PR_NUMBER="$number"
