@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.0] - 2026-10-20
+
+
+### ⚠️ Breaking Changes
+
+- Eliminar ProviderKind::LocalOnnx
+
+### 🔧 Fixed
+
+- Los mensajes de SemanticError dejan de nombrar ONNX ([#2108](https://github.com/XaviCode1000/webfang/pull/2108))
 ## [3.0.1] - 2026-10-20
 
 
