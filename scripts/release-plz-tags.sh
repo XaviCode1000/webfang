@@ -32,7 +32,10 @@
 # historical tag.
 #
 # Exit status: 0 for every mode, including an empty list (a normal outcome).
-# Non-zero only for a usage error (2), untrusted existing tag (3), or missing tag (4).
+# Non-zero for a usage error (2), untrusted existing tag (3), missing tag (4),
+# missing trust library (5), or an UNREADABLE tag list (6 — `git tag -l` or
+# `git tag --points-at` itself failed to run; audit B6: a producer that could
+# not run must never read as 'no tags').
 # Callers never mistake "no tags" for a trust failure.
 set -euo pipefail
 
@@ -82,9 +85,21 @@ if [[ "$MODE" == "--tag" ]]; then
 fi
 
 if [[ "$MODE" == "--all" ]]; then
-  mapfile -t candidates < <(git tag -l | grep -E "$RELEASE_TAG_NAME_RE" || true)
+  # Audit B6: `git tag -l | grep ... || true` swallowed the list producer's
+  # failure; with the tags unreadable (e.g. a clone fetched without them) the
+  # callers reported a healthy empty list. Capture the producer status
+  # explicitly: an unreadable list is NEVER a trustworthy 'no tags'.
+  tag_list="$(git tag -l)" || {
+    echo "::error::release-plz-tags: 'git tag -l' failed (exit $?) - refusing to report an unreadable tag list as 'no tags' (audit B6)." >&2
+    exit 6
+  }
+  mapfile -t candidates < <(grep -E "$RELEASE_TAG_NAME_RE" <<<"$tag_list" || true)
 else
-  mapfile -t candidates < <(git tag --points-at HEAD | grep -E "$RELEASE_TAG_NAME_RE" || true)
+  tag_list="$(git tag --points-at HEAD)" || {
+    echo "::error::release-plz-tags: 'git tag --points-at HEAD' failed (exit $?) - refusing to report an unreadable tag list as 'no tags' (audit B6)." >&2
+    exit 6
+  }
+  mapfile -t candidates < <(grep -E "$RELEASE_TAG_NAME_RE" <<<"$tag_list" || true)
 fi
 
 for tag in "${candidates[@]}"; do
