@@ -38,8 +38,8 @@ use crate::application::adaptive_engine::AdaptiveSelectorEngine;
 /// 0-byte vectors file alongside a success exit (silent data loss for RAG
 /// pipelines, class S1).
 ///
-/// - With the `ai` feature: `output_vectors && !opts.ai` → `DataFormatError`
-///   (exit 65, `EX_DATA`) with a Spanish user-facing message.
+/// - `output_vectors && !opts.ai` → `DataFormatError` (exit 65, `EX_DATA`)
+///   with a Spanish user-facing message.
 ///
 /// Returns `Some(exit)` when the run must be aborted, `None` to proceed.
 pub(crate) fn output_vectors_gate(opts: &CrawlOptions) -> Option<CliExit> {

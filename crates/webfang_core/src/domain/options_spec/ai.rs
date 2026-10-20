@@ -1,9 +1,8 @@
 //! AI flag group (ADR-002 slice 5a): mirrors `cli::args::AiArgs`
 //! field-by-field. **No entry in this group is feature-gated** (ADR-0004,
 //! slice C): the semantic cleaner no longer needs ONNX to exist, so every
-//! AI flag describes behavior a build without the `ai` feature can still
-//! honor — a remote embedding endpoint, or nothing at all when the flag is
-//! simply off.
+//! AI flag describes behavior that needs no ONNX build — a remote embedding
+//! endpoint, or nothing at all when the flag is simply off.
 //!
 //! A flag that renders only under the feature it configures is a flag that
 //! answers "unexpected argument" (exit 64) on the other build, naming

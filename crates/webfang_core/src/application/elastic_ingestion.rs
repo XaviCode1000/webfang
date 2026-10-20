@@ -48,9 +48,9 @@ use crate::error::ScraperError;
 /// time, so the repo's native `async fn` methods are awaited inline without
 /// `Box<dyn Future>` or `dyn` dispatch.
 ///
-/// Construct with [`ElasticIngestion::new`]; optionally inject an ONNX
-/// [`SemanticCleaner`] under the `ai` feature via
-/// [`ElasticIngestion::with_cleaner`] (frozen Decision 5).
+/// Construct with [`ElasticIngestion::new`]; optionally inject a
+/// [`SemanticCleaner`] via [`ElasticIngestion::with_cleaner`]
+/// (frozen Decision 5).
 ///
 /// [`SemanticCleaner`]: crate::domain::semantic_cleaner::SemanticCleaner
 pub struct ElasticIngestion<R: VectorRepository + Send + Sync> {
@@ -58,13 +58,13 @@ pub struct ElasticIngestion<R: VectorRepository + Send + Sync> {
     bridge: std::sync::Arc<dyn CpuExecutorPort>,
     repository: R,
     config: crate::domain::config::AutotuningConfig,
-    /// Optional ONNX semantic cleaner (frozen Decision 5). When `Some`, the
+    /// Optional semantic cleaner (frozen Decision 5). When `Some`, the
     /// orchestrator runs the cleaner's async `clean()` (HTML chunking +
     /// embeddings) instead of the bridge's sync lol_html text extraction.
-    /// `None` (and the no-`ai` build) → `embedding = None`.
+    /// `None` → `embedding = None`.
     ///
     /// Deviation from Decision 1's exact 4-field struct: this 5th field is
-    /// feature-gated and unavoidable — `SemanticCleaner::clean()` is async, so
+    /// unavoidable — `SemanticCleaner::clean()` is async, so
     /// embeddings cannot run in the sync Rayon bridge closure and must live in
     /// the orchestrator's async context. See PR5 apply-progress for the full
     /// rationale.

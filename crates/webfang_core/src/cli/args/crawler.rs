@@ -1228,8 +1228,7 @@ mod spec_parity_tests {
         assert_eq!(
             vis,
             vec!["ai"],
-            "visible alias `ai` must be offered in every configuration, not \
-             only under the `ai` feature"
+            "visible alias `ai` must be offered in every configuration"
         );
 
         let adaptive = arg_by_id(&args, "adaptive_selectors");

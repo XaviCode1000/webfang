@@ -667,11 +667,11 @@ mod tests {
         );
     }
 
-    /// The ungated slots render in EVERY configuration (ADR-0004): without
-    /// the `ai` feature the group collapses to exactly `max_chars` and the
-    /// `max_tokens` deprecation shim — never to zero, or the shim would be
-    /// invisible and an operator's stale flag would come back as "unexpected
-    /// argument".
+    /// The ungated slots render in EVERY configuration (ADR-0004). Before
+    /// paso 6 the group collapsed to exactly `max_chars` and the `max_tokens`
+    /// deprecation shim on a build without the `ai` feature — never to zero,
+    /// or the shim would be invisible and an operator's stale flag would come
+    /// back as "unexpected argument".
     #[test]
     fn ungated_ai_args_render_without_the_feature() {
         for headings in [Headings::Omitted, Headings::Applied] {
@@ -685,12 +685,12 @@ mod tests {
                 ids.contains(&"max_chars") && ids.contains(&"max_tokens"),
                 "the ungated pair must render in every configuration ({headings:?}); got {ids:?}"
             );
-            // And since slice C, so must the rest of the group — the cleaner is
-            // offered without the `ai` feature too.
+            // And since slice C, so must the rest of the group — no AI flag is
+            // feature-gated any more.
             assert_eq!(
                 ids, EXPECTED_AI_IDS,
-                "the AI group must render in full without regard to the `ai` \
-                 feature ({headings:?}); got {ids:?}"
+                "the AI group must render in full in every configuration \
+                 ({headings:?}); got {ids:?}"
             );
         }
     }
