@@ -15,13 +15,17 @@
 //!   clock. Timeouts are generous (15 s per read) to absorb cold starts and
 //!   BoringSSL initialization on constrained hardware.
 //!
-//! The regression guard (#759): with `--enable-ai`, the server used to block
-//! the MCP `initialize` handshake behind hf_hub model resolution (~390 MB
-//! download on a cold cache). Now the container boots fast, `serve()` starts
-//! immediately, and the AI ports are wired lazily in a background task. These
-//! tests assert the handshake is answered while that warmup is still pending.
-//! The flag is passed on every spawn: it is honestly ignored on non-AI builds
-//! and exercises the lazy wiring path on AI builds.
+//! The regression guard (#759): the server used to block the MCP `initialize`
+//! handshake behind hf_hub model resolution (~390 MB download on a cold
+//! cache). Now the container boots fast and `serve()` starts immediately, so
+//! these tests assert the handshake is answered with no model resolution in
+//! front of it.
+//!
+//! The `--enable-ai` flag these spawns used to pass is retired (#2123): since
+//! ADR-0004 paso 6 removed the `ai` Cargo feature it enabled nothing, so
+//! passing it is now a parse error. The contract under test is the one that
+//! mattered — a handshake answered promptly — and it holds for the flagless
+//! boot every spawn performs now.
 //!
 //! The last section (#1626, PC-3) covers contained panics on this transport:
 //! a panic reaching the server from the wire must be caught, recorded with its
@@ -78,8 +82,7 @@ const STDIN_FRAME_CAP: usize = 1_114_112;
 /// `kill_on_drop(true)` guarantees no orphan process survives a test panic.
 fn spawn_stdio_server() -> tokio::process::Child {
     let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_webfang-mcp-stdio"));
-    cmd.arg("--enable-ai")
-        .stdin(std::process::Stdio::piped())
+    cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         // stderr carries tracing logs, never JSON-RPC. Null it so the child
         // can never block on an unread log buffer.
@@ -98,8 +101,7 @@ fn spawn_stdio_server() -> tokio::process::Child {
 /// console).
 fn spawn_stdio_server_with_stderr(panic_probe: bool) -> tokio::process::Child {
     let mut cmd = tokio::process::Command::new(env!("CARGO_BIN_EXE_webfang-mcp-stdio"));
-    cmd.arg("--enable-ai")
-        .stdin(std::process::Stdio::piped())
+    cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .kill_on_drop(true);
@@ -195,11 +197,16 @@ async fn handshake(
     response
 }
 
-/// Regression guard for #759: `initialize` is answered while AI warmup is
-/// still pending. Pre-fix, the binary blocked this response behind hf_hub
-/// model resolution and never answered within any reasonable time.
+/// Regression guard for #759: `initialize` is answered promptly, with no
+/// model resolution in front of it. Pre-fix, the binary blocked this
+/// response behind hf_hub model resolution and never answered within any
+/// reasonable time.
+///
+/// The warmup this guard used to race is gone: `--enable-ai` is retired
+/// (#2123) and no build resolves a local model. What remains is the contract
+/// itself — the handshake is answered without waiting for anything.
 #[tokio::test]
-async fn stdio_initialize_is_answered_before_ai_warmup_completes() {
+async fn stdio_initialize_is_answered_without_model_resolution() {
     let mut child = spawn_stdio_server();
     let mut stdin = child.stdin.take().expect("piped stdin");
     let mut reader = BufReader::new(child.stdout.take().expect("piped stdout"));

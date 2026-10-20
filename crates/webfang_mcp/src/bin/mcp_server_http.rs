@@ -16,9 +16,7 @@ use webfang_mcp::mcp_server::server::{
     DEFAULT_MAX_SESSIONS, DEFAULT_MCP_ADDR, DEFAULT_SESSION_CAP_WINDOW_SECS,
     MAX_ALLOWED_SESSIONS_CAP, REDACTED_CREDENTIAL,
 };
-use webfang_mcp::mcp_server::{
-    build_container, build_mcp_state, default_dom_inspector, spawn_ai_wiring, McpState,
-};
+use webfang_mcp::mcp_server::{build_container, build_mcp_state, default_dom_inspector, McpState};
 
 /// Webfang MCP Server — Streamable HTTP transport.
 ///
@@ -91,10 +89,6 @@ struct Args {
     #[arg(long, env = "WEBFANG_MCP_ALLOW_ANONYMOUS")]
     allow_anonymous: bool,
 
-    /// Enable AI semantic cleaning (requires the `ai` feature at build time).
-    #[arg(long, env = "WEBFANG_MCP_AI")]
-    enable_ai: bool,
-
     /// Allowed root directories for absolute `output_dir` and `checkpoint_dir`
     /// paths (#696, #1588). Repeatable or comma-separated. When omitted,
     /// absolute `output_dir`/`checkpoint_dir` values are rejected
@@ -124,7 +118,6 @@ impl std::fmt::Debug for Args {
                 &self.auth_token.as_ref().map(|_| REDACTED_CREDENTIAL),
             )
             .field("allow_anonymous", &self.allow_anonymous)
-            .field("enable_ai", &self.enable_ai)
             .field("export_roots", &self.export_roots)
             .finish()
     }
@@ -220,16 +213,6 @@ async fn main() -> Result<()> {
 
     let args = Args::parse();
 
-    // Keep the `enable_ai` flag honest. The warning is now UNCONDITIONAL:
-    // ADR-0004 paso 6 removed the `ai` Cargo feature, so there is no build
-    // left in which the flag could enable anything. The TEXT is unchanged —
-    // it is the same line a non-`ai` build has always printed for this flag,
-    // and the AI tools keep answering with their honest "not available"
-    // error (see `mcp_server::handlers::ai`).
-    if args.enable_ai {
-        tracing::warn!("--enable-ai requested but the `ai` feature is not compiled in; ignoring");
-    }
-
     // REQ-06: fail fast on a tokenless non-loopback bind, before building any
     // container/downloader. #1611 G-18 adds the second refusal: with the
     // fail-closed default, "no token AND no opt-in" is a misconfiguration too,
@@ -262,18 +245,16 @@ async fn main() -> Result<()> {
     }
 
     // Build the container FAST — no model resolution happens here (#759).
-    // The AI ports are wired lazily in a background task after the container
-    // is shared with the server state. A construction failure propagates as a
+    // Nothing is wired in the background any more: since ADR-0004 paso 6
+    // there is no local model to load, and the embedding port is either
+    // present (a configured remote provider) or absent (an honest per-call
+    // error). A construction failure propagates as a
     // typed error to the supervisor: stderr message + exit code, never a
     // panic backtrace (#1123).
     let container =
         Arc::new(build_container().await.map_err(|e| {
             anyhow::anyhow!("No se pudo crear el contenedor del servidor MCP: {e}")
         })?);
-
-    if args.enable_ai {
-        spawn_ai_wiring(Arc::clone(&container));
-    }
 
     // Shared composition root (#1300) + the DOM inspector this binary ships
     // (#1294 NS-01). The bounded shared Downloader comes from `build_mcp_state`
@@ -538,7 +519,6 @@ mod tests {
             session_cap_window_secs: DEFAULT_SESSION_CAP_WINDOW_SECS,
             auth_token: Some(secret.to_string()),
             allow_anonymous: false,
-            enable_ai: false,
             export_roots: Vec::new(),
         };
 
@@ -572,7 +552,6 @@ mod tests {
             session_cap_window_secs: DEFAULT_SESSION_CAP_WINDOW_SECS,
             auth_token: None,
             allow_anonymous: true,
-            enable_ai: false,
             export_roots: Vec::new(),
         };
 
