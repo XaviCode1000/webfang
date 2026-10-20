@@ -37,3 +37,19 @@ mata B5, B7, B8 (+ PRs-B/C del mismo child treed in #2128 follow this PR sequent
 - L3: T1 (B7) resuelto en .github/workflows/release.yml: env RELEASE_EXPECTED_ASSETS con los 7 nombres
   canónicos y prechecks fail-closed en sign/verify/publish (smoke: falta un asset → exit 1 nombrándolo;
   inventario completo → exit 0). RED canónico: corrida 9 del repro (run1/run2.log, B7 confirmed).
+
+- L4: T2 (B8) commit 4a4a9092: ensure-release.sh completa la inventería (7 nombres + bundle+size>0, JSON crudo
+  con jq, falla-cerrada no-parsable); harnesses 35/24 verde; fixture shapes ahora {name,size}. El worker
+  (subagent) terminó el harness squash (verde 24/0, 35/0).
+- L5: T3 (B5) commit a8b6d7fc: L1.2 compara semver completo sin strip; I.10 corregido + I.10b/I.10c;
+  test_release_provenance 75/75.
+- L6: T1 re-verified en vivo tras armar el drive real de release.yml: (a) el caso B7 del repro está
+  anclado verbatim al cuerpo PED-DE-fix (no puede ver el fix) — la verificación viva se hizo extrayendo
+  el paso real con pyYAML y stub de cosign/parse GH: sign 6/7 → rc 1 nombrando al faltante, 7/7 → rc 0
+  'signed 7 assets'; publish precheck 1/7 → rc 1 lista nombrada, 7/7 → INVENTORY-OK. (b) el drive descubró
+  un falso-positivo propio: el heredoc añade un @NL@ final que produce la línea vacía y una rechazo del
+  inventario completo — corrigado con tail-safety guard + if explícito en los 3 sitios (re-ampliado al
+  commit T1 3b697812).
+- L7: T4: ci_fast_gate.sh GREEN (7 PASS /10 SKIP, actionlint ok); release_repro 2 corridas idénticas:
+  6 matched (B1,B2,B3,B4,B5,B8 defect=0) + 9 confirmados (B6,B7,B9-B15 — fuera de alcance de este PR;
+  B7 verificado en vivo por drive). PR: Closes part of #2128+ (PR-A de la Ola 1; B6→PR-B y B10→PR-C siguen).
