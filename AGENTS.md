@@ -421,12 +421,23 @@ direnv allow     # gitignored; carries the per-tree cache policy
 # invocation resolves to the rustup shim and **silently bypasses mbx**. There
 # is no error and no warning — the build looks normal and simply runs cold,
 # which is how a bad measurement gets taken. `mise activate bash --shims` also
-# puts the wrapper first, but only in login shells; agents, cron and other
-# non-login, non-interactive shells never run it, so direnv is the one route
-# that covers them all. Scoped per-worktree on purpose: the global mise config
-# already routes mise-activated interactive shells, and this keeps the wrapper
-# out of unrelated Rust projects. Any fix attempt must be verified with
-# `command -v cargo`, never by trusting the install succeeded.
+# puts the wrapper first but only in login shells. The direnv hook
+# (`eval "$(direnv hook bash)"` in ~/.bashrc) covers interactive shells
+# via PROMPT_COMMAND: opening a new terminal and `cd` into the worktree
+# applies its target. It does NOT cover non-interactive shells (`bash -c`,
+# agents, cron): PROMPT_COMMAND never fires there (#2039 still holds), so
+# every non-interactive cargo invocation must inline
+# `env CARGO_TARGET_DIR=... CARGO_INCREMENTAL=0 RUSTC_WRAPPER= PATH=...mbx/bin:$PATH`.
+# The hook fixes interactive only; it changes nothing for agents. That includes
+# the isolation guard's own remediation: `scripts/check_target_isolation.sh`
+# answers a foreign target with "write .envrc per the worktree bootstrap, then
+# direnv allow" — the one step that cannot reach a non-interactive shell. A
+# `bash -c` in that worktree still resolves CARGO_TARGET_DIR to whatever the
+# parent session exported (often main's target), and the guard then refuses it
+# as `target-owned-by-other-worktree`. Scoped per-worktree on purpose: the
+# global mise config already routes mise-activated interactive shells, and this
+# keeps the wrapper out of unrelated Rust projects. Any fix attempt must be
+# verified with `command -v cargo`, never by trusting the install succeeded.
 
 # There is deliberately NO second check here. The only enforcement is
 # scripts/ci_fast_gate.sh, and it works by canonical identity, not by name.
