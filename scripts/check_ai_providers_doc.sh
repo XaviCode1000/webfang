@@ -36,9 +36,17 @@
 # `crates/webfang_core/src/`, (c) por basename único bajo `crates/`. Si no
 # resuelve o es ambigua → drift. Nunca se adivina.
 #
+# AISLAMIENTO DE RUTAS: toda ruta que el guard LEE queda confinada a la raíz
+# del repo. Sin ese aislamiento, una cita como `../../etc/passwd` resolvería a
+# un archivo real FUERA del árbol y el guard imprimiría su contenido en el log
+# de CI (diagnóstico C2/C3). La ruta se normaliza contra su base y la que sale
+# se reporta como drift SIN leerse.
+#
 # Uso: scripts/check_ai_providers_doc.sh [--root DIR] [--advisory]
-# Salida: 0 limpio · 1 drift (fail-closed). `--advisory` imprime los mismos
-# hallazgos pero sale con 0.
+# Salida: 0 limpio · 1 drift (fail-closed). `--advisory` NUNCA falla por drift
+# ni por estructura ausente: imprime el hallazgo y sale con 0. Un error de
+# invocación (flag desconocido, `--root` que no existe) sigue fallando: no es
+# un hallazgo, es una llamada mal formada.
 # ============================================================================
 set -uo pipefail
 
@@ -50,9 +58,12 @@ usage() {
 Uso: scripts/check_ai_providers_doc.sh [--root DIR] [--advisory]
 
   --root DIR   raíz del repo (default: la raíz derivada de BASH_SOURCE)
-  --advisory   imprime los mismos hallazgos pero sale con 0
+  --advisory   imprime los mismos hallazgos y sale SIEMPRE con 0
 
-Salida: 0 limpio · 1 drift (fail-closed)
+Salida: 0 limpio · 1 drift (fail-closed). Con --advisory, el drift y la
+estructura ausente (doc, bloque del manifiesto, fence 'claims', manifiesto
+vacío) salen con 0 y el hallazgo se imprime igual. Un error de invocación
+sigue saliendo con 1.
 EOF
 }
 
@@ -97,6 +108,23 @@ if [[ ! -d "$ROOT" ]]; then
 fi
 ROOT="$(cd "$ROOT" && pwd)"
 
+# Canonicalización de la raíz: el aislamiento de rutas compara por forma
+# canónica. `realpath -m` resuelve los symlinks del prefijo existente y no
+# falla con rutas inexistentes. Sin `realpath` (macOS sin coreutils) el
+# aislamiento queda en su nivel LEXICAL — que ya bloquea `..` — y se avisa:
+# un symlink DENTRO del repo que apunte afuera no se detectaría.
+REALPATH_OK=0
+ROOT_CANON="$ROOT"
+if command -v realpath >/dev/null 2>&1; then
+  REALPATH_OK=1
+  ROOT_CANON="$(realpath -m -- "$ROOT" 2>/dev/null || printf '%s' "$ROOT")"
+else
+  # Los backticks son literales: es el nombre de la herramienta, no una
+  # sustitución de comandos.
+  # shellcheck disable=SC2016
+  printf 'aviso: `realpath` no está disponible — el aislamiento de rutas sólo es léxico (un symlink que apunte fuera de la raíz no se detecta)\n' >&2
+fi
+
 TMPD="$(mktemp -d)"
 trap 'rm -rf "$TMPD"' EXIT
 
@@ -104,6 +132,21 @@ FINDINGS=0
 report() { # file line message
   printf '::error file=%s,line=%s::%s\n' "$1" "$2" "$3" >&2
   FINDINGS=$((FINDINGS + 1))
+}
+
+# Salida estructural: el doc ausente, el bloque del manifiesto ausente, el
+# fence 'claims' ausente y el manifiesto vacío son HALLAZGOS, no una avería
+# del script. En modo `--advisory` no pueden abortar al llamador: el hallazgo
+# se imprime y se sale con 0, como en la rama final. Sin este contrato,
+# `--advisory` sólo cubría el drift detectado al final del recorrido y una
+# estructura ausente todavía salía con 1.
+abort_finding() { # línea motivo
+  report "$DOC_REL" "$1" "$2"
+  printf '::error::guard de drift doc↔código: %d hallazgo(s) en %s\n' "$FINDINGS" "$DOC_REL" >&2
+  if [[ $ADVISORY -eq 1 ]]; then
+    exit 0
+  fi
+  exit 1
 }
 
 # ─── normalización ───────────────────────────────────────────────────────────
@@ -126,43 +169,137 @@ EM_DASH="$(printf '\xe2\x80\x94')"
 MINUS_SIGN="$(printf '\xe2\x88\x92')"
 DASH_SED="s/${EN_DASH}/-/g; s/${EM_DASH}/-/g; s/${MINUS_SIGN}/-/g"
 
+# ─── aislamiento y resolución de rutas (S5) ─────────────────────────────────
+# El aislamiento y la resolución son la misma puerta: una ruta que el guard
+# LEE tiene que quedar confinada a la raíz del repo. Sin ese aislamiento, una
+# cita como `../../etc/passwd` resolvería a un archivo real FUERA del árbol y
+# el guard imprimiría su contenido en el log de CI (diagnóstico C2/C3).
+#
+# `confina <rel> <base>` normaliza `rel` (relativa a la raíz) contra `base`
+# (relativa a la raíz) e imprime el resultado; devuelve 1 si la ruta sale de
+# `base`. El nivel de anidamiento de la base es el PISO: un `..` no puede
+# bajar de ahí. El aislamiento es LEXICAL — no depende de que la ruta exista,
+# y una ruta que escapa no se mira siquiera.
+confina() { # rel base → ruta normalizada relativa a la raíz; 1 si escapa
+  local rel="$1" base="$2" seg
+  local -a stack=() rel_segs=() base_segs=()
+  IFS='/' read -r -a base_segs <<<"$base"
+  for seg in ${base_segs[@]+"${base_segs[@]}"}; do
+    case "$seg" in
+      ''|'.') continue ;;
+      '..')
+        [[ ${#stack[@]} -gt 0 ]] || return 1
+        stack=("${stack[@]:0:${#stack[@]}-1}")
+        ;;
+      *) stack+=("$seg") ;;
+    esac
+  done
+  IFS='/' read -r -a rel_segs <<<"$rel"
+  for seg in ${rel_segs[@]+"${rel_segs[@]}"}; do
+    case "$seg" in
+      ''|'.') continue ;;
+      '..')
+        [[ ${#stack[@]} -gt 0 ]] || return 1
+        stack=("${stack[@]:0:${#stack[@]}-1}")
+        ;;
+      *) stack+=("$seg") ;;
+    esac
+  done
+  [[ ${#stack[@]} -gt 0 ]] || return 1
+  (IFS=/; printf '%s\n' "${stack[*]}")
+}
+
+# canon_under_root <rel>: 1 si la forma canónica de la ruta sale de la raíz
+# canónica — el caso del symlink DENTRO del repo que apunta afuera, que el
+# aislamiento lexical no puede ver.
+canon_under_root() { # rel → 1 si escapa
+  [[ $REALPATH_OK -eq 1 ]] || return 0
+  local canon
+  canon="$(realpath -m -- "$ROOT/$1" 2>/dev/null)" || return 1
+  case "$canon" in
+    "$ROOT_CANON"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# motivo de una ruta no resuelta: 1 = no existe o es ambigua, 2 = escapa de la
+# raíz. El motivo va en el hallazgo porque son defectos distintos: el segundo
+# es el que puede filtrar contenido de fuera del árbol.
+motivo_ruta() { # rc → texto
+  if [[ "$1" -eq 2 ]]; then
+    printf 'sale de la raíz del repo — el guard no lee ningún archivo fuera de ella'
+  else
+    printf 'no existe, o el basename es ambiguo bajo crates/'
+  fi
+}
+
 # ─── resolución de rutas (S5) ────────────────────────────────────────────────
-resolve_path() { # path → imprime la ruta relativa al repo; 1 si no resuelve
-  local p="${1#./}" base count matches
-  if [[ -f "$ROOT/$p" ]]; then
-    printf '%s\n' "$p"
+resolve_path() { # path → imprime la ruta relativa al repo; 1 si no resuelve; 2 si escapa de la raíz
+  local p="${1#./}" base count matches rel
+  # (a) contra la raíz del repo
+  if ! rel="$(confina "$p" "")"; then
+    return 2
+  fi
+  if [[ -f "$ROOT/$rel" ]]; then
+    canon_under_root "$rel" || return 2
+    printf '%s\n' "$rel"
     return 0
   fi
-  if [[ -f "$ROOT/$CORE_SRC_REL/$p" ]]; then
-    printf '%s\n' "$CORE_SRC_REL/$p"
+  # (b) contra crates/webfang_core/src/
+  if ! rel="$(confina "$p" "$CORE_SRC_REL")"; then
+    return 2
+  fi
+  if [[ -f "$ROOT/$rel" ]]; then
+    canon_under_root "$rel" || return 2
+    printf '%s\n' "$rel"
     return 0
   fi
+  # (c) por basename único bajo crates/
   base="${p##*/}"
   matches="$(find "$ROOT/crates" -type f -name "$base" 2>/dev/null | sort)"
   count="$(printf '%s' "$matches" | grep -c . || true)"
   if [[ "$count" == "1" ]]; then
-    printf '%s\n' "${matches#"$ROOT"/}"
+    if ! rel="$(confina "${matches#"$ROOT"/}" "")"; then
+      return 2
+    fi
+    canon_under_root "$rel" || return 2
+    printf '%s\n' "$rel"
     return 0
   fi
   return 1
 }
 
 # ─── caché de archivos normalizados ─────────────────────────────────────────
+# Una entrada POR RUTA, y la caché FUNCIONA. `norm_file` deja el path en
+# `NF_PATH` en vez de imprimirlo: un `$(...)` corre en un subshell, así que
+# las mutaciones de los arrays se perdían y la caché era CÓDIGO MUERTO — cada
+# llamada reescribía el archivo y el lookup nunca encontraba nada.
+#
+# La clave del archivo de caché NO puede ser la traducción de la ruta con
+# `tr '/.' '__'`: esa traducción no es inyectiva (`domain/x.a.rs` y
+# `domain/x/a.rs` dan el MISMO nombre), así que la segunda escritura pisaba la
+# primera y el containment de C4 se satisfacía con el contenido de OTRO
+# archivo — un falso verde, la peor dirección posible. El nombre de la entrada
+# lo lleva un contador (único por construcción) y el contenido de la caché es
+# SIEMPRE el del archivo citado.
 NORM_KEYS=()
 NORM_VALS=()
-norm_file() { # ruta relativa → imprime el path del temporal con las líneas normalizadas
+NORM_N=0
+NF_PATH=""
+norm_file() { # ruta relativa → NF_PATH: el temporal con las líneas normalizadas
   local f="$1" i out
   for i in "${!NORM_KEYS[@]}"; do
     if [[ "${NORM_KEYS[$i]}" == "$f" ]]; then
-      printf '%s\n' "${NORM_VALS[$i]}"
+      NF_PATH="${NORM_VALS[$i]}"
       return 0
     fi
   done
-  out="$TMPD/$(printf '%s' "$f" | tr '/.' '__')"
+  NORM_N=$((NORM_N + 1))
+  out="$TMPD/norm.$NORM_N"
   norm_stream <"$ROOT/$f" >"$out"
   NORM_KEYS+=("$f")
   NORM_VALS+=("$out")
-  printf '%s\n' "$out"
+  NF_PATH="$out"
 }
 
 # ─── extracción de miembros de un tipo (C3) ─────────────────────────────────
@@ -213,8 +350,7 @@ extract_members() { # archivo línea tipo → imprime un miembro por línea
 # ─── doc ─────────────────────────────────────────────────────────────────────
 DOC="$ROOT/$DOC_REL"
 if [[ ! -f "$DOC" ]]; then
-  report "$DOC_REL" 1 "no existe el doc normativo $DOC_REL bajo la raíz $ROOT"
-  exit 1
+  abort_finding 1 "no existe el doc normativo $DOC_REL bajo la raíz $ROOT"
 fi
 mapfile -t DOC_LINES <"$DOC"
 
@@ -257,8 +393,7 @@ for i in "${!DOC_LINES[@]}"; do
 done
 
 if [[ $begin_idx -lt 0 || $end_idx -lt 0 || $end_idx -le $begin_idx ]]; then
-  report "$DOC_REL" 1 "C1: no existe el bloque del manifiesto (<!-- claims:begin --> … <!-- claims:end -->)"
-  exit 1
+  abort_finding 1 "C1: no existe el bloque del manifiesto (<!-- claims:begin --> … <!-- claims:end -->)"
 fi
 
 CLAIMS_FENCE_RE='^```claims[[:space:]]*$'
@@ -271,8 +406,7 @@ for ((i = begin_idx + 1; i < end_idx; i++)); do
 done
 
 if [[ $claims_start -lt 0 ]]; then
-  report "$DOC_REL" $((begin_idx + 1)) "C1: el bloque del manifiesto no contiene un fence con info-string 'claims'"
-  exit 1
+  abort_finding $((begin_idx + 1)) "C1: el bloque del manifiesto no contiene un fence con info-string 'claims'"
 fi
 
 # ─── parsing del manifiesto ─────────────────────────────────────────────────
@@ -364,8 +498,10 @@ while [[ $i -lt $end_idx ]]; do
   fi
 
   res=""
-  if ! res="$(resolve_path "$file")"; then
-    report "$DOC_REL" "$i" "C1: no se pudo resolver la ruta '$file' (no existe, o el basename es ambiguo bajo crates/)"
+  rc=0
+  res="$(resolve_path "$file")" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    report "$DOC_REL" "$i" "C1: no se pudo resolver la ruta '$file' ($(motivo_ruta "$rc"))"
     continue
   fi
 
@@ -381,8 +517,7 @@ while [[ $i -lt $end_idx ]]; do
 done
 
 if [[ ${#M_KIND[@]} -eq 0 ]]; then
-  report "$DOC_REL" $((claims_start + 1)) "C1: el manifiesto está vacío — el doc no declara ninguna afirmación verificable"
-  exit 1
+  abort_finding $((claims_start + 1)) "C1: el manifiesto está vacío — el doc no declara ninguna afirmación verificable"
 fi
 
 # ─── C2 / C3 / C4 / C5 ───────────────────────────────────────────────────────
@@ -466,7 +601,8 @@ for ((e = 0; e < ${#M_KIND[@]}; e++)); do
         report "$res" "$lineno" "C4: ningún fence del doc contiene la declaración '$f4'"
         continue
       fi
-      nf="$(norm_file "$res")"
+      norm_file "$res"
+      nf="$NF_PATH"
       for ((c = FENCE_OPEN[fence] + 1; c < FENCE_CLOSE[fence]; c++)); do
         dline="$(strip_comment "${DOC_LINES[$c]}")"
         dn="$(norm "$dline")"
@@ -489,10 +625,12 @@ for ((e = 0; e < ${#M_KIND[@]}; e++)); do
         # un doc interno también es una ocurrencia.
         hit="$(grep -rnF -- "$sym" "$ROOT/crates" 2>/dev/null | head -n 1)"
       else
-        rfile="$(resolve_path "$mfile")" || {
-          report "$DOC_REL" "$at" "C1: no se pudo resolver la ruta '$mfile' de la entrada 'absent'"
+        rc=0
+        rfile="$(resolve_path "$mfile")" || rc=$?
+        if [[ $rc -ne 0 ]]; then
+          report "$DOC_REL" "$at" "C1: no se pudo resolver la ruta '$mfile' de la entrada 'absent' ($(motivo_ruta "$rc"))"
           continue
-        }
+        fi
         hit="$(grep -nF -- "$sym" "$ROOT/$rfile" 2>/dev/null | head -n 1)"
       fi
       if [[ -n "$hit" ]]; then
@@ -516,9 +654,11 @@ SHORT_RE='^`:([0-9]+)(-[0-9]+)?`$'
 PATHLINE_RE='^(.+):([0-9]+)(-[0-9]+)?$'
 
 check_citation() { # ruta línea fin-rango línea-del-doc
-  local p="$1" ln="$2" lnend="$3" dln="$4" res
-  if ! res="$(resolve_path "$p")"; then
-    report "$DOC_REL" "$dln" "C6: no se pudo resolver la ruta '$p' de una cita del doc (no existe o el basename es ambiguo)"
+  local p="$1" ln="$2" lnend="$3" dln="$4" res rc
+  rc=0
+  res="$(resolve_path "$p")" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    report "$DOC_REL" "$dln" "C6: no se pudo resolver la ruta '$p' de una cita del doc ($(motivo_ruta "$rc"))"
     return
   fi
   if ! is_covered "$res:$ln"; then

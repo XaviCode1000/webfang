@@ -111,6 +111,75 @@ MD
   printf '%s\n' "$dir"
 }
 
+# Fixture de COLISIÓN de la caché de archivos normalizados: dos rutas
+# distintas que la traducción `tr '/.' '__'` de la clave antigua llevaba al
+# MISMO nombre (`domain/x.a.rs` y `domain/x/a.rs`).
+#
+# El contenido de `x.a.rs` NO contiene la línea "42" del fence de `beta`; el
+# de `x/a.rs` sí. Con la clave colisionante, el containment de C4 de la
+# tercera entrada (que vuelve a citar `x.a.rs`) se satisface con el contenido
+# del OTRO archivo: un falso verde.
+new_fixture_collision() {
+  local dir="$WORK/$1"
+  mkdir -p "$dir/docs/architecture" "$dir/crates/webfang_core/src/domain/x"
+
+  cat > "$dir/crates/webfang_core/src/domain/x.a.rs" <<'RS'
+pub fn alpha(&self) -> u32 {
+    7
+}
+
+pub fn beta(&self) -> u32 {
+    9
+}
+RS
+
+  cat > "$dir/crates/webfang_core/src/domain/x/a.rs" <<'RS'
+pub fn alpha(&self) -> u32 {
+    7
+}
+
+pub fn beta(&self) -> u32 {
+    42
+}
+RS
+
+  cat > "$dir/docs/architecture/ai-providers-design.md" <<'MD'
+# Ejemplo
+
+## Conceptos
+
+### 1. `alpha` — resolución
+
+```rust
+pub fn alpha(&self) -> u32 {
+    7
+}
+```
+
+Implementado en `crates/webfang_core/src/domain/x.a.rs:1` y `crates/webfang_core/src/domain/x/a.rs:1`.
+
+### 2. `beta` — resolución
+
+```rust
+pub fn beta(&self) -> u32 {
+    42
+}
+```
+
+Verificado en `crates/webfang_core/src/domain/x.a.rs:5`.
+
+<!-- claims:begin -->
+```claims
+impl   | crates/webfang_core/src/domain/x.a.rs | 1 | pub fn alpha(&self) -> u32 {
+impl   | crates/webfang_core/src/domain/x/a.rs | 1 | pub fn alpha(&self) -> u32 {
+impl   | crates/webfang_core/src/domain/x.a.rs | 5 | pub fn beta(&self) -> u32 {
+```
+<!-- claims:end -->
+MD
+
+  printf '%s\n' "$dir"
+}
+
 # run_guard <dir> [args...]: exit code en $?, stdout+stderr en $WORK/out
 run_guard() {
   local dir="$1"
@@ -279,6 +348,95 @@ if grep -q 'C4: la línea no contiene la declaración' "$WORK/out"; then
   pass "el desajuste de la línea del impl lo reporta C4, no C2/C3/C6"
 else
   fail "el desajuste de la línea del impl lo reporta C4, no C2/C3/C6 — $(head -c 400 "$WORK/out")"
+fi
+
+# ─── 17. una cita que sale de la raíz NO se lee (F1) ────────────────────────
+# NEGATION: pre-fix `resolve_path` probaba `[[ -f "$ROOT/$p" ]]` con la ruta
+# tal cual, sin normalizar ni rechazar los `..`: una cita `../fuera.txt`
+# resolvía a un archivo real un nivel por encima de la raíz y el guard
+# imprimía SU CONTENIDO en el log de CI (diagnóstico C2). El caso falla si el
+# secreto vuelve a la salida: el exit code solo no alcanza, porque el
+# contenido filtrado y el drift ausente comparten la misma forma.
+D="$(new_fixture escape-root)"
+# El archivo está un nivel POR ENCIMA de la raíz del fixture.
+printf 'SECRETO_FUERA_DE_LA_RAIZ\n' > "$WORK/fuera.txt"
+sed -i 's#^absent | \* | - | Ghost$#absent | * | - | Ghost\nclaim  | ../fuera.txt | 1 | NO_ESTA_EN_EL_ARCHIVO#' "$(DOC_OF "$D")"
+expect_exit 1 "una cita que sale de la raíz del repo produce drift" "$D"
+if grep -q 'SECRETO_FUERA_DE_LA_RAIZ' "$WORK/out"; then
+  fail "el contenido de un archivo fuera de la raíz NO aparece en la salida"
+else
+  pass "el contenido de un archivo fuera de la raíz NO aparece en la salida"
+fi
+if grep -q 'sale de la raíz del repo' "$WORK/out"; then
+  pass "la cita que escapa de la raíz se reporta como escape"
+else
+  fail "la cita que escapa de la raíz se reporta como escape — $(head -c 400 "$WORK/out")"
+fi
+
+# ─── 18. la caché de archivos normalizados no colisiona (F2) ───────────────
+# NEGATION: pre-fix la clave de la caché era la traducción de la ruta con
+# `tr '/.' '__'`, que NO es inyectiva: `domain/x.a.rs` y `domain/x/a.rs` dan
+# el mismo nombre de archivo. La segunda escritura pisaba la primera y el
+# containment de C4 se satisfacía con el contenido del OTRO archivo — un
+# falso verde, la peor dirección posible. El caso falla si el containment se
+# satisface con el contenido ajeno.
+D="$(new_fixture_collision cache-collision)"
+expect_exit 1 "la colisión de la caché no produce un falso verde" "$D"
+if grep -q 'C4: la línea del fence' "$WORK/out"; then
+  pass "el containment de C4 se lee contra el contenido del archivo citado"
+else
+  fail "el containment de C4 se lee contra el contenido del archivo citado — $(head -c 400 "$WORK/out")"
+fi
+
+# ─── 19. --advisory cubre el doc normativo ausente (F3) ────────────────────
+# NEGATION: pre-fix `--advisory` sólo cubría la rama FINAL del recorrido: el
+# doc ausente salía con 1 ANTES de llegar a ella. Un llamador que confiaba
+# en `--advisory` para no fallar abortaba, y la tolerancia del llamador
+# (`|| true`) sostenía el contrato en vez del script.
+D="$(new_fixture advisory-no-doc)"
+rm -f "$(DOC_OF "$D")"
+expect_exit 1 "doc ausente: exit 1 en modo normal" "$D"
+expect_exit 0 "doc ausente: exit 0 en modo --advisory" "$D" --advisory
+if grep -q '::error' "$WORK/out"; then
+  pass "doc ausente: --advisory imprime el hallazgo"
+else
+  fail "doc ausente: --advisory imprime el hallazgo — $(head -c 400 "$WORK/out")"
+fi
+
+# ─── 20. --advisory cubre el bloque del manifiesto ausente (F3) ────────────
+D="$(new_fixture advisory-no-manifest-block)"
+sed -i '/<!-- claims:begin -->/,/<!-- claims:end -->/d' "$(DOC_OF "$D")"
+expect_exit 1 "bloque del manifiesto ausente: exit 1 en modo normal" "$D"
+expect_exit 0 "bloque del manifiesto ausente: exit 0 en modo --advisory" "$D" --advisory
+if grep -q 'C1: no existe el bloque del manifiesto' "$WORK/out"; then
+  pass "bloque del manifiesto ausente: --advisory imprime el hallazgo"
+else
+  fail "bloque del manifiesto ausente: --advisory imprime el hallazgo — $(head -c 400 "$WORK/out")"
+fi
+
+# ─── 21. --advisory cubre el fence 'claims' ausente (F3) ───────────────────
+D="$(new_fixture advisory-no-claims-fence)"
+# El fence del manifiesto deja de ser 'claims': el bloque sigue ahí, pero el
+# fence que el guard busca no existe. Los backticks son literales.
+# shellcheck disable=SC2016
+sed -i 's#^```claims$#```text#' "$(DOC_OF "$D")"
+expect_exit 1 "fence 'claims' ausente: exit 1 en modo normal" "$D"
+expect_exit 0 "fence 'claims' ausente: exit 0 en modo --advisory" "$D" --advisory
+if grep -q "C1: el bloque del manifiesto no contiene un fence con info-string 'claims'" "$WORK/out"; then
+  pass "fence 'claims' ausente: --advisory imprime el hallazgo"
+else
+  fail "fence 'claims' ausente: --advisory imprime el hallazgo — $(head -c 400 "$WORK/out")"
+fi
+
+# ─── 22. --advisory cubre el manifiesto vacío (F3) ─────────────────────────
+D="$(new_fixture advisory-empty-manifest)"
+sed -i -E '/^(shape|impl|claim|absent) +\|/d' "$(DOC_OF "$D")"
+expect_exit 1 "manifiesto vacío: exit 1 en modo normal" "$D"
+expect_exit 0 "manifiesto vacío: exit 0 en modo --advisory" "$D" --advisory
+if grep -q 'C1: el manifiesto está vacío' "$WORK/out"; then
+  pass "manifiesto vacío: --advisory imprime el hallazgo"
+else
+  fail "manifiesto vacío: --advisory imprime el hallazgo — $(head -c 400 "$WORK/out")"
 fi
 
 # ═══ WIRING ════════════════════════════════════════════════════════════════

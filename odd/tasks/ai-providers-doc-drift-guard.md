@@ -209,3 +209,46 @@ Cuando esas líneas desaparezcan, las citas del doc vuelven a ser correctas sin 
 **L15 (2026-10-20, evidencia de cierre):** `bash scripts/test_ai_providers_doc.sh` → 28/28
 verde · `bash scripts/test_guard_coverage.sh` → `OK: 18 wired guard(s) covered (mutation:
 on)` · `shellcheck` → exit 0 · la lane de cargo no se ejecutó (L11).
+
+**L16 (2026-10-20, revisión nativa del commit `3610ea5d`):** la lente de **R1 (riesgo)**
+completó con `inspection.status: completed` sobre los 6 paths y **cero bloqueantes**: un
+WARNING y dos SUGGESTION, los tres reales y confirmados leyendo el código.
+
+- **R1 (WARNING)** — `resolve_path` probaba la ruta tal cual contra `$ROOT`, sin
+  rechazar `..`: una cita del doc podía resolver a un archivo fuera del repo y el guard
+  imprimía su contenido en el log de CI. Hoy no hay fuga activa (el manifiesto sólo cita
+  fuentes internas y el paso es advisory), pero el guard no confinaba lo que leía.
+- **R1 (SUGGESTION)** — la clave de la caché de archivos normalizados traducía `/` y `.`
+  al mismo `_`: dos rutas distintas podían compartir entrada, y el containment de C4
+  podía satisfacerse con el contenido de otro archivo — dirección de falso-verde.
+- **R1 (SUGGESTION)** — `--advisory` no cubría las cuatro salidas estructurales
+  tempranas (doc ausente, bloque ausente, fence ausente, manifiesto vacío): el contrato
+  "nunca falla" lo sostenía el `|| true` del llamador, no el script.
+
+Corregidos en un commit encima (la historia pusheada no se reescribe): `confina` (léxico)
++ `canon_under_root` (`realpath -m`, que también atrapa un symlink que apunta afuera),
+clave de caché inyectiva (`norm.$N`), y `abort_finding` para que **ningún** camino de
+salida devuelva 1 en modo advisory. El harness pasó de 28 a **45 casos**, y el neutering
+de cada corrección pone rojo su caso y sólo el suyo.
+
+**L17 (2026-10-20, un descubrimiento del worker que va más allá del hallazgo):** la caché
+de archivos normalizados era **código muerto**. `nf="$(norm_file "$res")"` corre en un
+subshell, así que `NORM_KEYS+=` nunca llegaba al shell padre: el lookup era siempre
+vacío y cada llamada reescribía el archivo. La colisión de clave estaba enmascarada por
+el orden escritura→lectura. La corrección la volvió viva (`NF_PATH`, sin subshell) — y
+con la caché viva, la clave no inyectiva se vuelve un falso verde **alcanzable**, que es
+lo que el caso 18 ahora demuestra. Lección: un `$(...)` que envuelve una función bash
+corre en un subshell, y toda mutación de arrays globales se pierde.
+
+**L18 (2026-10-20, dos lentes no pudieron correr — defecto de runtime, no del cambio):**
+las lentes de legibilidad y fiabilidad devolvieron `opencode_task_output_empty` dos
+veces cada una (Task del reviewer completa sin resultado capturable). Es la familia
+documentada en `Gentleman-Programming/gentle-ai` #1867. Causa probable: el modelo de las
+lentes no tiene `limit` en el config de opencode, así que OpenCode omite
+`maxOutputTokens` y el JSON largo del reviewer se trunca. El fix es
+`provider.<id>.models.<model>.limit.output` **en el config del runtime, no en el review**,
+y opencode no recarga config en caliente: requiere reiniciar el editor. Ambas lentes
+quedaron declaradas `unachievable` con `capture-unachievable` (motivo
+`opencode_task_output_empty`) y la transacción quedó en `stop`, sin recibo de aprobación:
+el resultado de R1 es evidencia, no autorización, y la entrega sigue bajo la política
+ordinaria del repo.
