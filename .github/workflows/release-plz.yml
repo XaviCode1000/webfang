@@ -237,3 +237,60 @@ jobs:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: bash scripts/apply_release_pins.sh
+      # The release flow OWNS the pending publication declaration (#2144).
+      # `latest` in .github/support.json is a FACT about what this repository
+      # published, and the enforcing gate
+      # (`scripts/check_support_drift.sh --scope=published`, a REQUIRED check
+      # inside `Validate PR metadata`) turns red for EVERY pull request when
+      # the declared `latest` lags behind the newest published patch. The gate
+      # tolerates exactly ONE narrow state: a declaration ONE patch ahead of
+      # the newest published patch of its own minor, with no tag of its own
+      # yet — the in-flight window of a sanctioned release.
+      #
+      # The support patch flow already produces that state (the patch bump
+      # declares the publication before the tag exists). The release-plz path
+      # declared NOTHING: the tag was published with the declaration still
+      # behind it and the whole repository went red (measured on v4.0.1 —
+      # repaired by #2143). This step declares the publication the Release PR
+      # is about to publish, in the same commit that carries the version
+      # bump, so a tag never exists without its declaration.
+      #
+      # A line that is NOT declared in .github/support.json is NOT invented
+      # here: rotating the support lines is a governance decision (an issue
+      # plus the maintainer — AGENTS.md "Agent routing",
+      # scripts/rotate-stable.sh), so the script warns, names the version and
+      # exits 0. A release is never blocked by a support governance matter;
+      # the enforcing gate reports the pending rotation with its own, more
+      # precise message.
+      #
+      # IDEMPOTENT: the script writes nothing when the release branch already
+      # declares the publication of its workspace version, so a re-run of this
+      # job (release-plz REGENERATES the Release PR branch on every push to
+      # `main`) creates no commit, no push and no CI triggered. The gate
+      # itself is NOT weakened — no branch exemption, no in-flight window; the
+      # declaration is correct after the merge because this step put it there,
+      # not because the gate tolerates it.
+      #
+      # It runs right AFTER `Own the docs version pins` on purpose: the
+      # Release PR has to exist before it can be found, and both steps write
+      # to the SAME branch (the same Release PR), so the pins and the
+      # declaration never land on two different branches.
+      #
+      # The token is the APP token, for the same reason the pins step uses it
+      # (#1228): a push made with GITHUB_TOKEN does not deliver
+      # `pull_request` events, so the head SHA of the Release PR would sit
+      # without checks and branch protection would block the merge. The
+      # script refuses to push to a non-local remote without GITHUB_TOKEN
+      # instead of pushing unauthenticated. The workflow-level GITHUB_TOKEN
+      # secret is forbidden in this file by scripts/check_release_dispatch.sh.
+      - name: Declare the pending publication
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          if ! bash scripts/declare_pending_publication.sh; then
+            echo "::error::the pending publication could not be declared in the Release PR branch"
+            exit 1
+          fi
