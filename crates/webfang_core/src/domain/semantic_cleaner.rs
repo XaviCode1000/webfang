@@ -57,17 +57,16 @@ pub mod private {
 /// # Errors
 ///
 /// Returns [`SemanticError`] in these cases:
-/// - [`SemanticError::ModelLoad`]: Failed to load ONNX model from cache
-/// - [`SemanticError::Tokenize`]: Tokenization failed (invalid input)
-/// - [`SemanticError::Inference`]: ONNX inference failed
+/// - [`SemanticError::Tokenize`]: the input could not be chunked
+/// - [`SemanticError::Inference`]: the embedding pipeline failed
 /// - [`SemanticError::ChunkTooLarge`]: Content exceeds the configured character budget
-/// - [`SemanticError::Download`]: Model download failed (if auto-download enabled)
 ///
 /// # Implementation Notes
 ///
 /// - Implementations MUST be thread-safe (`Send + Sync`)
-/// - Implementations MUST cache models to avoid reloading
-/// - Implementations MUST use memory-mapped files for large models (`mem-zero-copy`)
+/// - Implementations hold no model of their own: embeddings come from the
+///   [`EmbeddingPort`](crate::domain::embedding_port::EmbeddingPort) the
+///   composition root injects (ADR-0004 paso 6)
 pub trait SemanticCleaner: private::Sealed + Send + Sync {
     /// Clean HTML content and split into semantic chunks
     ///
@@ -93,8 +92,8 @@ pub trait SemanticCleaner: private::Sealed + Send + Sync {
     /// Returns [`SemanticError::ChunkTooLarge`] if any chunk exceeds the
     /// configured character budget (98 304 characters by default).
     ///
-    /// Returns [`SemanticError::Tokenize`] if the input contains invalid UTF-8
-    /// or special characters that break tokenization.
+    /// Returns [`SemanticError::Tokenize`] if the input cannot be turned into
+    /// chunks at all.
     ///
     /// # Examples
     ///

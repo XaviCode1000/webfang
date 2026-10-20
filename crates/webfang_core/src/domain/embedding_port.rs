@@ -45,9 +45,10 @@ type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 /// # Errors
 ///
 /// Returns [`SemanticError`] when:
-/// - [`SemanticError::Inference`]: ONNX model execution failed
-/// - [`SemanticError::Tokenize`]: input text tokenization failed
-/// - [`SemanticError::ModelLoad`]: model not available
+/// - [`SemanticError::Inference`]: the embedding pipeline failed — the remote
+///   endpoint refused or returned something unusable, or the vectors did not
+///   line up with the chunks
+/// - [`SemanticError::Tokenize`]: input text could not be chunked
 pub trait EmbeddingPort: Send + Sync {
     /// Generate an embedding vector for a single text.
     ///
