@@ -504,6 +504,22 @@ EOF
   else
     skip_step "docs version pins semantics" "no docs version pins files changed"
   fi
+  # Release-pins harnesses (#2028): the release flow owns the bump of the docs
+  # version pins, and these three pin the pieces that make that ownership real
+  # — the WRITER (the exact inverse of the gate above), the ORCHESTRATOR (the
+  # step .github/workflows/release-plz.yml invokes) and the WIRING of both into
+  # that workflow. The trigger names the new scripts AND the two workflows
+  # they read, so a PR touching only one side still lands in this CI-ONLY
+  # lane; `lane_docs` never runs for a `scripts/**` change, which is the only
+  # kind of change that can break them. Offline: mktemp fixtures, a local bare
+  # git repo and a fake `gh` on PATH — no cargo, no network.
+  if grep -Eq '^(scripts/(bump_docs_version_pins|test_bump_docs_version_pins|apply_release_pins|test_apply_release_pins|test_release_pins_wiring)\.sh|\.github/workflows/(release-plz|ci)\.yml)$' "$UNION_TMP" 2>/dev/null; then
+    run_step "docs pins writer semantics (offline)" bash scripts/test_bump_docs_version_pins.sh
+    run_step "release pins orchestrator semantics (offline)" bash scripts/test_apply_release_pins.sh
+    run_step "release pins wiring (offline)" bash scripts/test_release_pins_wiring.sh
+  else
+    skip_step "release pins harnesses" "no release pins files changed"
+  fi
   # Wiring harness for the MCP version-marker gate (#2038): same class as the
   # version-pins harness above. A `scripts/**`-only change can strip the step,
   # add a `paths:` filter to the job, drop `repo-guards` from the narrow scope,

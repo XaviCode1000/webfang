@@ -23,6 +23,19 @@
 # Use it for prose that reports what a past release did ("observed on v2.4.0"),
 # never for a recipe a user is meant to copy.
 #
+# WHO OWNS THE BUMP: the release flow, not a human. release-plz bumps
+# `[workspace.package] version` and never touches the narrative, so this gate
+# reds every Release PR by construction — and a human bump on that branch is
+# deleted when release-plz regenerates it. The step that owns the bump is
+# `Own the docs version pins` in the `release-plz-pr` job
+# (.github/workflows/release-plz.yml), which runs scripts/apply_release_pins.sh
+# and, inside the Release PR branch, scripts/bump_docs_version_pins.sh — the
+# exact inverse of this check: same file set, same marker, same version
+# grammar, and after it runs this gate passes over the same tree. There is no
+# branch exemption and no in-flight window here on purpose: exempting
+# `chore/release-*` would only move the red to `main` after the merge, without
+# fixing the pins.
+#
 # Usage: scripts/check_docs_version_pins.sh
 # Exit: 0 clean · 1 drift or unreadable inputs
 # ============================================================================

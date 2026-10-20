@@ -208,3 +208,32 @@ jobs:
           command: release-pr
         env:
           GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+      # The release flow OWNS the docs version pins (#2028). release-plz bumps
+      # `[workspace.package] version` and never touches the narrative, so the
+      # `vX.Y.Z` literals in README.md and docs/src/*.md go stale and
+      # `scripts/check_docs_version_pins.sh` — which runs on EVERY PR — reds
+      # the Release PR by construction. A human bump is not a fix: release-plz
+      # REGENERATES this branch on every push to `main`, so the bump is deleted
+      # and the PR comes back red (measured three times in one afternoon:
+      # v2.12.0 twice, v3.0.1 once).
+      #
+      # This step re-applies the bump in the same run that regenerates the
+      # branch, which makes it idempotent: the writer changes nothing when the
+      # pins already match, so there is no commit, no push and no CI triggered.
+      # The gate itself is NOT weakened — no branch exemption, no in-flight
+      # window; the pins are correct after the merge because this step put them
+      # there, not because the gate tolerates them.
+      #
+      # It runs AFTER `Run release-plz` on purpose: the Release PR has to exist
+      # before it can be found.
+      #
+      # The token is the APP token, for the same reason the release-plz step
+      # uses it (#1228): a push made with GITHUB_TOKEN does not deliver
+      # `pull_request` events, so the head SHA of the Release PR would sit
+      # without checks and branch protection would block the merge. `secrets.
+      # GITHUB_TOKEN` is forbidden in this file by scripts/check_release_dispatch.sh.
+      - name: Own the docs version pins
+        env:
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: bash scripts/apply_release_pins.sh

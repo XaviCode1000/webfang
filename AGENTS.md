@@ -1126,6 +1126,30 @@ version }}"`, `version_group = "webfang"` on every processed crate, `publish = f
   rerun, and App-pushed tags fire `push: tags` with no dispatch job. The `chore/release-*`
   exemption stays in `pr-validation.yml` (#1474) and #1177 carries `status:approved`.
 
+#### The release flow owns the docs version pins
+
+**The bump of the `vX.Y.Z` literals in `README.md` / `docs/src/*.md` is done by the release
+flow, not by a human** — the `Own the docs version pins` step of the `release-plz-pr` job
+(`.github/workflows/release-plz.yml`), which runs `scripts/apply_release_pins.sh` and, inside
+the Release PR branch, `scripts/bump_docs_version_pins.sh` (the exact inverse of
+`scripts/check_docs_version_pins.sh`).
+
+- **A manual bump is not a stable place.** release-plz **regenerates** the Release PR branch
+  on every push to `main`, so a human commit on that branch is deleted and the PR goes back
+  to red (measured three times in one afternoon: v2.12.0 ×2, v3.0.1 ×1). The flow re-applies
+  the bump in the same run that regenerates the branch, and the writer is idempotent: no
+  change means no commit, no push, no CI triggered.
+- **The gate has NO branch exemption and no in-flight window.** The `chore/release-*`
+  exemption that `pr-validation.yml` has is deliberately NOT replicated in `repo-guards`:
+  exempting the branch would only move the red to `main` after the merge, without fixing
+  the pins. The pins are correct after the merge because the Release PR carried them, not
+  because the gate tolerates stale ones. The cost of no window is one extra CI cycle per
+  push to `main` while the Release PR is open, which is the cost the manual re-bump
+  already had.
+- **The writer is fail-closed.** It only touches `README.md` + `docs/src/*.md`, respects the
+  `<!-- version-stale:allow -->` marker at line scope, and refuses an ambiguous line (two
+  different pins on one line) without writing anything.
+
 ### Pre-commit gate (every commit)
 
 ```bash
