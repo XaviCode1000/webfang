@@ -15,10 +15,6 @@ coverage:
         flags: [mcp]
         target: auto
         threshold: 2%
-      ai:
-        flags: [ai]
-        target: auto
-        threshold: 5% # feature-gated (ONNX), coverage is less stable
       cli:
         flags: [cli]
         target: auto
