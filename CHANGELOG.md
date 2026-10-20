@@ -9,15 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [3.0.0] - 2026-10-19
 
-
 ### ⚠️ Breaking Changes
 
-- Declarar la ruptura del paso 6
+- Retirar la feature Cargo `ai` y el crate `webfang_ai` (ADR-0004 paso 6) ([#2072](https://github.com/XaviCode1000/webfang/pull/2072))
 - El aviso de ONNX describe la retirada ya ejecutada ([#2078](https://github.com/XaviCode1000/webfang/pull/2078))
 
 ### 🔧 Fixed
 
 - Assert the measured spawn waits and wait for the pending SIGKILL ([#2065](https://github.com/XaviCode1000/webfang/pull/2065))
+
 ## [2.13.0] - 2026-10-18
 
 
