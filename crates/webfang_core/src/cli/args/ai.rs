@@ -211,40 +211,28 @@ fn threshold_was_chosen(m: &clap::ArgMatches) -> bool {
 /// assertion. It is also a guard on THIS module: if the anchor appeared twice
 /// inside the notice itself, every count would report 2 and read as a
 /// regression that does not exist.
-pub const ONNX_DEPRECATION_NOTICE_MARKER: &str = "ONNX local se retira";
+pub const ONNX_DEPRECATION_NOTICE_MARKER: &str = "ONNX local se retiró";
 
 /// Distinctive substring of [`orphan_threshold_notice`]. Same counting
 /// rationale as [`ONNX_DEPRECATION_NOTICE_MARKER`].
 pub const ORPHAN_THRESHOLD_NOTICE_MARKER: &str = "calibrado para Granite";
 
-/// Where a user states an objection to, or an active dependency on, the
-/// announced removal.
+/// ADR-0004 paso 6: the announced break, already shipped (spec T4 / S3).
 ///
-/// ONE definition, because ADR-0004 requires the notice to point at a FIXED
-/// channel (the *Señal de objeción* is passive and has to be checkable): the
-/// prose in [`ONNX_DEPRECATION_NOTICE`] and the `objection_channel` field on
-/// the `warn!` event carry the same URL, and two independent literals would be
-/// exactly the kind of drift that leaves the announcement pointing nowhere.
-pub const ONNX_OBJECTION_CHANNEL: &str = "https://github.com/XaviCode1000/webfang/issues/1997";
-
-/// ADR-0004 step 5: the announced break, in execution (spec T4 / S3).
+/// Four facts in a fixed order, per ADR-0004 `Compatibilidad`:
 ///
-/// Five facts in a fixed order, per ADR-0004 `Compatibilidad`:
-///
-/// 1. what disappears — the `ai` Cargo feature and ONNX local, and that
-///    `cargo build --features ai` will fail at RESOLUTION (Cargo features
+/// 1. what disappeared in 3.0.0 — the `ai` Cargo feature and ONNX local, and
+///    that `cargo build --features ai` fails at RESOLUTION (Cargo features
 ///    resolve at compile time, so no shim could keep the flag alive);
 /// 2. what survives un-gated — `--clean-ai` (now resolving its endpoint
 ///    through `--embedding-provider` / `WEBFANG_EMBEDDING_PROVIDER`) and
 ///    `--offline` (semantics unchanged: loopback allowed, public remote →
 ///    exit 78);
-/// 3. the shims that keep working for at least 2 more minor releases —
+/// 3. the shims that keep working until 3.2.0 —
 ///    `--ai-model`, `--max-tokens`, `WEBFANG_MAX_TOKENS`,
 ///    `AI_MODEL_ID` / `WEBFANG_AI_MODEL_ID`, `WEBFANG_AI_ENGINE`;
 /// 4. where to migrate — `webfang connect` / `webfang doctor` /
-///    `webfang show`;
-/// 5. the objection channel, and that removal lands 2 minor releases after
-///    this announcement.
+///    `webfang show`.
 ///
 /// User-facing prose is Spanish with every flag and env name left verbatim.
 /// The facts travel AGAIN as English structured fields on the `warn!` event
@@ -256,18 +244,15 @@ pub const ONNX_OBJECTION_CHANNEL: &str = "https://github.com/XaviCode1000/webfan
 /// `webfang_cli` emits this; it is not emitted from here. See
 /// [`PendingNotices`] for why the decision cannot be made at the emit site.
 pub const ONNX_DEPRECATION_NOTICE: &str = concat!(
-    "ONNX local se retira: la feature Cargo `ai` y la inferencia ONNX desaparecerán, ",
-    "y `cargo build --features ai` fallará en resolución de features. ",
-    "Sobreviven sin gate: `--clean-ai` (hoy sigue con ONNX local; tras el corte ",
-    "resuelve su endpoint por `--embedding-provider` / `WEBFANG_EMBEDDING_PROVIDER`) y `--offline` ",
+    "ONNX local se retiró en 3.0.0: la feature Cargo `ai` y la inferencia ONNX ya no existen, ",
+    "y `cargo build --features ai` falla en resolución de features. ",
+    "Sin gate desde entonces: `--clean-ai` (resuelve su endpoint por `--embedding-provider` / ",
+    "`WEBFANG_EMBEDDING_PROVIDER`; sin proveedor falla con ConfigError, exit 78) y `--offline` ",
     "(misma semántica: loopback permitido, remoto público -> exit 78). ",
-    "Siguen funcionando al menos 2 releases minor más, como shims: ",
+    "Estos shims siguen funcionando hasta 3.2.0: ",
     "`--ai-model`, `--max-tokens`, `WEBFANG_MAX_TOKENS`, ",
     "`AI_MODEL_ID` / `WEBFANG_AI_MODEL_ID`, `WEBFANG_AI_ENGINE`. ",
-    "Migración: `webfang connect`, `webfang doctor`, `webfang show`. ",
-    "Dependencias activas u objeciones: ",
-    "https://github.com/XaviCode1000/webfang/issues/1997 ",
-    "— la eliminación llega 2 releases minor después de este aviso."
+    "Migración: `webfang connect`, `webfang doctor`, `webfang show`."
 );
 
 /// ADR-0004 step 5: the orphaned default relevance threshold (spec T5 / S4).
@@ -409,6 +394,14 @@ fn touches_ai_surface(m: &clap::ArgMatches) -> bool {
 /// through, so the notices are feature-independent by construction: an operator
 /// on a non-`ai` binary is exactly the one who most needs to hear the feature
 /// is going away.
+///
+/// The trigger is deliberately NOT narrowed to the shims now that the removal
+/// shipped. `--clean-ai` still fires the notice, and that is bounded rather
+/// than permanent: the notice is deleted together with the shims in 3.2.0.
+/// Narrowing it now would change a contract the behavioral tests pin
+/// (`onnx_deprecation_notice_fires_once_when_clean_ai_is_used`) inside the
+/// change that has to declare a breaking release, and the notice is true for a
+/// `--clean-ai` operator either way.
 fn pending_notices(
     m: &clap::ArgMatches,
     threshold: f32,
