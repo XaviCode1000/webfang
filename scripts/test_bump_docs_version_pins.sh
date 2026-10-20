@@ -110,6 +110,36 @@ else
   fail "el pin viejo de README.md se reescribe ($(cat "$WORK/stderr"))"
 fi
 
+# ─── 1b. a MISSING docs tree is not a tree with no pins (audit B12) ───────────
+# NEGATION: the writer's discovery was `find docs/src ... 2>/dev/null`: a
+# missing tree yielded an empty list with no error, the non-empty guard still
+# passed on README.md alone, and the writer rewrote ONLY README.md and
+# reported success — every docs version pin left stale while the writer said
+# it had done its job. This writer runs FIRST in the Release PR flow, so its
+# blind spot hides the reader's too.
+D="$(new_fixture missing-docs 3.0.0)"
+rm -rf "$D/docs/src"
+printf 'VERSION=v3.0.0\n' > "$D/README.md"
+if run_writer "$D"; then
+  fail "el escritor se niega cuando falta el árbol docs/src (reportó éxito: $(cat "$WORK/stderr"))"
+elif grep -q 'docs/src' "$WORK/stderr"; then
+  pass "el escritor se niega cuando falta el árbol docs/src nombrando la ruta"
+else
+  fail "el escritor se niega cuando falta el árbol docs/src nombrando la ruta ($(cat "$WORK/stderr"))"
+fi
+
+# ─── 1c. a docs tree with no document is not a clean tree (audit B12) ────────
+D="$(new_fixture empty-docs 3.0.0)"
+rm -f "$D"/docs/src/*.md
+printf 'VERSION=v3.0.0\n' > "$D/README.md"
+if run_writer "$D"; then
+  fail "el escritor se niega cuando el árbol docs/src no tiene ningún .md (reportó éxito: $(cat "$WORK/stderr"))"
+elif grep -q 'docs/src' "$WORK/stderr"; then
+  pass "el escritor se niega cuando el árbol docs/src no tiene ningún .md nombrando la ruta"
+else
+  fail "el escritor se niega cuando el árbol docs/src no tiene ningún .md nombrando la ruta ($(cat "$WORK/stderr"))"
+fi
+
 # ─── 2. stale pin inside docs/src/*.md is rewritten ──────────────────────────
 # NEGATION: pre-fix the drift in the docs tree could not be repaired by
 # anything: the narrative is the copy-paste surface, so a stale recipe there

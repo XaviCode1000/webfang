@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Semantics harness for scripts/bump-support-patch.sh (S12/B2, #2060).
+# Semantics harness for scripts/bump-support-patch.sh (S12/B2, #2060) and for
+# the projection it maintains (scripts/render-support-md.sh, B9).
 #
 # The bump script is the ONLY sanctioned path to mutate the workspace version
 # on a support branch (release-plz never runs there), and every mutation it
@@ -30,12 +31,22 @@
 # same fake-returning-0 shim style as test_seed_contamination.sh): no build,
 # no network, no mutation of the repository this harness runs from. The git
 # settings that would otherwise leak from the developer's global config are
-# pinned per fixture, and the plain fixture carries no
-# .github/support.json on purpose: the line-state check's own "tip, omitted"
-# fallback path is used so those cases isolate the NEW guards (the state
-# check is a pre-existing guard, not this task's scope). The declaration
-# cases use a fixture that HAS one, because that is the path the release
-# contract has to keep honest.
+# pinned per fixture.
+#
+# The fixture carries the two things the RELEASE CONTRACT reads, because both
+# now fail closed and a fixture that omits them would exercise the wrong
+# branch of the contract:
+#
+#   1. the DECLARATION of the line the bump serves (2.12, STABLE) — an
+#      unavailable line state is a refusal (B11b), not an omitted check;
+#   2. a LOCAL bare `origin` — the tag-uniqueness check consults the remote
+#      and a failed fetch is a refusal (B11a), so the happy path needs a
+#      remote that answers. It is a directory in the fixture's temp space,
+#      never the network.
+#
+# The declaration cases add what only they need: the PUBLISHED tag of the
+# line, which is the fact the enforcing gate compares the declaration
+# against.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -67,6 +78,32 @@ SHIM
 make_shims
 
 # ─── Fixture ────────────────────────────────────────────────────────────────
+# write_declaration <fixture> <minor> <state>: the support declaration of a
+# single line, written from one template so every fixture starts from the
+# same shape. The line's `latest` is the patch the line published.
+write_declaration() {
+  local dir="$1" minor="$2" state="$3"
+  mkdir -p "$dir/.github"
+  cat > "$dir/.github/support.json" <<JSON
+{
+  "schema_version": 1,
+  "lines": [
+    {
+      "minor": "$minor",
+      "state": "$state",
+      "branch": null,
+      "latest": "$minor.0",
+      "released_at": "2026-10-01T00:00:00+00:00",
+      "accepts": [
+        "bugfix",
+        "security"
+      ]
+    }
+  ]
+}
+JSON
+}
+
 # new_fx <name> <workspace-version>: a minimal repo whose root Cargo.toml is
 # only what the script touches: a `version` line under [workspace.package],
 # a CHANGELOG.md with an [Unreleased] section, and a stub Cargo.lock so the
@@ -95,6 +132,24 @@ new_fx() {
   printf '## [Unreleased]\n\n### Fixed\n\n- placeholder.\n' > "$dir/CHANGELOG.md"
   git -C "$dir" add -A
   git -C "$dir" commit -q -m init
+  # The remote the tag-uniqueness check consults: a LOCAL bare repo, so the
+  # fetch has a real remote to answer (never the network) and the happy path
+  # exercises a SUCCESSFUL fetch. The uniqueness check refuses a failed
+  # fetch (B11a), so a fixture without a remote would test the wrong branch
+  # of the contract. It is pushed BEFORE the declaration lands on main, so
+  # `origin/main` does not carry the declaration and the line-state lookup
+  # keeps falling back to the working tree, exactly as in the real repo (the
+  # support branch's declaration is the one the bump serves).
+  git init -q --bare "$WORK/$1-origin.git"
+  git -C "$dir" remote add origin "$WORK/$1-origin.git"
+  git -C "$dir" push -q origin main
+  # The DECLARATION of the line the bump serves. The release contract reads
+  # the line's state, and an unavailable state is a REFUSAL (B11b), so the
+  # fixture carries one.
+  write_declaration "$dir" 2.12 STABLE
+  ( cd "$dir" && ./scripts/render-support-md.sh >/dev/null )
+  git -C "$dir" add -A
+  git -C "$dir" commit -q -m "declaracion de soporte"
   # The working scenario is inside the hotfix worktree: HEAD IS a branch of
   # the support line. The support line is created ALONGSIDE main (both sit on
   # the same commit) because the hotfix cases need `main` to be a DIFFERENT
@@ -113,37 +168,14 @@ switch_head_to() {
   git -C "$1" symbolic-ref HEAD "refs/heads/$2"
 }
 
-# new_fx_decl <name> <workspace-version>: the same fixture WITH a support
-# declaration (one STABLE line, 2.12) and the matching published tag. This is
-# the fixture the release contract is about: the plain one above has no
-# declaration on purpose, so the line-state check falls back to its "tip,
-# omitted" path and the NEW guards stay isolated.
+# new_fx_decl <name> <workspace-version>: the same fixture plus the PUBLISHED
+# tag of the line (v2.12.0) — the fact the declaration points at, and the
+# fact the enforcing gate compares the declaration against.
 new_fx_decl() {
   local dir
   dir="$(new_fx "$1" "$2")"
-  mkdir -p "$dir/.github"
-  cat > "$dir/.github/support.json" <<'JSON'
-{
-  "schema_version": 1,
-  "lines": [
-    {
-      "minor": "2.12",
-      "state": "STABLE",
-      "branch": null,
-      "latest": "2.12.0",
-      "released_at": "2026-10-01T00:00:00+00:00",
-      "accepts": [
-        "bugfix",
-        "security"
-      ]
-    }
-  ]
-}
-JSON
-  ( cd "$dir" && ./scripts/render-support-md.sh >/dev/null )
-  git -C "$dir" add -A
-  git -C "$dir" commit -q -m "declaracion de soporte"
   git -C "$dir" tag v2.12.0
+  git -C "$dir" push -q origin --tags
   echo "$dir"
 }
 
@@ -174,19 +206,36 @@ run_drift() {
   LAST_DRIFT_OUT="$(cat "$WORK/drift.out")"
 }
 
-# snap_files <fixture>: copy the three mutable files so refused paths can be
-# compared byte-for-byte afterwards.
+# same_file <a> <b>: true when both paths hold the same bytes, and ALSO when
+# both are absent — a file that was not there and stayed not there is
+# untouched. The comparison a refusal case needs when the case itself
+# removes a file from the fixture.
+same_file() {
+  if [[ ! -e "$1" && ! -e "$2" ]]; then return 0; fi
+  [[ -e "$1" && -e "$2" ]] || return 1
+  cmp -s "$1" "$2"
+}
+
+# snap_files <fixture>: copy the mutable files so refused paths can be
+# compared byte-for-byte afterwards. A file the fixture does not have is
+# recorded as ABSENT, not skipped.
 snap_files() {
-  local dir="$1"
-  cp "$dir/Cargo.toml" "$WORK/cargo.toml.snap"
-  cp "$dir/CHANGELOG.md" "$WORK/changelog.md.snap"
-  cp "$dir/Cargo.lock" "$WORK/cargo.lock.snap"
+  local dir="$1" src dst
+  for pair in "Cargo.toml:cargo.toml" "CHANGELOG.md:changelog.md" \
+              "Cargo.lock:cargo.lock" ".github/support.json:support.json" \
+              "SUPPORT.md:support.md"; do
+    src="$dir/${pair%%:*}"
+    dst="$WORK/${pair##*:}.snap"
+    if [[ -f "$src" ]]; then cp "$src" "$dst"; else rm -f "$dst"; fi
+  done
 }
 files_untouched() {
   local dir="$1"
-  cmp -s "$dir/Cargo.toml" "$WORK/cargo.toml.snap" \
-    && cmp -s "$dir/CHANGELOG.md" "$WORK/changelog.md.snap" \
-    && cmp -s "$dir/Cargo.lock" "$WORK/cargo.lock.snap"
+  same_file "$dir/Cargo.toml" "$WORK/cargo.toml.snap" \
+    && same_file "$dir/CHANGELOG.md" "$WORK/changelog.md.snap" \
+    && same_file "$dir/Cargo.lock" "$WORK/cargo.lock.snap" \
+    && same_file "$dir/.github/support.json" "$WORK/support.json.snap" \
+    && same_file "$dir/SUPPORT.md" "$WORK/support.md.snap"
 }
 
 echo "== cuando la rama no es la del bump, NINGÚN byte se mueve (S12) =="
@@ -535,6 +584,150 @@ if [[ -z "$(git -C "$FX_FC" status --porcelain)" ]]; then
   pass "el rechazo no dejó cambios sin commitear"
 else
   fail "el rechazo dejó cambios: $(git -C "$FX_FC" status --porcelain | tr '\n' ' ')"
+fi
+
+# ─── B11(a): the tag-uniqueness check must not degrade (fail closed) ───────
+# The uniqueness of the tag is a fact about the REMOTE's tag set. The fetch
+# that brings that set into the local view was optional-by-accident: its
+# failure was swallowed with `|| true`, so the check silently degraded to
+# the LOCAL view and the bump proceeded on a degraded view — a guard that
+# read as a pass because it could not see.
+echo "== un fetch de tags fallido NO degrada la unicidad: el bump se niega (B11a) =="
+# NEGATION: pre-fix the failed fetch was swallowed, the check fell back to
+# the local tag view, the bump PROCEEDED with exit 0 and the release
+# contract's first clause was never actually evaluated.
+FX_FETCHFAIL="$(new_fx fetch_falla 2.12.0)"
+# The remote exists but cannot be reached: the fetch fails the way an
+# unreachable or broken remote fails.
+git -C "$FX_FETCHFAIL" remote set-url origin "$WORK/no-existe-origin.git"
+snap_files "$FX_FETCHFAIL"
+fetch_commits_before="$(git -C "$FX_FETCHFAIL" rev-list --count HEAD)"
+run_bump "$FX_FETCHFAIL" 2.12.1
+if [[ "$LAST_RC" -ne 0 ]]; then
+  pass "el bump se niega cuando el fetch de tags falla"
+else
+  fail "el bump aceptó con el fetch de tags fallido (degradó la unicidad) — out: $LAST_OUT"
+fi
+if grep -qiE 'fetch' <<<"$LAST_OUT"; then
+  pass "el rechazo nombra el fetch fallido"
+else
+  fail "el rechazo no nombró el fetch fallido: $LAST_OUT"
+fi
+if [[ "$LAST_OUT" != *"tip:"* ]]; then
+  pass "el rechazo NO es un 'tip' que deja pasar el bump"
+else
+  fail "el rechazo se degradó a un aviso: $LAST_OUT"
+fi
+if [[ -z "$(git -C "$FX_FETCHFAIL" status --porcelain)" ]] && files_untouched "$FX_FETCHFAIL" \
+   && [[ "$(git -C "$FX_FETCHFAIL" rev-list --count HEAD)" -eq "$fetch_commits_before" ]]; then
+  pass "el rechazo por fetch fallido no muta nada"
+else
+  fail "el rechazo por fetch fallido mutó el árbol: $(git -C "$FX_FETCHFAIL" status --porcelain | tr '\n' ' ')"
+fi
+
+# ─── B11(b): an unavailable line state is not a passed gate ────────────────
+# The second clause of the release contract asks whether the line of the
+# patch accepts changes. When the state could not be READ, the check
+# degraded to a "tip" and the script finished OK: a contract that was never
+# evaluated reported success.
+echo "== un estado de línea NO disponible NO se lee como un gate aprobado (B11b) =="
+# NEGATION: pre-fix an unavailable declaration printed "tip: support.json no
+# disponible, se omite el check de estado" and the bump finished with exit
+# 0 — the line-state clause never ran and the release reported success.
+FX_NOLINE="$(new_fx sin_estado 2.12.0)"
+# The declaration is gone: the line's state cannot be established at all.
+rm -f "$FX_NOLINE/.github/support.json" "$FX_NOLINE/SUPPORT.md"
+snap_files "$FX_NOLINE"
+noline_commits_before="$(git -C "$FX_NOLINE" rev-list --count HEAD)"
+run_bump "$FX_NOLINE" 2.12.1
+if [[ "$LAST_RC" -ne 0 ]]; then
+  pass "el bump se niega cuando el estado de la línea no está disponible"
+else
+  fail "el bump aceptó sin estado de línea (gate nunca evaluado) — out: $LAST_OUT"
+fi
+if grep -qiE 'estado de la línea' <<<"$LAST_OUT"; then
+  pass "el rechazo nombra el estado de línea no disponible"
+else
+  fail "el rechazo no nombró el estado de línea: $LAST_OUT"
+fi
+if [[ "$LAST_OUT" != *"tip:"* ]]; then
+  pass "el rechazo NO es un 'tip' que deja pasar el bump"
+else
+  fail "el rechazo se degradó a un aviso: $LAST_OUT"
+fi
+if [[ ! -e "$FX_NOLINE/.github/support.json" && ! -e "$FX_NOLINE/SUPPORT.md" ]] \
+   && files_untouched "$FX_NOLINE" \
+   && [[ "$(git -C "$FX_NOLINE" rev-list --count HEAD)" -eq "$noline_commits_before" ]]; then
+  # The status is NOT asserted clean here on purpose: this case DELETES the
+  # declaration itself, so the worktree is dirty by the case's own doing.
+  # What matters is that the bump did not recreate the declaration it found
+  # missing, and that it moved no other byte.
+  pass "el rechazo por estado no disponible no recrea la declaración ni muta nada"
+else
+  fail "el rechazo por estado no disponible mutó el árbol: $(git -C "$FX_NOLINE" status --porcelain | tr '\n' ' ')"
+fi
+
+# ─── B9: a failed render must not truncate the tracked projection ───────────
+# SUPPORT.md is a TRACKED file and this script is its single writer. The
+# generate mode wrote it THROUGH the redirection, and the shell truncates
+# the redirection target BEFORE the render runs: a render that died mid-way
+# (a broken jq, an unreadable declaration) left the tracked projection with
+# the header only — a corrupted, tracked file, committed by whoever ran the
+# script next.
+echo "== un render fallido NO trunca la proyección rastreada (B9) =="
+# NEGATION: pre-fix the generate mode truncated SUPPORT.md before the render
+# ran, so a jq that failed mid-render left the tracked file with the header
+# only and the script still exited non-zero (the wrong kind of failure: the
+# file was already damaged).
+FX_RENDER="$(new_fx_decl render_atomico 2.12.0)"
+render_before="$(sha256sum "$FX_RENDER/SUPPORT.md" | cut -d' ' -f1)"
+render_bytes_before="$(wc -c < "$FX_RENDER/SUPPORT.md")"
+# A jq that fails the way a broken jq fails: the render's header is written
+# and the pipeline dies right after. The stub is reached through a wrapper
+# that carries the PATH, so the harness never rewrites its own PATH.
+mkdir -p "$WORK/jq-fail"
+cat > "$WORK/jq-fail/jq" <<'SHIM'
+#!/usr/bin/env bash
+echo "stub: jq falla a propósito" >&2
+exit 1
+SHIM
+cat > "$WORK/jq-fail/with-broken-jq" <<'SHIM'
+#!/usr/bin/env bash
+export PATH="$(dirname "$0"):$PATH"
+exec "$@"
+SHIM
+chmod +x "$WORK/jq-fail/jq" "$WORK/jq-fail/with-broken-jq"
+render_rc=0
+( cd "$FX_RENDER" && "$WORK/jq-fail/with-broken-jq" ./scripts/render-support-md.sh >/dev/null 2>&1 ) || render_rc=$?
+if [[ "$render_rc" -ne 0 ]]; then
+  pass "el render con jq roto sale con código distinto de cero"
+else
+  fail "el render con jq roto salió 0"
+fi
+render_after="$(sha256sum "$FX_RENDER/SUPPORT.md" 2>/dev/null | cut -d' ' -f1)"
+if [[ -n "$render_after" && "$render_before" == "$render_after" ]]; then
+  pass "SUPPORT.md quedó byte a byte intacto tras el render fallido"
+else
+  fail "el render fallido truncó la proyección: $(wc -c < "$FX_RENDER/SUPPORT.md" 2>/dev/null || echo 0) bytes (antes: $render_bytes_before)"
+fi
+if [[ -z "$(git -C "$FX_RENDER" status --porcelain)" ]]; then
+  pass "el render fallido no dejó el archivo rastreado modificado (git limpio)"
+else
+  fail "el render fallido dejó la proyección rastreada modificada: $(git -C "$FX_RENDER" status --porcelain | tr '\n' ' ')"
+fi
+if [[ -z "$(find "$FX_RENDER" -maxdepth 1 -name '.SUPPORT.md.*' -print -quit)" ]]; then
+  pass "el render fallido no dejó un temporal en el repo"
+else
+  fail "el render fallido dejó un temporal: $(find "$FX_RENDER" -maxdepth 1 -name '.SUPPORT.md.*' -print -quit)"
+fi
+# Control: the same renderer with a working jq still writes the projection,
+# and writes the expected bytes.
+render_ok_rc=0
+( cd "$FX_RENDER" && ./scripts/render-support-md.sh >/dev/null ) || render_ok_rc=$?
+if [[ "$render_ok_rc" -eq 0 && "$render_before" == "$(sha256sum "$FX_RENDER/SUPPORT.md" | cut -d' ' -f1)" ]]; then
+  pass "el generate exitoso reproduce el archivo esperado"
+else
+  fail "el generate exitoso no reprodujo el archivo esperado (rc=$render_ok_rc)"
 fi
 
 echo
