@@ -10,6 +10,14 @@
 #   MERGE_WHEN_GREEN_TIMEOUT=1800 scripts/merge-when-green.sh <PR-NUMBER>  # same via env
 #
 # Behavior:
+#   0. Refuses a squash-merge that would destroy a breaking declaration. A
+#      breaking marker lives in a commit subject (`feat(ai)!: ...`) or in a
+#      `BREAKING CHANGE:` footer, and `gh pr merge --squash` rebuilds the subject
+#      from the PR TITLE — dropping the `!` — while release-plz ignores a footer
+#      buried in the squashed body. Measured on #2072 and #2078: both shipped as
+#      patches with the marker gone. So this runs BEFORE the wait: if the PR
+#      title or any branch commit declares a break and the strategy is squash,
+#      it exits 5 and names the remedy (--merge). See #2081.
 #   1. Reads the required status-check contexts from branch protection, then polls
 #      `gh pr checks --json name,bucket` until EVERY one of them has REPORTED with
 #      a terminal bucket, and all report `pass`. Waiting on
@@ -40,6 +48,9 @@
 #   3  All checks green but merge state is not mergeable (e.g. BEHIND — rebase first).
 #   4  gh command failure (network, auth, etc.) or a required context that never
 #      reported before the deadline.
+#   5  Refused: this PR declares a breaking change and the chosen strategy would
+#      destroy the marker (squash). Nothing was merged. Re-run with --merge, or
+#      move the declaration into a commit. See #2081.
 #
 # Notes:
 #   - Respects branch protection: uses `gh pr merge --squash` (or `--merge`), NOT
@@ -50,6 +61,12 @@
 #     granularity, so a batch needs a merge commit. It is the same merge with a
 #     different strategy flag — every guard above still applies. `--squash` stays
 #     the default so no existing invocation changes behaviour.
+#   - The breaking-marker guard (step 0) has NO override flag on purpose. A
+#     bypass would re-arm exactly the silent failure it exists to stop: the
+#     release would ship as a patch and nobody would notice until the tag was
+#     public. The marker is a property of the branch, so the remedy is always
+#     available — use `--merge`, or put the `!` in a commit instead of only in
+#     the PR title.
 #   - Never passes `--delete-branch`: in the worktree flow the head branch is
 #     checked out in a sibling worktree, and Git refuses to delete a branch that
 #     is any worktree's HEAD (linked-worktree invariant). `gh` would return
@@ -120,6 +137,10 @@ Flags:
   --merge     Merge commit instead of squash. Use for batch PRs, where squashing
               N independent fixes would destroy per-fix revert granularity.
               Mutually exclusive with --squash.
+              REQUIRED when the PR declares a breaking change (a '!' before the
+              ':' in the title or a commit subject, or a 'BREAKING CHANGE:'
+              footer): squash would drop the marker and the release would ship
+              as a patch.
   --timeout=<sec>  Watcher deadline in seconds (default 600). Accepts
               '--timeout 300' or '--timeout=300'. Overrides the
               MERGE_WHEN_GREEN_TIMEOUT env var. Useful for large PRs with
@@ -136,6 +157,8 @@ Exit codes:
   2  A required check failed/cancelled.
   3  Checks green but PR is BEHIND or BLOCKED — rebase first.
   4  gh network/auth failure.
+  5  Refused before merging: the PR declares a breaking change and --squash
+     would destroy the marker. Nothing was merged. Re-run with --merge.
 
 Result marker:
   After an actual merge (not --dry-run) the script prints this machine line last:
@@ -222,6 +245,98 @@ fi
 if ! command -v gh >/dev/null 2>&1; then
   echo "error: gh CLI is not installed or not on PATH" >&2
   exit 1
+fi
+
+# --- 0. Breaking-marker guard (before the wait, not after) -------------------
+# The marker has to SURVIVE the merge, and squash is the strategy that kills it:
+#   - `gh pr merge --squash` rebuilds the subject from the PR TITLE and drops the
+#     `!`: `fix(cli)!: ...` landed as `fix(cli): ... (#2078)`;
+#   - release-plz does not honour a `BREAKING CHANGE:` footer inside the squashed
+#     body: the squashed #2078 commit carried it and `release-plz update` still
+#     computed 2.13.1.
+# Both outcomes are SILENT — the major ships as a patch and nobody sees it until
+# the tag is public. So the refusal is here, before the ~9 minute wait and long
+# before the tag (#2081).
+#
+# The marker is the `!` that belongs to the TYPE: `type!:`, `type(scope)!:`, and
+# also the malformed `type!(scope):` that #2072 used. Both positions are
+# recognised because both express the same intent, and the malformed one is the
+# one that already burned this repo. A `!` that is not in that position
+# (`fix: don't retry`) is prose, not a marker, and must not block a merge.
+#
+# NEGATION (scripts/test_merge_when_green_breaking.sh): before this guard, the
+# title-with-`!` + --squash case exited 0 and merged. That is the case pinned as
+# the mandatory failing test.
+breaking_subject_re='^[a-zA-Z]+(\([^)]*\))?!(\([^)]*\))?:'
+
+pr_meta="$(gh pr view "$pr_number" --json title,commits 2>/dev/null || true)"
+if [[ -z "$pr_meta" ]]; then
+  # Fail closed. An unreadable PR is not evidence that the marker is absent, and
+  # acting on an incomplete answer is the #1011 failure shape.
+  echo "error: could not read the title/commits of PR #${pr_number} from gh." >&2
+  echo "       Refusing to merge blind: the breaking-marker guard cannot run (#2081)." >&2
+  exit 4
+fi
+
+pr_title="$(printf '%s' "$pr_meta" | jq -r '.title // ""')"
+
+title_declares_breaking=0
+if [[ "$pr_title" =~ $breaking_subject_re ]]; then
+  title_declares_breaking=1
+fi
+
+# Offending commits, one per line: short sha + subject. The body is tested
+# separately because a footer is a line inside it, not the whole body.
+breaking_commits="$(printf '%s' "$pr_meta" | jq -r '
+  .commits[]?
+  | select(
+      ((.messageHeadline // "") | test("^[a-zA-Z]+(\\([^)]*\\))?!(\\([^)]*\\))?:"))
+      or ((.messageBody // "") | test("(?im)^BREAKING[ -]CHANGE:"))
+    )
+  | "         \(.oid[0:8])  \(.messageHeadline)"
+')"
+
+if [[ "$merge_strategy" == "squash" ]]; then
+  if [[ $title_declares_breaking -eq 1 || -n "$breaking_commits" ]]; then
+    {
+      echo "error: this PR declares a BREAKING change and --squash would destroy the marker."
+      echo "       Nothing was merged."
+      if [[ $title_declares_breaking -eq 1 ]]; then
+        echo "       PR title: ${pr_title}"
+      fi
+      if [[ -n "$breaking_commits" ]]; then
+        echo "       commits that declare it:"
+        printf '%s\n' "$breaking_commits"
+      fi
+      echo
+      echo "       Why refused instead of warned: --squash rebuilds the subject from the PR"
+      echo "       title (dropping the '!') and release-plz ignores a 'BREAKING CHANGE:' footer"
+      echo "       inside the squashed body. Measured on #2072 and #2078: the major shipped as"
+      echo "       a patch and nobody saw it until the tag was public."
+      echo
+      echo "       Re-run with a merge commit, which preserves the branch commits:"
+      echo "         scripts/merge-when-green.sh ${pr_number} --merge"
+    } >&2
+    exit 5
+  fi
+elif [[ $title_declares_breaking -eq 1 && -z "$breaking_commits" ]]; then
+  # The mirror image, and the reason this branch exists: a merge commit keeps the
+  # branch commits and DISCARDS the PR title (its subject becomes "Merge pull
+  # request #N ..."). A declaration that lives only in the title therefore never
+  # reaches main either — same silent patch, different strategy.
+  {
+    echo "error: the PR title declares a BREAKING change but no commit does."
+    echo "       PR title: ${pr_title}"
+    echo "       Nothing was merged."
+    echo
+    echo "       A merge commit keeps the branch commits and discards the PR title, so this"
+    echo "       declaration would never reach main: release-plz reads commit subjects and"
+    echo "       would compute a patch."
+    echo
+    echo "       Declare it where the release reads it: amend the branch so a commit subject"
+    echo "       carries the '!', or drop it from the title if the change is not breaking."
+  } >&2
+  exit 5
 fi
 
 # --- 1. Wait for required checks to finish -----------------------------------

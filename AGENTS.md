@@ -869,6 +869,7 @@ Run it locally before committing any support mutation: `scripts/check_support_dr
 - `release-plz` owns versioning on `main` (Release PR → tag `v*` → binaries). It NEVER runs on `support/*`: both `release-pr` and `update` fail on `cargo package` for the unpublished path+version deps (same #1337 codepath, verified by pre-flight) — and `release-pr` targets the default branch by upstream design (#2159 open).
 - On `support/*`: manual PATCH via `bump-support-patch.sh` INSIDE the hotfix PR (fix commit(s) first, then the script enforces the release contract — tag uniqueness, line `accepts`, lock in sync, CHANGELOG entry, snapshot green — and produces the single `chore: bump` commit). Never run `release-plz` against a support branch.
 - Version bumps are release acts, never part of feature/fix commits. Inter-crate pins stay at `^old` by #1339 precedent — only the root `[workspace.package]` version moves.
+- **A breaking declaration has to survive the merge.** `merge-when-green.sh` reads the PR title and every branch commit BEFORE waiting on CI: if any of them carries the marker — `type!:`, `type(scope)!:`, the malformed `type!(scope):`, or a `BREAKING CHANGE:` footer — it refuses `--squash` with exit 5 and names the remedy (`--merge`). Why it refuses instead of warning: `gh pr merge --squash` rebuilds the subject from the PR title and drops the `!` (#2078 landed as `fix(cli): ... (#2078)`), and release-plz does not honour a `BREAKING CHANGE:` footer inside the squashed body — both measured while closing ADR-0004 paso 6, both shipped as patches. A title-only declaration is refused under `--merge` too, because a merge commit keeps the branch commits and discards the title. There is no override flag on purpose: a bypass re-arms exactly the silent failure the guard exists to stop (#2081).
 
 ### Governance scripts (all fail-closed; safe to re-run)
 
@@ -1457,7 +1458,7 @@ remains required only as the temporary context until Tier 1 is proven stable.
 
 ```bash
 scripts/merge-when-green.sh <PR-N>            # Wait for green checks, squash-merge (default)
-scripts/merge-when-green.sh <PR-N> --merge    # Merge commit — use this for batch PRs
+scripts/merge-when-green.sh <PR-N> --merge    # Merge commit — batch PRs, and REQUIRED when the PR declares a breaking change
 scripts/merge-when-green.sh <PR-N> --dry-run  # Poll and report; do not merge
 scripts/ci_pr_overlap.sh <N1> <N2>            # exit 0 = disjoint files, safe to batch
 scripts/ci_batch_branch.sh <branch> <sha...>  # local integration branch helper (--dry-run first)
