@@ -35,13 +35,62 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel)"
 
+# The REAL cargo, captured before anything shadows it. The lock-invariant case
+# below needs a genuine cargo: a stub can only prove that the stub was called,
+# never what cargo does with a lock that disagrees with the manifests.
+#
+# It must NOT be the mbx shim. In a worktree, `command -v cargo` resolves to
+# ~/.local/share/mbx/bin/cargo — a CACHE WRAPPER whose whole purpose is to
+# build. Asked for `cargo metadata`, it decided to build: that is how a
+# harness that promises "no build" compiled the workspace (1.9 GB of artifacts,
+# 6m33s of CPU, and a global OOM that took the session down with it). The
+# wrapper is invisible in the argv and the error, so the only defence is to
+# resolve the toolchain's cargo and to refuse the wrapper outright.
+REAL_CARGO=""
+if command -v rustup >/dev/null 2>&1; then
+  REAL_CARGO="$(rustup which cargo 2>/dev/null || true)"
+fi
+[ -x "$REAL_CARGO" ] || REAL_CARGO="$HOME/.cargo/bin/cargo"
+[ -x "$REAL_CARGO" ] || REAL_CARGO="$(command -v cargo 2>/dev/null || true)"
+case "$REAL_CARGO" in
+  '' | */mbx/bin/cargo)
+    echo "coherence-harness: refusing to run — the resolved cargo is '${REAL_CARGO:-<none>}'," >&2
+    echo "coherence-harness: the mbx shim is a build cache wrapper, and this harness must not build." >&2
+    exit 2
+    ;;
+esac
+
 SANDBOX="$(mktemp -d)"
 trap 'rm -rf "$SANDBOX"' EXIT
-mkdir -p "$SANDBOX/bin" "$SANDBOX/seeds"
+mkdir -p "$SANDBOX/bin" "$SANDBOX/seeds" "$SANDBOX/safety"
 # NOT named CARGO_*: the recipe deliberately unsets every CARGO_* for the build,
 # and this test had its log file wiped by that policy — the policy was right
 # and the name was wrong.
 export SEED_TEST_LOG="$SANDBOX/cargo.log" SEED_REPO_ROOT="$REPO_ROOT"
+
+# SAFETY NET: a cargo in front of the real one that REFUSES to build anything.
+#
+# The recording stub below is prepended to PATH per invocation, and every
+# invocation that forgets to do that reaches the REAL cargo — and a real
+# `cargo build --workspace` of this repository is the exact resource accident
+# this suite must not cause (it compiles BoringSSL and links gigabytes).
+# Measured: one such slip cost 1m15s wall, 6m33s CPU and 1.9 GB of artifacts.
+#
+# So the safety stub is on PATH for the WHOLE harness: a `cargo metadata` is
+# delegated to the real cargo (the workspace-contract digest is computed from
+# the real metadata, as it always was), and every other invocation is refused
+# loudly. An accidental build is now impossible instead of merely unlikely.
+cat >"$SANDBOX/safety/cargo" <<'SAFETY'
+#!/usr/bin/env bash
+if [ "${1:-}" = "metadata" ]; then
+  exec "$WEBFANG_REAL_CARGO" "$@"
+fi
+echo "safety-cargo: refusing to run 'cargo $*' in the coherence harness" >&2
+exit 1
+SAFETY
+chmod +x "$SANDBOX/safety/cargo"
+export WEBFANG_REAL_CARGO="$REAL_CARGO"
+export PATH="$SANDBOX/safety:$PATH"
 
 cat >"$SANDBOX/bin/cargo" <<'STUB'
 #!/usr/bin/env bash
@@ -61,6 +110,13 @@ fi
   printf 'RUSTC_WRAPPER\t%s\n' "${RUSTC_WRAPPER-<unset>}"
     printf 'RUSTC\t%s\n' "${RUSTC-<unset>}"
 } >> "$SEED_TEST_LOG"
+# A failing build has to fail the PUBLICATION (S14.2): the stub fails the
+# non-metadata call and prints a message, so the test can prove cargo's own
+# error reaches the operator instead of being swallowed.
+if [ -n "${SEED_TEST_FAIL_BUILD:-}" ]; then
+  echo "stub-cargo: simulated build failure" >&2
+  exit 1
+fi
 [ -n "${CARGO_METADATA:-}" ] && printf '{"packages":[{"name":"webfang_core","targets":[{"name":"webfang_core"}]}]}\n'
 exit 0
 STUB
@@ -482,7 +538,121 @@ else
   echo "       the build, or it became a constant that silently forks nothing"
 fi
 
-echo
-echo "PASS=$PASS FAIL=$FAIL"
+# --- 15. the reference build runs with --locked (B17) --------------------------
+# The key digests Cargo.lock, so the build has to use THAT lock. Without
+# --locked, cargo may rewrite a lock that no longer matches the manifests —
+# during the build, after the key already hashed the old bytes. The published
+# seed then describes a resolution the key never recorded, and the consumer
+# that verifies the key reports "reproducible" for a build that was not.
+#
+# The flag belongs to the RECIPE, next to --profile and --target, for the same
+# reason they do: the recipe is the single description of the build and both
+# sides read it.
+# NEGATION: pre-fix the recipe's cargo args carried no --locked, so the very
+# build that publishes the seed was free to rewrite the lock the key hashed.
+pub >/dev/null 2>&1
+ARGV_LOCKED="$(cargo_field ARGV)"
+case "$ARGV_LOCKED" in
+  *--locked*) ok "the reference build runs with --locked" ;;
+  *) bad "the reference build does NOT carry --locked (argv: $ARGV_LOCKED)" ;;
+esac
+
+# --- 16. the lock the key hashed is the lock the build leaves behind ----------
+# The invariant S14.3 names: the digest of the lock the key recorded is the
+# digest of the lock the build left on disk.
+#
+# The fixture is two crates with only PATH dependencies — no registry, so
+# --offline is safe and nothing is ever downloaded — and it is exercised with
+# `cargo metadata`, which performs the SAME resolution (and the same lock
+# rewrite) as a build while compiling NOTHING. Building the real workspace
+# here would be the resource accident this suite must not be.
+#
+# `--no-deps` is deliberately NOT used: with it cargo skips the resolve and
+# therefore never checks the lock at all (measured: exit 0 on a stale lock),
+# so it cannot witness this invariant.
+#
+# The lock goes stale by adding a second path dependency: the manifest moves,
+# the lock does not. That is exactly the state the key can hash and the build
+# can silently rewrite.
+LOCKFX="$SANDBOX/lockfx"
+mkdir -p "$LOCKFX/app/src" "$LOCKFX/dep/src" "$LOCKFX/dep2/src"
+printf '[package]\nname = "coherence-dep"\nversion = "0.1.0"\nedition = "2021"\n' \
+  > "$LOCKFX/dep/Cargo.toml"
+printf 'pub fn dep() -> u8 { 1 }\n' > "$LOCKFX/dep/src/lib.rs"
+printf '[package]\nname = "coherence-dep2"\nversion = "0.1.0"\nedition = "2021"\n' \
+  > "$LOCKFX/dep2/Cargo.toml"
+printf 'pub fn dep2() -> u8 { 2 }\n' > "$LOCKFX/dep2/src/lib.rs"
+printf '[package]\nname = "coherence-app"\nversion = "0.1.0"\nedition = "2021"\n\n[dependencies]\ncoherence-dep = { path = "../dep" }\n' \
+  > "$LOCKFX/app/Cargo.toml"
+printf 'pub fn app() -> u8 { coherence_dep::dep() }\n' > "$LOCKFX/app/src/lib.rs"
+
+# lock_meta <locked|free>: resolve the fixture, optionally with --locked.
+# Returns cargo's exit code; the stderr lands in $SANDBOX/meta_err.
+lock_meta() {
+  local mode="$1"
+  local -a margs=(metadata --offline --format-version 1)
+  [ "$mode" = "locked" ] && margs=(metadata --locked --offline --format-version 1)
+  ( cd "$LOCKFX/app" \
+    && CARGO_TARGET_DIR="$LOCKFX/tgt" CARGO_BUILD_JOBS=1 \
+       env -u RUSTC_WRAPPER "$REAL_CARGO" "${margs[@]}" \
+  ) >/dev/null 2>"$SANDBOX/meta_err"
+}
+
+if [ -z "$REAL_CARGO" ]; then
+  bad "no real cargo on PATH: the lock-invariant case did not run"
+elif ! lock_meta free || [ ! -f "$LOCKFX/app/Cargo.lock" ]; then
+  bad "the fixture produced no Cargo.lock: the lock-invariant case did not run"
+else
+  # Make the lock stale: a second path dependency the lock does not know.
+  printf 'coherence-dep2 = { path = "../dep2" }\n' >> "$LOCKFX/app/Cargo.toml"
+  LOCK_BEFORE="$(sha256sum "$LOCKFX/app/Cargo.lock" | cut -d' ' -f1)"
+  lock_meta locked
+  RC_LOCKED=$?
+  LOCK_AFTER="$(sha256sum "$LOCKFX/app/Cargo.lock" | cut -d' ' -f1)"
+  if [ "$RC_LOCKED" -ne 0 ]; then
+    ok "with --locked a stale lock FAILS the build (cargo exit $RC_LOCKED)"
+  else
+    bad "--locked did NOT fail on a stale lock (cargo exit 0)"
+  fi
+  if [ "$LOCK_BEFORE" = "$LOCK_AFTER" ]; then
+    ok "with --locked the on-disk lock is byte-identical (the key's digest still describes it)"
+  else
+    bad "--locked rewrote the lock anyway ($LOCK_BEFORE -> $LOCK_AFTER)"
+  fi
+  lock_meta free
+  RC_FREE=$?
+  LOCK_FREE="$(sha256sum "$LOCKFX/app/Cargo.lock" | cut -d' ' -f1)"
+  if [ "$RC_FREE" -eq 0 ] && [ "$LOCK_FREE" != "$LOCK_BEFORE" ]; then
+    ok "without --locked the same stale lock is rewritten (cargo exit 0)"
+  else
+    bad "without --locked the lock was NOT rewritten (exit $RC_FREE, digest $LOCK_FREE)"
+  fi
+fi
+
+# --- 17. a failed reference build fails the publication ------------------------
+# S14.2: the failure has to be fail-closed AND visible — cargo's own message
+# has to reach the operator. A `|| true`, or a subshell that swallows the
+# status, would publish a seed that no successful build ever produced.
+#
+# The stub has to be on PATH for THIS invocation too: the publisher resolves
+# the cargo binary it will run, and without the stub it would resolve the real
+# one — and a real `cargo build --workspace` of this repository is the resource
+# accident this suite must not cause. Measured cost of that slip: 1m15s wall,
+# 6m33s CPU, 1.9 GB of artifacts, for a test that was supposed to compile
+# nothing.
+# NEGATION: pre-fix nothing pinned this, so a swallowed status would have
+# published on a target dir that came from a failed build.
+PATH="$SANDBOX/bin:$PATH" SEED_TEST_FAIL_BUILD=1 bash "$SCRIPT_DIR/seed_publish.sh" \
+  --seeds-root "$SANDBOX/seeds" --features "" >"$SANDBOX/out17" 2>"$SANDBOX/err17"
+RC17=$?
+if [ "$RC17" -ne 0 ] \
+  && grep -q 'reference build failed' "$SANDBOX/err17" \
+  && grep -q 'simulated build failure' "$SANDBOX/err17"; then
+  ok "a failed reference build fails the publication and surfaces cargo's message"
+else
+  bad "the publication did not fail closed on a failed build (exit $RC17)"
+fi
+
+printf '\nharness: %d ok, %d fail\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
 echo "the key describes the build: one recipe, one contract, no unkeyed door"

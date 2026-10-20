@@ -437,9 +437,28 @@ seed_recipe_compute_key() {
 # Every field that the key encodes appears here, and every field that appears
 # here is in the key. That correspondence is the whole point: it is what makes
 # "the key describes the build" a structural property rather than a promise.
+#
+# `--locked` is part of that contract, for the same reason `--profile` and
+# `--target` are: the key digests Cargo.lock (seed_compat_key.sh hashes it), so
+# the build has to use THAT lock. Without the flag, cargo is free to rewrite a
+# lock that no longer matches the manifests — and it does so DURING the build,
+# after the key already hashed the old bytes. The published seed then
+# corresponds to a resolution the key never described, and the consumer that
+# verifies the key reports "reproducible" for a build that was not.
+#
+# With the flag, a lock that disagrees with the manifests makes the build FAIL
+# (cargo exits non-zero, and seed_publish.sh propagates that failure with
+# cargo's own message), so the publication dies instead of silently describing
+# something else.
+#
+# It lives HERE, in the recipe, and not in seed_publish.sh: the recipe is the
+# single description of the build, and every consumer of it (publisher,
+# consumer, tests) inherits the flag. A flag added at the call site would
+# leave the other consumers free to build without it — the exact shape of
+# drift this module exists to remove.
 seed_recipe_cargo_args() {
   printf '%s\n' \
-    build --workspace --offline \
+    build --workspace --offline --locked \
     ${SEED_RECIPE_PROFILE:+--profile "$SEED_RECIPE_PROFILE"} \
     ${SEED_RECIPE_TARGET:+--target "$SEED_RECIPE_TARGET"} \
     ${SEED_RECIPE_FEATURES_CANON:+--features "$SEED_RECIPE_FEATURES_CANON"}
