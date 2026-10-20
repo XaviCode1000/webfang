@@ -1428,6 +1428,41 @@ command -v cargo                               # MUST print ~/.local/share/mbx/b
 
 **Always run `command -v cargo` before trusting any build measurement.** `~/.cargo/bin` precedes the wrapper by rustup's default, so outside login shells `cargo` resolves to the rustup shim and bypasses mbx with no error and no warning: the build runs cold and looks completely normal. `mise activate bash --shims` puts the wrapper first but only in login shells — `.bashrc` overrides it afterwards on purpose for interactive ones — so the non-login shells that agents, cron and tools actually run in get nothing. This is why the per-worktree `.envrc` carries the `PATH_add` (see Worktree lifecycle). A build that bypassed the cache is indistinguishable from one that hit it; the only tell is a `mbx[cache]` line in the output, so assert the route and fail closed. This trap already produced one false published measurement.
 
+> 🚨 **The corollary: `command -v cargo` is NOT cargo — it is the mbx shim, and the shim builds.**
+> Measured 2026-10-20: in a worktree, `command -v cargo` prints
+> `~/.local/share/mbx/bin/cargo` — a 488-byte shell shim that execs the `mbx`
+> build-cache wrapper (mbx 1.22.0; 77 GB store, 1 136 builds, 43 472 cache
+> hits). The wrapper exists to compile and to share compiled work across
+> checkouts. It is not a transparent `cargo`, and a script that treats
+> "whatever `command -v cargo` returned" as *the* cargo inherits a build
+> machine wherever it thought it had a no-op.
+>
+> Two OOM kills on 2026-10-20 took an agent session down, and the kernel's own
+> process table is the evidence. The first: ~1 600 concurrent `mbx` processes
+> at 1.25 MB RSS each exhausting a 2 GB cgroup (`memory: usage 2096892kB,
+> limit 2097152kB, failcnt 3166`) — the wrapper's machinery is a memory
+> multiplier, and it is invisible in the argv and in the error message. The
+> second: a global OOM after a real 1.9 GB workspace build was left in `/tmp`,
+> which is a 16 GB tmpfs on this machine, i.e. RAM. Note the asymmetry that
+> makes this hard to attribute: `mbx cargo metadata` on a two-crate fixture
+> does **not** compile (store unchanged, 0 artifacts) and a single call spawns
+> one daemon — the swarm appears under load, not on every invocation.
+>
+> Three rules follow, for anything an agent runs:
+> 1. **Never resolve cargo with `command -v cargo`.** If a script must call a
+>    cargo that does not build, resolve the toolchain's: `rustup which cargo`
+>    (fallback `$HOME/.cargo/bin/cargo`), and refuse the mbx shim explicitly
+>    instead of trusting the lookup. `scripts/test_seed_recipe_coherence.sh`
+>    does exactly that, and refuses to run if the resolution lands on the shim.
+> 2. **Cap every cargo call an agent makes**: `systemd-run --user --scope
+>    -p MemoryMax=1G -p CPUQuota=100%` with `CARGO_BUILD_JOBS=1` and
+>    `env -u RUSTC_WRAPPER`. The scope is what keeps an OOM *inside* the scope
+>    instead of the desktop — measured: the 2 GB cgroup contained the daemon
+>    swarm exactly as intended, and the desktop survived it.
+> 3. **A scratch directory must never become a cargo target dir under `/tmp`.**
+>    `/tmp` is RAM here. Put scratch dirs and target dirs on disk
+>    (`$HOME/.cache/…`).
+
 `[profile.dev.package."*"] opt-level = 0` is deliberate, not drift — it is worth -60% of a cold dev build (251 s -> 99 s, paired measurement) and `[profile.dev.build-override] opt-level = 3` keeps build scripts fast. Do not "fix" it.
 
 **mold 3.0.0** is installed locally for faster linking and is worth roughly -28% on `--all-targets` (89 binaries) where linking dominates. It is **not** committed and must not be: `mise.toml` records that CI has no mold and a repo-level install cannot be scoped to local-only builds. Local use only:
