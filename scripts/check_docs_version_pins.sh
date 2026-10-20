@@ -73,14 +73,29 @@ PIN_ERE="v${VER_ERE}"
 
 ALLOW_MARKER='<!-- version-stale:allow -->'
 
+# The document set is discovered, NOT assumed. `find docs/src ... 2>/dev/null`
+# turned a MISSING docs tree into an empty list with no error at all: the
+# non-empty guard still passed (README.md was in the list) and every docs
+# version pin went UNCHECKED while the gate reported green. A tree that
+# does not exist and a tree that holds no document are two different
+# states, and neither of them is a state the gate can pass in silence.
+DOCS_DIR="docs/src"
+[[ -d "$DOCS_DIR" ]] \
+  || err "no se encontró el árbol de documentación '$DOCS_DIR' en $ROOT — no hay narrativa que verificar y un árbol ausente no se reporta como limpio."
+if ! DOC_LIST="$(find "$DOCS_DIR" -name '*.md' -type f | sort)"; then
+  err "no se pudo recorrer el árbol de documentación '$DOCS_DIR' en $ROOT — la verificación no puede ejecutarse (fail closed)."
+fi
+[[ -n "$DOC_LIST" ]] \
+  || err "el árbol de documentación '$DOCS_DIR' existe pero no contiene ningún archivo .md — no hay narrativa que verificar (fail closed)."
+
 mapfile -t FILES < <(
   {
     [[ -f README.md ]] && printf '%s\n' README.md
-    find docs/src -name '*.md' -type f 2>/dev/null
+    printf '%s\n' "$DOC_LIST"
   } | sort
 )
 
-[[ ${#FILES[@]} -gt 0 ]] || err "no se encontró ningún documento que revisar (README.md / docs/src/*.md)."
+[[ ${#FILES[@]} -gt 0 ]] || err "no se encontró ningún documento que revisar (README.md / $DOCS_DIR/*.md)."
 
 offenders=()
 checked=0   # lines carrying at least one version literal, reported on success
