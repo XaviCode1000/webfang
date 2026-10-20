@@ -16,6 +16,18 @@
 # when it cannot see is indistinguishable from a guard that does not exist —
 # which is the exact failure mode this script replaces.
 #
+# THREE FACTS, ONE PRODUCER EACH
+#   - the DECLARED minors come from ONE producer, which is sorted at the
+#     source and FAILS when the file cannot be read: a declaration nobody
+#     can read must never look like a declaration that declares nothing;
+#   - a minor is declared EXACTLY ONCE: two lines for one minor is a
+#     contradiction, and the rendered projection would carry two rows for
+#     one line;
+#   - the PUBLISHED tags and the MALFORMED tags are two DIFFERENT sets: a
+#     release candidate (`-rc.N`) is not a publication, and a malformed tag
+#     (`v2-14-0`) is REPORTED instead of being filtered away by the filter
+#     that excludes the candidates.
+#
 # SCOPES (both, by default)
 #   --scope=declared    JSON self-consistency + SUPPORT.md render drift.
 #                       Needs no git tags, fully deterministic, green today:
@@ -76,6 +88,51 @@ note() {
   echo "::notice title=$ANNOTATION_TITLE::$*"
 }
 
+# ─── Producers: the facts every check reads, each read exactly once ───────
+
+# declared_minors: the `.minor` values the declaration carries, in VERSION
+# order (2.9 before 2.10 before 10.0 — never lexicographic).
+#
+# The producer used to be `jq -r '.lines[].minor' ... || sort -V || true`.
+# `||` binds left to right, so `sort` only ran when jq FAILED — and then it
+# read EMPTY stdin, so a file that could not be read produced an EMPTY list
+# with exit 0: a broken declaration was indistinguishable from a declaration
+# that declares nothing. The ordering was supplied further down by a re-sort
+# of the tracking floor, so the producer itself was never right.
+#
+# This is the version that is right at the source: reading the file and
+# ordering the result are two explicit steps, a jq failure is a FAILURE
+# (return 1, never an empty list), and a success is a SORTED list.
+declared_minors() {
+  local raw
+  raw="$(jq -r '.lines[] | select(.minor != null) | .minor' "$SUPPORT_JSON")" || return 1
+  [[ -n "$raw" ]] || return 0
+  printf '%s\n' "$raw" | sort -V
+}
+
+# duplicate_minors: the `.minor` values declared by MORE THAN ONE line, one
+# per duplicated value, in version order. A line whose `.minor` is null is
+# not counted here: the grammar check reports it on its own.
+duplicate_minors() {
+  jq -r '.lines[] | select(.minor != null) | .minor' "$SUPPORT_JSON" \
+    | sort -V | uniq -d
+}
+
+# check_duplicate_minors: a minor declared twice is a CONTRADICTION, not a
+# redundancy. The rendered projection would carry two rows for one line, and
+# every lookup by minor (the STABLE one, the tracking floor, the membership
+# check) would have two answers with no rule to pick one. The uniqueness of
+# `.minor` was never checked, so a declaration could name the same line twice
+# and pass both scopes untouched.
+check_duplicate_minors() {
+  local dup
+  if ! dup="$(duplicate_minors)"; then
+    err "$SUPPORT_JSON no se pudo leer para verificar la unicidad de .minor (fail closed)."
+    return
+  fi
+  [[ -z "$dup" ]] || err "minor declarada más de una vez: $(echo "$dup" | tr '\n' ' ') (cada minor declara exactamente una línea de soporte)."
+}
+
 # ─── Declared scope: is the file internally coherent, and is its projection
 # ─── current? Neither question needs a single tag.
 
@@ -107,6 +164,12 @@ check_declared() {
 
   bad_minor="$(jq -r '.lines[] | select((.minor // "") | test("^[0-9]+\\.[0-9]+$") | not) | (.minor // "(null)")' "$SUPPORT_JSON")"
   [[ -z "$bad_minor" ]] || err "campo .minor inválido (se espera X.Y): $(echo "$bad_minor" | tr '\n' ' ')."
+
+  # A minor is declared EXACTLY ONCE. The counts above say how many lines are
+  # STABLE/MAINTENANCE, not how many lines there are: a declaration naming
+  # the same minor twice passed this scope untouched, and the projection
+  # emitted two rows for one line.
+  check_duplicate_minors
 
   # A jq scoping detail on purpose: inside `startswith(...)` the argument is
   # evaluated with the PREVIOUS pipe stage's output (a string) as its input, so
@@ -188,16 +251,41 @@ pending_publication() {
 
 # ─── Published scope: does the declaration match the published tags?
 
-published_minors() {
-  # Minor lines of every released tag, newest last. A prerelease (`-rc.N`) is
-  # deliberately NOT a published minor: an RC is a candidate, not a release,
-  # and counting it would make the gate flap during a stabilization window.
-  git tag --list 'v*' \
+# published_patch_tags: the PUBLISHED patches (X.Y.Z) of the given tag
+# pattern, without the `v` prefix.
+#
+# A release candidate (`-rc.N`) is a CANDIDATE, not a publication, so the
+# hyphen filter below is deliberate HERE — and it is the only place it
+# belongs. The malformed computation needs the opposite intent (report what
+# is not a well-formed tag at all), so it must not reuse this filter: the
+# hyphen filter used to run FIRST there and dropped every hyphenated tag
+# before it could ever be reported, so a malformed tag such as `v2-14-0`
+# rode through unreported (B15).
+published_patch_tags() {
+  local pattern="${1:-v*}"
+  git tag --list "$pattern" \
     | sed 's/^v//' \
     | grep -v -- '-' \
-    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
-    | cut -d. -f1,2 \
-    | sort -u -V
+    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$'
+}
+
+# published_minors: minor lines of every published tag, newest last. A
+# prerelease (`-rc.N`) is deliberately NOT a published minor: an RC is a
+# candidate, not a release, and counting it would make the gate flap during a
+# stabilization window.
+published_minors() {
+  published_patch_tags | cut -d. -f1,2 | sort -u -V
+}
+
+# unparseable_tags: the `v*` tags that are NEITHER a publication (vX.Y.Z) NOR
+# a release candidate (vX.Y.Z-rc.N — the shape release-tag-trust.sh accepts).
+#
+# A candidate is not a publication, so it never counts as one, but it is not a
+# MALFORMED tag either: it is never reported. The tag names are reported WITH
+# their `v` — that is the name the tag has.
+unparseable_tags() {
+  git tag --list 'v*' \
+    | grep -vE '^v[0-9]+\.[0-9]+\.[0-9]+(-rc\.[0-9]+)?$'
 }
 
 check_published() {
@@ -205,27 +293,50 @@ check_published() {
     err "clone shallow: no hay tags que verificar. Traé los tags (fetch-depth: 0) antes de correr este scope — un guard que no puede ver no puede aprobar."
     return
   fi
-  local unparseable
-  unparseable="$(git tag --list 'v*' | sed 's/^v//' | grep -v -- '-' | grep -vE '^[0-9]+\.[0-9]+\.[0-9]+$' || true)"
-  [[ -z "$unparseable" ]] || err "tags publicados con formato inesperado (se espera vX.Y.Z): $(echo "$unparseable" | tr '\n' ' ')."
+  local unparseable rc_unparseable=0
+  # The DECLARATION is read first, and through ONE producer: a file the gate
+  # cannot read is a FAILURE (not a declaration that declares nothing), and
+  # the producer hands the minors over already sorted in version order.
+  local declared
+  if ! declared="$(declared_minors)"; then
+    err "$SUPPORT_JSON ilegible o inválido: no se pudo leer la lista de minors declaradas (fail closed — un productor que devolviera una lista vacía aprobaría una declaración que nadie puede leer)."
+    return
+  fi
+
+  # A minor is declared EXACTLY ONCE, and the published scope is the REQUIRED
+  # check in CI: it cannot accept a declaration the declared scope rejects.
+  check_duplicate_minors
+
+  # The MALFORMED tags are their own computation: a tag that is neither a
+  # publication nor a release candidate is reported, name and all. The
+  # candidate filter (the one that excludes `-rc.N` from the published set)
+  # is NOT applied here — it would hide the malformed tags it was never
+  # meant to judge.
+  unparseable="$(unparseable_tags)" || rc_unparseable=$?
+  if [[ "$rc_unparseable" -gt 1 ]]; then
+    err "no se pudo computar el reporte de tags con formato inesperado (grep salió con $rc_unparseable); fail closed."
+    return
+  fi
+  [[ -z "$unparseable" ]] || err "tags v* con formato inesperado (se espera vX.Y.Z; un candidato vX.Y.Z-rc.N no es una publicación y no se reporta): $(echo "$unparseable" | tr '\n' ' ')."
 
   local minors
-  minors="$(published_minors)"
-  if [[ -z "$minors" ]]; then
+  if ! minors="$(published_minors)" || [[ -z "$minors" ]]; then
     err "no se encontró ningún tag vX.Y.Z; no hay contra qué verificar la declaración (fail closed)."
     return
   fi
 
-  local declared newest stable
-  declared="$(jq -r '.lines[].minor' "$SUPPORT_JSON" 2>/dev/null || sort -V || true)"
+  local newest stable
   newest="$(echo "$minors" | tail -n 1)"
+  # The file was proven readable by the producer above, so jq cannot fail
+  # here; the fallback only keeps the lookup from aborting the script — an
+  # empty STABLE is reported as a governance error below.
   stable="$(jq -r '.lines[] | select(.state == "STABLE") | .minor // empty' "$SUPPORT_JSON" 2>/dev/null || true)"
   DECLARED_STABLE="$stable"
   # The newest tag, not the newest minor: "2.12 is not declared" reads better
-  # next to the release that caused it. Same filter as published_minors, so a
-  # prerelease or an unparseable tag cannot become the headline number.
-  NEWEST_TAG="$(git tag --list 'v*' | sed 's/^v//' | grep -v -- '-' \
-    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
+  # next to the release that caused it. Same published set as published_minors
+  # (X.Y.Z only), so a prerelease or an unparseable tag cannot become the
+  # headline number.
+  NEWEST_TAG="$(published_patch_tags | sort -V | tail -n 1 || true)"
   NEWEST_TAG="${NEWEST_TAG:+v$NEWEST_TAG}"
 
   # Support tracking has a floor: the OLDEST declared line. Everything published
@@ -235,9 +346,17 @@ check_published() {
   # file rather than configured, so the floor cannot drift either.
   local tracked=""
   if [[ -n "$declared" ]]; then
+    # The producer hands the declared minors in VERSION order, so the floor is
+    # its FIRST element. The re-sort that used to live here was the mask that
+    # hid the producer's own bug (B14): with the producer correct at the
+    # source the mask is redundant, and keeping it would keep the producer
+    # untested — a lexicographic producer would put the floor at 10.0 and let
+    # the published 9.0 fall below it.
+    local floor
+    floor="$(head -n 1 <<<"$declared")"
     local floor_major floor_minor
-    floor_major="$(echo "$declared" | sort -V | head -n 1 | cut -d. -f1)"
-    floor_minor="$(echo "$declared" | sort -V | head -n 1 | cut -d. -f2)"
+    floor_major="$(cut -d. -f1 <<<"$floor")"
+    floor_minor="$(cut -d. -f2 <<<"$floor")"
     tracked="$(printf '%s\n' "$minors" | awk -F. -v fm="$floor_major" -v fn="$floor_minor" \
       '($1 > fm) || ($1 == fm && $2 >= fn)')"
   fi
@@ -289,8 +408,7 @@ check_published() {
   local stale_latest="" pending_latest=""
   while IFS=$'\t' read -r m l; do
     local newest_line
-    newest_line="$(git tag --list "v$m.*" | sed 's/^v//' | grep -v -- '-' \
-      | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
+    newest_line="$(published_patch_tags "v$m.*" | sort -V | tail -n 1 || true)"
     if [[ "$newest_line" == "$l" ]]; then
       continue
     fi
