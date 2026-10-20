@@ -1,4 +1,12 @@
-# Ola 1 — release pipeline producer-fail aware (B5, B6, B7, B8, B10)
+# Campaña de remediación fail-open — cierre de las olas 1 y 2
+
+**Ola 1 (B5, B6, B7, B8, B10)** · **Ola 2 (B9, B11, B12, B13, B14, B15)**.
+
+> Este doc cubre el cierre de ambas olas del plan global del audit
+> `AUDIT-SCRIPTS-FAIL-OPEN-20261018-222141` (umbrella #2127). Las olas 3+ (TOML/Rust,
+> seed+artifact, policy+advisory, CI) siguen abiertas en #2130–#2133.
+
+## Ola 1 — release pipeline producer-fail aware (B5, B6, B7, B8, B10)
 
 **Feature doc de la Ola 1 del plan global de remediación del audit
 `AUDIT-SCRIPTS-FAIL-OPEN-20261018-222141`.** Umbrella: #2127 · Ola 1: #2128.
@@ -84,3 +92,64 @@ PR-A: #2135 (merged) · PR-B: #2140 · PR-C: #2141 · reparación de drift: #214
   (`refresh_support_latest.sh --set`) y el camino `main` → release-plz → tag no. Issue #2144 con
   la automatización en dos capas (capa 1 preventiva: declarar en el Release PR antes del corte
   del tag; capa 2: workflow `push: tags` que recomputa y abre PR).
+
+---
+
+# Ola 2 — el gate de support y los pines de docs (B9, B11, B12, B13, B14, B15)
+
+**Issues**: Ola 2 = #2129. PRs: #2150 (B13, B14, B15), #2151 (B9, B11, B12).
+Automatización relacionada: #2153 (capa 1 preventiva del drift, issue #2144).
+
+## Specs
+
+- **S6** — "una declaración con la misma minor dos veces no puede pasar" (B13).
+  El gate de soporte valida unicidad de `.minor` y nombra la minor repetida.
+- **S7** — "un productor que no puede leer no puede devolver una lista vacía con éxito" (B14).
+  El productor de minors declaradas entrega orden de versión y falla cerrado.
+- **S8** — "un tag `v*` que no es `vX.Y.Z` debe llegar al reporte" (B15).
+  Un candidato `-rc.N` no es una publicación y no se reporta; cualquier otra cosa sí.
+- **S9** — "un render fallido no puede dejar la proyección rastreada truncada" (B9).
+  El generate escribe por rename atómico sólo tras un render exitoso.
+- **S10** — "un guard que no puede decidir no puede degradarse a 'no hay nada que mirar'" (B11).
+  Un fetch fallido y un estado de línea ilegible son rechazos nombrados, no tips.
+- **S11** — "un árbol de documentación ausente no es un árbol sin pines" (B12).
+  El árbol ausente se nombra y se rechaza, en el gate **y** en el escritor.
+
+## Tasks
+
+| ID | Specs | Ruta | PR | Commit |
+|---|---|---|---|---|
+| T8 | S6, S7, S8 | `scripts/check_support_drift.sh` + harness | #2150 | `5799535f` |
+| T9 | S9, S10, S11 | `scripts/render-support-md.sh`, `scripts/bump-support-patch.sh`, `scripts/check_docs_version_pins.sh`, `scripts/bump_docs_version_pins.sh` + 3 harnesses | #2151 | `e693a673` |
+| T10 | — | automatización del drift (capa 1) | #2153 | `e0f34639` |
+
+## Log
+
+- **L13** — Ola 2 abierta con dos unidades disjuntas delegadas en paralelo (superficies
+  no solapadas: el gate de soporte por un lado, el render y los pines por otro) y una
+  tercera (la automatización) con el script ya escrito y el harness + cableado pendientes.
+- **L14** — El harness del gate pasó de **54 a 60** casos. B13 falla también en el scope
+  `published` (es el gate *requerido*: restringir el fix al scope no requerido dejaría
+  pasar el duplicado por la puerta que CI consulta). De paso, el mensaje "no se encontró
+  ningún tag vX.Y.Z" documentado era inalcanzable (grep salía 1 con lista vacía y mataba
+  el script bajo `set -euo pipefail`: un repo sin tags fallaba en silencio).
+- **L15** — El hallazgo fuera de alcance más valioso de la Ola 2: **el ESCRITOR** de los
+  pines de docs (`bump_docs_version_pins.sh`) tenía el mismo patrón B12 que el gate, y
+  corre **primero** en el flujo del Release PR — su punto ciego ocultaba el del lector.
+  Corregido en el mismo PR, con dos filas de harness propias.
+- **L16** — **Tres casos del harness canónico eran frágiles** y no certificaba ninguno de sus fixes:
+  B7 congelaba el cuerpo pre-fix del step de `release.yml`; B14 contaba un **comentario** que
+  menciona el patrón defectuoso (la misma ceguera que B3 del propio audit); B9 medía
+  "truncado" por la presencia de una fila, confundiendo *truncado* con *nunca renderizado*.
+  Los tres se corrigieron en el harness (artefacto local: `webfang-audit/` está gitignored) y
+  ahora **discriminan**: CONFIRMED sin el fix, matches con él (control ejecutado contra `main`
+  y contra el worktree que no toca ese defecto).
+- **L17** — Incidentes de proceso: (a) una branch `chore/release-*` **choca con el namespace
+  del bot de release-plz** (`release-plz.toml:38` → `pr_branch_prefix = "chore/release-"`): el
+  bot cerró el PR #2149 al abrir su propio Release PR; la rama se renombró a
+  `chore/support-declare-pending-publication` → #2153. (b) El advisory **RUSTSEC-2026-0383**
+  dejó el required check `Security Audit` en rojo para **todo** PR del repo: se corrigió
+  subiendo `webpki-root-certs` a 1.0.10 en **los dos** lockfiles (la auditoría escanea
+  `Cargo.lock` **y** `fuzz/Cargo.lock`) → #2148.
+- **L18** — Cierre verificado: el harness canónico corre **15 matched / 0 confirmed** sobre
+  `main` post-merge, con dos corridas idénticas.
