@@ -40,6 +40,8 @@
 #                                             -> 2 unregistered-target
 #   16  target that cannot be canonicalised  -> 2 uncanonicalizable-target
 #   17  git enumeration fails                -> 2 worktree-enumeration-failed
+#   18  refusal names the non-interactive remedy -> the message says HOW,
+#                                              not only what to change
 #                                              (fail-closed; case 16 uses a
 #                                              set-but-empty target, the one
 #                                              input coreutils realpath -m 9.10
@@ -347,6 +349,28 @@ ISO_PATH_PREPEND="$STUBDIR"
 run_case "case 17: git enumeration failure is fail-closed" \
   2 worktree-enumeration-failed "$WT_A" "$A1"
 ISO_PATH_PREPEND=""
+
+# --- section H: the remediation is executable in the shell the caller is in ---------
+echo "H: the remediation reaches a non-interactive shell"
+#
+# A correct verdict paired with an unexecutable remediation is not a pass — the
+# same argument #1770 made about the `sed` recipe this guard used to hand out.
+# The direnv hook fires through PROMPT_COMMAND, which never runs in a
+# non-interactive shell, so a refusal that only says "write .envrc, then direnv
+# allow" hands the caller a step it cannot take: measured 2026-10-20, an agent
+# inside an authorised worktree was told exactly that while its shell still
+# resolved CARGO_TARGET_DIR to main's target, and the guard refused it again.
+#
+# So a refusal that asks for an environment change must ALSO name the way to
+# make that change effective from a non-interactive shell. The case below is
+# reproducible in the fixture: an unregistered target.
+run_case "case 18: unregistered target refusal names the non-interactive remedy" \
+  2 unregistered-target "$WT_A" "$UNREG"
+# shellcheck disable=SC2016 # "$(direnv export bash)" must NOT expand: it is the text the guard must print
+assert_contains "case 18: names the direnv export remedy" \
+  "$LAST_OUT" 'eval "$(direnv export bash)"'
+assert_contains "case 18: names the inline alternative" \
+  "$LAST_OUT" 'env CARGO_TARGET_DIR='
 
 # --- summary ---------------------------------------------------------------------------------
 if [ "$FAILED" -ne 0 ]; then
