@@ -425,9 +425,12 @@ direnv allow     # gitignored; carries the per-tree cache policy
 # (`eval "$(direnv hook bash)"` in ~/.bashrc) covers interactive shells
 # via PROMPT_COMMAND: opening a new terminal and `cd` into the worktree
 # applies its target. It does NOT cover non-interactive shells (`bash -c`,
-# agents, cron): PROMPT_COMMAND never fires there (#2039 still holds), so
-# every non-interactive cargo invocation must inline
-# `env CARGO_TARGET_DIR=... CARGO_INCREMENTAL=0 RUSTC_WRAPPER= PATH=...mbx/bin:$PATH`.
+# agents, cron): PROMPT_COMMAND never fires there, so a non-interactive cargo
+# invocation must either eval the tree's own environment
+# (`eval "$(direnv export bash)"` — measured 2026-10-20: it loads THIS tree's
+# .envrc and switches CARGO_TARGET_DIR to this tree's target) or inline the
+# variables explicitly
+# (`env CARGO_TARGET_DIR=... CARGO_INCREMENTAL=0 RUSTC_WRAPPER= PATH=...mbx/bin:$PATH`).
 # The hook fixes interactive only; it changes nothing for agents. That includes
 # the isolation guard's own remediation: `scripts/check_target_isolation.sh`
 # answers a foreign target with "write .envrc per the worktree bootstrap, then
