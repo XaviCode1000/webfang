@@ -266,12 +266,12 @@ release (`check_release_dispatch.sh`, `verify-release-tag.sh`).
 
 | ID | Specs | Ruta | Entrega | Commit |
 | --- | --- | --- | --- | --- |
-| T1 | S6 | delegada (worker) | `scripts/bump_docs_version_pins.sh` + `scripts/test_bump_docs_version_pins.sh` | `96aaa5b4` |
-| T2 | S4, S5, S8 | delegada (worker) | `scripts/apply_release_pins.sh` + `scripts/test_apply_release_pins.sh` | `8a309aa9` |
-| T3 | S1, S8 | delegada (worker) | `.github/workflows/release-plz.yml` | work unit 3 |
-| T4 | S7 | delegada (worker) | `scripts/test_release_pins_wiring.sh` + `ci.yml` + `ci_fast_gate.sh` | work unit 3 |
-| T5 | S2, S9 | delegada (worker) | `AGENTS.md` + header de `check_docs_version_pins.sh` | work unit 3 |
-| T6 | S1..S9 | inline (padre) | verificación, commits por work unit, assessment de riesgo | — |
+| T1 | S6 | delegada (worker) | `scripts/bump_docs_version_pins.sh` + `scripts/test_bump_docs_version_pins.sh` | `98eaf428` |
+| T2 | S4, S5, S8 | delegada (worker) | `scripts/apply_release_pins.sh` + `scripts/test_apply_release_pins.sh` | `bd64e66c` |
+| T3 | S1, S8 | delegada (worker) | `.github/workflows/release-plz.yml` | `e57e0b12` |
+| T4 | S7 | delegada (worker) | `scripts/test_release_pins_wiring.sh` + `ci.yml` + `ci_fast_gate.sh` | `e57e0b12` |
+| T5 | S2, S9 | delegada (worker) | `AGENTS.md` + header de `check_docs_version_pins.sh` | `e57e0b12` |
+| T6 | S1..S9 | inline (padre) | verificación, commits por work unit, assessment de riesgo | `2b738b84` + este commit |
 
 **Orden dentro del writer**: T1 → T2 → T3 → T4 → T5 (T4 y T5 necesitan que T1/T2
 existan para poder referenciarlos).
@@ -368,3 +368,28 @@ existan para poder referenciarlos).
   persistido en `.git/config` → falla (i); worktree no borrado → falla (i);
   chequeo de token vacío eliminado → falla (j); control sin mutación → verde.
   Harness: `14 ok, 0 fail`.
+- **L14** (2026-10-20, padre) — Revisión nativa de 4 lentes **NO DISPONIBLE**
+  en este entorno: el transporte de captura (`opencode_task`) no logra un
+  resultado admisible para ninguno de los cuatro revisores. Cuatro intentos,
+  tres formas de prompt (materialization+contexto completo; materialization+contexto
+  sin parches; sólo la línea de binding del provider, 539 chars) — mismo
+  resultado: `opencode_task_output_empty` para tres lentes y
+  `reviewer_result_not_admissible` para el cuarto, con el payload preservado en
+  `.git/gentle-ai/rejected-results/review-a8f2bf39c0bb6f17/` (JSON truncado a
+  ~130 bytes, cortado a mitad del objeto). El gate de entrega reporta
+  `delivery: unmanaged` — la entrega sigue la política ordinaria del repo, así
+  que **no bloquea** el commit. Lo que SÍ corrió y pasó es la verificación de
+  nivel (tier) independiente: `gentle-ai-verify` con **0 blockers** y S1–S9 MET.
+  Queda como decisión del maintainer: aceptar la entrega sin el aval de las 4
+  lentes, o pedir otra corrida de la revisión en un entorno con el transporte
+  operativo.
+- **L15** (2026-10-20, padre) — Verificación final del padre, sobre el árbol
+  de la rama: los tres harnesses nuevos verdes (14 / 14 / 7 de 7), los tres
+  preexistentes que leen los archivos tocados verdes (`test_docs_version_pins.sh`
+  11 ok, `test_docs_version_pins_wiring.sh` 12/12, `test_ci_fast_gate.sh` y
+  `test_guard_coverage.sh` en verde), los dos guards en verde
+  (`check_docs_version_pins.sh`, `check_release_dispatch.sh`), `bash -n` y
+  `shellcheck` (0 findings) sobre los 5 scripts nuevos, `actionlint` sobre los
+  dos workflows, y los controles negativos del harness de wiring comprobados a
+  mano (borrar el paso del orquestador → `FAILED: 3/7`; cambiar el token a
+  `secrets.GITHUB_TOKEN` → `FAILED: 2/7`).
