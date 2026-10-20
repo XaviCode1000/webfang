@@ -130,8 +130,8 @@ pub struct Container {
     /// at-most-once injection; a second `set` is a no-op.
     cleaner: OnceCell<Arc<dyn SemanticCleaner>>,
 
-    /// Embedding port for text vectorization (#386). Unset when the `ai`
-    /// feature is off. Always compiled — the trait is a domain port.
+    /// Embedding port for text vectorization (#386). Unset when no provider is
+    /// configured. Always compiled — the trait is a domain port.
     embedding_port: OnceCell<Arc<dyn EmbeddingPort>>,
 
     /// Note repository for vault search persistence (#386). Unset when vault
@@ -143,25 +143,23 @@ pub struct Container {
     /// Always compiled: the trait is a domain port.
     vault_note_reader: OnceCell<Arc<dyn VaultNoteReader>>,
 
-    /// Text chunker for Markdown segmentation (#386). Unset when the `ai`
-    /// feature is off. Always compiled — the trait is a domain port.
+    /// Text chunker for Markdown segmentation (#386). Unset when no chunker was
+    /// injected. Always compiled — the trait is a domain port.
     text_chunker: OnceCell<Arc<dyn TextChunker>>,
 
-    /// LLM completion port for structured extraction (#789). Unset when the
-    /// `ai` feature is off or no provider is configured; the service maps
-    /// this absence to an honest Config error. Always compiled — the trait
-    /// is a domain port.
+    /// LLM completion port for structured extraction (#789). Unset when no
+    /// provider is configured; the service maps this absence to an honest
+    /// Config error. Always compiled — the trait is a domain port.
     llm_port: OnceCell<Arc<dyn LlmPort>>,
 }
 
 /// Vault-search AI ports (#433), constructed in the binary layer (CLI/MCP) and
 /// injected into the [`Container`] in one shot.
 ///
-/// Fields are domain trait objects so the dependency direction (`ai → core`) is
-/// respected: `webfang_core` never names the concrete adapters, which live in
-/// `webfang_ai` / the persistence layer and are assembled by the binary crate.
-/// An empty bundle (the [`Default`]) wires nothing — used by builds without the
-/// `ai` feature.
+/// Fields are domain trait objects so the dependency direction is respected:
+/// `webfang_core` never names the concrete adapters, which the binary crate
+/// assembles. An empty bundle (the [`Default`]) wires nothing — the state when
+/// the binary has no vault-search ports to inject.
 #[derive(Clone, Default)]
 pub struct VaultAiPorts {
     /// Embedding port for query/chunk vectorization.
@@ -171,8 +169,8 @@ pub struct VaultAiPorts {
     /// Text chunker for Markdown segmentation.
     pub text_chunker: Option<Arc<dyn TextChunker>>,
 
-    /// Semantic cleaner for AI-driven content extraction. `None` when the `ai`
-    /// feature is off or no cleaner was injected.
+    /// Semantic cleaner for AI-driven content extraction. `None` when no
+    /// cleaner was injected.
     pub cleaner: Option<Arc<dyn SemanticCleaner>>,
 }
 

@@ -842,8 +842,8 @@ mod tests {
         );
         assert!(
             crawler::CLEAN_AI.active(),
-            "an ungated spec is always active, so --clean-ai must be offered on \
-             a build with and without the `ai` feature"
+            "an ungated spec is always active, so --clean-ai must be offered in \
+             every build"
         );
 
         // Ungated entries are always active.

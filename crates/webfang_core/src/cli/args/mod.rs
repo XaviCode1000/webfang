@@ -664,8 +664,9 @@ fn url_from_args(args: &Args) -> ValidUrl {
 ///
 /// The conversion factor lives in
 /// [`options_spec::ai::max_tokens_to_max_chars`](crate::domain::options_spec::ai::max_tokens_to_max_chars),
-/// which `webfang_ai`'s `ModelConfig::default()` also reads: one constant, or
-/// `--max-tokens 4096` and `--max-chars 4096` would mean different budgets.
+/// the single constant the retired `webfang_ai` `ModelConfig::default()` also
+/// read: one constant, or `--max-tokens 4096` and `--max-chars 4096` would mean
+/// different budgets.
 ///
 /// Returns `(max_chars, deprecated_max_tokens)`.
 fn resolve_max_chars(args: &Args) -> (usize, Option<usize>) {
