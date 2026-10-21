@@ -232,6 +232,18 @@ jobs:
       # layering `infrastructure → adapters → application → domain` (inward only).
       # Fails if `application` imports `infrastructure` etc. (see
       # `scripts/check_intra_crate_direction.sh` and ADR-0010 allowlist).
+      # Seed semantics: the publish/clone/recipe contract of the seed chain.
+      # These two are offline and fast; `test_seed_clone_modes.sh` stays local
+      # because it needs a CoW filesystem (`cp --reflink=always`) and FAILS
+      # rather than skips on a non-CoW runner, and
+      # `test_seed_contamination.sh` stays manual because it does a real 2.7 G
+      # build. The assertions of the first one live in the repo, not only in
+      # the audit's local harness.
+      - name: Seed publish atomicity semantics harness
+        run: bash scripts/test_seed_publish_atomicity.sh
+      - name: Seed recipe coherence semantics harness
+        run: bash scripts/test_seed_recipe_coherence.sh
+
       - name: Intra-crate direction gate (strict)
         run: INTRA_CRATE_MODE=strict bash scripts/check_intra_crate_direction.sh
       # Regression guard for stabilization-sitemap-regression, re-based by #1328:
