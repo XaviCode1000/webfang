@@ -92,10 +92,10 @@ por evidencia (comentario en el issue).
 
 ## Tasks
 
-- [ ] T1 · S1 — `scripts/merge-when-green.sh`: leer `state` y `mergeStateStatus` en una
+- [x] T1 · S1 — `scripts/merge-when-green.sh`: leer `state` y `mergeStateStatus` en una
   sola llamada; si `state == MERGED`, imprimir "already merged" y salir 0 **antes** del
   loop de reintentos de `UNKNOWN`; el loop también re-consulta `state`.
-- [ ] T2 · S1 — `scripts/test_merge_when_green_merged_state.sh` (nuevo): harness de
+- [x] T2 · S1 — `scripts/test_merge_when_green_merged_state.sh` (nuevo): harness de
   negación con `gh` falso, modelado sobre `scripts/test_merge_when_green_breaking.sh`.
   Caso obligatorio: PR `MERGED` ⇒ exit 0, mensaje "already merged", **sin** espera de 90 s.
   Casos de no-regresión: `state == OPEN` + `mergeStateStatus == UNKNOWN` ⇒ sigue
@@ -103,20 +103,22 @@ por evidencia (comentario en el issue).
   exit 3 intacto. El harness debe cablearse en el job `repo-guards` de
   `.github/workflows/ci.yml` (junto a `scripts/test_merge_when_green_breaking.sh`, ~línea
   606): un harness que ningún workflow nombra es decoración y el metaguard lo detecta.
-- [ ] T3 · S2 — `AGENTS.md` §Post-merge cleanup: el borrado del target dir se ejecuta como
+- [x] T3 · S2 — `AGENTS.md` §Post-merge cleanup: el borrado del target dir se ejecuta como
   comando **standalone** con el path absoluto literal (`/home/xavi/.cache/cargo-target/<name>`),
   nunca con `$HOME`/`~` y nunca encadenado; la cadena `git branch -D` + `git worktree
   prune` corre antes y completa. Sin gate nuevo, sin helper de ownership.
-- [ ] T4 · S3 — `AGENTS.md` §Worktree policy: el registro de misión
+- [x] T4 · S3 — `AGENTS.md` §Worktree policy: el registro de misión
   (`odd/tasks/<feature>.md`) se crea y edita **dentro del worktree de la misión**, nunca en
   el checkout principal. Sin chequeo automatizado nuevo.
 - [x] T5 · S4 — **CANCELADA por la revisión del padre**: el ADR no cambia (registro
   histórico congelado). #2105 se cierra por evidencia, no por diff.
-- [ ] T6 · S1–S4 — verificación: `bash -n scripts/merge-when-green.sh`; el harness nuevo en
+- [x] T6 · S1–S4 — verificación: `bash -n scripts/merge-when-green.sh`; el harness nuevo en
   verde; `bash scripts/test_merge_when_green_breaking.sh` sigue en verde (el guard de
   breaking-marker no se toca); `bash scripts/test_guard_coverage.sh` en verde (el harness
   nuevo está cableado y no abre una entrada en el ratchet); `bash scripts/test_ci_merge_when_green.sh`
-  en verde; `bash scripts/ci_fast_gate.sh` en verde si el tiempo lo permite.
+  en verde; `bash scripts/ci_fast_gate.sh` en verde si el tiempo lo permite. — Ejecutada;
+  la última línea queda **pendiente** (el lote prohíbe cargo: es un build de BoringSSL) y
+  la ejecuta CI o el owner.
 
 ## Resultado de la implementación (2026-10-21)
 
@@ -186,14 +188,20 @@ cargo, que en CI construye el job `repo-guards` y en local no está. No es de es
 
 ### Borde de slice (registrado por el hook de pre-commit)
 
-El hook mide 431 líneas autorales en los 2 primeros commits: ya pasó el corte de ~400
-líneas. Este repo **no tiene PRs apiladas**, así que la estrategia es **entrega
+El hook mide las líneas autorales del branch contra `origin/main`: 431 en los 2 primeros
+commits, y **1033 en los 4** tras el commit del libro mayor. Los dos cortes pasan el corte de
+~400 líneas. Este repo **no tiene PRs apiladas**, así que la estrategia es **entrega
 secuencial**, y el corte queda así:
 
 | Slice | Commits | Contenido | PR (cuando el owner ordene) |
 |---|---|---|---|
-| 1 | `d16ffef2`, `67ff6128` | el fix de #1970 + sus harnesses + las dos reglas de #1971/#1972 | una PR, etiqueta `type:bug` (el diff es del script) |
-| 2 | el commit de trackers | los docs ODD de este lote + el plan del backlog | una PR desde el `main` nuevo, etiqueta `type:docs` |
+| 1 | `d16ffef2` | el fix de #1970 + su harness + el step en `ci.yml` | una PR sobre `main`, etiqueta `type:bug`, `Closes #1970` |
+| 2 | `67ff6128` | las dos reglas de proceso de #1971/#1972 en `AGENTS.md` | una PR desde el `main` nuevo, etiqueta `type:docs`, `Closes #1971`, `Closes #1972` |
+| 3 | `66f23d63`, `2b8bbb1f` | los trackers ODD de este lote + el plan del backlog + su libro mayor | una PR desde el `main` nuevo, etiqueta `type:docs` |
+
+**Decisión del owner para el slice 3**: el gate de PR exige una issue enlazada y
+`status:approved` (nunca se auto-aprueba), y los trackers ODD no cierran ninguna issue, así que hace
+falta una issue para el slice de docs (o `Closes part of #N` de un umbrella) antes de abrirlo.
 
 Ninguna PR se abre todavía (decisión del owner): el trabajo queda commiteado en el worktree.
 
