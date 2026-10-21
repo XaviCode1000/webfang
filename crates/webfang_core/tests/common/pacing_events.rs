@@ -41,12 +41,12 @@ use webfang_core::application::rate_limiter::{
     record_pacing_wait, PacingContext, RATE_LIMIT_WAIT_OPERATION,
 };
 
-/// `scope` of the pacing waits published by the batch path
-/// (`scrape_multiple_inner`).
+/// `scope` of the pacing waits published by the batch path.
 ///
-/// The production side passes this scope as a literal at the call site; it
-/// has no exported constant yet, so the test mirrors it here.
-pub const BATCH_SCOPE: &str = "batch_scrape";
+/// Bound to the PRODUCTION constant instead of mirroring the literal
+/// (#2214): a mirrored string can drift, and a drifted scope makes the test
+/// fail for the wrong reason.
+pub use webfang_core::application::scraper_service::BATCH_SCOPE;
 
 /// `scope` of the control event published by [`PacingWaitCollector::emit_control`].
 pub const CONTROL_SCOPE: &str = "test_control";
