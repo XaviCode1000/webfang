@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.0] - 2026-10-21
+
+
+### ⚠️ Breaking Changes
+
+- Retira --enable-ai de los dos binarios MCP ([#2145](https://github.com/XaviCode1000/webfang/pull/2145))
+- Retira los shims de migración de ONNX
+
+### 🏗️ Architecture Improvements
+
+- La rama inalcanzable de la ladder de termination source ([#1836](https://github.com/XaviCode1000/webfang/pull/1836)) ([#2195](https://github.com/XaviCode1000/webfang/pull/2195))
+- Colapsar Tier2EmbeddingPort a un newtype y borrar LocalEmbeddingPort ([#2154](https://github.com/XaviCode1000/webfang/pull/2154))
+
+### 🔧 Fixed
+
+- Show and doctor report the effective embeddings provider, not a retired local model ([#2161](https://github.com/XaviCode1000/webfang/pull/2161))
+- La constante del hatch SSRF vive en domain, no se reexporta desde application (Ola 3, S3) ([#2164](https://github.com/XaviCode1000/webfang/pull/2164))
+- La semántica de --offline dice lo que el guard hace ([#2178](https://github.com/XaviCode1000/webfang/pull/2178))
+- La exención de loopback no viaja por un prefijo de traducción ([#1965](https://github.com/XaviCode1000/webfang/pull/1965)) ([#2185](https://github.com/XaviCode1000/webfang/pull/2185))
+- Un registro de termination source rechazado no detiene la corrida ([#1835](https://github.com/XaviCode1000/webfang/pull/1835)) ([#2194](https://github.com/XaviCode1000/webfang/pull/2194))
+- Gatea la trampa Tree Borrows de servo_arc en el test de outcome ([#2187](https://github.com/XaviCode1000/webfang/pull/2187)) ([#2211](https://github.com/XaviCode1000/webfang/pull/2211))
+- Aserta el evento de pacing en vez del reloj de pared ([#1962](https://github.com/XaviCode1000/webfang/pull/1962)) ([#2213](https://github.com/XaviCode1000/webfang/pull/2213))
+
+### 🔧 Other
+
+- Subir el pin mínimo de obscura a 0.2.5 ([#1710](https://github.com/XaviCode1000/webfang/pull/1710)) ([#2186](https://github.com/XaviCode1000/webfang/pull/2186))
 ## [4.0.1] - 2026-10-20
 
 
