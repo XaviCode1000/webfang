@@ -4,108 +4,108 @@ Production-ready web scraper. Clean Architecture, AI semantic cleaning, sitemap-
 
 **Stack:** Rust 1.88 · Tokio · wreq 6 (TLS fingerprint) · SQLite
 
-> **Cómo usar este archivo.** Es un **router**, no un manual. Cada bloque dice o bien la
-> regla (la que no podés deducir del código ni del compilador), o bien **dónde está el
-> resto**. El detalle largo vive en Engram y en el harness.
+> **How to use this file.** It is a **router**, not a manual. Every block either states the
+> rule (the one you cannot derive from the code or the compiler) or points at **where the rest
+> lives**. The long detail lives in Engram and in the harness.
 >
-> **Nada se documenta dos veces.** Si un hecho tiene fuente de verdad —un script, un
-> `support.json`, un test, un lockfile— este archivo **enlaza** esa fuente, no la copia.
-> Una copia en prosa es una copia que se pudre.
+> **Nothing is documented twice.** If a fact has a source of truth — a script, a
+> `support.json`, a test, a lockfile — this file **links** that source, it does not copy it.
+> A copy in prose is a copy that rots.
 
-## 🔎 Consultar en Engram
+## 🔎 Consulting Engram
 
-Todo lo que no está acá se busca en Engram: `mem_search` (MCP) o
+Everything that is not here is searched in Engram: `mem_search` (MCP) or
 `engram search "<query>" --project webfang [--scope personal]`.
 
-| Necesito | Query | Scope | Obs |
+| I need | Query | Scope | Obs |
 |---|---|---|---|
 | Worktrees: bootstrap, seeds, cleanup, target dirs | `worktree target dir seed bootstrap envrc` | project | #2307 |
-| Perfil de build de la máquina: mbx, mold, OOM, timings | `build profile mbx mold cargo target OOM` | personal | #2306 |
-| Líneas de soporte, hotfix routing, versionado, gobernanza | `support line routing hotfix branch taxonomy versioning` | project | #2308 |
-| Gates de PR, pre-commit, merge, batch, CHANGELOG | `merge-when-green batch merge pre-commit changelog` | project | #2309 |
-| Delivery gates: hooks, push a main, verificación en la nube | `delivery gates hooksPath main-push verify cloud timeout` | project | #2316 |
-| Contingencia SSH :22 → :443 | `ssh port 22 443 identity` | personal | #2311 |
-| Contaminación, historia inmutable, hard-deny | `contamination history immutable hard-deny governance` | project | #2312 |
-| Revisión nativa RDD: ciclo completo | `gentle-ai review assess start consent capture acknowledge` | project | #2213 + skill `rdd-defect-workflow` |
-| Índice de skills con los paths exactos | `skill-registry skills paths` | project | #43 + `.atl/skill-registry.md` (generado por árbol) |
-| Persistencia de estado, `--resume`, StateStore | `StateStore ExportState load_or_default version bak` | project | #216 + `docs/persistence-resume.md` |
-| Dónde vive el conocimiento (decisión del owner) | `knowledge architecture AGENTS.md decision` | project | #370 |
-| Best practices de AGENTS.md | `agents md best practices` | project | #368 |
-| Índice completo bloque → obs | `knowledge index bloque destino query verificada` | project | #2313 |
+| Workstation build profile: mbx, mold, OOM, timings | `build profile mbx mold cargo target OOM` | personal | #2306 |
+| Support lines, hotfix routing, versioning, governance | `support line routing hotfix branch taxonomy versioning` | project | #2308 |
+| PR gates, pre-commit, merge, batch, CHANGELOG | `merge-when-green batch merge pre-commit changelog` | project | #2309 |
+| Delivery gates: hooks, push to main, cloud verification | `delivery gates hooksPath main-push verify cloud timeout` | project | #2316 |
+| SSH :22 → :443 contingency | `ssh port 22 443 identity` | personal | #2311 |
+| Contamination, immutable history, hard-deny | `contamination history immutable hard-deny governance` | project | #2312 |
+| Native review (RDD): full cycle | `gentle-ai review assess start consent capture acknowledge` | project | #2213 + skill `rdd-defect-workflow` |
+| Skill index with exact paths | `skill-registry skills paths` | project | #43 + `.atl/skill-registry.md` (generated per tree) |
+| State persistence, `--resume`, StateStore | `StateStore ExportState load_or_default version bak` | project | #216 + `docs/persistence-resume.md` |
+| Where project knowledge lives (owner decision) | `knowledge architecture AGENTS.md decision` | project | #370 |
+| AGENTS.md best practices | `agents md best practices` | project | #368 |
+| Full block → obs index | `knowledge index bloque destino query verificada` | project | #2313 |
 
-**Fuentes de verdad en el repo — enlazá, no copies:**
+**Sources of truth in the repo — link them, do not copy them:**
 
-| Hecho | Fuente de verdad |
+| Fact | Source of truth |
 |---|---|
-| Estado de las líneas de soporte | `.github/support.json` (`jq`), renderizado a `SUPPORT.md` |
-| Grafo de dependencias entre crates | `cargo metadata` + `scripts/check_dependency_direction.sh` |
-| Conteo de tools MCP | `crates/webfang_mcp/tests/stdio_handshake.rs` |
-| Topología de branches admitida | `scripts/check-topology.sh` |
-| Reglas de PR que CI exige | `.github/workflows/pr-validation.yml` |
-| Pines de versión en docs | `scripts/check_docs_version_pins.sh` |
+| Support-line state | `.github/support.json` (`jq`), rendered into `SUPPORT.md` |
+| Inter-crate dependency graph | `cargo metadata` + `scripts/check_dependency_direction.sh` |
+| MCP tool count | `crates/webfang_mcp/tests/stdio_handshake.rs` |
+| Admitted branch topology | `scripts/check-topology.sh` |
+| PR rules CI enforces | `.github/workflows/pr-validation.yml` |
+| Version pins in docs | `scripts/check_docs_version_pins.sh` |
 
-## 🔧 Comandos
+## 🔧 Commands
 
 ```bash
-# Verificación (el gate de CI completo; el `--all-features` es obligatorio)
+# Verification (the full CI gate; --all-features is mandatory)
 cargo check
 cargo clippy --all-targets --all-features -- -D warnings \
   -W clippy::cognitive_complexity -W clippy::too_many_lines
-cargo fmt --all -- --check          # `--check` verifica; un `cargo fmt` pelado es un fixer
+cargo fmt --all -- --check          # --check verifies; a bare `cargo fmt` is a fixer
 env "RUSTDOCFLAGS=-D warnings" cargo doc --workspace --all-features --no-deps
 
 # Tests
 cargo nextest run --test <name>
-cargo insta review                  # revisar cada diff de snapshot
+cargo insta review                  # review every snapshot diff
 
-# Gate local (lane-aware: docs / CI / code / full)
+# Local gate (lane-aware: docs / CI / code / full)
 bash scripts/ci_fast_gate.sh
 
-# Pruebas manuales
-scripts/merge-when-green.sh <PR>            # esperar checks verdes y mergear
-scripts/ci_status.sh <PR>                   # resumen read-only
-scripts/ci_pr_overlap.sh <N1> <N2>          # ¿archivos disjuntos? (batch merge)
+# Manual checks
+scripts/merge-when-green.sh <PR>            # wait for green checks, then merge
+scripts/ci_status.sh <PR>                   # read-only summary
+scripts/ci_pr_overlap.sh <N1> <N2>          # disjoint files? (batch merge)
 ```
 
-## 🚧 Reglas del proyecto
+## 🚧 Project rules
 
-Lo que el compilador **no** puede cazar. Todo lo demás es del harness o de la tabla de
-arriba.
+What the compiler **cannot** catch. Everything else comes from the harness or the table
+above.
 
-- **Nunca `.unwrap()` en producción** — usá `?`, `match` o `.context()`.
-- **Errores user-facing en español; tracing fields y logs en inglés.**
-- **HTTP: siempre `wreq`, nunca `reqwest`** — impersonación de fingerprint TLS para evasión
-  de WAF. Un agente que sugiera `reqwest` está equivocado.
-- **No unificar dependencias en conflicto** (dashmap 5/6, selectors 0.35/0.37/0.38): son
-  deliberadas, tres crates distintos necesitan versiones distintas.
-- **No cites números de línea.** Citá el símbolo (`WreqDownloader::fetch_inner`) o el path.
-  Una cita por línea se invalida con cada edit anterior del archivo.
-- **No copies estado mutable en prosa.** Si cambia solo (versiones, conteos, líneas de
-  soporte, labels), enlazá la fuente.
-- **No toques `CHANGELOG.md`** en un work PR — un solo escritor (el Release PR).
-- **No toques `docs/`** salvo pedido explícito.
+- **Never `.unwrap()` in production** — use `?`, `match` or `.context()`.
+- **User-facing errors in Spanish; tracing fields and logs in English.**
+- **HTTP: always `wreq`, never `reqwest`** — TLS fingerprint impersonation for WAF evasion.
+  An agent that suggests `reqwest` is wrong.
+- **Do not unify conflicting dependencies** (dashmap 5/6, selectors 0.35/0.37/0.38): they are
+  deliberate, three different crates need three different versions.
+- **Do not cite line numbers.** Cite the symbol (`WreqDownloader::fetch_inner`) or the path. A
+  line-number citation is invalidated by every edit above it in the file.
+- **Do not copy mutable state into prose.** If it changes on its own (versions, counts, support
+  lines, labels), link the source.
+- **Do not touch `CHANGELOG.md`** in a work PR — there is a single writer (the Release PR).
+- **Do not touch `docs/`** unless explicitly asked.
 
-## 🏗️ Arquitectura
+## 🏗️ Architecture
 
-### Mapa del workspace (5 crates)
+### Workspace map (5 crates)
 
 ```text
 webfang/                          # virtual workspace root (no [package])
 ├── crates/
 │   ├── webfang_core/             # domain + application + infrastructure + cli
-│   ├── webfang_mcp/              # MCP server (36 tools, 9 categorías)
-│   ├── webfang_cli/              # binario `webfang` (main.rs)
-│   ├── webfang_test_utils/       # harness de tests compartido (no se publica)
-│   └── webfang_benchmark/        # harness de benchmarks (leaf, tooling)
+│   ├── webfang_mcp/              # MCP server (36 tools, 9 categories)
+│   ├── webfang_cli/              # the `webfang` binary (main.rs)
+│   ├── webfang_test_utils/       # shared test harness (not published)
+│   └── webfang_benchmark/        # benchmark harness (leaf, tooling)
 ```
 
-- **El código de la CLI vive en `crates/webfang_core/src/cli/`** (`error.rs`, `scrape_flow.rs`,
-  `args/`, `preflight.rs`, `orchestrator.rs`). `crates/webfang_cli/src/main.rs` es el binario
-  delgado. Buscá el módulo, no el crate.
+- **The CLI code lives in `crates/webfang_core/src/cli/`** (`error.rs`, `scrape_flow.rs`,
+  `args/`, `preflight.rs`, `orchestrator.rs`). `crates/webfang_cli/src/main.rs` is the thin
+  binary. Look for the module, not the crate.
 
-### Dirección de dependencias (POLÍTICA, verificada por gate)
+### Dependency direction (POLICY, enforced by a gate)
 
-| Crate | Puede depender de |
+| Crate | May depend on |
 |---|---|
 | `webfang_core` | — |
 | `webfang_mcp` | `webfang_core` |
@@ -113,304 +113,301 @@ webfang/                          # virtual workspace root (no [package])
 | `webfang_test_utils` | `webfang_core` |
 | `webfang_benchmark` | `webfang_core`, `webfang_test_utils` |
 
-- La **dirección es `cli → core`, `mcp → core`; `cli` NO depende de `mcp`**. Si necesitás
-  algo del server MCP en la CLI, es una decisión de arquitectura, no un import.
-- **Dev tier:** cualquier crate puede apuntar a `webfang_test_utils` desde
-  `[dev-dependencies]` (es el harness compartido y nunca se publica). Una arista desde
-  `[dependencies]` está prohibida.
-- Gate: `scripts/check_dependency_direction.sh` (corre en el job `repo-guards` de `ci.yml`),
-  con su harness de semántica `scripts/test_dependency_direction.sh`.
+- The **direction is `cli → core`, `mcp → core`; `cli` does NOT depend on `mcp`**. If you
+  need something from the MCP server in the CLI, that is an architecture decision, not an
+  import.
+- **Dev tier:** any crate may target `webfang_test_utils` from `[dev-dependencies]` (it is
+  the shared harness and is never published). An edge from `[dependencies]` is prohibited.
+- Gate: `scripts/check_dependency_direction.sh` (runs in the `repo-guards` job of `ci.yml`),
+  with its semantics harness `scripts/test_dependency_direction.sh`.
 
-### Capas intra-crate (Clean Architecture)
+### Intra-crate layers (Clean Architecture)
 
 ```text
-infrastructure → adapters → application → domain   (sólo hacia adentro)
+infrastructure → adapters → application → domain   (inward only)
 ```
 
-Domain define puertos (traits) → Infrastructure los implementa → Application orquesta.
-Al escribir código nuevo, copiá el patrón del módulo equivalente más cercano: trait en
-`application/crawler/engine.rs`, entidad de dominio en `domain/entities.rs` con
-constructor + `TryFrom` + `Display`/`Debug`/`PartialEq`, adapter en
-`infrastructure/`, error nuevo en el archivo de error de la capa.
+Domain defines ports (traits) → Infrastructure implements them → Application orchestrates.
+When writing new code, copy the pattern of the closest equivalent module: trait in
+`application/crawler/engine.rs`, domain entity in `domain/entities.rs` with constructor +
+`TryFrom` + `Display`/`Debug`/`PartialEq`, adapter in `infrastructure/`, new error in the
+layer's error file.
 
-**Avoid:** componentes gigantes. Ningún archivo nuevo debería pasar de ~500 líneas, y si
-tocás uno que ya la supera, partilo. Para ver los archivos más grandes del repo:
+**Avoid:** giant components. No new file should exceed ~500 lines, and if you touch one that
+already does, split it. To see the current largest files in the repo:
 `find crates -name '*.rs' -not -path '*/tests/*' | xargs wc -l | sort -rn | head`.
 
-### Estratificación de errores
+### Error stratification
 
-El error de aplicación es `ScraperError` (`crates/webfang_core/src/error.rs`) y **todo
-converge hacia él**: no es una cadena de envoltorios, es un embudo.
-
-```text
-DomainError    (domain/error/domain_error.rs,  7 variantes) ─┐
-InfraError     (infrastructure/error.rs,         15 variantes) ─┤
-CrawlError     (domain/error/crawl_error.rs)                   ─┼─ From ─→ ScraperError
-DownloadError  (domain/downloader_port.rs)                     ─┘
-```
-
-- `DomainError` e `InfraError` implementan `From<…> for ScraperError`: son **entradas** del
-  error de aplicación, no una cadena de envoltorios. `domain/error/domain_error.rs` no define
-  ningún `impl From`.
-- `CliError` (`crates/webfang_core/src/cli/error.rs`) es **independiente**: no tiene relación
-  con `ScraperError`; traduce a exit codes (`EXIT_CONFIG = 78` para error de configuración).
-- `HttpError` es un enum de **dominio** (`domain/http_error.rs`), no una variante de
-  `InfraError`. `WafError` **no es un tipo de error**: es una variante de `FetchBehavior`
-  (`application/crawler/crawl_task.rs`). `ParseError` no existe en este repo.
-- Matriz completa y reglas de exit code: `docs/error-classification-matrix.md`.
-- Una variante nueva de error entra por `From` hacia `ScraperError`, y su mensaje user-facing
-  va en español.
-
-### Cadena de guardas del fetch (ORDEN OBLIGATORIO)
-
-Todo camino de fetch — CLI, engine, tool MCP, benchmark, adapter futuro— tiene que cablear
-las protecciones **en este orden**. Cada etapa asume que la anterior ya filtró: desviarse
-del orden es un **bug**, no una elección de estilo (pacer *después* de una request condenada
-gasta presupuesto de rate sobre algo que el SSRF iba a rechazar; clasificar reintentos
-*después* de leer el cuerpo gasta una lectura completa de una respuesta que nunca se va a
-aceptar).
+The application error is `ScraperError` (`crates/webfang_core/src/error.rs`) and **everything
+converges towards it**: it is not a chain of wrappers, it is a funnel.
 
 ```text
-ValidUrl (entrada) → rate limit (pacing) → por intento:
-    timeout → redirect policy → SSRF en el socket dial (cada hop)
-→ clasificación de reintentos → lectura del cuerpo
+DomainError    (domain/error/domain_error.rs,  7 variants)   ─┐
+InfraError     (infrastructure/error.rs,        15 variants) ─┤
+CrawlError     (domain/error/crawl_error.rs)                 ─┼─ From ─→ ScraperError
+DownloadError  (domain/downloader_port.rs)                   ─┘
 ```
 
-| # | Etapa | Implementación de referencia | Por qué |
+- `DomainError` and `InfraError` implement `From<…> for ScraperError`: they are **inputs** to
+  the application error, not a chain of wrappers. `domain/error/domain_error.rs` defines no
+  `impl From` at all.
+- `CliError` (`crates/webfang_core/src/cli/error.rs`) is **independent**: it has no relation to
+  `ScraperError`; it maps to exit codes (`EXIT_CONFIG = 78` for a configuration error).
+- `HttpError` is a **domain** enum (`domain/http_error.rs`), not an `InfraError` variant.
+  `WafError` **is not an error type**: it is a `FetchBehavior` variant
+  (`application/crawler/crawl_task.rs`). `ParseError` does not exist in this repo.
+- Full matrix and exit-code rules: `docs/error-classification-matrix.md`.
+- A new error variant enters through `From` towards `ScraperError`, and its user-facing
+  message goes in Spanish.
+
+### Fetch guard chain (MANDATORY ORDER)
+
+Every fetch path — CLI, engine, MCP tool, benchmark, future adapter — must wire the
+protections **in this order**. Each stage assumes the previous one filtered: deviating from
+the order is a **bug**, not a style choice (pacing *after* a doomed request burns rate budget
+on something the SSRF guard would have rejected; classifying retries *after* reading the body
+wastes a full read of a response that will never be accepted).
+
+```text
+ValidUrl (entry) → rate limit (pacing) → per attempt:
+    timeout → redirect policy → SSRF at the socket dial (every hop)
+→ retry classification → body read
+```
+
+| # | Stage | Reference implementation | Why |
 |---|---|---|---|
-| 1 | Validación de entrada | `ValidUrl` / `try_from_url` (`domain/value_objects.rs`), construido en el boundary del argv | El texto de URL no confiable se vuelve un tipo de dominio validado antes de entrar a cualquier flujo. Nunca aceptes un `Url`/`String` crudo como target de fetch. |
-| 2 | Rate limit (pacing) | Scrape: token bucket en `scrape_urls` (`cli/scrape_flow.rs`, `build_scrape_rate_limiter`), con pacing cancel-aware vía `until_ready_or_cancel_observed` (`application/rate_limiter.rs`). Crawl: `RateLimiterConfig` (`application/rate_limiter.rs`), construido en `application/crawler/engine.rs` desde `delay_ms` + burst del budget | La espera ocurre **antes** de tocar la red: una espera cancelada cuenta como skipped, nunca como fetch bloqueado. |
-| 3a | Timeout | `Client::builder()` en `infrastructure/downloader/wreq_downloader.rs`: request timeout + connect timeout (el connect se clampa en `infrastructure/downloader/fetch_router.rs`) | Techo por request. |
-| 3b | Redirect policy | `redirect_policy()` (`domain/ssrf_guard.rs`): límite de 10 hops + parada síncrona cuando el target del redirect es una IP literal prohibida | Cada hop de redirect re-entra a la cadena: es un dial nuevo, no un pase libre. |
-| 3c | SSRF en el dial | `ssrf_guard()` envolviendo el `Client` (`infrastructure/downloader/wreq_downloader.rs`, impl en `domain/ssrf_guard.rs`): chequeo a nivel de resolver en **cada** conexión; rangos privados / link-local / loopback rechazados antes de que exista el socket | Nada puede conectar a una dirección prohibida, ni por nombre DNS ni por hop de redirect. E2E en `crates/webfang_core/tests/ssrf_rfc1918_e2e_test.rs`: rechazo pre-socket de RFC1918/CGNAT/NAT64/mapeados, exit 69, cero packets salientes. |
-| 4 | Clasificación de reintentos | `fetch_inner` (`infrastructure/downloader/wreq_downloader.rs`): transitorios de mid-body (`ConnectionReset`/`UnexpectedEof`) reintentan; 429 → `max(Retry-After, backoff exponencial)`; 5xx → exponencial; 403 → un reintento con UA rotada **sólo** si la UA no está pineada, capturando el status rotado; **los timeouts también reintentan**; 4xx terminal y errores de builder se reportan tal cual; agotados los reintentos se reporta el **último status observado**, nunca uno hardcodeado; WARN sólo cuando hubo un reintento | La clasificación decide el gasto: dormir, rotar o fallar. Corre **antes** de leer el cuerpo. |
-| 5 | Lectura del cuerpo | `read_body_capped` (el método del downloader en `infrastructure/downloader/wreq_downloader.rs`; el helper genérico de tope, en `domain/body_cap.rs`), tope `DEFAULT_MAX_PAGE_BYTES` = 50 MiB (`domain/downloader_factory.rs`), error `BodyTooLarge` más allá del tope | La lectura es acotada para que una página enorme o un gzip bomb no inflen la memoria. Ningún camino de fetch puede leer un cuerpo sin tope. |
+| 1 | Entry validation | `ValidUrl` / `try_from_url` (`domain/value_objects.rs`), built at the argv boundary | Untrusted URL text becomes a validated domain type before entering any flow. Never accept a raw `Url`/`String` as a fetch target. |
+| 2 | Rate limit (pacing) | Scrape: token bucket in `scrape_urls` (`cli/scrape_flow.rs`, `build_scrape_rate_limiter`), with cancel-aware pacing via `until_ready_or_cancel_observed` (`application/rate_limiter.rs`). Crawl: `RateLimiterConfig` (`application/rate_limiter.rs`), constructed in `application/crawler/engine.rs` from `delay_ms` + budget burst | The wait happens **before** the network is touched: a cancelled wait counts as skipped, never as a blocked fetch. |
+| 3a | Timeout | `Client::builder()` in `infrastructure/downloader/wreq_downloader.rs`: request timeout + connect timeout (the connect one is clamped in `infrastructure/downloader/fetch_router.rs`) | Per-request ceiling. |
+| 3b | Redirect policy | `redirect_policy()` (`domain/ssrf_guard.rs`): 10-hop limit + synchronous stop when the redirect target is a forbidden literal IP | Every redirect hop re-enters the chain: it is a new dial, not a free pass. |
+| 3c | SSRF at the dial | `ssrf_guard()` wrapping the `Client` (`infrastructure/downloader/wreq_downloader.rs`, implementation in `domain/ssrf_guard.rs`): resolver-level check on **every** connection; private / link-local / loopback ranges rejected before the socket exists | Nothing may connect to a forbidden address, neither by DNS name nor through a redirect hop. E2E in `crates/webfang_core/tests/ssrf_rfc1918_e2e_test.rs`: pre-socket rejection of RFC1918/CGNAT/NAT64/mapped targets, exit 69, zero outbound packets. |
+| 4 | Retry classification | `fetch_inner` (`infrastructure/downloader/wreq_downloader.rs`): mid-body transients (`ConnectionReset`/`UnexpectedEof`) retry; 429 → `max(Retry-After, exponential backoff)`; 5xx → exponential; 403 → one retry with a rotated UA **only** if the UA is not pinned, capturing the rotated status; **timeouts also retry**; terminal 4xx and builder errors are reported as-is; once retries are exhausted the **last observed status** is reported, never a hardcoded one; WARN only when a retry actually happened | The classification decides the spend: sleep, rotate or fail. It runs **before** the body is read. |
+| 5 | Body read | `read_body_capped` (the downloader method in `infrastructure/downloader/wreq_downloader.rs`; the generic cap helper in `domain/body_cap.rs`), cap `DEFAULT_MAX_PAGE_BYTES` = 50 MiB (`domain/downloader_factory.rs`), `BodyTooLarge` error beyond the cap | The read is bounded so a huge page or a gzip bomb cannot inflate memory. No fetch path may read an uncapped body. |
 
-**Convención para caminos de fetch nuevos:** replicá las etapas 1→4 antes de la 5, y citá
-esta tabla en el review. Si un camino no puede reusar `WreqDownloader`/`FetchRouter`, el
-orden igual tiene que valer: un camino que conecta antes de validar, o pacea después del
-dial, se rechaza en review aunque sus tests pasen.
+**Convention for new fetch paths:** replicate stages 1→4 before stage 5, and cite this table in
+the review. If a path cannot reuse `WreqDownloader`/`FetchRouter`, the order must still hold: a
+path that connects before validating, or paces after dialing, is rejected in review even if
+its tests pass.
 
-### Reglas async
+### Async rules
 
-- Runtime Tokio multi-threaded.
-- `spawn_blocking` para trabajo CPU-intensivo (parsing HTML y etapas CPU-heavy) — ver
+- Tokio multi-threaded runtime.
+- `spawn_blocking` for CPU-intensive work (HTML parsing and other CPU-heavy stages) — see
   `CpuBridge.dispatch`.
-- **Nunca** holding de `Mutex`/`RwLock` a través de un `.await`.
-- Canales **acotados** para backpressure.
-- `.instrument(span)` sobre futures; nunca un guard `span.enter()` cruzando un `.await`.
+- **Never** hold a `Mutex`/`RwLock` across an `.await`.
+- **Bounded** channels for backpressure.
+- `.instrument(span)` on futures; never a `span.enter()` guard across an `.await`.
 
 ### MCP server
 
-- Ubicación canónica: `crates/webfang_mcp/src/mcp_server/`. **Nunca** crees código en el
-  `src/` raíz de ese crate.
-- 36 tools en 9 categorías (el conteo exacto lo fija
+- Canonical location: `crates/webfang_mcp/src/mcp_server/`. **Never** create code in that
+  crate's root `src/`.
+- 36 tools across 9 categories (the exact count is pinned by
   `crates/webfang_mcp/tests/stdio_handshake.rs`).
-- Transporte: Streamable HTTP (`rmcp`) en `127.0.0.1:8080/mcp`, más stdio vía el binario
-  `webfang-mcp-stdio`.
-- Todo resultado de tool se neutraliza y se envuelve con procedencia (Layer 1,
-  `mcp_server/provenance.rs`). Las reglas para *consumir* esa salida son Layer 2:
-  `docs/security/prompt-injection-policy.md` — leelo antes de actuar sobre un resultado.
+- Transport: Streamable HTTP (`rmcp`) on `127.0.0.1:8080/mcp`, plus stdio via the
+  `webfang-mcp-stdio` binary.
+- Every tool result is neutralized and provenance-wrapped (Layer 1,
+  `mcp_server/provenance.rs`). The rules for *consuming* that output are Layer 2:
+  `docs/security/prompt-injection-policy.md` — read it before acting on a result.
 
-### Limpieza semántica (`--clean-ai`)
+### Semantic cleaning (`--clean-ai`)
 
-- `--clean-ai` resuelve su cleaner por un `EmbeddingPort` **remoto**
-  (`infrastructure/semantic_cleaner.rs`), con `--embedding-provider`
-  (env `WEBFANG_EMBEDDING_PROVIDER`; el flag le gana al env).
-- `--offline` rechaza **todo** provider de embeddings — remoto o loopback — con **exit 78**.
-  El guard dispara antes de inspeccionar el endpoint.
-- Superficie de flags de AI: `--threshold`, `--max-chars`, `--offline`.
+- `--clean-ai` resolves its cleaner through a **remote** `EmbeddingPort`
+  (`infrastructure/semantic_cleaner.rs`), with `--embedding-provider`
+  (env `WEBFANG_EMBEDDING_PROVIDER`; the flag wins over the env).
+- `--offline` rejects **every** embeddings provider — remote or loopback — with **exit 78**.
+  The guard fires before the endpoint is inspected.
+- AI flag surface: `--threshold`, `--max-chars`, `--offline`.
 
 ### Build
 
-- `cmake` es obligatorio: `wreq` → `btls` → `btls-sys` compila BoringSSL desde C++.
-- 🔒 **`[profile.dev]` vive en el `Cargo.toml` raíz, nunca en `.cargo/config.toml`.** Cargo
-  resuelve `config.toml` desde el CWD hacia arriba, así que un perfil declarado ahí cambia
-  el hash `-C metadata` de cada unidad para toda invocación cuyo CWD esté fuera del repo
-  (cron, IDE, `mise exec`, `--manifest-path`) → recompila el grafo entero en silencio. Como
-  `btls-sys` está en el fondo del grafo, cada rehash se amplifica a un rebuild completo de
-  los ~640 objetos de BoringSSL. No lo "tidies" de vuelta.
-- Debuggee completo puntual: `CARGO_PROFILE_DEV_DEBUG=true cargo build`.
+- `cmake` is mandatory: `wreq` → `btls` → `btls-sys` compiles BoringSSL from C++.
+- 🔒 **`[profile.dev]` lives in the root `Cargo.toml`, never in `.cargo/config.toml`.** Cargo
+  resolves `config.toml` from the CWD upward, so a profile declared there changes the
+  `-C metadata` hash of every unit for any invocation whose CWD is outside the repo (cron,
+  IDE, `mise exec`, `--manifest-path`) → silently recompiles the whole graph. Because
+  `btls-sys` sits at the bottom of the graph, each rehash is amplified into a full rebuild of
+  the ~640 BoringSSL objects. Do not "tidy" it back.
+- Occasional full debug info: `CARGO_PROFILE_DEV_DEBUG=true cargo build`.
 
 ## 🧪 Testing
 
-- Los tests de integración viven en `crates/webfang_core/tests/` y Cargo los **auto-descubre**
-  (un archivo por target). Sólo agregá una entrada `[[test]]` en
-  `crates/webfang_core/Cargo.toml` para casos que el auto-descubrimiento no cubre
-  (subdirectorios como `tests/compile_fail/`, features especiales).
+- Integration tests live in `crates/webfang_core/tests/` and Cargo **auto-discovers** them
+  (one file per target). Only add a `[[test]]` entry in
+  `crates/webfang_core/Cargo.toml` for cases auto-discovery does not cover (subdirectories such
+  as `tests/compile_fail/`, special features).
 - **Harness**: `crates/webfang_core/tests/common/cli_harness.rs` — `BehavioralTest`
   (wiremock + TempDir), `scraper_cmd()`, `find_files()`, `read_md_content()`.
-  Importalo con `#[path = "common/mod.rs"] mod common;`.
-- **Binary resolution — golden rule:** usá siempre `webfang_path()`, **nunca**
-  `assert_cmd::cargo_bin(...)`. La env `CARGO_BIN_EXE_*` sólo se setea para el crate dueño, y
-  en este workspace virtual el binario `webfang` lo construye `webfang_cli`, un crate hermano:
-  los tests que corren bajo `webfang_core` no lo resuelven con `cargo_bin`.
+  Import it with `#[path = "common/mod.rs"] mod common;`.
+- **Binary resolution — golden rule:** always use `webfang_path()`, **never**
+  `assert_cmd::cargo_bin(...)`. The `CARGO_BIN_EXE_*` env var is only set for the owning
+  crate, and in this virtual workspace the `webfang` binary is built by `webfang_cli`, a
+  sibling crate: tests running under `webfang_core` cannot resolve it with `cargo_bin`.
 
 ```bash
 Command::new(webfang_path())   // ✅
 Command::cargo_bin("webfang")   // ❌
 ```
 
-- **Snapshots (`insta`)**: todo test que produzca Markdown/JSON/stderr debe usar snapshots, no
-  `assert!(output.contains("..."))`. Ciclo: `cargo nextest run` (falla con `.snap.new`) →
-  `cargo insta review` (revisá cada diff) → `cargo nextest run` (verde). `.snap.new` está
-  gitignored: nunca commitees snapshots pendientes.
-- **Sanitización obligatoria**: `redact_nondeterministic()` normaliza path de TempDir →
-  `[TEMP_PATH]`, timestamps ISO-8601 → `[TIMESTAMP]`, puertos de wiremock → `[PORT]`, ANSI →
-  `[ANSI]`. Para más campos no deterministas, `insta::with_settings!({ add_filter(...) })`.
-- **Diagnóstico de 6 nodos** para cada test que escribas o modifiques:
-  1. **Comportamiento observable** — probá puertos públicos, nunca estado interno.
-  2. **Adapters efímeros** — wiremock para HTTP, TempDir para filesystem. Sin red real.
-  3. **Aserciones semánticas** — invariantes de negocio vía snapshots, no dumps de datos.
-  4. **Distribución del esfuerzo** — máxima inversión en la lógica de dominio estable.
-  5. **Simplicidad del Arrange** — un Arrange de más de 5 líneas es un defecto de diseño de
-     producción, no del test.
-  6. **Determinismo absoluto** — tiempo y azar inyectados, cero flakiness.
-  Si el Arrange se complicó, arreglá el diseño de producción, no el test.
-- Para crear un test de integración: archivo en `crates/webfang_core/tests/` (sin
-  `[[test]]`), import del harness, `webfang_path()` para el binario, snapshots para la
-  salida, y `cargo nextest run --test <name>`.
+- **Snapshots (`insta`)**: every test that produces Markdown/JSON/stderr must use snapshots, not
+  `assert!(output.contains("..."))`. Cycle: `cargo nextest run` (fails with `.snap.new`) →
+  `cargo insta review` (review every diff) → `cargo nextest run` (green). `.snap.new` is
+  gitignored: never commit pending snapshots.
+- **Mandatory sanitization**: `redact_nondeterministic()` normalizes the TempDir path →
+  `[TEMP_PATH]`, ISO-8601 timestamps → `[TIMESTAMP]`, wiremock ports → `[PORT]`, ANSI →
+  `[ANSI]`. For extra non-deterministic fields, `insta::with_settings!({ add_filter(...) })`.
+- **Six-node diagnostic** for every test you write or modify:
+  1. **Observable behavior** — exercise public ports, never internal state.
+  2. **Ephemeral adapters** — wiremock for HTTP, TempDir for the filesystem. No real network.
+  3. **Semantic assertions** — business invariants through snapshots, not data dumps.
+  4. **Effort distribution** — maximum investment in the stable domain logic.
+  5. **Arrange simplicity** — an Arrange longer than 5 lines is a production design defect, not
+     a test defect.
+  6. **Absolute determinism** — injected time and randomness, zero flakiness.
+  If the Arrange got complicated, fix the production design, not the test.
+- To create an integration test: a file in `crates/webfang_core/tests/` (no `[[test]]`), the
+  harness import, `webfang_path()` for the binary, snapshots for the output, and
+  `cargo nextest run --test <name>`.
 
-## 🌭 Observabilidad
+## 🌭 Observability
 
-**Iron rule:** toda feature, hot path o cambio de comportamiento se entrega con
-observabilidad. Código que no se puede tracear en producción no está terminado. El stack es
-el crate `tracing` + el **FileTraceLayer** siempre disponible (`--trace-file out.jsonl`) +
-correlation IDs nativos. Sin backend de métricas externo: no se introduce OpenTelemetry ni
-ningún otro collector.
+**Iron rule:** every feature, hot path or behavior change ships with observability. Code that
+cannot be traced in production is not finished. The stack is the `tracing` crate + the always
+available **FileTraceLayer** (`--trace-file out.jsonl`) + native correlation IDs. No external
+metrics backend: neither OpenTelemetry nor any other collector is introduced.
 
-| Situación | Requisito |
+| Situation | Requirement |
 |---|---|
-| Hot path / operación nueva | `#[instrument(skip(...), fields(url = %url, ...))]` con los campos que identifican la operación |
-| Camino de error | `log_scrape_error(&err, url, stage, correlation_id, "context")` — nunca un `warn!`/`eprintln!` pelado |
-| Flujo crawl/batch nuevo | Generá un `CorrelationId` en la entrada y propagalo; cada unidad de trabajo recibe un `.child()` |
-| Operación larga | Log de progreso periódico + resumen estructurado final (`total`, `succeeded`, `errors`, `duration`, `trace_id`) |
-| Spans async | `.instrument(span)` sobre futures; nunca un guard `span.enter()` cruzando un `.await` |
+| New hot path / operation | `#[instrument(skip(...), fields(url = %url, ...))]` with the fields that identify the operation |
+| Error path | `log_scrape_error(&err, url, stage, correlation_id, "context")` — never a bare `warn!`/`eprintln!` |
+| New crawl/batch flow | Generate a `CorrelationId` at the entry point and propagate it; each unit of work gets a `.child()` |
+| Long-running operation | Periodic progress log + final structured summary (`total`, `succeeded`, `errors`, `duration`, `trace_id`) |
+| Async spans | `.instrument(span)` on futures; never a `span.enter()` guard across an `.await` |
 
-- **Campos estructurados, no sopa de strings:** `tracing::info!(pages = n, url = %url, "msg")`.
-- **Correlación:** cada evento lleva un `trace_id` de 16 hex **efímero, identidad dentro de la
-  corrida** (no lo persistas ni lo unas entre corridas; la identidad durable entre corridas es
-  el UUID del `CorrelationId`). Para reconstruir una corrida: `ROOT=<16-hex root>; jq -c
-  'select(.trace_id == "$ROOT")' <file>` — el `trace_id` es de **nivel superior**, no
-  `.fields.trace_id` (ese inner sólo se puebla en el camino de error). Los registros
-  `span_close` comparten el nombre `.span`, así que los conteos por etapa tienen que excluir
-  `.record == "span_close"`.
-- **Errores user-facing en español; tracing fields y logs en inglés.**
-- **Sin backends de métricas nuevos:** emití un evento `tracing` estructurado y consultalo del
-  JSONL. `docs/src/debugging.md` y `scripts/analyze-trace.sh` tienen el recetario de queries.
-- **Snapshots deterministas:** `correlation_id`/`trace_id` son internos y van con `#[serde(skip)]`.
+- **Structured fields, not string soup:** `tracing::info!(pages = n, url = %url, "msg")`.
+- **Correlation:** every event carries a 16-hex `trace_id` that is **ephemeral, an identity
+  within the run** (do not persist it or join across runs; the durable cross-run identity is
+  the `CorrelationId` UUID). To reconstruct a run: `ROOT=<16-hex root>; jq -c
+  'select(.trace_id == "$ROOT")' <file>` — the `trace_id` is at **top level**, not
+  `.fields.trace_id` (that inner one is only populated on the error path). `span_close` records
+  share the `.span` name, so per-stage counts must exclude `.record == "span_close"`.
+- **User-facing errors in Spanish; tracing fields and logs in English.**
+- **No new metrics backends:** emit a structured `tracing` event and query it from the JSONL.
+  `docs/src/debugging.md` and `scripts/analyze-trace.sh` hold the query cookbook.
+- **Deterministic snapshots:** `correlation_id`/`trace_id` are internal and carry
+  `#[serde(skip)]`.
 
 ## 🔬 Intelligence Stack
 
-Dos herramientas complementarias. Elegí por misión, no por costumbre. **No son skills: son
-CLIs** (`codedb 0.2.5849`, `codegraph 1.6.2`) — invocalas por comando, no cargando un skill.
+Two complementary tools. Pick by mission, not by habit. **They are not skills: they are
+CLIs** (`codedb 0.2.5849`, `codegraph 1.6.2`) — invoke them as commands, not by loading a
+skill.
 
-| Momento | Herramienta | Por qué |
+| Moment | Tool | Why |
 |---|---|---|
-| "¿De qué se trata esta tarea?" — orientación inicial | **CodeDB** `context` | 1 llamada: keywords + defs de símbolos + archivos rankeados + snippets. Reemplaza 3-5 llamadas secuenciales. |
-| "Mostrame el código de X" — explorar y entender | **CodeGraph** `explore` | Devuelve el fuente verbatim + call paths + blast radius en UNA llamada. Elimina el loop grep→Read. |
-| "¿Dónde está definido X?" — lookup | **CodeDB** `word` / `symbol` | Índice invertido, O(1). |
-| "¿Quién llama a X?" — chequeo táctico | **CodeDB** `callers` | 1 round-trip: fusiona índice de palabras + scope del outline. |
-| "¿Cómo fluye X por el código?" — más profundo | **CodeGraph** `explore` / `impact` | Call paths + resumen de blast radius. |
-| Diagnósticos post-edición | `cargo check` / `cargo clippy` | codedb no tiene herramienta de diagnósticos: el compilador es el gate. |
-| Consultar un repo público (sin clone) | **DeepWiki** MCP (`read_wiki_structure`, `ask_question`) | MCP remoto aparte, registrado por el instalador de codedb. codedb es local-only. |
+| "What is this task about?" — first orientation | **CodeDB** `context` | 1 call: keywords + symbol defs + ranked files + snippets. Replaces 3-5 sequential calls. |
+| "Show me the code of X" — explore and understand | **CodeGraph** `explore` | Returns the verbatim source + call paths + blast radius in ONE call. Eliminates the grep→Read loop. |
+| "Where is X defined?" — lookup | **CodeDB** `word` / `symbol` | Inverted index, O(1). |
+| "Who calls X?" — tactical check | **CodeDB** `callers` | 1 round-trip: fuses the word index with the outline scope. |
+| "How does X flow through the code?" — deeper | **CodeGraph** `explore` / `impact` | Call paths + blast radius summary. |
+| Post-edit diagnostics | `cargo check` / `cargo clippy` | codedb has no diagnostics tool: the compiler is the gate. |
+| Query a public GitHub repo (no clone) | **DeepWiki** MCP (`read_wiki_structure`, `ask_question`) | Separate remote MCP, registered by the codedb installer. codedb itself is local-only. |
 
-**Regla de bolsillo:** CodeDB para *encontrar y leer* (táctico, O(1)); CodeGraph para
-*explorar y entender* (devuelve fuente, call paths y blast radius).
+**Pocket rule:** CodeDB to *find and read* (tactical, O(1)); CodeGraph to *explore and
+understand* (returns source, call paths and blast radius).
 
-### Gates no negociables
+### Non-negotiable gates
 
-- Antes de editar un símbolo → `CodeGraph explore` (callers + impacto). **Nunca** edites a ciegas.
-- Antes de renombrar → chequeá **todas** las usages (`codedb callers` / `CodeGraph explore`).
-- Antes de commitear → `cargo check` + `cargo clippy` + `cargo fmt --all -- --check`, y
-  releé el diff.
-- **Excepciones legítimas a `grep`/`rg`:** logs, output de CI, texto de `.env`/config, y
-  archivos fuera del índice — nunca código fuente.
+- Before editing a symbol → `CodeGraph explore` (callers + impact). **Never** edit blind.
+- Before renaming → check **all** usages (`codedb callers` / `CodeGraph explore`).
+- Before committing → `cargo check` + `cargo clippy` + `cargo fmt --all -- --check`, and
+  re-read the diff.
+- **Legitimate exceptions to `grep`/`rg`:** logs, CI output, `.env`/config text, and files
+  outside the index — never source code.
 
-### Rutas absolutas en worktrees (CRÍTICO)
+### Absolute paths in worktrees (CRITICAL)
 
-En un worktree, **ambas** herramientas necesitan el **path absoluto** del worktree. Con el
-nombre pelado resuelven al checkout principal, en silencio:
+In a worktree, **both** tools need the **absolute path** of the worktree. With the bare name
+they silently resolve to the main checkout:
 
-| Herramienta | Parámetro |
+| Tool | Parameter |
 |---|---|
 | CodeDB MCP | `project="/home/xavi/Projects/Rust/webfang-worktrees/<dir>"` |
 | CodeGraph MCP | `projectPath="/home/xavi/Projects/Rust/webfang-worktrees/<dir>"` |
 
-Nunca uses el nombre del repo pelado en un worktree: es ambiguo entre main y todos los
-worktrees.
+Never use the bare repo name in a worktree: it is ambiguous between main and every worktree.
 
-**CodeDB CLI — la raíz es POSITIONAL-FIRST:** `codedb <abs-root> <cmd>` (`usage: codedb
-[root] <command> [args...]`). Sólo `mcp` acepta el orden invertido (`codedb mcp <path>`).
-`codedb status <path>` y `codedb reindex <path>` **ignoran el path final** y operan sobre el
-proyecto del cwd con exit 0 — verificá siempre con `codedb <abs-root> status`: `root` debe
-ser el path del worktree y `head` debe coincidir con `git -C <abs-root> rev-parse --short HEAD`.
+**CodeDB CLI — the root is POSITIONAL-FIRST:** `codedb <abs-root> <cmd>` (`usage: codedb
+[root] <command> [args...]`). Only `mcp` accepts the reversed order (`codedb mcp <path>`).
+`codedb status <path>` and `codedb reindex <path>` **ignore the trailing path** and operate
+on the cwd project with exit 0 — always verify with `codedb <abs-root> status`: `root` must be
+the worktree path and `head` must match `git -C <abs-root> rev-parse --short HEAD`.
 
-## 🌳 Política de worktrees
+## 🌳 Worktree policy
 
-Cada rama activa vive en su propio directorio **hermano** del repo (nunca adentro: los
-worktrees internos rompen file watchers, ripgrep y las herramientas de código). Repositorio
-compartido de objetos `.git`; working tree, índice y HEAD aislados.
+Every active branch lives in its own **sibling** directory of the repo (never inside it: in-repo
+worktrees break file watchers, ripgrep and the code intelligence tools). The `.git` object store
+is shared; working tree, index and HEAD are isolated.
 
-### Reglas de hierro
+### Iron rules
 
-- **El CWD es la frontera absoluta.** Nunca accedas a rutas fuera de tu worktree con
-  `../<otro-worktree>/`.
-- **Un worktree por sesión.** Nunca cambies de branch a mitad de tarea: creá otro worktree.
-- **`.git/worktrees/` es estado interno de Git.** Nunca lo edites a mano: usá
+- **The CWD is the absolute boundary.** Never reach paths outside your worktree through
+  `../<other-worktree>/`.
+- **One worktree per session.** Never switch branches mid-task: create another worktree.
+- **`.git/worktrees/` is Git's internal state.** Never edit it by hand: use
   `git worktree add` / `remove` / `prune` / `repair`.
-- **Comandos prohibidos:**
-  - `git checkout`, `git switch` — cambian la branch dentro del worktree actual. Usá
-    `git worktree add`. Desde git 2.44 upstream lo exige: `git checkout -B <branch>` se niega
-    (exit 128) si la branch está en uso en otro worktree. El hatch es
-    `git checkout --ignore-other-worktrees -B <branch>` (el flag va **antes** de `-B`; después
-    se parsea como refspec y el comando igual falla). Es el mismo clase de escape que
-    `--force`: sólo con autorización humana explícita.
-  - `git stash` / `stash pop` / `stash apply` / `stash drop` — el storage (`refs/stash`) es
-    **compartido por TODOS los worktrees**: un `pop` en un worktree puede aplicar el stash de
-    otra sesión. Si necesitás apartar algo, commitealo en una branch descartable.
-  - `git worktree move`, `git worktree lock` — usá `remove` + `add`.
-  - `git worktree add --force` — saltea el guard nativo de Git que rechaza una branch ya
-    checkoutada en otro worktree. Dos agentes en la misma branch son exactamente la falla que
-    ese guard previene.
+- **Forbidden commands:**
+  - `git checkout`, `git switch` — they change the branch inside the current worktree. Use
+    `git worktree add`. Since git 2.44 upstream enforces this: `git checkout -B <branch>`
+    refuses (exit 128) if the branch is in use in another worktree. The hatch is
+    `git checkout --ignore-other-worktrees -B <branch>` (the flag goes **before** `-B`; after
+    it, the flag is parsed as a refspec and the command still fails). It is the same class of
+    escape as `--force`: explicit human authorization only.
+  - `git stash` / `stash pop` / `stash apply` / `stash drop` — the storage (`refs/stash`) is
+    **shared by ALL worktrees**: a `pop` in one worktree can apply another session's stash. If
+    you need to set something aside, commit it on a throwaway branch.
+  - `git worktree move`, `git worktree lock` — use `remove` + `add`.
+  - `git worktree add --force` — it bypasses Git's native guard that refuses a branch already
+    checked out in another worktree. Two agents on the same branch are exactly the failure that
+    guard prevents.
 
-### Placement, naming y el proxy de identidad
+### Placement, naming and the identity proxy
 
 ```text
 ~/Projects/Rust/
-├── webfang/                     # main repo (siempre en main)
-└── webfang-worktrees/           # hermanos del repo (gitignored global)
+├── webfang/                     # main repo (always on main)
+└── webfang-worktrees/           # repo siblings (globally gitignored)
     ├── feat-auth/               # branch: feat/auth
     └── fix-crawler-timeout/     # branch: fix/crawler-timeout
 ```
 
-La convención es `/ → -`: `feat/auth` → `feat-auth`. **El invariante que importa es que el
-commit aterrice en la branch prevista para la tarea o el PR.** El proxy de nombre es la
-verificación por defecto — corré esto antes de cada commit en un worktree:
+The convention is `/ → -`: `feat/auth` → `feat-auth`. **The invariant that matters is that the
+commit lands on the branch intended for the task or the PR.** The name proxy is the default
+verification — run this before every commit in a worktree:
 
 ```bash
 [ "$(basename "$PWD")" = "$(git branch --show-current | tr '/' '-')" ] || echo "MISMATCH"
 ```
 
-### Protocolo de excepción de identidad
+### Identity-exception protocol
 
-Un proxy fallido **no** prueba que estés en el worktree equivocado — pero el nombre local de
-la branch tampoco prueba que estés en el correcto. Commitear bajo un mismatch de
-directorio/nombre sólo se permite si se cumplen **las tres**:
+A failed proxy does **not** prove you are in the wrong worktree — but the local branch name
+also does not prove you are in the right one. Committing under a directory/name mismatch is
+allowed only when **all three** hold:
 
-1. **Expectativa anclada externamente.** La branch prevista se conoce por una fuente fija
-   fuera de este worktree *antes* de commitear: metadata de PR
-   (`gh pr view --json headRefOid,headRefName`), metadata de tarea, ref upstream, o
-   instrucción humana explícita. Una branch que sólo existe adentro del worktree no prueba
-   nada.
-2. **Binding verificable.** El worktree está observablemente atado a esa branch:
-   `git symbolic-ref --short HEAD` y `git worktree list` coinciden (path → branch). Con
-   upstream, `git rev-parse @{u}` es señal extra.
-3. **Ascendencia, no igualdad.** El HEAD pre-commit tiene que estar en o descendiente del
-   tip/base esperado — un check estricto `HEAD == tip` se rompe después del primer commit de
-   una secuencia, así que la ascendencia es el test correcto.
+1. **Externally anchored expectation.** The intended branch is known from a source fixed outside
+   this worktree *before* committing: PR metadata
+   (`gh pr view --json headRefOid,headRefName`), task metadata, an upstream ref, or an explicit
+   human instruction. A branch that only exists inside the worktree proves nothing.
+2. **Verifiable binding.** The worktree is observably attached to that branch:
+   `git symbolic-ref --short HEAD` and `git worktree list` agree (path → branch). With an
+   upstream, `git rev-parse @{u}` is an extra signal.
+3. **Ancestry, not equality.** The pre-commit HEAD must be at or a descendant of the expected
+   tip/base — a strict `HEAD == tip` check breaks after the first commit of a sequence, so
+   ancestry is the correct test.
 
-Cada commit de excepción registra la evidencia en el body (trailer compacto):
+Every exception commit records the evidence in its body (compact trailer):
 
 ```text
 Worktree-Identity-Exception: directory-name mismatch
@@ -419,221 +416,223 @@ Expected-Head: <sha>
 Evidence: <external source> + git symbolic-ref + git worktree list
 ```
 
-Si alguna condición falla, MISMATCH es un STOP duro.
+If any condition fails, MISMATCH is a hard stop.
 
-### Bootstrap por worktree
+### Per-worktree bootstrap
 
-El `.envrc` es **por worktree**, nunca compartido, y se escribe **desde el nombre del propio
-árbol** (nunca derivándolo del de main: un `sed` sobre el de main dejó un
-`CARGO_TARGET_DIR` perfectamente válido apuntando al target de MAIN, en silencio). Son
-**exactamente 5 líneas**:
+The `.envrc` is **per worktree**, never shared, and it is written **from the tree's own
+name** (never derived from main's: a `sed` over main's left a perfectly valid
+`CARGO_TARGET_DIR` pointing at MAIN's target, silently). It is **exactly 5 lines**:
 
 ```bash
 TREE="$(basename "$PWD")"
 cat > .envrc <<EOF
-export CARGO_TARGET_DIR=\$HOME/.cache/cargo-target/\$TREE
+export CARGO_TARGET_DIR=\$HOME/.cache/cargo-target/$TREE
 export CARGO_INCREMENTAL=0
 unset RUSTC_WRAPPER
-export CARGO_LLVM_COV_TARGET_DIR=\$HOME/.cache/cargo-target/\$TREE-llvm-cov
+export CARGO_LLVM_COV_TARGET_DIR=\$HOME/.cache/cargo-target/$TREE-llvm-cov
 PATH_add \$HOME/.local/share/mbx/bin
 EOF
 direnv allow
-cp ~/Projects/Rust/webfang/.env .        # .env es gitignored
+cp ~/Projects/Rust/webfang/.env .        # .env is gitignored
 ```
 
-Después: indexá el worktree (`codegraph init`; `codedb "$PWD" reindex && codedb "$PWD"
-status`) y, opcionalmente, `bash scripts/seed_target.sh` (siembra un target ya compilado;
-`cold` es un resultado normal, `refused` es el único que no es un build). El detalle
-operativo, los errores que ya Pagaron y el contrato de seeds: **obs #2307**.
+`$TREE` is substituted when the file is written; only `$HOME` stays literal. A literal
+`$TREE` left in the file makes the isolation guard reject the build with
+`reason=unregistered-target`.
 
-**Sin los dos índices, el agente está ciego en el worktree**: las herramientas resuelven al
-checkout principal o devuelven vacío. Reiniciá la conexión MCP después de indexar (el server
-cachea el registry al arrancar).
+Then: index the worktree (`codegraph init`; `codedb "$PWD" reindex && codedb "$PWD" status`)
+and, optionally, `bash scripts/seed_target.sh` (seeds an already-compiled target; `cold` is a
+normal result, `refused` is the only one that is not a build). The operational detail, the
+mistakes already paid for and the seed contract: **obs #2307**.
 
-### Commits frecuentes (obligatorio en worktrees)
+**Without both indexes the agent is blind in the worktree**: the tools resolve to the main
+checkout or return nothing. Restart the MCP connection after indexing (the server caches the
+registry at startup).
 
-Commiteá **después de cada paso completado**: un `git mv`, un replace masivo, un
-`cargo check` que pasa, los tests en verde. El trabajo sin commitear en un worktree se puede
-perder en silencio si perdés contexto o ocurre un checkout. El patrón completo (qué va en un
-commit y qué no) está en el skill `work-unit-commits`.
+### Frequent commits (mandatory in worktrees)
 
-### Limpieza post-merge (el merge no está terminado hasta que el repo queda listo)
+Commit **after every completed step**: a `git mv`, a bulk replace, a passing `cargo check`, the
+tests in green. Uncommitted work in a worktree can be lost silently if you lose context or a
+checkout happens. The full pattern (what goes into a commit and what does not) is in the
+`work-unit-commits` skill.
 
-Desde el repo **main**:
+### Post-merge cleanup (the merge is not done until the repo is ready)
 
-1. **Verificá que el merge entró** — `gh pr view <N> --json state,mergedAt,mergeCommit`;
-   `state` debe ser `MERGED`.
-2. **Sync de main (ff-only)** — `git fetch origin && git merge --ff-only origin/main`. Si
-   `--ff-only` falla, main divergió: **STOP** e investigá, no lo papelees.
-3. **Sacá el worktree de la misión** — `git worktree remove ~/Projects/Rust/webfang-worktrees/<dir>`.
-4. **Borrá la branch local** — `git branch -D <type>/<desc>` (el squash reescribe historia, así
-   que el `-d` seguro se niega; el check del paso 1 es tu red). Nunca toques `main`,
-   `gh-pages`, `backup/*` ni la branch actual.
-5. **Purgá la metadata huérfana** — `git worktree prune`.
-6. **Borrá el target dir de la misión** — por **ownership**: el directorio que vos nombraste
-   (su basename exacto, o el nombre custom que exportaste). **Nunca** enumeres el padre
-   cazando candidatos extra: agents nombran sus targets libremente y git nunca ve esos
-   nombres. Re-chequeá con **ventana móvil** (conteo de archivos dos veces a 60 s con delta 0,
-   más cero `cargo`/`rustc`/`cargo-nextest` vivos: `pgrep -x`, un nombre por llamada).
-7. **Verificá el handoff** — `git worktree list` y `git branch -vv` sin restos **de la misión
-   que mergeaste**, y `git status --short` vacío. Otras worktrees y branches son de otras
-   misiones: su presencia no es un handoff fallido ni es tu negocio.
+From the **main** repo:
 
-### Recursos compartidos vs por-worktree
+1. **Verify the merge landed** — `gh pr view <N> --json state,mergedAt,mergeCommit`; `state`
+   must be `MERGED`.
+2. **Sync main (ff-only)** — `git fetch origin && git merge --ff-only origin/main`. If
+   `--ff-only` fails, main diverged: **STOP** and investigate, do not paper over it.
+3. **Remove the mission's worktree** — `git worktree remove ~/Projects/Rust/webfang-worktrees/<dir>`.
+4. **Delete the local branch** — `git branch -D <type>/<desc>` (squash rewrites history, so the
+   safe `-d` refuses; the step-1 check is your safety net). Never touch `main`, `gh-pages`,
+   `backup/*` or the current branch.
+5. **Prune orphaned metadata** — `git worktree prune`.
+6. **Delete the mission's target dir** — by **ownership**: the directory you named (its exact
+   basename, or the custom name you exported). **Never** enumerate the parent hunting for
+   extra candidates: agents name their targets freely and git never sees those names.
+   Re-check with a **moving window** (file count sampled twice 60 s apart with delta 0, plus
+   zero live `cargo`/`rustc`/`cargo-nextest`: `pgrep -x`, one name per call).
+7. **Verify the handoff** — `git worktree list` and `git branch -vv` with no leftovers **of the
+   mission you merged**, and `git status --short` empty. Other worktrees and branches belong to
+   other missions: their presence is neither a failed handoff nor your business.
 
-| Recurso | ¿Compartido? | Acción |
+### Shared vs per-worktree resources
+
+| Resource | Shared? | Action |
 |---|---|---|
-| Store de objetos `.git/` | ✅ | automático |
-| Git config, hooks | ✅ | automático |
-| `Cargo.lock` | ✅ | vía Git |
-| `target/` | ❌ | `.envrc` + `direnv allow` por worktree; lo exige `scripts/ci_fast_gate.sh` |
-| `.envrc` | ❌ | se escribe por worktree; gitignored |
-| `.env` | ❌ | `cp` desde main |
-| Índices `.codegraph/` y `codedb.snapshot` | ❌ | indexar por worktree |
-| Seeds (`~/.cache/cargo-target/seeds/`) | ✅ read-only | los consume `seed_target.sh`; nunca los escribe un worktree |
-| Quarantine (`~/.cache/cargo-target/quarantine/`) | ⚠️ | objetos retirados explícitamente: **jamás** un build target, nunca se consume ni se limpia en un bootstrap normal |
-| `refs/stash` | ⚠️ **DANGER** | **NUNCA** `git stash` |
+| `.git/` object store | ✅ | automatic |
+| Git config, hooks | ✅ | automatic |
+| `Cargo.lock` | ✅ | via Git |
+| `target/` | ❌ | `.envrc` + `direnv allow` per worktree; required by `scripts/ci_fast_gate.sh` |
+| `.envrc` | ❌ | written per worktree; gitignored |
+| `.env` | ❌ | `cp` from main |
+| `.codegraph/` and `codedb.snapshot` indexes | ❌ | index per worktree |
+| Seeds (`~/.cache/cargo-target/seeds/`) | ✅ read-only | consumed by `seed_target.sh`; never written by a worktree |
+| Quarantine (`~/.cache/cargo-target/quarantine/`) | ⚠️ | explicitly retired objects: **never** a build target, never consumed nor cleaned during a normal bootstrap |
+| `refs/stash` | ⚠️ **DANGER** | **NEVER** `git stash` |
 
-### Namespace reservado `~/.cache/cargo-target/`
+### Reserved `~/.cache/cargo-target/` namespace
 
 ```text
 ~/.cache/cargo-target/
-├── <worktree-target>/   ← build state de un owner
-├── seeds/               ← RESERVADO: store de seeds publicados
-└── quarantine/          ← RESERVADO: objetos retirados, nunca un build target
+├── <worktree-target>/   ← build state owned by one agent
+├── seeds/               ← RESERVED: published seed store
+└── quarantine/          ← RESERVED: retired objects, never a build target
 ```
 
-`seeds/` y `quarantine/` son namespaces reservados y jamás pueden ser el
-`CARGO_TARGET_DIR` de un worktree. No inventes categorías nuevas (`scratch/`, `shared/`,
-`cache/`, `tmp/`): el guard rechaza tres identidades conocidas y acepta cualquier otra, así
-que un nombre que nadie pensó entra por la puerta de atrás. El denylist no frena la
-invención; el namespace explícito sí.
+`seeds/` and `quarantine/` are reserved namespaces and can never be a worktree's
+`CARGO_TARGET_DIR`. Do not invent new categories (`scratch/`, `shared/`, `cache/`, `tmp/`): the
+guard rejects three known identities and accepts anything else, so a name nobody thought of
+gets in through the back door. A denylist does not stop invention; the explicit namespace does.
 
-### Contaminación
+### Contamination
 
-Si detectás que operaste fuera de tu worktree, o que un `git stash pop` aplicó cambios
-inesperados:
+If you detect that you operated outside your worktree, or that a `git stash pop` applied
+unexpected changes:
 
-1. **STOP** de inmediato en todas las operaciones.
-2. **NO** intentes limpiar: ni `git reset`, ni force-push, ni parcheo manual.
-3. Reportá exactamente: *"Contamination detected. Worktree: `<path>`. Intruder commit:
+1. **STOP** every operation immediately.
+2. Do **NOT** try to clean up: no `git reset`, no force-push, no manual patching.
+3. Report exactly: *"Contamination detected. Worktree: `<path>`. Intruder commit:
    `<hash>` or unexpected stash applied. Awaiting human instructions."*
-4. Esperá autorización humana explícita antes de cualquier acción correctiva.
+4. Wait for explicit human authorization before any corrective action.
 
-### Historia pusheada es inmutable
+### Pushed history is immutable
 
-Una vez que un commit existe en `origin/<branch>`, su SHA es público y cualquier otro
-worktree o corrida de CI puede tenerlo. Reescribirlo (`git reset HEAD~N` + recommit)
-desincroniza local de remoto, y la única vuelta es un force-push — que el harness
-**hard-deny** sin ruta de aprobación. La corrección va **encima**, como commit nuevo.
+Once a commit exists on `origin/<branch>`, its SHA is public and any other worktree or CI run
+may hold it. Rewriting it (`git reset HEAD~N` + recommit) desynchronizes local from remote, and
+the only way back is a force-push — which the harness **hard-denies** with no approval path.
+The correction lands **on top**, as a new commit.
 
-| Situación | ❌ | ✅ |
+| Situation | ❌ | ✅ |
 |---|---|---|
-| Commit pusheado defectuoso | `git reset HEAD~N` + recommit | commit nuevo que describe el fix |
-| Commit pusheado con mensaje mejorable | `git commit --amend` sobre historia pusheada | commit nuevo (o `--amend` sólo si no está pusheado) |
-| Commit **no** pusheado | — | `git commit --amend` |
+| Pushed commit is defective | `git reset HEAD~N` + recommit | a new commit that describes the fix |
+| Pushed commit needs a better message | `git commit --amend` over pushed history | a new commit (or `--amend` only if it is not pushed) |
+| Commit **not** pushed | — | `git commit --amend` |
 
-⚠️ La puerta es asimétrica: `git reset --hard` está hard-deny, pero un `git reset HEAD~N`
-pelado no está gateado. Podés recorrer una reescritura con libertad y descubrir recién al
-final que el push está bloqueado.
+⚠️ The gate is asymmetric: `git reset --hard` is hard-denied, but a bare `git reset HEAD~N` is
+not gated at all. You can walk into a rewrite freely and only discover at the end that the push
+is blocked.
 
-## 🏷️ Branching, releases y líneas de soporte
+## 🏷️ Branching, releases and support lines
 
-- **Taxonomía — sólo estas existen:** `main` (desarrollo; bases `feat/*`, `fix/*`,
+- **Taxonomy — only these exist:** `main` (development; bases `feat/*`, `fix/*`,
   `refactor/*`, `perf/*`, `docs/*`, `test/*`, `chore/*`, + `ci/*`, `build/*`, `style/*`,
-  `revert/*`) · `release/X.Y` (estabilización temporal de un MINOR/MAJOR, cortada por el
-  maintainer desde un SHA explícito de main; acepta sólo `fix/*`; se borra al shippear
-  `vX.Y.0`; un PATCH nunca la crea) · `support/X.Y` (línea de mantenimiento, creada on
-  demand desde el último tag de la línea cuando necesita un patch mientras main está
-  adelante; acepta sólo `hotfix/*`; se borra al EOL — pero `support.json` es la fuente de
-  verdad, no la branch) · `hotfix/*` (DEBE basarse en `support/X.Y`; base de PR =
-  `support/X.Y`, nunca main).
-- **El estado de las líneas no está acá.** Leé `.github/support.json` (jq). El modelo
-  completo, el routing de hotfixes y los scripts de gobernanza: **obs #2308**.
-- **Operaciones prohibidas (review-blocking, enforced en CI):** mergear `main` INTO
-  `support/*` · cherry-pick de `main` → `support/*` sin issue aprobada · taggear `vX.Y.Z+1`
-  desde `main` mientras está adelante · hotfix PR con base `main` · crear `support/*` "por
-  las dudas" · editar `SUPPORT.md` a mano · correr `release-plz` sobre una branch de soporte
-  · batchear PRs con distinto `baseRefName` (archivos disjuntos no alcanza).
-- **Versionado:** los bumps de versión son actos de release, nunca parte de un commit de
-  feature/fix. Los pins inter-crate quedan en `^old`; sólo se mueve `[workspace.package]`.
-  `release-plz` gobierna `main`; en `support/*` el PATCH es manual, dentro del hotfix PR.
+  `revert/*`) · `release/X.Y` (temporary stabilization for a MINOR/MAJOR, cut by the maintainer
+  from an explicit main SHA; accepts only `fix/*`; deleted when `vX.Y.0` ships; a PATCH never
+  creates one) · `support/X.Y` (maintenance line, created on demand from the line's latest tag
+  when it needs a patch while main is ahead; accepts only `hotfix/*`; deleted at EOL — but
+  `support.json` is the source of truth, not the branch) · `hotfix/*` (MUST be based on
+  `support/X.Y`; PR base = `support/X.Y`, never main).
+- **The state of the lines is not here.** Read `.github/support.json` (jq). The full model, the
+  hotfix routing and the governance scripts: **obs #2308**.
+- **Forbidden operations (review-blocking, enforced in CI):** merging `main` INTO
+  `support/*` · cherry-picking `main` → `support/*` without an approved issue · tagging
+  `vX.Y.Z+1` from `main` while it is ahead · a hotfix PR with base `main` · creating
+  `support/*` "just in case" · editing `SUPPORT.md` by hand · running `release-plz` on a support
+  branch · batching PRs with different `baseRefName` (disjoint files is not enough).
+- **Versioning:** version bumps are release acts, never part of a feature/fix commit.
+  Inter-crate pins stay at `^old`; only `[workspace.package]` moves. `release-plz` governs
+  `main`; on `support/*` the PATCH is manual, inside the hotfix PR.
 
-## 🔒 Permisos y límites
+## 🔒 Permissions and limits
 
-### Allowed sin preguntar
+### Allowed without asking
 
-- Leer cualquier archivo del repo.
+- Read any file in the repo.
 - `cargo check`, `cargo clippy`, `cargo fmt`, `cargo nextest run`.
-- Las dos herramientas de intelligence (CodeDB, CodeGraph).
-- Editar dentro de `crates/`, `crates/*/tests/`, `benches/`, `examples/`.
-- Gestión de worktrees: `git worktree add`, `remove`, `list`, `prune`.
-- Inspección cross-branch de sólo lectura: `git show <branch>:<file>`, `git log <branch>`.
+- Both intelligence tools (CodeDB, CodeGraph).
+- Edit inside `crates/`, `crates/*/tests/`, `benches/`, `examples/`.
+- Worktree management: `git worktree add`, `remove`, `list`, `prune`.
+- Read-only cross-branch inspection: `git show <branch>:<file>`, `git log <branch>`.
 
-### Preguntar primero
+### Ask first
 
-- Agregar o quitar dependencias (`Cargo.toml`).
-- Cambiar feature flags o perfiles.
-- Borrar archivos.
-- `cargo build --release` o `cargo llvm-cov`.
-- Modificar CI/CD (`.github/`).
-- Archivos nuevos fuera de `crates/`, `crates/*/tests/`, `benches/`, `examples/`.
-- Mergear un PR (el merge lo decide el maintainer).
+- Adding or removing dependencies (`Cargo.toml`).
+- Changing feature flags or profiles.
+- Deleting files.
+- `cargo build --release` or `cargo llvm-cov`.
+- Modifying CI/CD (`.github/`).
+- New files outside `crates/`, `crates/*/tests/`, `benches/`, `examples/`.
+- Merging a PR (the maintainer decides the merge).
 
-### Nunca
+### Never
 
-- Commitear secretos, `.env` o credenciales.
-- `.unwrap()` en producción.
-- Force-push a main.
-- Modificar `target/`, `dist/`, `build/`.
-- `git checkout` / `git switch` para cambiar de branch (usá `git worktree add`).
-- `git stash` en cualquier forma.
-- Acceder a worktrees hermanos por paths relativos (`../feat-auth/...`).
-- Commitear en un worktree con mismatch de branch/directorio sin el protocolo de excepción.
-- Usar el nombre pelado del repo para las herramientas de intelligence en un worktree.
-- Reescribir historia pusheada (`git reset` / `rebase` sobre commits que ya están en
+- Commit secrets, `.env` or credentials.
+- `.unwrap()` in production.
+- Force-push to main.
+- Modify `target/`, `dist/`, `build/`.
+- `git checkout` / `git switch` to change branches (use `git worktree add`).
+- `git stash` in any form.
+- Reach sibling worktrees through relative paths (`../feat-auth/...`).
+- Commit in a worktree with a branch/directory mismatch without the exception protocol.
+- Use the bare repo name for the intelligence tools in a worktree.
+- Rewrite pushed history (`git reset` / `rebase` over commits already on
   `origin/<branch>`).
 
-### Hard-deny: no hay ruta de aprobación
+### Hard-deny: there is no approval path
 
-Algunas clases de comando abren un diálogo que el humano aprueba. Otras son **hard-deny** y
-no muestran diálogo nunca. La autorización conversacional **no puede** cambiar una decisión
-hard-deny, porque no hay diálogo que apretar.
+Some command classes open a dialog the human approves. Others are **hard-deny** and never show
+a dialog. Conversational authorization **cannot** change a hard-deny decision, because there is
+no dialog to press.
 
-| Clase | Ejemplos |
+| Class | Examples |
 |---|---|
-| **Confirm** (diálogo → aprueba → corre) | `git push`, `git rebase`, `git branch -D` forzado, `npm publish`, `pi remove` |
-| **Hard-deny** (nada es aprobable) | force-push (`--force`, `--force-with-lease`, `-f`), `git reset --hard`, `git clean -f -d`, `rm -rf /` o `~`, `chmod -R 777`, `chown -R` |
+| **Confirm** (dialog → approve → runs) | `git push`, `git rebase`, forced `git branch -D`, `npm publish`, `pi remove` |
+| **Hard-deny** (nothing is approvable) | force-push (`--force`, `--force-with-lease`, `-f`), `git reset --hard`, `git clean -f -d`, `rm -rf /` or `~`, `chmod -R 777`, `chown -R` |
 
-Cuando un hard-deny bloquea: **no re-preguntes el permiso en conversación** (es estructuralmente
-inútil y quema un turno); **no rutees alrededor del patrón** partiendo el comando,
-reordenando flags o envolviéndolo en un script (la lista es deliberadamente no-configurable);
-**reportá el bloque una vez**, con el comando exacto para el humano y con un equivalente no
-destructivo que vos sí puedas ejecutar.
+When a hard-deny blocks: **do not re-ask for permission in conversation** (it is structurally
+useless and burns a turn); **do not route around the pattern** by splitting the command,
+reordering flags or wrapping it in a script (the list is deliberately non-configurable);
+**report the block once**, with the exact command for the human and a non-destructive
+equivalent you can execute yourself.
 
-## 📝 Commits, PRs y CI
+## 📝 Commits, PRs and CI
 
-**Formato:** `type(scope): description` — type: `feat` | `fix` | `refactor` | `test` | `docs` |
+**Format:** `type(scope): description` — type: `feat` | `fix` | `refactor` | `test` | `docs` |
 `perf` | `chore` | `revert` — scope: `cli` | `crawler` | `ai` | `mcp` | `exporter` | `http` |
 `domain` | `infra`.
 
-**Los 5 gates de PR** (job `Validate PR metadata`, required, sin `continue-on-error`):
+**The 5 PR gates** (job `Validate PR metadata`, required, no `continue-on-error`):
 
-1. **Issue vinculada** — el body debe traer `Closes #N` / `Fixes #N` / `Resolves #N`. Para un
-   slice parcial de un umbrella: `Closes part of #N` (pasa validación y **no** cierra el
-   umbrella). Un `Closes #N` pelado contra un umbrella con scope restante lo auto-cierra a
-   mitad de plan.
-2. **La issue vinculada lleva `status:approved`** antes de abrir el PR. El label es
-   protegido: **nunca** te auto-apruebes — pedí la aprobación del maintainer. Si el PR se
-   abrió antes del label, la validación no se re-evalúa sola: `gh run rerun <id> --failed`.
-3. **Exactamente un label `type:*`.** El vocabulario de labels **no** es el de commit types:
+1. **Linked issue** — the body must carry `Closes #N` / `Fixes #N` / `Resolves #N`. For a
+   partial slice of an umbrella: `Closes part of #N` (it passes validation and **does not**
+   close the umbrella). A bare `Closes #N` against an umbrella with remaining scope auto-closes
+   it mid-plan.
+2. **The linked issue carries `status:approved`** before the PR is opened. The label is
+   protected: **never** self-approve — request the maintainer's approval. If the PR was opened
+   before the label landed, validation does not re-evaluate on its own: `gh run rerun <id>
+   --failed`.
+3. **Exactly one `type:*` label.** The label vocabulary is **not** the commit-type vocabulary:
    `feat`→`type:feature`, `fix`→`type:bug`, `refactor`→`type:refactor`, `docs`→`type:docs`,
    `chore`→`type:chore`, breaking→`type:breaking-change`, tests→`type:testing`.
-4. **Branch conventional** — la regex vive en `pr-validation.yml`; no la reescribas acá (una
-   cita de regex se pudre: la fuente de verdad es el workflow).
-5. **Sin atribución de IA** en los commits del PR.
+4. **Conventional branch name** — the regex lives in `pr-validation.yml`; do not restate it
+   here (a regex citation rots: the workflow is the source of truth).
+5. **No AI attribution** in the PR's commits.
 
-**Pre-commit (tiene que replicar CI exactamente):**
+**Pre-commit (must replicate CI exactly):**
 
 ```bash
 cargo check && cargo clippy --all-targets --all-features -- -D warnings \
@@ -642,99 +641,101 @@ cargo check && cargo clippy --all-targets --all-features -- -D warnings \
   && env "RUSTDOCFLAGS=-D warnings" cargo doc --workspace --all-features --no-deps
 ```
 
-- El `--all-features` es una **bandera de seguridad**: hay código gated por `chromium` cuyos
-  únicos consumidores están tras `#[cfg(feature = "chromium")]`, y correr clippy sin él hace
-  que esos imports parezcan muertos — `clippy --fix` los **borraría**, y `cargo check` con
-  features default igual pasa. Nunca corras `clippy --fix` contra un set más angosto.
-- `cargo fmt` pelado es un **fixer** (reescribe el árbol y sale 0 haya cambiado o no): un
-  verde de eso no es evidencia. Verificá con `--check` y commiteá el resultado.
-- El cuarto comando replica el job `doc-quality` de CI (niega lints de rustdoc). `check`,
-  `clippy` y `fmt` nunca documentan un item.
+- `--all-features` is a **safety flag**: there is `chromium`-gated code whose only consumers sit
+  behind `#[cfg(feature = "chromium")]`, and running clippy without it makes those imports
+  look dead — `clippy --fix` would **delete** them, and `cargo check` with default features
+  still passes. Never run `clippy --fix` against a narrower feature set.
+- A bare `cargo fmt` is a **fixer** (it rewrites the tree and exits 0 whether it changed
+  anything or not): green from it is not evidence. Verify with `--check` and commit the result.
+- The fourth command replicates CI's `doc-quality` job (it denies rustdoc lints). `check`,
+  `clippy` and `fmt` never document an item.
 
-**Checklist antes de abrir el PR:**
+**Checklist before opening the PR:**
 
 - [ ] `bash scripts/ci_fast_gate.sh` GREEN
-- [ ] `cargo check` + `cargo clippy --all-targets --all-features` (comando completo arriba) + `cargo fmt --all -- --check`
-- [ ] `cargo doc` con `RUSTDOCFLAGS=-D warnings` si cambió código de biblioteca
-- [ ] `cargo nextest run` (al menos el módulo afectado)
-- [ ] `git diff --stat main...HEAD` revisado: sólo los símbolos/archivos esperados
-- [ ] Errores user-facing en español; los items públicos nuevos con doc comments
-- [ ] Exactamente un label `type:*` + issue vinculada **con** `status:approved` + branch conventional
-- [ ] `CHANGELOG.md` **no** tocado por este PR
-- [ ] Worktree verificado: `git branch --show-current` coincide con el directorio
-- [ ] Ningún `git checkout`/`switch`/`stash` en la sesión
+- [ ] `cargo check` + `cargo clippy --all-targets --all-features` (full command above) + `cargo fmt --all -- --check`
+- [ ] `cargo doc` with `RUSTDOCFLAGS=-D warnings` if library code changed
+- [ ] `cargo nextest run` (at least the affected module)
+- [ ] `git diff --stat main...HEAD` reviewed: only the expected symbols/files changed
+- [ ] User-facing errors in Spanish; new public items carry doc comments
+- [ ] Exactly one `type:*` label + linked issue **with** `status:approved` + conventional branch
+- [ ] `CHANGELOG.md` **not** touched by this PR
+- [ ] Worktree verified: `git branch --show-current` matches the directory
+- [ ] No `git checkout`/`switch`/`stash` during the session
 
-**Merge:** `scripts/merge-when-green.sh <PR>` (squash por defecto; `--merge` para batches y
-**obligatorio** cuando el PR declara breaking change). **Nunca** uses `--auto` (no está
-habilitado en este repo). El detalle de los guards, el batching y las excepciones:
-**obs #2309** y `docs/merge-queue-manual.md`.
+**Merge:** `scripts/merge-when-green.sh <PR>` (squash by default; `--merge` for batches and
+**mandatory** when the PR declares a breaking change). **Never** use `--auto` (it is not
+enabled in this repo). The detail of the guards, the batching and the exceptions:
+**obs #2309** and `docs/merge-queue-manual.md`.
 
-**Hooks y verificación:** el `pre-commit` y el `pre-push` consultan el gate de review; en un
-clone nuevo hay que activar el wiring con `git config core.hooksPath scripts/githooks`. Para
-esperar CI preferí el patrón no bloqueante (`gh run list --workflow=ci.yml …`) y nunca
-`gh run watch` bajo un timeout corto; un `git push` que dio timeout no implicó que falló
-(verificá con `git ls-remote`). Detalle: **obs #2316**.
+**Hooks and verification:** the `pre-commit` and `pre-push` consult the review gate; on a fresh
+clone you must enable the wiring with `git config core.hooksPath scripts/githooks`. To wait
+for CI prefer the non-blocking pattern (`gh run list --workflow=ci.yml …`) and never
+`gh run watch` under a short timeout; a `git push` that timed out did not necessarily fail
+(verify with `git ls-remote`). Detail: **obs #2316**.
 
-**No hay PRs apiladas en este repo.** `scripts/check-topology.sh` sólo admite los pares
-head-prefix → base de su tabla, y **ningún head prefix de feature puede apuntar a otra branch
-de trabajo** (sí están admitidos `fix/*` → `release/X.Y` y `hotfix/*` → `support/X.Y`, que son
-líneas versionadas, no branches de trabajo). La vía que funciona es **entrega secuencial**: slice 1 como PR normal sobre `main` →
-merge → slice 2 desde el `main` nuevo → PR normal → repetir. Nunca retargetees un PR abierto
-a una branch de trabajo para "achicar el diff": ese movimiento volvió inmergeable un PR sano
-una vez, y rehacer sobre `main` siempre está disponible y siempre es legal.
+**There are no stacked PRs in this repo.** `scripts/check-topology.sh` only admits the
+head-prefix → base pairs of its table, and **no feature head prefix may target another
+working branch** (`fix/*` → `release/X.Y` and `hotfix/*` → `support/X.Y` are admitted, because
+those are versioned lines, not working branches). The path that works is **sequential
+delivery**: slice 1 as a normal PR on top of `main` → merge → slice 2 from the new `main` →
+normal PR → repeat. Never retarget an open PR onto a working branch to "shrink the diff": that
+move made a healthy PR unmergeable once, and rebuilding on `main` is always available and always
+legal.
 
-## 🧾 Revisión nativa (RDD)
+## 🧾 Native review (RDD)
 
-La revisión nativa es una **vista externa**, nunca una autorización de entrega: después del
-acknowledgement, commit / push / PR / release siguen bajo política ordinaria del repo.
+The native review is an **outside view**, never a delivery authorization: after the
+acknowledgement, commit / push / PR / release stay under ordinary repository policy.
 
-- El **candidato** es un slice revisable — un commit work-unit o un slice de PR. Nunca un TODO,
-  nunca la branch acumulada.
-- El ciclo completo (assess → status → start → consent → collect → capture → acknowledge), las
-  4 lentes, los envelopes de fallo y las vías de recuperación: **obs #2213** y el skill
-  `rdd-defect-workflow`.
-- El **consentimiento es por candidato**, no es el kill switch del switch global. Nunca
-  fabricar una aprobación ni re-habilitar el switch por el usuario.
+- The **candidate** is one reviewable slice — a work-unit commit or a PR slice. Never a TODO,
+  never the accumulated branch.
+- The full cycle (assess → status → start → consent → collect → capture → acknowledge), the
+  4 lenses, the failure envelopes and the recovery paths: **obs #2213** and the
+  `rdd-defect-workflow` skill.
+- **Consent is per candidate**, it is not the global switch's kill switch. Never fabricate an
+  approval and never re-enable the switch for the user.
 
-## 🗺️ Skills y CLIs
+## 🗺️ Skills and CLIs
 
-- **Índice de skills:** `.atl/skill-registry.md` — autogenerado **por árbol** y gitignored:
-  no existe en un clone nuevo hasta que corras `gentle-ai skill-registry refresh` en ese árbol.
-  Es un **índice** para delegadores: el `SKILL.md` es la fuente de verdad y hay que **inyectar
-  paths exactos**, no resúmenes. El registry saltea `sdd-*`, `_shared` y `skill-registry` por
-  contrato.
-- **CodeDB y CodeGraph son CLIs, no skills** — ver § Intelligence Stack.
-- Skills relevantes (el scope lo define el registry, no este archivo): `rust-skills` (265
-  reglas / 26 categorías; prefix por categoría: `own-`, `err-`, `async-`, `api-`, `test-`, …),
+- **Skill index:** `.atl/skill-registry.md` — generated **per tree** and gitignored: it does not
+  exist in a fresh clone until you run `gentle-ai skill-registry refresh` in that tree. It is
+  an **index** for delegators: the `SKILL.md` is the source of truth and you must **inject
+  exact paths**, not summaries. The registry skips `sdd-*`, `_shared` and `skill-registry` by
+  contract.
+- **CodeDB and CodeGraph are CLIs, not skills** — see § Intelligence Stack.
+- Relevant skills (the registry defines the scope, not this file): `rust-skills` (265 rules /
+  26 categories; category prefixes: `own-`, `err-`, `async-`, `api-`, `test-`, …),
   `branch-pr`, `work-unit-commits`, `chained-pr`, `rdd-defect-workflow`,
-  `cognitive-doc-design` (scope user) y `codebase-refactoring`, `dry-refactoring`, `jscpd`,
-  `webfang-architecture` (scope repo).
-- **Cada delegación a un subagente debe incluir:** los paths de skills a leer, el mandato de
-  intelligence (explorar impacto antes de editar; `cargo check` antes de devolver), los
-  comandos de verificación exactos, y el path absoluto del worktree.
+  `cognitive-doc-design` (user scope) and `codebase-refactoring`, `dry-refactoring`, `jscpd`,
+  `webfang-architecture` (repo scope).
+- **Every delegation to a subagent must include:** the skill paths to read, the intelligence
+  mandate (explore impact before editing; `cargo check` before returning), the exact
+  verification commands, and the absolute worktree path.
 
-## 💾 Engram (uso correcto)
+## 💾 Engram (correct usage)
 
-El server de Engram resuelve la sesión activa desde el working directory. Con varias
-sesiones de agente concurrentes en este repo, `mem_save` / `mem_judge` pueden fallar con
-`multiple active runtime sessions match the current project and directory`.
+The Engram server resolves the active session from the working directory. With several
+concurrent agent sessions in this repo, `mem_save` / `mem_judge` can fail with `multiple
+active runtime sessions match the current project and directory`.
 
-- **Nunca inventes un `session_id`.** Registrá uno con `mem_session_start` (ID explícito y
-  único) y pasá ese mismo `session_id` a cada `mem_save` / `mem_judge` de la sesión.
-- **Cerrá la sesión al terminar** (`mem_session_end(id, summary)`). Desde engram v2.1.0 cada
-  registro escribe un lease de runtime de 30 minutos, y un lease expirado queda excluido de
-  la resolución: una sesión cuyo runtime nunca renueva deja de ser candidata **por sí sola**,
-  30 minutos después de su última renovación. Cerrar antes sólo importa mientras el runtime
-  sigue vivo.
-- Si `mem_save` devuelve `judgment_required: true`, juzgá **cada** candidato con **su**
-  `judgment_id` (el de `candidates[]`), nunca con el de nivel superior.
-- Ante **cualquier** error de engram, corré `engram --help` primero (después
-  `engram <cmd> --help` para el comando que falló) antes de reintentar o inventar flags. El
-  CLI es el fallback cuando el MCP falla: `engram save`, `engram search`, `engram context`.
-- Diagnóstico de la colisión de sesiones:
-  `engram doctor --check ambiguous_active_runtime_sessions --project webfang` (es
-  diagnostic-only; `doctor repair` no cubre ese check). Si la colisión es entre dos sesiones
-  **genuinamente vivas**, es por diseño: terminá la que terminó, o pasá `session_id`.
-- El **conocimiento del proyecto vive acá**, no en el repo: decisiones, dirección, hallazgos de
-  auditoría y razonamiento. El repo guarda las **reglas** y sus fuentes de verdad.
-  (Decisión del owner: obs #370.)
+- **Never invent a `session_id`.** Register one with `mem_session_start` (explicit unique ID)
+  and pass that same `session_id` to every `mem_save` / `mem_judge` of the session.
+- **Close the session when you are done** (`mem_session_end(id, summary)`). Since engram v2.1.0
+  every registration writes a 30-minute runtime lease, and an expired lease is excluded from
+  candidate resolution: a session whose runtime never renews stops being a candidate **by
+  itself**, 30 minutes after its last renewal. Closing earlier only matters while the runtime
+  is still alive.
+- If `mem_save` returns `judgment_required: true`, judge **each** candidate with **its own**
+  `judgment_id` (the one in `candidates[]`), never with the top-level one.
+- On **any** engram error, run `engram --help` first (then `engram <cmd> --help` for the command
+  that failed) before retrying or inventing flags. The CLI is the fallback when the MCP fails:
+  `engram save`, `engram search`, `engram context`.
+- Diagnosing the session collision:
+  `engram doctor --check ambiguous_active_runtime_sessions --project webfang` (diagnostic
+  only; `doctor repair` does not cover that check). If the collision is between two
+  **genuinely alive** sessions, that is by design: end the one that finished, or pass
+  `session_id`.
+- **Project knowledge lives here**, not in the repo: decisions, direction, audit findings and
+  reasoning. The repo holds the **rules** and their sources of truth.
+  (Owner decision: obs #370.)
