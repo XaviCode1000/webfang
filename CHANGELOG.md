@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.2] - 2026-10-21
+
+
+### 🏗️ Architecture Improvements
+
+- Colapsar Tier2EmbeddingPort a un newtype y borrar LocalEmbeddingPort ([#2154](https://github.com/XaviCode1000/webfang/pull/2154))
+
+### 📦 Dependencies
+
+- Update Cargo.lock dependencies
 ## [4.0.1] - 2026-10-20
 
 
