@@ -19,7 +19,7 @@ Todo lo que no está acá se busca en Engram: `mem_search` (MCP) o
 
 | Necesito | Query | Scope | Obs |
 |---|---|---|---|
-| Worktrees: bootstrap, seeds, cleanup, target dirs | `worktree target dir seed bootstrap envrc` | project | #2307 (＋ #2144, #2031, #2157) |
+| Worktrees: bootstrap, seeds, cleanup, target dirs | `worktree target dir seed bootstrap envrc` | project | #2307 |
 | Perfil de build de la máquina: mbx, mold, OOM, timings | `build profile mbx mold cargo target OOM` | personal | #2306 |
 | Líneas de soporte, hotfix routing, versionado, gobernanza | `support line routing hotfix branch taxonomy versioning` | project | #2308 |
 | Gates de PR, pre-commit, merge, batch, CHANGELOG | `merge-when-green batch merge pre-commit changelog` | project | #2309 |
@@ -28,9 +28,9 @@ Todo lo que no está acá se busca en Engram: `mem_search` (MCP) o
 | Contaminación, historia inmutable, hard-deny | `contamination history immutable hard-deny governance` | project | #2312 |
 | Revisión nativa RDD: ciclo completo | `gentle-ai review assess start consent capture acknowledge` | project | #2213 + skill `rdd-defect-workflow` |
 | Índice de skills con los paths exactos | `skill-registry skills paths` | project | #43 + `.atl/skill-registry.md` (generado por árbol) |
-| Persistencia de estado, `--resume`, StateStore | `StateStore ExportState load_or_default version bak` | project | #216, #1341 + `docs/persistence-resume.md` |
+| Persistencia de estado, `--resume`, StateStore | `StateStore ExportState load_or_default version bak` | project | #216 + `docs/persistence-resume.md` |
 | Dónde vive el conocimiento (decisión del owner) | `knowledge architecture AGENTS.md decision` | project | #370 |
-| Best practices de AGENTS.md + las dos auditorías | `agents md best practices` | project | #368 |
+| Best practices de AGENTS.md | `agents md best practices` | project | #368 |
 | Índice completo bloque → obs | `knowledge index bloque destino query verificada` | project | #2313 |
 
 **Fuentes de verdad en el repo — enlazá, no copies:**
@@ -79,8 +79,7 @@ arriba.
 - **No unificar dependencias en conflicto** (dashmap 5/6, selectors 0.35/0.37/0.38): son
   deliberadas, tres crates distintos necesitan versiones distintas.
 - **No cites números de línea.** Citá el símbolo (`WreqDownloader::fetch_inner`) o el path.
-  Una cita por línea se invalida con cada edit anterior del archivo — y este archivo lo
-  dice porque antes tenía ~40 de ellas.
+  Una cita por línea se invalida con cada edit anterior del archivo.
 - **No copies estado mutable en prosa.** Si cambia solo (versiones, conteos, líneas de
   soporte, labels), enlazá la fuente.
 - **No toques `CHANGELOG.md`** en un work PR — un solo escritor (el Release PR).
@@ -100,8 +99,6 @@ webfang/                          # virtual workspace root (no [package])
 │   └── webfang_benchmark/        # harness de benchmarks (leaf, tooling)
 ```
 
-- `webfang_ai` fue eliminado (ADR-0004 paso 6, `docs/adr/0004-onnx-local-removal.md`); la
-  limpieza semántica corre por adapters remotos de `EmbeddingPort` en `webfang_core`.
 - **El código de la CLI vive en `crates/webfang_core/src/cli/`** (`error.rs`, `scrape_flow.rs`,
   `args/`, `preflight.rs`, `orchestrator.rs`). `crates/webfang_cli/src/main.rs` es el binario
   delgado. Buscá el módulo, no el crate.
@@ -136,10 +133,9 @@ Al escribir código nuevo, copiá el patrón del módulo equivalente más cercan
 constructor + `TryFrom` + `Display`/`Debug`/`PartialEq`, adapter en
 `infrastructure/`, error nuevo en el archivo de error de la capa.
 
-**Avoid:** componentes gigantes. Los archivos más grandes del repo hoy son
-`application/crawler/engine.rs` (~3.200 líneas), `cli/preflight.rs` (~3.200),
-`infrastructure/http/waf_engine.rs` (~2.600), `mcp_server/handlers/scraping.rs` (~2.500) y
-`src/error.rs` (~2.200) — si tu cambio empuja uno de esos, partilo.
+**Avoid:** componentes gigantes. Ningún archivo nuevo debería pasar de ~500 líneas, y si
+tocás uno que ya la supera, partilo. Para ver los archivos más grandes del repo:
+`find crates -name '*.rs' -not -path '*/tests/*' | xargs wc -l | sort -rn | head`.
 
 ### Estratificación de errores
 
@@ -223,13 +219,7 @@ dial, se rechaza en review aunque sus tests pasen.
   (env `WEBFANG_EMBEDDING_PROVIDER`; el flag le gana al env).
 - `--offline` rechaza **todo** provider de embeddings — remoto o loopback — con **exit 78**.
   El guard dispara antes de inspeccionar el endpoint.
-- Superficie de flags de AI real: `--threshold`, `--max-chars`, `--offline`.
-- **Los shims de migración ya NO existen** (issue #2119): `--ai-model` y `--max-tokens` no
-  son flags, así que clap responde `unexpected argument` (exit 64); los envs
-  `WEBFANG_AI_MODEL_ID`, `AI_MODEL_ID`, `WEBFANG_MAX_TOKENS` y `WEBFANG_AI_ENGINE` se
-  **ignoran en silencio**. No los trates como "deprecados pero activos".
-- Recuperación manual del árbol ONNX viejo: tag `onnx-tree/pre-step5` (commit `38ab6a31`).
-  Ver `docs/src/ai-onnx-migration.md` y ADR-0004.
+- Superficie de flags de AI: `--threshold`, `--max-chars`, `--offline`.
 
 ### Build
 
@@ -286,7 +276,8 @@ Command::cargo_bin("webfang")   // ❌
 **Iron rule:** toda feature, hot path o cambio de comportamiento se entrega con
 observabilidad. Código que no se puede tracear en producción no está terminado. El stack es
 el crate `tracing` + el **FileTraceLayer** siempre disponible (`--trace-file out.jsonl`) +
-correlation IDs nativos. **No hay OpenTelemetry** (eliminado en #356) y no se reintroduce.
+correlation IDs nativos. Sin backend de métricas externo: no se introduce OpenTelemetry ni
+ningún otro collector.
 
 | Situación | Requisito |
 |---|---|
@@ -487,9 +478,6 @@ Desde el repo **main**:
 7. **Verificá el handoff** — `git worktree list` y `git branch -vv` sin restos **de la misión
    que mergeaste**, y `git status --short` vacío. Otras worktrees y branches son de otras
    misiones: su presencia no es un handoff fallido ni es tu negocio.
-
-**No hay red de seguridad automática**: el `git-hygiene.timer` semanal que podaba branches
-locales confirmados como seguros **no existe** en este entorno. Todo el runbook es manual.
 
 ### Recursos compartidos vs por-worktree
 
