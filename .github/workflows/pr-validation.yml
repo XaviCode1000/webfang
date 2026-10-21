@@ -10,8 +10,113 @@ permissions:
   issues: read
 
 jobs:
+  # ==========================================================================
+  # Auto-label the PR type (#2126) — it runs BEFORE the validation job.
+  #
+  # The gate "Require exactly one type:* label" below starts RED on a PR
+  # opened without a label, and GitHub cannot apply a label from a PR
+  # template (the issues template can, the pull-request template cannot).
+  # This job is what APPLIES the rule the title already declares.
+  #
+  # TWO PROPERTIES, BOTH LOAD-BEARING:
+  #
+  #   - NO RACE. `validate` declares `needs: auto-label-type`, so the
+  #     validation starts only once the labeler has finished. A validation
+  #     running in parallel would observe the missing label and go red on a
+  #     PR that is about to be labelled — and the validation does NOT
+  #     re-evaluate on its own when the label lands later (a PR opened
+  #     before the label stays red until a forced re-run).
+  #
+  #   - THE LABELER NEVER BLOCKS THE VALIDATION. `continue-on-error: true`
+  #     keeps a labeler failure (a fork PR whose token is read-only, a
+  #     missing permission, a bug in the script) from failing the workflow,
+  #     and `validate` runs with `!cancelled()` so it runs no matter how the
+  #     labeler ended. A PR that could not be labelled keeps today's
+  #     behaviour: red until a human labels it.
+  #
+  #   - THE BOT NEVER FIGHTS A HUMAN. The labeler reacts to `opened` and
+  #     `edited` only (see the job below), so a label a human sets is never
+  #     replaced by the bot.
+  # ==========================================================================
+  auto-label-type:
+    name: Auto-label PR type
+    continue-on-error: true
+    # The labeler reacts to EXACTLY two events:
+    #
+    #   - `opened`: the PR carries no label yet.
+    #   - `edited`: the title changed, so the label derived from it can
+    #     legitimately change — the stale `type:*` label is replaced by the
+    #     derived one, and the PR ends with exactly one.
+    #
+    # It does NOT react to `labeled` / `unlabeled` / `synchronize` /
+    # `reopened`. A bot that reacted to `labeled` would fight a human over
+    # the label forever: the human sets one, the event fires, the bot
+    # replaces it, the human sets it again, ... The ping-pong is impossible
+    # because the bot only ever acts on a TITLE it was handed.
+    #
+    # The WORKFLOW's own event list stays wide on purpose: it also carries
+    # the required "Validate PR metadata" job, and a workflow that did not
+    # run on `synchronize` would leave that required check unreported after
+    # a new push (the PR would sit on "Expected" forever).
+    if: ${{ github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'edited') }}
+    runs-on: ubuntu-latest
+    permissions:
+      # Minimal, exactly as #2126 asks: `contents: read` for the checkout
+      # and `pull-requests: write` — the documented permission for "add a
+      # label to a pull request". Nothing else.
+      contents: read
+      pull-requests: write
+    steps:
+      # The BASE, never the head. This job runs code with a write-scoped
+      # token, so it must never run the PR's code: a branch could carry a
+      # modified scripts/auto_label_type.sh and the write token would be
+      # handed to it. The decision needs only the API (the title and the
+      # labels), so the trusted script from the base branch is enough.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+          fetch-depth: 1
+          ref: ${{ github.event.pull_request.base.sha }}
+      - name: Apply the type label from the PR title
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ ! -f scripts/auto_label_type.sh ]; then
+            echo "::notice::La rama base todavia no tiene scripts/auto_label_type.sh: no hay nada que etiquetar."
+            exit 0
+          fi
+          bash scripts/auto_label_type.sh
+
+  # The semantics harness for the script above. It is hermetic and offline
+  # (a fake `gh`, mktemp fixtures, no network), so it costs about a second
+  # per event. It runs HERE, and not in ci.yml's repo-guards job, because
+  # that file is outside the scope of #2126.
+  auto-label-semantics:
+    name: Auto-label harness (offline)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      # The HEAD this time: the harness must test the code the PR proposes.
+      # The token here is read-only, so running the PR's script is safe.
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Auto-label semantics harness (offline)
+        run: bash scripts/test_auto_label_type.sh
+
   validate:
     name: Validate PR metadata
+    # The labeler runs first (the job above): `needs` makes this job wait
+    # for it, so the validation never observes a missing `type:*` label that
+    # the labeler is about to add. `!cancelled()` keeps it running whatever
+    # the labeler did — a labeler failure must never turn this required
+    # check into "never reported".
+    needs: auto-label-type
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
