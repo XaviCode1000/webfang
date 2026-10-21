@@ -472,7 +472,7 @@ cierre de la campaña) → release, con #2184 pendiente de la resolución de su 
 
 **L32.** (el guard de breaking change: mi script lo by-passeaba) La sesión propietaria de
 #2184 avisó de algo que el script de la cadena no respetaba: **"el merge necesita
-`--merge` por el marker `refactor(cli)!`"**. Ten�� razón, y no es un detalle de estilo:
+`--merge` por el marker `refactor(cli)!`"**. Tenés razón, y no es un detalle de estilo:
 AGENTS.md tiene una regla dura — *"A breaking declaration has to survive the merge"* —
 y su propio guard `scripts/merge-when-green.sh` **rechaza `--squash`** (exit 5) cuando el
 título o un commit de la rama llevan el marker, porque `gh pr merge --squash` reconstruye
@@ -617,8 +617,8 @@ la línea 5.0 — **decisión de gobernanza del owner**: el propio flujo de rele
 sale con 0, porque *"a line that is NOT declared in .github/support.json is NOT invented
 here"*.
 
-**L37.** (el camino sancionado para declarar la línea 5.0) La campaña ibadah que el
-mecanismo ya está en el repo desde la Ola 2, y lo verifiqué: no hace falta inventar nada.
+**L37.** (el camino sancionado para declarar la línea 5.0) La campaña **cableó** el
+mecanismo que ya está en el repo desde la Ola 2, y lo verifiqué: no hace falta inventar nada.
 
 - `scripts/refresh_support_latest.sh --set X.Y=X.Y.Z` es el **escritor sancionado** de
   `support.json` para declarar la publicación pendiente de una línea (repetible). El gate
@@ -626,6 +626,9 @@ mecanismo ya está en el repo desde la Ola 2, y lo verifiqué: no hace falta inv
   declaración que va UNA patch por delante de la última publicada de su minor y que
   todavía no tiene etiqueta propia* — la ventana en vuelo de un release sancionado. Por
   eso declarar 5.0 ANTES de mergear la release es lo que evita el rojo.
+  **CORREGIDO en L38: el orden es el INVERSO.** `declare_pending_publication.sh`
+  cubre sólo el parche pendiente de una línea YA declarada, y `rotate-stable.sh` falla
+  cerrado sin el tag: la declaración de una minor va DESPUÉS de su tag (L38, L53-L55).
 - `scripts/rotate-stable.sh X.Y` es el **evento de rotación**: cuando shipa `vX.(Y+1).0`
   degrada el STABLE anterior a MAINTENANCE, EOL-linea el MAINTENANCE anterior
   (`eol-line.sh`, con borrado de rama) y registra el STABLE nuevo al principio de la
@@ -1184,7 +1187,7 @@ Como el gate no escaneó, **no pudo reportar** la violación que el caso B36-liv
 `engine.rs`, y el harness concluded *"the inserted line is NOT in the report → CONFIRMED:
 everything between the doc-comment mention and the real module is unscanned"*.
 
-**El漏点 fue mío**: la campaña sí compilaba el extractor **en ese worktree** y pasaba
+**La omisión fue mía**: la campaña sí compilaba el extractor **en ese worktree** y pasaba
 `INTRA_CRATE_LINT_BIN` apuntando a ese binario ("el gate recibe INTRA_CRATE_LINT_BIN
 apuntando al binario de ESE worktree"), y yo lo salté. El fail-closed del gate —que es
 justo lo que la campaña remarco— se convirtió en un falso positivo del arnés.
