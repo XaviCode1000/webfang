@@ -448,7 +448,7 @@ the text.
 
 | # | Condition | Code | Retriable | Agent should | Source |
 | :-: | :--- | :-: | :-: | :-: | :-: |
-| B6.1 | AI compiled but not enabled, or the model is still warming up | none | No (or retry after warmup) | Restart with `--enable-ai`, or wait for the model to load and retry. | `mcp_server/handlers/ai.rs:48-58` (`ai_unavailable`), used at `mcp_server/handlers/ai.rs:129`, `mcp_server/handlers/ai.rs:196-200`, `mcp_server/handlers/ai.rs:207` |
+| B6.1 | AI tool called with no embeddings provider configured | none | No | Configure a remote embeddings provider (`--embedding-provider <id>` or `WEBFANG_EMBEDDING_PROVIDER`); there is no local model and no flag that turns one on. | `mcp_server/handlers/ai.rs:58-64` (`ai_unavailable`), used at `mcp_server/handlers/ai.rs:137`, `mcp_server/handlers/ai.rs:206-208`, `mcp_server/handlers/ai.rs:216` |
 | B6.2 | ~~AI not compiled into the binary~~ **retired** (ADR-0004 paso 6: the `ai` feature is gone; the AI tools are always compiled in and resolve their `EmbeddingPort` remotely via `--embedding-provider`) | none | No | none — rebuild advice no longer applies; see [ai-onnx-migration.md](ai-onnx-migration.md). | same helper, `mcp_server/handlers/ai.rs` (line numbers may move) |
 | B6.3 | Vault note repository not configured | none | No | Operator must configure persistence. | `mcp_server/handlers/ai.rs:201-204` |
 | B6.4 | `chromium` not compiled (axtree tool) | none | No | Rebuild with `--features chromium`. | `mcp_server/handlers/axtree.rs:185-197` |

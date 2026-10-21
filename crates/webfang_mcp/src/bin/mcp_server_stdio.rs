@@ -16,7 +16,7 @@ use tokio::sync::Notify;
 use webfang_core::cli::error::{CliExit, EXIT_IO_ERROR};
 use webfang_mcp::mcp_server::{
     build_container, build_mcp_state, default_dom_inspector, panic_hook::setup_panic_hook,
-    spawn_ai_wiring, validation::MAX_BLOB_LEN, McpHandler, McpState,
+    validation::MAX_BLOB_LEN, McpHandler, McpState,
 };
 
 /// Webfang MCP Server — Stdio transport.
@@ -28,10 +28,6 @@ use webfang_mcp::mcp_server::{
     long_about = "Exposes 36 tools via the Model Context Protocol over stdin/stdout."
 )]
 struct Args {
-    /// Enable AI semantic cleaning (requires the `ai` feature at build time).
-    #[arg(long, env = "WEBFANG_MCP_AI")]
-    enable_ai: bool,
-
     /// Allowed root directories for absolute `output_dir` and `checkpoint_dir`
     /// paths (#696, #1588). Repeatable or comma-separated. When omitted,
     /// absolute `output_dir`/`checkpoint_dir` values are rejected
@@ -410,20 +406,13 @@ async fn main() -> CliExit {
 
     let args = Args::parse();
 
-    // Keep the `enable_ai` flag honest. The warning is now UNCONDITIONAL:
-    // ADR-0004 paso 6 removed the `ai` Cargo feature, so there is no build
-    // left in which the flag could enable anything. The TEXT is unchanged —
-    // it is the same line a non-`ai` build has always printed for this flag,
-    // and the AI tools keep answering with their honest "not available"
-    // error (see `mcp_server::handlers::ai`).
-    if args.enable_ai {
-        tracing::warn!("--enable-ai requested but the `ai` feature is not compiled in; ignoring");
-    }
-
     // Build the container FAST — no model resolution happens here (#759).
-    // The AI ports are wired lazily in a background task after the server
-    // starts serving, so the MCP `initialize` handshake is never blocked
-    // behind the hf_hub model resolution (~390 MB on a cold cache).
+    // Nothing is wired in the background any more: since ADR-0004 paso 6
+    // there is no local model to load, and the embedding port is either
+    // present (a configured remote provider) or absent (an honest per-call
+    // error). So the MCP `initialize` handshake is never blocked behind a
+    // model load — it used to block behind the hf_hub download, ~390 MB on a
+    // cold cache.
     // A construction failure is a boot-time error: log it (English, structured)
     // and exit with the config-error code — never a panic backtrace (#1123).
     let container = match build_container().await {
@@ -435,10 +424,6 @@ async fn main() -> CliExit {
             ));
         },
     };
-
-    if args.enable_ai {
-        spawn_ai_wiring(Arc::clone(&container));
-    }
 
     // Keep a second handle: `serve()` moves the handler (and with it the
     // state and its container) into the service, so this clone is what lets
