@@ -173,13 +173,16 @@ pub fn disables_ssrf(raw: Option<&str>) -> bool {
 ///
 /// Covers:
 /// - IPv4: loopback (127.0.0.0/8), private (10/8, 172.16/12, 192.168/16),
-///   link-local (169.254/16), unspecified (0.0.0.0), broadcast
-///   (255.255.255.255), reserved (240.0.0.0/4), CGNAT (100.64.0.0/10).
+///   link-local (169.254/16), the "this network on this host" family
+///   (0.0.0.0/8 — Linux routes the whole family to the local host),
+///   broadcast (255.255.255.255), reserved (240.0.0.0/4), CGNAT
+///   (100.64.0.0/10).
 /// - IPv6: loopback (::1), unspecified (::), unique-local (fc00::/7),
 ///   unicast link-local (fe80::/10), IPv4-mapped and IPv4-compatible
 ///   (re-validated as IPv4), NAT64 well-known prefix 64:ff9b::/96 and
-///   6to4 2002::/16 (embedded IPv4 re-validated as IPv4), Teredo
-///   2001:0000::/32 (fail-closed).
+///   6to4 2002::/16 (embedded IPv4 re-validated as IPv4), the NAT64
+///   Network-Specific Prefixes (the rest of 64:ff9b::/32, fail-closed),
+///   Teredo 2001:0000::/32 (fail-closed).
 #[must_use]
 pub fn is_forbidden_ip(ip: &IpAddr) -> bool {
     match ip {
@@ -187,8 +190,11 @@ pub fn is_forbidden_ip(ip: &IpAddr) -> bool {
             v4.is_loopback()
                 || v4.is_private()
                 || v4.is_link_local()
-                // 0.0.0.0: `connect()` routes it to loopback on Linux/macOS.
-                || v4.is_unspecified()
+                // 0.0.0.0/8 ("this network on this host", RFC 1122): Linux
+                // routes the WHOLE family to the local host, so 0.0.0.1
+                // reaches this machine — the family is denied, not just the
+                // 0.0.0.0 address (#1965, A5).
+                || is_ipv4_this_network(v4)
                 || v4.is_broadcast()
                 || is_reserved_v4(v4)
                 || is_cgnat(v4)
@@ -202,6 +208,18 @@ pub fn is_forbidden_ip(ip: &IpAddr) -> bool {
                 || is_ipv6_unique_local(v6)
                 || is_ipv6_link_local(v6)
             {
+                return true;
+            }
+            // The NAT64 Network-Specific Prefixes (RFC 6052 §2.2) fail closed
+            // BEFORE the embedding check below, and they must stay there: the
+            // embedding helper returns `None` for them (their embedded IPv4
+            // sits at an undecodable position), so a later check could never
+            // reach them. RFC 6052 §2.2 places the embedded IPv4 right after
+            // the prefix, whose length varies (/32../64), and the address does
+            // NOT encode that length — so the embedded address cannot be
+            // located, let alone validated. Same fail-closed reason as
+            // Teredo (#1965, A6).
+            if is_ipv6_nat64_non_canonical(v6) {
                 return true;
             }
             // RFC 4291 §2.5.5.2: IPv4-mapped (`::ffff:a.b.c.d`) and the deprecated
@@ -262,13 +280,20 @@ pub fn is_forbidden_ip_with(ip: &IpAddr, allow_loopback: bool) -> bool {
     is_forbidden_ip(ip)
 }
 
-/// Dial-time always-denied set (FIN-017): link-local, unspecified,
-/// multicast, broadcast, reserved, and Teredo — the ranges no allowlist
-/// entry can ever reach. IPv4-mapped IPv6 forms normalize to IPv4 first;
-/// the deprecated IPv4-compatible form is deliberately NOT normalized
+/// Dial-time always-denied set (FIN-017): link-local, the "this network on
+/// this host" family (0.0.0.0/8), unspecified, multicast, broadcast,
+/// reserved, Teredo and the NAT64 Network-Specific Prefixes — the ranges no
+/// allowlist entry can ever reach. IPv4-mapped IPv6 forms normalize to IPv4
+/// first; the deprecated IPv4-compatible form is deliberately NOT normalized
 /// here (it never matches an allowlist, so it stays denied either way).
-/// NAT64/6to4 prefixes are absent on purpose: their verdict derives from
-/// the embedded IPv4 via [`is_forbidden_ip_with_policy`].
+///
+/// The CANONICAL translation prefixes are absent on purpose: their verdict
+/// derives from the embedded IPv4 via [`is_forbidden_ip_with_policy`], and
+/// the canonical NAT64 Well-Known Prefix (64:ff9b::/96) is the standard
+/// path that must keep working. The NON-CANONICAL NAT64 space (the rest of
+/// 64:ff9b::/32) is the opposite case and IS in this set: a
+/// Network-Specific Prefix does not encode where the embedded IPv4 sits, so
+/// it cannot be validated and fails closed (#1965, A6).
 #[must_use]
 pub fn is_always_denied_ip(ip: &IpAddr) -> bool {
     let normalized = match ip {
@@ -278,7 +303,9 @@ pub fn is_always_denied_ip(ip: &IpAddr) -> bool {
     match normalized {
         IpAddr::V4(v4) => {
             v4.is_link_local()
-                || v4.is_unspecified()
+                // 0.0.0.0/8: Linux routes the whole family to the local
+                // host, so 0.0.0.1 reaches this machine (#1965, A5).
+                || is_ipv4_this_network(&v4)
                 || v4.is_broadcast()
                 || v4.is_multicast()
                 || is_reserved_v4(&v4)
@@ -288,6 +315,10 @@ pub fn is_always_denied_ip(ip: &IpAddr) -> bool {
                 || is_ipv6_link_local(&v6)
                 || v6.is_multicast()
                 || is_ipv6_teredo(&v6)
+                // The NAT64 Network-Specific Prefixes cannot be decoded, so
+                // they fail closed here — before any allowlist entry is
+                // consulted (#1965, A6).
+                || is_ipv6_nat64_non_canonical(&v6)
         },
     }
 }
@@ -363,6 +394,22 @@ pub fn is_reserved_v4(v4: &Ipv4Addr) -> bool {
     v4.octets()[0] & 0b1111_0000 == 0b1111_0000 && !v4.is_broadcast()
 }
 
+/// Returns `true` if `v4` falls within the "this network on this host"
+/// family 0.0.0.0/8 (RFC 1122 §3.2.1.3).
+///
+/// Only `0.0.0.0` itself is the unspecified address, but the WHOLE /8 is
+/// routed to the local host on Linux and macOS: `0.0.0.1` reaches the
+/// machine itself, so the family is denied as a family and not only the one
+/// address (#1965, A5).
+///
+/// Denying the family also closes the translated forms: `64:ff9b::0:1`
+/// (NAT64) and `2002:0:1::` (6to4) embed an address of this family, and
+/// the translation prefixes delegate their verdict to that embedded IPv4.
+#[must_use]
+pub fn is_ipv4_this_network(v4: &Ipv4Addr) -> bool {
+    v4.octets()[0] == 0
+}
+
 /// Returns `true` if `v6` is within the unique-local range fc00::/7
 /// (fc00:: – fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff).
 #[must_use]
@@ -381,21 +428,61 @@ pub fn is_ipv6_link_local(v6: &Ipv6Addr) -> bool {
 /// Returns the IPv4 address embedded in a NAT64-translated address when
 /// `v6` falls within the well-known prefix 64:ff9b::/96 (RFC 6052 §2.1);
 /// `None` otherwise. The embedded IPv4 occupies segments\[6..8\].
+///
+/// A Network-Specific Prefix (the rest of 64:ff9b::/32) carries NO decodable
+/// embedded address — see [`is_ipv6_nat64_non_canonical`] — so it yields
+/// `None` as well.
 #[must_use]
 pub fn ipv6_nat64_embedded_v4(v6: &Ipv6Addr) -> Option<Ipv4Addr> {
-    let segments = v6.segments();
-    if segments[0] != 0x0064
-        || segments[1] != 0xff9b
-        || !segments[2..6].iter().all(|&segment| segment == 0)
-    {
+    if !is_ipv6_nat64_well_known_prefix(v6) {
         return None;
     }
+    let segments = v6.segments();
     Some(Ipv4Addr::new(
         (segments[6] >> 8) as u8,
         segments[6] as u8,
         (segments[7] >> 8) as u8,
         segments[7] as u8,
     ))
+}
+
+/// Whether `v6` falls within the canonical NAT64 Well-Known Prefix
+/// 64:ff9b::/96 (RFC 6052 §2.1).
+///
+/// The WKP is the only NAT64 prefix whose embedded IPv4 occupies a fixed
+/// position (segments\[6..8\]), so it is the only one whose embedded address
+/// can be located — and therefore validated.
+fn is_ipv6_nat64_well_known_prefix(v6: &Ipv6Addr) -> bool {
+    let segments = v6.segments();
+    segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2..6].iter().all(|&s| s == 0)
+}
+
+/// Whether `v6` falls within the NAT64 prefix space 64:ff9b::/32 (RFC 6052
+/// §2.1) — the Well-Known Prefix and the Network-Specific Prefixes alike.
+fn is_ipv6_nat64_prefix_space(v6: &Ipv6Addr) -> bool {
+    let segments = v6.segments();
+    segments[0] == 0x0064 && segments[1] == 0xff9b
+}
+
+/// Returns `true` if `v6` falls within the NAT64 prefix space 64:ff9b::/32
+/// (RFC 6052 §2.1) but OUTSIDE the canonical Well-Known Prefix 64:ff9b::/96
+/// — i.e. a Network-Specific Prefix (RFC 6052 §2.2).
+///
+/// Such an address cannot be validated: RFC 6052 §2.2 places the embedded
+/// IPv4 immediately after the prefix, whose length varies (/32../64), and the
+/// address does NOT encode that length — so the position of the embedded IPv4
+/// is not derivable from the address alone. The only safe verdict is to
+/// refuse the whole space, the same fail-closed reason as Teredo (whose
+/// embedded address is XOR-obfuscated and cannot be trusted either).
+///
+/// The canonical Well-Known Prefix is EXCLUDED on purpose: it is the
+/// standard, legitimate path — `64:ff9b::8.8.8.8` is the NAT64 form of a
+/// public address, and IPv6-only deployments scrape public sites through a
+/// NAT64 gateway — and its verdict derives from the embedded IPv4, which IS
+/// validated ([`ipv6_nat64_embedded_v4`]).
+#[must_use]
+pub fn is_ipv6_nat64_non_canonical(v6: &Ipv6Addr) -> bool {
+    is_ipv6_nat64_prefix_space(v6) && !is_ipv6_nat64_well_known_prefix(v6)
 }
 
 /// Returns the IPv4 address encapsulated in a 6to4 address (RFC 3056) when
@@ -1138,6 +1225,122 @@ mod tests {
         ));
     }
 
+    /// A5 (#1965): the "this network on this host" family 0.0.0.0/8 must be
+    /// denied as a FAMILY. Only `0.0.0.0` itself is the unspecified address,
+    /// but Linux routes the whole /8 to the local host — `0.0.0.1` reaches
+    /// the machine itself.
+    ///
+    /// The deny list must hold on every path, and a hand-built policy that
+    /// allowlists the family must not reach it either: the always-denied set
+    /// denies FIRST, before any allowlist entry is consulted.
+    #[test]
+    fn this_network_family_is_denied_on_every_path() {
+        let policy = hand_built_policy(&["0.0.0.0/8"]);
+        for literal in ["0.0.0.0", "0.0.0.1", "0.0.0.2", "0.0.255.255", "0.1.0.1"] {
+            let ip = addr(literal);
+            assert!(
+                is_forbidden_ip(&ip),
+                "{literal} must be forbidden on the flat path"
+            );
+            assert!(
+                is_forbidden_ip_with_policy(&ip, false, &policy),
+                "{literal} must stay forbidden under a hand-built allowlist"
+            );
+            assert!(
+                is_forbidden_ip_with_policy(&ip, true, &policy),
+                "{literal} must stay forbidden under a hand-built allowlist, even with the loopback flag"
+            );
+            assert!(
+                is_forbidden_resolved_address(&ip, "probe.lan", false, &policy),
+                "{literal} must stay forbidden on the resolved path"
+            );
+            assert!(
+                is_forbidden_resolved_address(&ip, "probe.lan", true, &policy),
+                "{literal} must stay forbidden on the resolved path, even with the loopback flag"
+            );
+        }
+    }
+
+    /// A5 (#1965): the translated forms of the 0.0.0.0/8 family are denied
+    /// too. The translation prefixes delegate their verdict to the embedded
+    /// IPv4, so a hole in the IPv4 deny list is a hole in BOTH translation
+    /// paths.
+    ///
+    /// The loopback flag is irrelevant here: this is NOT the loopback
+    /// exemption, it is the "this network" family — `64:ff9b::0:1` (NAT64)
+    /// and `2002:0:1::` (6to4) embed `0.0.0.1`, which is denied with the
+    /// flag on and off alike.
+    #[test]
+    fn translated_this_network_forms_are_denied_with_and_without_the_flag() {
+        let policy = hand_built_policy(&["10.0.0.0/8"]);
+        for literal in ["64:ff9b::0:1", "2002:0:1::"] {
+            let ip = addr(literal);
+            assert!(
+                is_forbidden_ip(&ip),
+                "{literal} must be forbidden on the flat path"
+            );
+            for allow_loopback in [false, true] {
+                assert!(
+                    is_forbidden_ip_with_policy(&ip, allow_loopback, &policy),
+                    "{literal} must stay forbidden on the policy path (allow_loopback={allow_loopback})"
+                );
+                assert!(
+                    is_forbidden_resolved_address(&ip, "probe.lan", allow_loopback, &policy),
+                    "{literal} must stay forbidden on the resolved path (allow_loopback={allow_loopback})"
+                );
+            }
+        }
+    }
+
+    /// A6 (#1965): a NAT64 Network-Specific Prefix (RFC 6052 §2.2) does not
+    /// encode where the embedded IPv4 sits, so it cannot be validated — the
+    /// whole space fails closed, exactly like Teredo.
+    #[test]
+    fn non_canonical_nat64_is_denied_on_every_path() {
+        let policy = hand_built_policy(&["10.0.0.0/8"]);
+        for literal in [
+            "64:ff9b:1::7f00:1",
+            "64:ff9b:1::a00:1",
+            "64:ff9b:0:1::1",
+            "64:ff9b:1:0:0:0:7f00:1",
+        ] {
+            let ip = addr(literal);
+            assert!(
+                is_forbidden_ip(&ip),
+                "{literal} must be forbidden on the flat path"
+            );
+            for allow_loopback in [false, true] {
+                assert!(
+                    is_forbidden_ip_with_policy(&ip, allow_loopback, &policy),
+                    "{literal} must stay forbidden on the policy path (allow_loopback={allow_loopback})"
+                );
+                assert!(
+                    is_forbidden_resolved_address(&ip, "probe.lan", allow_loopback, &policy),
+                    "{literal} must stay forbidden on the resolved path (allow_loopback={allow_loopback})"
+                );
+            }
+        }
+    }
+
+    /// A6 (#1965) positive control: the LEGITIMATE translation cases must
+    /// keep working, pinned here so a future change cannot silently break
+    /// them.
+    ///
+    /// - `64:ff9b::8.8.8.8` (NAT64 of a public address) stays ALLOWED: the
+    ///   canonical Well-Known Prefix is the standard path for IPv6-only
+    ///   deployments that scrape public sites through a NAT64 gateway.
+    /// - `2002:808:808::` (6to4 of a public address) stays ALLOWED.
+    /// - `64:ff9b::7f00:1` (NAT64 of the loopback) stays FORBIDDEN — the
+    ///   merged A2 behaviour, unchanged.
+    /// - `64:ff9b::a00:1` (NAT64 of a private address) stays FORBIDDEN.
+    #[test]
+    fn legitimate_translation_forms_keep_working() {
+        assert!(!is_forbidden_ip(&addr("64:ff9b::8.8.8.8")));
+        assert!(!is_forbidden_ip(&addr("2002:808:808::")));
+        assert!(is_forbidden_ip(&addr("64:ff9b::7f00:1")));
+        assert!(is_forbidden_ip(&addr("64:ff9b::a00:1")));
+    }
+
     #[test]
     fn public_addresses_unchanged_under_empty_policy() {
         let empty = NetworkPolicy::default();
@@ -1403,32 +1606,70 @@ mod tests {
     }
 
     /// A4 (#1965), second half: the dial-layer always-denied set covers every
-    /// never-allowable range EXCEPT the two translation prefixes, whose
-    /// absence is deliberate — their verdict derives from the embedded IPv4.
-    /// The asymmetry is pinned here so a future unification of the two tables
+    /// never-allowable range EXCEPT the translation prefixes whose verdict
+    /// derives from the embedded IPv4, which stay absent on purpose. The
+    /// asymmetry is pinned here so a future unification of the two tables
     /// breaks loudly instead of silently changing a verdict.
+    ///
+    /// A6 (#1965) split the NAT64 class in two: the registry entry covers the
+    /// whole prefix space 64:ff9b::/32, whose canonical Well-Known Prefix
+    /// keeps the embedded-IPv4 verdict (absent from the dial-layer set on
+    /// purpose) while the Network-Specific Prefix space cannot be decoded and
+    /// is therefore denied BY the dial layer. The expectation is per class,
+    /// not per probe address, so neither half can drift silently.
     #[test]
     fn the_dial_layer_always_denied_set_covers_every_never_allowable_range() {
         for (range_addr, prefix_len, class) in crate::domain::network_policy::NEVER_ALLOWABLE {
             let probe = *range_addr;
-            let is_translation = match probe {
-                IpAddr::V6(v6) => {
-                    ipv6_nat64_embedded_v4(&v6).is_some() || ipv6_6to4_embedded_v4(&v6).is_some()
-                },
-                IpAddr::V4(_) => false,
-            };
-            if is_translation {
-                assert!(
-                    !is_always_denied_ip(&probe),
-                    "{class} ({probe}/{prefix_len}): the translation prefixes stay absent from the dial-layer set on purpose"
-                );
-            } else {
-                assert!(
-                    is_always_denied_ip(&probe),
-                    "{class} ({probe}/{prefix_len}): the dial-layer always-denied set must cover it"
-                );
+            if let IpAddr::V6(v6) = probe {
+                if is_ipv6_nat64_prefix_space(&v6) {
+                    // The canonical Well-Known Prefix keeps the embedded-IPv4
+                    // verdict: absent from the dial-layer set on purpose.
+                    assert!(
+                        !is_always_denied_ip(&probe),
+                        "{class} ({probe}/{prefix_len}): the canonical NAT64 Well-Known Prefix must stay absent from the dial-layer set on purpose"
+                    );
+                    // The rest of the prefix space is denied by the dial layer.
+                    assert!(
+                        is_always_denied_ip(&addr("64:ff9b:1::7f00:1")),
+                        "{class} ({probe}/{prefix_len}): the non-canonical NAT64 space must be denied by the dial layer"
+                    );
+                    continue;
+                }
+                if ipv6_nat64_embedded_v4(&v6).is_some() || ipv6_6to4_embedded_v4(&v6).is_some() {
+                    assert!(
+                        !is_always_denied_ip(&probe),
+                        "{class} ({probe}/{prefix_len}): the translation prefixes stay absent from the dial-layer set on purpose"
+                    );
+                    continue;
+                }
             }
+            assert!(
+                is_always_denied_ip(&probe),
+                "{class} ({probe}/{prefix_len}): the dial-layer always-denied set must cover it"
+            );
         }
+    }
+
+    /// A6 (#1965): the NAT64 prefix space is denied as a whole EXCEPT the
+    /// canonical Well-Known Prefix, whose verdict comes from the embedded
+    /// IPv4 and therefore stays absent from the dial-layer set on purpose.
+    ///
+    /// The split is the truth the registry and the dial layer must agree on:
+    /// a Network-Specific Prefix cannot be decoded (RFC 6052 §2.2 does not
+    /// encode the embedded IPv4's position), so it fails closed; the
+    /// canonical /96 can be decoded, so its verdict stays the embedded
+    /// address's.
+    #[test]
+    fn the_dial_layer_denies_the_non_canonical_nat64_space_only() {
+        assert!(
+            !is_always_denied_ip(&addr("64:ff9b::8.8.8.8")),
+            "the canonical Well-Known Prefix must stay absent from the dial-layer set on purpose"
+        );
+        assert!(
+            is_always_denied_ip(&addr("64:ff9b:1::7f00:1")),
+            "the non-canonical NAT64 space must be denied by the dial layer"
+        );
     }
 
     /// A4 (#1965): a translation prefix is never allowable as a blanket, and
@@ -1570,8 +1811,11 @@ mod tests {
         assert!(!is_forbidden_ip(&addr("2002:808:808::"))); // 8.8.8.8
                                                             // Prefix look-alikes outside the ranges.
         assert!(!is_forbidden_ip(&addr("2001:db8::1"))); // not 2001:0::/32
-        assert!(!is_forbidden_ip(&addr("64:ff9b:1::1"))); // outside 64:ff9b::/96
         assert!(!is_forbidden_ip(&addr("2002:100:1::"))); // 6to4 → 1.0.0.1 (public)
+                                                          // 64:ff9b:1::1 is NOT a look-alike outside the ranges: it is a NAT64
+                                                          // Network-Specific Prefix INSIDE 64:ff9b::/32, whose embedded IPv4
+                                                          // cannot be located (RFC 6052 §2.2), so it fails closed (#1965, A6).
+        assert!(is_forbidden_ip(&addr("64:ff9b:1::1")));
     }
 
     #[test]
