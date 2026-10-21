@@ -55,6 +55,10 @@
 #                                              set-but-empty target, the one
 #                                              input coreutils realpath -m 9.10
 #                                              refuses to canonicalise)
+#   19  main's declaration is INDENTED         -> parsed like any other tree's
+#                                              (case 5's shape, one level of
+#                                              indirection deeper: the liberal
+#                                              parser, not the rigid sed)
 #
 # Case 17 note: the worktree list is intercepted by a stub `git` that fails
 # ONLY `worktree list` and execs the real git for everything else, so the
@@ -225,6 +229,19 @@ A5="$T5/wt-a-target"
 WT5A="$(add_worktree "$FX5" wt-a)"
 write_envrc "$WT5A" "export CARGO_TARGET_DIR=$A5" "export CARGO_INCREMENTAL=0"
 
+# FX5I: main's declaration is INDENTED — a shape the real bootstrap writes
+# ("export CARGO_TARGET_DIR=" on an indented line). The worktree under check
+# is properly registered, so the ONLY thing that can refuse it is a parser
+# that reads main's declaration with a stricter rule than every other tree's.
+FX5I="$(new_fixture)"
+T5I="$SANDBOX/fx5i-targets"
+mkdir -p "$T5I"
+M5I="$T5I/main-target"
+A5I="$T5I/wt-a-target"
+WT5I="$(add_worktree "$FX5I" wt-a)"
+write_envrc "$FX5I" "  export CARGO_TARGET_DIR=$M5I" "export CARGO_INCREMENTAL=1"
+write_envrc "$WT5I" "export CARGO_TARGET_DIR=$A5I" "export CARGO_INCREMENTAL=0"
+
 # FX3: main(.envrc -> M3) + wt-a(.envrc -> A3) + wt-b(.envrc -> B3).
 FX3="$(new_fixture)"
 T3="$SANDBOX/fx3-targets"
@@ -290,6 +307,18 @@ run_case "case 5: unbootstrapped main refuses the worktree" \
   2 main-unbootstrapped "$WT5A" "$A5"
 assert_contains "case 5: preserved message text" \
   "$LAST_OUT" "main checkout is not bootstrapped"
+
+# NEGATION (#2070 ítem 3): main's declaration was read with a rigid `sed`
+# that demands the declaration in column 0, while every other tree — the
+# worktrees and the tree under check — goes through the liberal
+# `parse_envrc_target_decl`. An indented declaration therefore left
+# MAIN_TARGET empty and EVERY worktree of the repo was rejected with
+# reason=main-unbootstrapped, even though the same shape is accepted in a
+# worktree. The refusal names a precondition the tree already met.
+run_case "case 19: main's indented declaration is parsed" \
+  0 own-registered-target "$WT5I" "$A5I"
+assert_not_contains "case 19: main is not reported as unbootstrapped" \
+  "$LAST_OUT" "reason=main-unbootstrapped"
 
 # --- section D: registry ownership and collisions --------------------------------------
 echo "D: registry ownership and collisions"
