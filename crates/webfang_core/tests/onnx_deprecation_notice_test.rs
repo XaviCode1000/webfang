@@ -127,7 +127,8 @@ async fn scrape(t: &BehavioralTest, extra: &[&str]) -> std::process::Output {
 /// resolvable provider stops at the configuration error (exit 78) BEFORE any
 /// request leaves the process. `--offline` is kept on the invocation because
 /// it is one of the two flags the announcement promises survives un-gated, and
-/// its semantics (loopback allowed) are unchanged.
+/// its semantics are the guard's own: EVERY embeddings provider, remote or
+/// loopback, is rejected with exit 78.
 ///
 /// The run therefore ends in exit 78 with the honest "no embedding provider"
 /// message — and that is EXACTLY what these tests want to observe: the two
@@ -203,6 +204,35 @@ async fn onnx_deprecation_notice_fires_once_when_clean_ai_is_used() {
         &clean_ai_snapshot_name("onnx_deprecation_notice_clean_ai_stderr"),
         t.out.path(),
         stderr,
+    );
+}
+
+/// The notice must state the `--offline` rule the guard ACTUALLY enforces.
+///
+/// #2166: the notice used to say "misma semántica: loopback permitido,
+/// remoto público -> exit 78", but the guard fires BEFORE the endpoint is
+/// inspected, so it rejects EVERY embeddings provider — a loopback one
+/// included. The published text was the defect, and a text that promises a
+/// capability the binary does not have is the exact failure class this notice
+/// exists to prevent, one level up.
+#[tokio::test]
+async fn onnx_deprecation_notice_states_the_real_offline_rule() {
+    let (_t, stderr) = ai_surface_stderr(&[]).await;
+
+    assert!(
+        stderr.contains("rechaza cualquier provider de embeddings"),
+        "the notice must say that `--offline` rejects EVERY embeddings provider; \
+         stderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("loopback"),
+        "the notice must name loopback explicitly, so the operator knows the \
+         rule covers it; stderr:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("loopback permitido"),
+        "the notice must not promise loopback under `--offline`: the guard \
+         rejects it too; stderr:\n{stderr}"
     );
 }
 

@@ -24,10 +24,13 @@
 #     discarded-statement form, which is the shape CC-L1 names.
 #   * It stops at the file's test module, detected as a `#[cfg(...)]` attribute
 #     containing `test` followed by a `mod`. Both `#[cfg(test)]` and the
-#     `#[cfg(all(test, not(miri)))]` form used in this repo match, and every
-#     test module here is the last thing in its file. Production code is what
-#     must never park; several tests legitimately build a zero-permit semaphore
-#     to observe permit accounting.
+#     `#[cfg(all(test, not(miri)))]` form used in this repo match. The
+#     exemption covers the test module and NOTHING ELSE: an inline
+#     `mod x { ... }` body is skipped until its braces balance, and a
+#     `mod x;` declaration (whose body lives in another file) ends the
+#     exemption immediately, so production code after a test module is
+#     scanned again. Production code is what must never park; several tests
+#     legitimately build a zero-permit semaphore to observe permit accounting.
 #   * CC-L2's exemptions live in `scripts/concurrency_lint_allowlist.txt`, keyed
 #     on path + argument text, so they survive line drift. See that file for what
 #     the allowlist does and does not buy.
@@ -78,7 +81,24 @@ function exempt(file, text,    i) {
     }
     return 0
 }
+# Braces opened minus braces closed on a line, ignoring string literals, char
+# literals and line comments. The test-module exemption needs it: the module
+# ends where its braces balance, not where the file ends.
+function brace_delta(text,   s, opens, closes) {
+    s = text
+    gsub(/"([^"\\]|\\.)*"/, "", s)
+    gsub(CHARLIT_RE, "", s)
+    sub(/\/\/.*$/, "", s)
+    opens = gsub(/\{/, "{", s)
+    closes = gsub(/\}/, "}", s)
+    return opens - closes
+}
 BEGIN {
+    # A char literal (a brace between two apostrophes) can hold a brace that
+    # is not code. The pattern is built with sprintf because the awk program
+    # lives inside a single-quoted shell string and cannot hold a raw quote.
+    SQ = sprintf("%c", 39)
+    CHARLIT_RE = SQ "([^" SQ "\\\\]|\\\\.)*" SQ
     n_exempt = 0
     while ((getline row < allowlist) > 0) {
         if (row ~ /^[ \t]*#/ || row == "") continue
@@ -94,14 +114,50 @@ BEGIN {
     }
     close(allowlist)
 }
-FNR == 1 { in_test = 0 }
+FNR == 1 { in_test = 0; test_depth = 0; awaiting_test_item = 0 }
 {
-    if (in_test) next
-    # Test-module boundary. Matched on the attribute rather than the literal
-    # `#[cfg(test)]` because this repo also uses `#[cfg(all(test, not(miri)))]`.
-    # A doc comment quoting the attribute must not trigger it, hence the
-    # leading-whitespace-then-`#` anchor.
-    if ($0 ~ /^[ \t]*#\[cfg\([^)]*test/) { in_test = 1; next }
+    # --- test-module boundary ------------------------------------------------
+    # The exemption covers the TEST MODULE, not the rest of the file. It used
+    # to latch at the first `#[cfg(test)]` and never reset, so every line after
+    # a test module -- production code included -- was exempt from the scan.
+    #
+    # The shape of what follows the attribute decides how long the exemption
+    # lasts:
+    #   * `mod x { ... }` -- the inline module body is exempt, and the scan
+    #     resumes when its braces balance.
+    #   * `mod x;`        -- the body lives in ANOTHER file, so nothing in this
+    #     file is exempt: production code after the declaration is scanned.
+    #   * `fn x { ... }` -- a single item guarded by the attribute; its body is
+    #     exempt.
+    if (awaiting_test_item) {
+        # More attributes, blank lines and comments between the attribute and
+        # the item it guards: keep waiting for the item.
+        if ($0 ~ /^[ \t]*#\[/) next
+        if ($0 ~ /^[ \t]*$/) next
+        if ($0 ~ /^[ \t]*\/\//) next
+        awaiting_test_item = 0
+        delta = brace_delta($0)
+        if (delta > 0) {
+            in_test = 1
+            test_depth = delta
+            next
+        }
+        # No braces on the item line: nothing in this file is exempt, and this
+        # line is production code.
+    } else if (in_test) {
+        test_depth += brace_delta($0)
+        if (test_depth > 0) next
+        in_test = 0
+        test_depth = 0
+        # The module closed on this line: whatever follows it is production.
+    } else if ($0 ~ /^[ \t]*#\[cfg\([^)]*test/) {
+        # Matched on the attribute rather than the literal `#[cfg(test)]`
+        # because this repo also uses `#[cfg(all(test, not(miri)))]`. A doc
+        # comment quoting the attribute must not trigger it, hence the
+        # leading-whitespace-then-`#` anchor.
+        awaiting_test_item = 1
+        next
+    }
 
     rel = FILENAME
     sub("^" root "/", "", rel)
@@ -109,7 +165,13 @@ FNR == 1 { in_test = 0 }
     # --- CC-L1: a permit acquired and immediately dropped -------------------
     if ($0 ~ /\.acquire(_owned)?\(\)[ \t]*\.await[ \t]*\??[ \t]*;/) {
         # A binding keeps the permit alive; only a bare statement discards it.
-        if ($0 !~ /let / && $0 !~ /=/ && $0 !~ /return/ && $0 !~ /assert/) {
+        # A WILDCARD binding does not: `let _ = sem.acquire().await;` drops the
+        # permit at the semicolon, which is semantically the bare statement
+        # this rule exists to catch. The old exclusions (`let ` and `=`) skipped
+        # it, so the wildcard was an escape hatch out of the gate.
+        wildcard_binding = 0
+        if ($0 ~ /^[ \t]*let[ \t]+(mut[ \t]+)?_[ \t]*=/) wildcard_binding = 1
+        if (wildcard_binding || ($0 !~ /let / && $0 !~ /=/ && $0 !~ /return/ && $0 !~ /assert/)) {
             report("CC-L1", rel, FNR, $0, \
                 "acquired semaphore permit is discarded at the semicolon, so the bound it enforces never applies; bind it to a variable or pass it to a guard")
         }
