@@ -65,8 +65,12 @@
 # USAGE
 #   SOURCE_DATE_EPOCH=<unix-ts> bash scripts/check_archive_reproducibility.sh <archive> [archive ...]
 #
-# Fail-closed: a missing SOURCE_DATE_EPOCH, a missing python3, or an unreadable
-# archive is a FAILURE. There is no "cannot tell, so skip" path.
+# Fail-closed: a missing SOURCE_DATE_EPOCH, a missing python3, an unreadable
+# archive, or a SOURCE_DATE_EPOCH the archive format cannot represent is a
+# FAILURE. There is no "cannot tell, so skip" path. In particular, a zip
+# stamped with an epoch below the DOS epoch (1980-01-01) cannot carry that
+# mtime at all, so the guard fails with the reason instead of skipping the
+# assertion and reporting the archive as verified.
 #
 # STYLE: user-facing errors are Spanish (repo convention for this scripts/
 # family); internal output is English.
@@ -237,7 +241,19 @@ def check_zip(archive):
             names = [i.filename for i in infos]
             check_common_shape(archive, names)
             expected = None
-            if epoch >= DOS_EPOCH:
+            if epoch < DOS_EPOCH:
+                # The zip format stores a DOS date, whose epoch is 1980-01-01.
+                # A SOURCE_DATE_EPOCH below it is NOT representable, so the
+                # invariant "mtime == SOURCE_DATE_EPOCH" can neither hold nor
+                # be asserted. The old code left `expected` as None, skipped
+                # the date_time assertion entirely and still printed a success
+                # line claiming `mtime~0`: an assertion that never ran,
+                # reported as verified. It now fails with the reason.
+                fail(archive, "SOURCE_DATE_EPOCH={} predates the DOS epoch (1980-01-01): the zip "
+                              "format cannot represent it, so 'mtime == SOURCE_DATE_EPOCH' can "
+                              "neither hold nor be asserted. Refusing to report this archive as "
+                              "verified.".format(epoch))
+            else:
                 st = time.gmtime(epoch)
                 # The expectation is the epoch expressed in the format's own
                 # resolution, not the raw epoch: MS-DOS time stores seconds/2
@@ -290,7 +306,7 @@ for path in archives:
     # uid/gid, no owner names and no gzip header; saying "gzip mtime 0" about a
     # .zip would be a false claim in a gate whose entire job is to state facts.
     if path.endswith(".zip"):
-        detail = "sorted entries, mtime~{} (DOS 2-second resolution), mode 0755, create_system=Unix, deflate".format(epoch)
+        detail = "sorted entries, mtime~{} (DOS 2-second resolution, asserted), mode 0755, create_system=Unix, deflate".format(epoch)
     else:
         detail = "sorted entries, uid/gid 0, no owner names, mtime={}, gzip mtime 0".format(epoch)
     print("reproducibility invariants OK: {} ({})".format(path, detail))

@@ -156,6 +156,27 @@ expect_kv run_code_jobs false "nothing in the diff is a build input"
 expect_kv affected none "no area flag is set"
 
 # ---------------------------------------------------------------------------
+# 1b. A tool under tools/ is CODE, not an unknown surface.
+#     The intra-crate lint tool (tools/intra-crate-lint) is Rust source. If
+#     tools/ matched no bucket, a tools-only change would fall into the
+#     "unknown path" widening and set all=true — the fast gate would widen
+#     to FULL for a change that is, in fact, a build input.
+# ---------------------------------------------------------------------------
+R="$(new_repo tools_code)"
+mkdir -p "$R/tools/intra-crate-lint/src"
+printf 'pub fn a() {}\n' >"$R/tools/intra-crate-lint/src/lib.rs"
+commit_all "$R" base
+BASE="$(git -C "$R" rev-parse HEAD)"
+printf 'pub fn a() {}\npub fn b() {}\n' >"$R/tools/intra-crate-lint/src/lib.rs"
+commit_all "$R" change
+
+classify "$R" "$BASE" HEAD
+expect_files 1 "tools-only diff reports one file"
+expect_kv code true "a tool under tools/ is a build input"
+expect_kv all false "tools/ is a known surface, not the unknown widening"
+expect_kv run_code_jobs true "a tools-only change runs the code lanes"
+
+# ---------------------------------------------------------------------------
 # 2. The live symptom: CI file + Rust source in ONE diff. Pre-fix the
 #    concatenated pseudo-path started with `.github/` and matched is_ci_file,
 #    so ci_only=true, the unknown widening never fired, run_code_jobs stayed
@@ -372,8 +393,8 @@ expect_kv run_code_jobs true "an empty diff runs the code lanes"
 #     classified the last commit instead of the branch: a PR whose tip was a
 #     docs edit read as docs-only and skipped cargo while the branch also
 #     touched Rust. The fixture renames its branch away from main on purpose,
-#     so `main` cannot resolve either and HEAD~1 is the only thing left to
-#     fall back to.
+#     so neither `main` nor HEAD~1 can resolve and the verdict can only be
+#     the widening one.
 # ---------------------------------------------------------------------------
 R="$(new_repo unresolvable-base)"
 git -C "$R" branch -m trunk
@@ -388,6 +409,28 @@ classify "$R" "no-such-ref-xyz" HEAD
 expect_kv all true "an unresolvable base widens to all=true"
 expect_kv run_code_jobs true "an unresolvable base runs the code lanes"
 expect_kv docs_only false "an unresolvable base does not classify as docs-only"
+
+# ---------------------------------------------------------------------------
+# 11. The REQUESTED base is the only candidate (B45/S1). The fallback chain
+#     was "<base> -> main -> HEAD~1": the HEAD~1 half is gone, but the `main`
+#     half was not. A local main can be stale or AHEAD of the real base, so
+#     the diff would not be the PR's range — and a branch whose tip is a
+#     documentation commit read as documentation-only, so the Rust change was
+#     never compiled. The fixture HAS a local main on purpose: the verdict
+#     must widen, not silently diff against it.
+# ---------------------------------------------------------------------------
+R="$(new_repo local-main-is-not-a-base)"
+git -C "$R" branch -m main
+printf 'v1\n' >"$R/README.md"
+commit_all "$R" "base"
+git -C "$R" checkout -q -b topic
+printf 'v2\n' >"$R/README.md"
+commit_all "$R" "docs on the branch"
+
+classify "$R" "no-such-ref-xyz" HEAD
+expect_kv all true "an unresolvable base widens even when a local main exists"
+expect_kv run_code_jobs true "the local main does not narrow the code lanes"
+expect_kv docs_only false "the local main is not a substitute for the requested base"
 
 echo
 if [ "$fail" = "0" ]; then

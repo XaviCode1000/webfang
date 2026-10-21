@@ -12,6 +12,12 @@
 #     attribution shape as the Codebuff trailer that slipped through, and it
 #     is already on main 11 times — this check is forward-looking and does not
 #     rewrite that history, but it must not accept the pattern again.
+#
+# It also pins the ONE case where the fixture reader and the production reader
+# used to disagree: a message that already ends in a newline. The production
+# path reads it through a command substitution, which strips the trailing
+# newlines; the --fixture path did not, so the trailer block was read from
+# different bytes and a marker read as clean.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -95,6 +101,9 @@ everything after the final blank line — is scanned.
 
 Nothing attributable follows."
 
+expect ok "clean message that ends in a newline" \
+$'chore: tidy imports\n\nBody prose, no trailer.\n'
+
 # --- must be rejected ------------------------------------------------------
 
 expect reject "Codebuff co-author (the case that slipped through)" \
@@ -149,6 +158,18 @@ Co-authored-by: release-plz-tu-repo[bot] <337500568+release-plz-tu-repo[bot]@use
 fix(cli): the actual offender
 
 Co-Authored-By: Codebuff <noreply@codebuff.com>"
+
+# The fixture reader keeps the newline that precedes the NUL separator, so
+# these messages arrive with a trailing newline the production reader never
+# sees. They must be read exactly like their newline-less twins.
+expect reject "marker message that ends in a newline" \
+$'chore: a\n\nGenerated with Codebuff\n'
+
+expect reject "co-author message that ends in a newline" \
+$'chore: b\n\nCo-Authored-By: Codebuff <noreply@codebuff.com>\n'
+
+expect reject "robot emoji in a message that ends in a newline" \
+$'chore: c\n\n🤖\n'
 
 # --- fail closed -----------------------------------------------------------
 
