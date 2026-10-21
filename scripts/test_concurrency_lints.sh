@@ -22,7 +22,11 @@
 #      (tests legitimately build one to exercise permit accounting);
 #   6. a documented exemption silences exactly the site it names — the real
 #      allowlist's row passes at its own path, and the same argument text in a
-#      DIFFERENT file still fails.
+#      DIFFERENT file still fails;
+#   7. a WILDCARD binding (`let _ = sem.acquire().await;`) is reported: it
+#      drops the permit at the semicolon, exactly like the bare statement;
+#   8. the test-module exemption ends where the test module ends: production
+#      code AFTER a test module is scanned again.
 #
 # Case 6 is the one that matters most: an allowlist gate is only safe if it is
 # keyed narrowly, and this proves the key includes the path.
@@ -114,6 +118,38 @@ async fn bad(arc: Arc<Semaphore>) {
 }
 RS
 
+# The wildcard binding. `let _ = sem.acquire().await;` DROPS the permit at the
+# semicolon -- the permit is never bound to a name, so it is released
+# immediately. It is the bare statement in disguise, and the gate's `let ` / `=`
+# exclusions used to skip it.
+assert_case cc_l1_wildcard_binding FAILS "CC-L1" <<'RS'
+use tokio::sync::Semaphore;
+
+async fn bad(sem: &Semaphore) {
+    let _ = sem.acquire().await;
+}
+RS
+
+assert_case cc_l1_wildcard_binding_question_mark FAILS "CC-L1" <<'RS'
+use tokio::sync::Semaphore;
+
+async fn bad(sem: &Semaphore) {
+    let _ = sem.acquire().await?;
+}
+RS
+
+# A NAMED binding keeps the permit alive until the binding dies, so it stays
+# accepted -- the wildcard rule must not widen into "every `let` is a bug".
+assert_case cc_l1_named_binding_passes PASS "" <<'RS'
+use tokio::sync::Semaphore;
+
+async fn good(sem: &Semaphore) {
+    let _permit = sem.acquire().await;
+    let permit = sem.acquire().await.expect("permit");
+    drop(permit);
+}
+RS
+
 # --- 3. CC-L2: runtime value, no visible non-zero guarantee ----------------
 assert_case cc_l2_runtime_value FAILS "CC-L2" <<'RS'
 use tokio::sync::Semaphore;
@@ -168,6 +204,72 @@ mod tests {
         let sem = Arc::new(Semaphore::new(0));
         let _g = PermitGuard::new(Arc::clone(&sem), 50);
         assert_eq!(sem.available_permits(), 50);
+    }
+}
+RS
+
+# The exemption covers the TEST MODULE, not the rest of the file. Production
+# code after a test module used to be exempt for the rest of the file, so this
+# bare acquire was never reported.
+assert_case cc_l1_after_test_module_is_scanned FAILS "CC-L1" <<'RS'
+use tokio::sync::Semaphore;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn permits_are_returned_on_drop() {
+        let sem = Arc::new(Semaphore::new(0));
+        assert_eq!(sem.available_permits(), 0);
+    }
+}
+
+async fn production(sem: &Semaphore) {
+    sem.acquire().await;
+}
+RS
+
+# A `mod x;` declaration puts the test body in ANOTHER file, so nothing in this
+# file is exempt and the production code after it is scanned.
+assert_case cc_l1_after_external_test_module_is_scanned FAILS "CC-L1" <<'RS'
+use tokio::sync::Semaphore;
+
+#[cfg(test)]
+mod tests;
+
+async fn production(sem: &Semaphore) {
+    sem.acquire().await;
+}
+RS
+
+# The exemption still covers the body of an inline test module: a zero-permit
+# semaphore built inside `mod tests { ... }` is legitimate, and the production
+# code before the module is scanned as well.
+assert_case cc_l1_before_test_module_is_scanned FAILS "CC-L1" <<'RS'
+use tokio::sync::Semaphore;
+
+async fn production(sem: &Semaphore) {
+    sem.acquire().await;
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn permits_are_returned_on_drop() {
+        let sem = Arc::new(Semaphore::new(0));
+        assert_eq!(sem.available_permits(), 0);
+    }
+}
+RS
+
+assert_case zero_permit_in_inline_test_module_passes PASS "" <<'RS'
+use tokio::sync::Semaphore;
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn permits_are_returned_on_drop() {
+        let sem = Arc::new(Semaphore::new(0));
+        assert_eq!(sem.available_permits(), 0);
     }
 }
 RS
