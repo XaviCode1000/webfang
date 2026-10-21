@@ -245,6 +245,7 @@ is_code_file() {
     # shadow them (same match, lost documentation of intent).
     */build.rs | build.rs | \
       *.rs | crates/* | tests/* | */tests/* | benches/* | examples/* | fuzz/* | \
+      tools/* | \
       *Cargo.toml | *Cargo.lock | \
       clippy.toml | rustfmt.toml | rust-toolchain.toml | deny.toml | \
       nextest.toml | .cargo/* | Dockerfile* | *.dockerfile | docker-compose*)

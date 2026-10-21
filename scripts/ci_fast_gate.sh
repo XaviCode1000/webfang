@@ -387,6 +387,15 @@ EOF
   # the same guard in lane_fmt_and_guards.
   run_guard "docs version pins gate (#2017)" scripts/check_docs_version_pins.sh \
     bash scripts/check_docs_version_pins.sh
+  # AI providers doc drift (#2136): docs/architecture/ai-providers-design.md is
+  # a normative spec cited by 13 code files and it lives OUTSIDE the mdBook —
+  # no gate read it, and that is how a signature that did not compile survived
+  # months. Blocking since phase 2: the CI step is required, so this mirror has
+  # to block too — a guard that blocks in CI and not here is a surprise the
+  # developer only discovers in the CI run. This lane is the DOC side of the
+  # drift; the CODE side is covered by the same guard in lane_fmt_and_guards.
+  run_guard "ai providers doc drift gate (#2136)" scripts/check_ai_providers_doc.sh \
+    bash scripts/check_ai_providers_doc.sh
 }
 
 # collect_shell_files: print, one per line, the changed files that are shell.
@@ -573,6 +582,13 @@ EOF
   else
     skip_step "docs version pins semantics" "no docs version pins files changed"
   fi
+  # AI providers doc drift (#2136): the same blocking mirror the other two
+  # lanes run, here for the lane that fires when `scripts/**` changed. A
+  # `scripts/**` change can move the code the doc cites, so this lane sees the
+  # CODE side of the drift. Blocking since phase 2: the CI step is required,
+  # and a local lane that stayed green would hide the drift until CI.
+  run_guard "ai providers doc drift gate (#2136)" scripts/check_ai_providers_doc.sh \
+    bash scripts/check_ai_providers_doc.sh
   # Release-pins harnesses (#2028): the release flow owns the bump of the docs
   # version pins, and these three pin the pieces that make that ownership real
   # — the WRITER (the exact inverse of the gate above), the ORCHESTRATOR (the
@@ -762,6 +778,14 @@ lane_fmt_and_guards() {
   # step of ci.yml, like every other guard in this function.
   run_guard "docs version pins gate (#2017)" scripts/check_docs_version_pins.sh \
     bash scripts/check_docs_version_pins.sh
+  # AI providers doc drift (#2136): the same guard the docs lane runs, and it
+  # has to run here too — the drift has TWO trigger surfaces (the doc and the
+  # code), so a lane that only sees one of them would leave half the drift
+  # invisible: a code PR that moves a cited signature changes no markdown and
+  # never reaches lane_docs. Blocking since phase 2, like the CI step it
+  # mirrors: required in CI, required here.
+  run_guard "ai providers doc drift gate (#2136)" scripts/check_ai_providers_doc.sh \
+    bash scripts/check_ai_providers_doc.sh
   # Issue #1614: the version-marker half of the MCP public-surface policy. The
   # other half (live schema vs the committed fixture) is a test and runs in the
   # cargo lanes; this one needs the base commit, which a test cannot see.

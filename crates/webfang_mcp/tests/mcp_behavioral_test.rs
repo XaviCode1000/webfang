@@ -1135,8 +1135,8 @@ async fn test_metrics_empty_state_honest_error() {
 /// (isError:true, Spanish) when the vault-search ports are absent.
 ///
 /// `start_test_server` builds a bare `Container` and never wires the
-/// embedding/note/chunker ports (the production wiring lives in the
-/// `mcp_server` example behind `WEBFANG_MCP_AI`, #433), so this asserts the
+/// embedding/note/chunker ports (the production wiring resolves a remote
+/// `EmbeddingPort` through `--embedding-provider`, #433), so this asserts the
 /// permanent "ports absent → honest error" contract: never a false success,
 /// never a protocol error — the tool is always registered, and it degrades to
 /// an honest error when no embedding provider is configured.
