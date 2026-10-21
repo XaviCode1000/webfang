@@ -716,6 +716,53 @@ jobs:
       - run: cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines
 
   # ============================================================================
+  # ARTIFACT GUARDS: the artifact producers are fail-closed and reproducible
+  # (audit B21, B26-B31). Five semantics harnesses, one per producer, each
+  # driving the REAL script against a fixture and asserting the CONTRACT
+  # (published whole or not at all, atomic swap, reproducible bytes, data
+  # never as program text) rather than the implementation.
+  # OFFLINE: no toolchain, no cargo, no network — the harnesses stub the
+  # binaries they need (rustdoc-markdown, cargo, the CLI) and read the real
+  # scripts from the checkout. Each one is a plain `bash` invocation: a red
+  # harness fails the step.
+  # ============================================================================
+  artifact-guards:
+    name: Artifact guards (fail-closed + reproducible producers)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      # B21 (atomic publication), B29 (fence flavour), B30 (derived date)
+      - name: LLM bundle producer
+        run: |
+          set -euo pipefail
+          bash scripts/test_artifact_llm_bundle.sh
+      # B26 (the licence expression is never shortened)
+      - name: Third-party notices producer
+        run: |
+          set -euo pipefail
+          bash scripts/test_artifact_notices.sh
+      # B27 (the chapter is staged in its own directory: same-fs rename)
+      - name: CLI reference producer
+        run: |
+          set -euo pipefail
+          bash scripts/test_artifact_cli_reference.sh
+      # B28 (the trace id reaches jq as data, never as program text)
+      - name: Trace analyzer
+        run: |
+          set -euo pipefail
+          bash scripts/test_artifact_analyze_trace.sh
+      # B31 (the archive is staged and published with an atomic replace)
+      - name: Deterministic zip writer
+        run: |
+          set -euo pipefail
+          bash scripts/test_artifact_deterministic_zip.sh
+
+  # ============================================================================
   # CODE QUALITY: dead deps + duplication ratchet (issue #516).
   # cargo-machete fails on any unused dependency; check_duplication.sh fails if
   # duplicated lines exceed the committed baseline (a DESCENDING ratchet).
