@@ -18,6 +18,14 @@
 # against the SLO targets in docs/ci-slo.md (PASS/WARN when data suffices,
 # `unknown` otherwise — numbers are never invented).
 #
+# Two fail-closed rules the snapshot obeys:
+#   - the required contexts are read from BOTH protection shapes
+#     (`checks[].context` and the deprecated `contexts[]`), so a modern
+#     checks[]-only protection is never reported as "no required contexts";
+#   - every listed run is accounted for: a run whose payload cannot be parsed
+#     is COUNTED and the snapshot says the sample is INCOMPLETE, instead of
+#     silently shrinking the sample and printing it as a complete picture.
+#
 # Exit codes:
 #   0  Snapshot printed (even when some data is unavailable -> `unknown`).
 #   2  Usage error, gh/jq missing, repo identity unreadable, or the branch
@@ -93,7 +101,15 @@ if [[ -z "$PROTECTION_JSON" ]]; then
   exit 2
 fi
 
-REQUIRED_CHECKS="$(printf '%s' "$PROTECTION_JSON" | jq -r '.required_status_checks.contexts[]?' 2>/dev/null || true)"
+# Modern branch protections expose the required contexts as `checks[].context`;
+# the deprecated `contexts[]` still exists on older ones. Reading ONLY the
+# deprecated shape reported 0 required contexts for a checks[]-only protection
+# and the snapshot claimed "no required contexts" while exiting 0 (B54). Both
+# shapes are read, exactly like merge-when-green.sh does.
+REQUIRED_CHECKS="$(printf '%s' "$PROTECTION_JSON" | jq -r '.required_status_checks.checks[]?.context // empty' 2>/dev/null || true)"
+if [[ -z "$REQUIRED_CHECKS" ]]; then
+  REQUIRED_CHECKS="$(printf '%s' "$PROTECTION_JSON" | jq -r '.required_status_checks.contexts[]? // empty' 2>/dev/null || true)"
+fi
 REQUIRED_COUNT="$(printf '%s' "$REQUIRED_CHECKS" | grep -c . || true)"
 # grep -c exits 1 on empty input; the `|| true` above keeps `set -e` quiet and
 # REQUIRED_COUNT is then empty -> normalise to 0.
@@ -118,52 +134,93 @@ RUNS_IN_WINDOW=0
 DECIDED_RUNS=0
 PASSED_RUNS=0
 RUNS_OK=false
+# Every listed run must be accounted for: analyzed, or counted as unparsable.
+RUNS_LISTED=0
+RUNS_UNPARSABLE=0
 
 to_epoch() {
-  date -u -d "$1" +%s 2>/dev/null || echo ""
+  # GNU date first, BSD date second (macOS has no `-d`). A parse failure stays
+  # a parse failure: it is counted as unparsable, never mistaken for "no data".
+  local ts="$1" out=""
+  out="$(date -u -d "$ts" +%s 2>/dev/null || true)"
+  if [[ -n "$out" ]]; then printf '%s' "$out"; return 0; fi
+  out="$(date -u -j -f '%Y-%m-%dT%H:%M:%SZ' "$ts" +%s 2>/dev/null || true)"
+  if [[ -n "$out" ]]; then printf '%s' "$out"; return 0; fi
+  return 1
 }
 
-if [[ -n "$RUN_LIST" ]] && printf '%s' "$RUN_LIST" | jq -e 'type == "array"' >/dev/null 2>&1; then
-  RUNS_OK=true
-  # Single bulk pass over the already-fetched runs: no per-run API calls.
+# analyze_runs <entries> — one bulk pass over the already-fetched runs: no
+# per-run API calls. Every listed run is accounted for: either analyzed, or
+# counted as unparsable. A run that silently vanishes shrinks the sample while
+# the snapshot still reads as a complete picture of the window (B55).
+analyze_runs() {
+  local entries="$1"
+  local run_json detail item_fields created updated conclusion event
+  local created_epoch updated_epoch duration_secs
+  RUNS_LISTED="$(printf '%s\n' "$entries" | grep -c . || true)"
+  [[ -n "$RUNS_LISTED" ]] || RUNS_LISTED=0
   while IFS= read -r run_json; do
     [[ -z "$run_json" ]] && continue
     detail="$run_json"
-    created="$(printf '%s' "$detail" | jq -r '.createdAt // empty' 2>/dev/null || true)"
-      updated="$(printf '%s' "$detail" | jq -r '.updatedAt // empty' 2>/dev/null || true)"
-      conclusion="$(printf '%s' "$detail" | jq -r '.conclusion // empty' 2>/dev/null || true)"
-      event="$(printf '%s' "$detail" | jq -r '.event // empty' 2>/dev/null || true)"
-      [[ -z "$created" || -z "$updated" ]] && continue
-      created_epoch="$(to_epoch "$created")"
-      updated_epoch="$(to_epoch "$updated")"
-      if [[ -z "$created_epoch" || -z "$updated_epoch" ]]; then
-        continue
-      fi
-      if [[ "$created_epoch" -lt "$CUTOFF_EPOCH" ]]; then
-        continue
-      fi
-      RUNS_IN_WINDOW=$((RUNS_IN_WINDOW + 1))
-      if [[ -n "$event" ]]; then
-        printf '%s\n' "$event" >> "$EVENTS_FILE"
-      fi
-      case "$conclusion" in
-        "" | in_progress | queued | waiting | pending | requested)
-          # In-flight: visible in the event breakdown, excluded from pass
-          # rate (neither numerator nor denominator).
-          ;;
-        success)
-          DECIDED_RUNS=$((DECIDED_RUNS + 1))
-          PASSED_RUNS=$((PASSED_RUNS + 1))
-          ;;
-        *)
-          DECIDED_RUNS=$((DECIDED_RUNS + 1))
-          ;;
-      esac
-      duration_secs=$((updated_epoch - created_epoch))
-      if [[ "$duration_secs" -ge 0 ]]; then
-        printf '%s\n' "$duration_secs" >> "$DURATIONS_FILE"
-      fi
-    done < <(printf '%s' "$RUN_LIST" | jq -c '.[:200][]' 2>/dev/null || true)
+    # One jq call per run; the four fields are joined with the unit separator
+    # so an empty value keeps its position. A jq failure is COUNTED, never
+    # silently skipped.
+    if ! item_fields="$(printf '%s' "$detail" | jq -r '[ (.createdAt // ""), (.updatedAt // ""), (.conclusion // ""), (.event // "") ] | join("\u001f")' 2>/dev/null)"; then
+      RUNS_UNPARSABLE=$((RUNS_UNPARSABLE + 1))
+      continue
+    fi
+    IFS=$'\x1f' read -r created updated conclusion event <<<"$item_fields" || true
+    if [[ -z "$created" || -z "$updated" ]]; then
+      RUNS_UNPARSABLE=$((RUNS_UNPARSABLE + 1))
+      continue
+    fi
+    created_epoch="$(to_epoch "$created" || true)"
+    updated_epoch="$(to_epoch "$updated" || true)"
+    if [[ -z "$created_epoch" || -z "$updated_epoch" ]]; then
+      RUNS_UNPARSABLE=$((RUNS_UNPARSABLE + 1))
+      continue
+    fi
+    if [[ "$created_epoch" -lt "$CUTOFF_EPOCH" ]]; then
+      continue
+    fi
+    RUNS_IN_WINDOW=$((RUNS_IN_WINDOW + 1))
+    if [[ -n "$event" ]]; then
+      printf '%s\n' "$event" >>"$EVENTS_FILE"
+    fi
+    case "$conclusion" in
+      "" | in_progress | queued | waiting | pending | requested)
+        # In-flight: visible in the event breakdown, excluded from pass
+        # rate (neither numerator nor denominator).
+        ;;
+      success)
+        DECIDED_RUNS=$((DECIDED_RUNS + 1))
+        PASSED_RUNS=$((PASSED_RUNS + 1))
+        ;;
+      *)
+        DECIDED_RUNS=$((DECIDED_RUNS + 1))
+        ;;
+    esac
+    duration_secs=$((updated_epoch - created_epoch))
+    if [[ "$duration_secs" -ge 0 ]]; then
+      printf '%s\n' "$duration_secs" >>"$DURATIONS_FILE"
+    fi
+  done <<<"$entries"
+}
+
+if [[ -n "$RUN_LIST" ]] && printf '%s' "$RUN_LIST" | jq -e 'type == "array"' >/dev/null 2>&1; then
+  # The bulk extraction is checked too: a failed jq means we know NOTHING
+  # about the sample, which is not the same as "the window held no runs".
+  entries=""
+  bulk_ok=true
+  if ! entries="$(printf '%s' "$RUN_LIST" | jq -c '.[:200][]' 2>/dev/null)"; then
+    bulk_ok=false
+  fi
+  if [[ "$bulk_ok" == "true" ]]; then
+    RUNS_OK=true
+    analyze_runs "$entries"
+  else
+    echo "warning: could not parse the run list returned by gh; the sample is unknown." >&2
+  fi
 fi
 
 PASS_RATE="unknown"
@@ -240,7 +297,14 @@ echo ""
 echo "## Run stats"
 echo ""
 if [[ "$RUNS_OK" == "true" ]]; then
-  echo "- runs in window: ${RUNS_IN_WINDOW}"
+  if [[ "$RUNS_UNPARSABLE" -gt 0 ]]; then
+    # The sample is PARTIAL and says so on the count line itself: a bare
+    # "runs in window: N" would read as a complete picture of the window.
+    echo "- runs in window: ${RUNS_IN_WINDOW} (${RUNS_UNPARSABLE} of ${RUNS_LISTED} listed runs could not be parsed — sample INCOMPLETE)"
+    echo "- warning: the stats below cover a PARTIAL sample; ${RUNS_UNPARSABLE} listed run(s) were unreadable and are NOT counted."
+  else
+    echo "- runs in window: ${RUNS_IN_WINDOW}"
+  fi
   if [[ "$DECIDED_RUNS" -gt 0 ]]; then
     echo "- pass rate: ${PASS_RATE}% (${PASSED_RUNS}/${DECIDED_RUNS} decided runs)"
   else
@@ -264,7 +328,7 @@ if [[ "$RUNS_OK" == "true" ]]; then
     echo "| (no events) | 0 |"
   fi
 else
-  echo "- runs in window: unknown (gh run list failed or returned no data)"
+  echo "- runs in window: unknown (gh run list failed, returned no data, or could not be parsed)"
   echo "- pass rate: unknown"
   echo "- wall-clock median: unknown"
   echo "- wall-clock p90: unknown"
