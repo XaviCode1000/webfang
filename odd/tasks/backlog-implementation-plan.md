@@ -164,6 +164,7 @@ Reglas derivadas para los lotes de este plan:
 | D15 | #2061 → **rechazar** el bot de issues/PR | El scope `published` ya corre dentro del `Validate PR metadata` (fail-closed); un bot nuevo es un escritor nuevo con su propia máquina de estados |
 | D16 | #1828 → la fila WAL-kill se **rechaza**; `PRAGMA integrity_check` sobre las filas existentes | La fila WAL exigiría un punto de arming **nuevo** en producción para servir a un test: un verbo nuevo en el contrato del crash-harness |
 | D17 | #1826 y #1710 se **comentan, no se cierran** | Un hilo con dos modos de falla: cerrar deja strandado al que espera la otra mitad |
+| D19 | #1833 (scratch-crate para type-checkear `cfg(windows)`) se **rechaza como gate**: la lane Windows sigue siendo el único compilador real de Windows, y el test de Windows pasa **in-module** | Un scratch crate con una copia del módulo y la tabla de lints replicada a mano es un **segundo** compilador de Windows que no compila el crate real: puede quedar verde mientras el crate real está rojo. Un gate que puede mentir es peor que un procedimiento. La lane no shieldea (decisión #1633, registrada en el comentario de `ci.yml`) y el feedback de 25 min se acepta: el costo de la alternativa es un mecanismo falso |
 | D18 | #1797: `version_string()` (0 call sites) se dropea y **no** se escribe `build.rs` | El issue pide un `build.rs` que nadie necesita: la función que lo alimentaría tiene 0 call sites, así que el archivo sería metadata falsa. Sin `build.rs`, el perfil de release sigue siendo el de Cargo, sin una arista que nadie puede reproducir |
 
 ---
@@ -175,7 +176,7 @@ Reglas derivadas para los lotes de este plan:
 | O1 | `#1852`: cambiar feature flags (`default`) y una arista de dev-dependency | L8 | **RESUELTA 2026-10-22**: sí, `default = ["mcp"]` + `default-features = false` |
 | O2 | `#1796/#1797/#1799/#2031/#1984`: tocar o remover deps y features | L9, L10 | **RESUELTA 2026-10-22**: los tres swaps autorizados (`sysinfo`, `keyring`, `serde_yaml`) |
 | O3 | `#1821`: `status:approved` + credenciales de Apple | L13 | **PENDIENTE**: es una acción del owner (credenciales), no una decisión que yo pueda tomar |
-| O4 | `#1833`: su propuesta revierte una decisión registrada (la lane CI es el único compilador de Windows) | L8 | **PENDIENTE** |
+| O4 | `#1833`: su propuesta revierte una decisión registrada (la lane CI es el único compilador de Windows) | L8 | **RESUELTA POR EL AGENTE (D19)**: la propuesta del scratch-crate se rechaza como gate; la lane Windows queda como único compilador real de Windows |
 | O5 | `#1710`: la decisión stealth/standard es documentación (`docs/` está fuera de alcance por defecto) | L11 | **RESUELTA 2026-10-22**: `docs/` autorizado (runbook WAL/SQLite + la nota de #1710) |
 | O7 | Orden de apertura de las PRs y de los merges (3 PRs abiertas + 1 release esperando; `main` se mueve cada ~15 min con `strict: true`) | todas | **PENDIENTE** |
 | O8 | `#2235`: Miri exige el toolchain `nightly`, que no está en la máquina | L15 | **RESUELTA 2026-10-22**: instalar nightly y hacer L15 |
