@@ -21,6 +21,8 @@
 //! durably flushed.
 
 use std::collections::HashSet;
+use std::fs::File;
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 
 use tokio_util::sync::CancellationToken;
@@ -117,17 +119,22 @@ pub(crate) struct CommitSession<'a> {
     /// second identical item must skip its append, or the file holds duplicate
     /// records that differ only in `timestamp_utc` (F-02).
     driven: HashSet<(String, String)>,
+    /// Lines of the output file that were skipped while indexing it because
+    /// they were not valid UTF-8 (#1812). The export summary carries the
+    /// count: the operator must SEE what was dropped.
+    skipped_non_utf8: usize,
 }
 
 impl<'a> CommitSession<'a> {
     fn open(ctx: Option<&'a ResumeContext<'a>>, output_path: &std::path::Path) -> Self {
         let records = ctx.map_or_else(DomainRecords::new, |c| load_preserving(c.store));
-        let hash_index = build_content_hash_index(output_path);
+        let (hash_index, report) = build_content_hash_index(output_path);
         Self {
             ctx,
             records,
             hash_index,
             driven: HashSet::new(),
+            skipped_non_utf8: report.skipped_non_utf8,
         }
     }
 
@@ -548,6 +555,96 @@ fn fresh_discovered(
     Some(Stateful::<RawRecord, crate::domain::page_state::Discovered>::new(record))
 }
 
+/// Counters collected while indexing an existing JSONL output file.
+///
+/// The report is what the export summary shows the operator: how many lines
+/// were read, how many carried no checksum, and how many were skipped
+/// because they were not valid UTF-8 (#1812).
+#[derive(Debug, Default, Clone, Copy)]
+pub(crate) struct JsonlIndexReport {
+    /// Non-empty lines read from the file.
+    pub(crate) lines: usize,
+    /// Lines that parsed as a JSON object but carried no [`CHECKSUM_FIELD`].
+    pub(crate) without_checksum: usize,
+    /// Lines that were not valid UTF-8 and were skipped.
+    pub(crate) skipped_non_utf8: usize,
+}
+
+/// The [`CHECKSUM_FIELD`] index of an existing JSONL output file, plus the
+/// counters collected while reading it.
+#[derive(Debug, Default)]
+pub(crate) struct JsonlChecksumIndex {
+    /// Every checksum found in the file.
+    pub(crate) hashes: HashSet<String>,
+    /// What the read observed.
+    pub(crate) report: JsonlIndexReport,
+}
+
+/// Read the [`CHECKSUM_FIELD`] index of an existing JSONL output file.
+///
+/// # Streaming (#1812)
+///
+/// The file is read LINE BY LINE through a [`BufReader`], never as one
+/// string: an export larger than RAM must not be loaded into RAM to be
+/// indexed. This is the ONE reader for the export file — the application's
+/// `CommitSession` and the infrastructure writer session read the same bytes
+/// through it, so both sides agree on what a line is.
+///
+/// # Damaged bytes (#1812)
+///
+/// A line that is not valid UTF-8 is SKIPPED and counted, never fatal: one
+/// damaged byte must not abort the whole export. The caller reports the
+/// count through [`JsonlIndexReport::skipped_non_utf8`].
+///
+/// # Errors
+///
+/// Returns an I/O error when the file exists but cannot be read. A missing
+/// file is NOT an error — it yields an empty index, exactly like a first run
+/// against a fresh output path.
+pub(crate) fn read_jsonl_checksum_index(
+    path: &std::path::Path,
+) -> std::io::Result<JsonlChecksumIndex> {
+    let mut index = JsonlChecksumIndex::default();
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(index),
+        Err(e) => return Err(e),
+    };
+    let mut reader = BufReader::new(file);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if reader.read_until(b'\n', &mut line)? == 0 {
+            break;
+        }
+        // Strip the line terminator: the `\n` and the `\r` of a CRLF file.
+        while matches!(line.last(), Some(b'\n') | Some(b'\r')) {
+            line.pop();
+        }
+        if line.is_empty() {
+            continue;
+        }
+        index.report.lines += 1;
+        let Ok(text) = std::str::from_utf8(&line) else {
+            index.report.skipped_non_utf8 += 1;
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(text) else {
+            continue;
+        };
+        match value
+            .get(CHECKSUM_FIELD)
+            .and_then(serde_json::Value::as_str)
+        {
+            Some(hash) => {
+                index.hashes.insert(hash.to_owned());
+            },
+            None => index.report.without_checksum += 1,
+        }
+    }
+    Ok(index)
+}
+
 /// Rebuild the resume dedup index from an existing output file.
 ///
 /// The field name comes from the pinned [`CHECKSUM_FIELD`] constant (#1617,
@@ -555,38 +652,63 @@ fn fresh_discovered(
 /// a rename in one of them would empty the index with no error. Lines that
 /// parse but carry no checksum are counted and reported, so a mismatch between
 /// the writer and the readers is visible instead of silent.
-fn build_content_hash_index(path: &std::path::Path) -> HashSet<String> {
-    let Ok(bytes) = std::fs::read_to_string(path) else {
-        return HashSet::new();
+///
+/// The read itself is [`read_jsonl_checksum_index`]'s: STREAMING, and a line
+/// that is not valid UTF-8 is skipped and reported instead of failing the
+/// export (#1812).
+fn build_content_hash_index(path: &std::path::Path) -> (HashSet<String>, JsonlIndexReport) {
+    let index = match read_jsonl_checksum_index(path) {
+        Ok(index) => index,
+        Err(e) => {
+            // The index only PROVES a flush for the resume gate; an
+            // unreadable file proves nothing, but it must not abort the
+            // export either. Report it and continue with an empty index.
+            crate::infrastructure::observability::log_scrape_error(
+                &e,
+                &path.display().to_string(),
+                "jsonl_resume_index",
+                None,
+                "could not read the output file to rebuild the resume index; continuing with an empty index",
+            );
+            return (HashSet::new(), JsonlIndexReport::default());
+        },
     };
-    let mut index = HashSet::new();
-    let mut lines = 0usize;
-    let mut without_checksum = 0usize;
-    for line in bytes.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        lines += 1;
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
-            match value.get(CHECKSUM_FIELD).and_then(|h| h.as_str()) {
-                Some(hash) => {
-                    index.insert(hash.to_string());
-                },
-                None => without_checksum += 1,
-            }
-        }
+    if index.report.skipped_non_utf8 > 0 {
+        // The DECIDED policy (#1812): a line that is not valid UTF-8 is
+        // skipped, the export COMPLETES, and the damage is reported — never
+        // a silent skip and never a failed export.
+        let error = std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "{} line(s) of the export file are not valid UTF-8",
+                index.report.skipped_non_utf8
+            ),
+        );
+        crate::infrastructure::observability::log_scrape_error(
+            &error,
+            &path.display().to_string(),
+            "jsonl_resume_index",
+            None,
+            "JSONL lines that are not valid UTF-8 were skipped while indexing the export file",
+        );
     }
-    if without_checksum > 0 {
+    if index.report.without_checksum > 0 {
         tracing::warn!(
             file = %path.display(),
-            lines,
-            lines_without_checksum = without_checksum,
+            lines = index.report.lines,
+            lines_without_checksum = index.report.without_checksum,
             field = CHECKSUM_FIELD,
             "output lines carry no checksum field; resume dedup will re-drive them (writer/reader field-name mismatch?)"
         );
     }
-    info!(file = %path.display(), lines, hashes = index.len(), "indexed output file for resume dedup");
-    index
+    info!(
+        file = %path.display(),
+        lines = index.report.lines,
+        hashes = index.hashes.len(),
+        skipped_non_utf8 = index.report.skipped_non_utf8,
+        "indexed output file for resume dedup"
+    );
+    (index.hashes, index.report)
 }
 
 /// Map an export-stage failure onto the SC6 taxonomy: item-data problems are
@@ -831,6 +953,8 @@ pub fn process_results(
     session.final_persist();
 
     info!(
+        total = processed_urls.len(),
+        skipped_non_utf8 = session.skipped_non_utf8,
         "✅ Export completado: {} documentos procesados",
         processed_urls.len()
     );
@@ -862,6 +986,118 @@ pub fn domain_from_url(url: &str) -> String {
         .ok()
         .and_then(|p| p.host_str().map(str::to_string))
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// What the AI export path will do with one chunk.
+///
+/// The plan is computed BEFORE the batch export, so the commit point can
+/// only mark what was actually written (#1812). The non-AI path
+/// ([`process_single_item`]) is the reference: a chunk that cannot be
+/// exported is a RECORDED FAILURE, never a silent commit — a committed
+/// record that was never written makes the resume gate skip the page
+/// forever.
+enum AiChunkOutcome {
+    /// The resume gate decided otherwise: this chunk is not driven.
+    NotDriven,
+    /// Validated and queued for the batch export. Carries the content hash
+    /// the commit point must record.
+    Exported(String),
+    /// A within-run duplicate of an earlier chunk: the FIRST occurrence is
+    /// the one exported (#1215) — never a failure, never a second append.
+    Duplicate,
+    /// Validation rejected the chunk: an honest, recorded failure.
+    Invalid(String),
+}
+
+/// Plan every chunk of the AI export path before anything is written.
+///
+/// Returns the per-chunk outcome and the chunks that will be exported.
+fn plan_ai_chunks(
+    chunks: &[crate::domain::DocumentChunk],
+    decisions: &[ItemDecision],
+    content_hashes: &[String],
+) -> (
+    Vec<AiChunkOutcome>,
+    Vec<crate::domain::DocumentChunkValidated>,
+) {
+    let mut driven_keys: HashSet<(String, String)> = HashSet::new();
+    let mut outcomes = Vec::with_capacity(chunks.len());
+    let mut validated_chunks = Vec::with_capacity(chunks.len());
+    for ((chunk, decision), content_hash) in chunks.iter().zip(decisions).zip(content_hashes) {
+        if !matches!(decision, ItemDecision::DriveAndCommit) {
+            outcomes.push(AiChunkOutcome::NotDriven);
+            continue;
+        }
+        // #1215: the exporter is append-only, so a second identical chunk in
+        // the same run must not write a duplicate record. The first
+        // occurrence wins; the loser is a skip, not a failure.
+        if !driven_keys.insert((chunk.url.clone(), content_hash.clone())) {
+            outcomes.push(AiChunkOutcome::Duplicate);
+            continue;
+        }
+        match chunk.clone().validate() {
+            Ok(validated) => {
+                outcomes.push(AiChunkOutcome::Exported(content_hash.clone()));
+                validated_chunks.push(validated);
+            },
+            Err(e) => outcomes.push(AiChunkOutcome::Invalid(e.to_string())),
+        }
+    }
+    (outcomes, validated_chunks)
+}
+
+/// Commit the AI export path's per-chunk outcomes.
+///
+/// Mirrors [`process_single_item`]: only what was actually written is
+/// committed, and a chunk that could not be exported is a recorded failure
+/// at a non-advanced status (SC6) — never a silent commit (#1812).
+fn commit_ai_outcomes(
+    session: &mut CommitSession<'_>,
+    processed_urls: &[String],
+    content_hashes: &[String],
+    decisions: &[ItemDecision],
+    outcomes: &[AiChunkOutcome],
+    output_path: &std::path::Path,
+    run_id: &RunId,
+) {
+    for (((url_str, content_hash), decision), outcome) in processed_urls
+        .iter()
+        .zip(content_hashes)
+        .zip(decisions)
+        .zip(outcomes)
+    {
+        match decision {
+            ItemDecision::AlreadyCommitted => continue,
+            ItemDecision::PromoteFromFlushProof => {
+                session.promote_from_flush_proof(
+                    url_str,
+                    output_path.display().to_string(),
+                    content_hash,
+                );
+            },
+            ItemDecision::DriveAndCommit => match outcome {
+                AiChunkOutcome::Exported(hash) => {
+                    session.commit_item(url_str, hash.clone(), output_path.to_path_buf(), run_id);
+                },
+                AiChunkOutcome::Invalid(error) => {
+                    // The non-AI path's shape: an item that cannot be
+                    // exported is a recorded failure, NOT a commit. A commit
+                    // here would make `--resume` skip the page forever even
+                    // though nothing was ever written to the file.
+                    let err = ExporterError::InvalidConfig(error.clone());
+                    let class = classify_export_failure(&err);
+                    session.fail_item(url_str, class, &err.to_string());
+                },
+                AiChunkOutcome::Duplicate => {
+                    info!(url = %url_str, "duplicate (url, content_hash) already exported this run; skipping commit");
+                },
+                AiChunkOutcome::NotDriven => {},
+            },
+        }
+        if session.cancelled() {
+            break;
+        }
+    }
 }
 
 /// Process pre-cleaned document chunks and export them.
@@ -920,51 +1156,31 @@ pub fn process_results_with_chunks(
         );
     }
 
-    // Only chunks that will actually drive this run reach export_batch:
+    // Plan BEFORE the export (#1812): the plan says what will actually be
+    // written, so the commit point below can only mark what WAS written.
     // COMMITTED-proven and PromoteFromFlushProof chunks must not re-append
     // (BUG F3-A: exporting before deciding duplicated them on resume).
-    // #1215: within-run duplicates (same url + same content hash) are also
-    // dropped here — export_batch is append-only, so a second identical
-    // chunk would write a duplicate record. First occurrence wins.
-    let mut driven_keys: HashSet<(String, String)> = HashSet::new();
-    let validated_chunks: Vec<crate::domain::DocumentChunkValidated> = chunks
-        .iter()
-        .zip(&decisions)
-        .zip(&content_hashes)
-        .filter(|((_, d), _)| matches!(d, ItemDecision::DriveAndCommit))
-        .filter_map(|((c, _), h)| c.clone().validate().ok().map(|v| (v, h.clone())))
-        .filter(|(v, h)| driven_keys.insert((v.url.clone(), h.clone())))
-        .map(|(v, _)| v)
-        .collect();
+    let (outcomes, validated_chunks) = plan_ai_chunks(chunks, &decisions, &content_hashes);
 
     // Use export_batch to avoid per-chunk file open/close (which overwrites in VectorExporter)
     if !validated_chunks.is_empty() {
         exporter.export_batch(&validated_chunks)?;
     }
 
-    for ((url_str, content_hash), decision) in
-        processed_urls.iter().zip(&content_hashes).zip(decisions)
-    {
-        match decision {
-            ItemDecision::AlreadyCommitted => continue,
-            ItemDecision::PromoteFromFlushProof => {
-                session.promote_from_flush_proof(
-                    url_str,
-                    output_path.display().to_string(),
-                    content_hash,
-                );
-            },
-            ItemDecision::DriveAndCommit => {
-                session.commit_item(url_str, content_hash.clone(), output_path.clone(), run_id);
-            },
-        }
-        if session.cancelled() {
-            break;
-        }
-    }
+    commit_ai_outcomes(
+        &mut session,
+        &processed_urls,
+        &content_hashes,
+        &decisions,
+        &outcomes,
+        &output_path,
+        run_id,
+    );
     session.final_persist();
 
     info!(
+        total = processed_urls.len(),
+        skipped_non_utf8 = session.skipped_non_utf8,
         "✅ AI-cleaned export completed: {} chunks processed",
         processed_urls.len()
     );
@@ -1646,6 +1862,118 @@ mod tests {
     }
 
     // =========================================================================
+    // #1812: the export path's data integrity
+    // =========================================================================
+
+    /// Peak resident set size in bytes (Linux only).
+    ///
+    /// The CURRENT rss falls back when the reader frees its buffer, so only
+    /// the PEAK shows what the read cost.
+    fn peak_rss_bytes() -> Option<u64> {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        let line = status.lines().find(|l| l.starts_with("VmHWM:"))?;
+        let kb = line.split_whitespace().nth(1)?.parse::<u64>().ok()?;
+        Some(kb.saturating_mul(1024))
+    }
+
+    /// Write a JSONL file of `lines` records, each roughly `width` bytes long.
+    ///
+    /// The records go through a buffered writer so the FIXTURE never holds
+    /// the whole file: the measurement must see the cost of the READ, not of
+    /// the file it reads.
+    fn write_wide_jsonl(path: &std::path::Path, lines: usize, width: usize) {
+        use std::io::Write;
+        let file = std::fs::File::create(path).expect("create jsonl");
+        let mut writer = std::io::BufWriter::new(file);
+        let filler = "x".repeat(width);
+        for i in 0..lines {
+            writeln!(
+                writer,
+                "{{\"url\":\"https://big.test/{i}\",\"content\":\"{filler}\",\"checksum_sha256\":\"{i:064x}\"}}"
+            )
+            .expect("write line");
+        }
+        writer.flush().expect("flush");
+    }
+
+    /// The DECIDED policy (#1812): a line that is not valid UTF-8 is
+    /// skipped, the export COMPLETES, and the skip is REPORTED — a
+    /// structured error plus the count of skipped entries in the export
+    /// summary, which is the surface the operator reads.
+    #[test]
+    fn a_non_utf8_line_is_reported_in_the_export_summary() {
+        use crate::infrastructure::observability::test_log_capture::LogBuffer;
+
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("export.jsonl");
+        let mut bytes =
+            b"{\"url\":\"https://kept.test/a\",\"checksum_sha256\":\"aaaa\"}\n".to_vec();
+        bytes.extend_from_slice(&[0xff, 0xfe, 0x00]);
+        bytes.push(b'\n');
+        std::fs::write(&path, &bytes).unwrap();
+
+        let (buffer, _guard) = LogBuffer::capture();
+        process_results(
+            &[make_scraped_content(
+                "https://new.test/b",
+                "B",
+                "body of the new record",
+            )],
+            temp_dir.path().to_path_buf(),
+            ExportFormat::Jsonl,
+            "export",
+            None,
+        )
+        .expect("the export must COMPLETE even with a damaged line");
+
+        let log = buffer.text();
+        assert!(
+            log.contains("skipped_non_utf8=1"),
+            "the export summary must carry the count of skipped entries: {log}"
+        );
+        assert!(
+            log.contains("not valid UTF-8"),
+            "the structured error must name the damage: {log}"
+        );
+    }
+
+    /// The resume index must be STREAMED, not read whole (#1812).
+    ///
+    /// Coarse memory check: indexing a 16 MiB export must not cost the
+    /// process the whole file. The reader that did `fs::read_to_string`
+    /// loaded every byte; the streaming reader holds ONE line at a time, so
+    /// the peak grows by the size of the index (one hash per line), not by
+    /// the size of the file.
+    ///
+    /// The measurement is the process PEAK rss (`VmHWM`): the current rss
+    /// falls back when the reader frees its buffer, so only the peak shows
+    /// the cost. Linux-only — the test returns early elsewhere.
+    #[test]
+    fn the_resume_index_is_streamed_not_read_whole() {
+        if peak_rss_bytes().is_none() {
+            return; // not Linux: the peak rss is not observable
+        }
+        let temp_dir = TempDir::new().unwrap();
+        let path = temp_dir.path().join("big.jsonl");
+        write_wide_jsonl(&path, 4096, 4096); // 4096 lines x ~4 KiB = ~16 MiB
+
+        let before = peak_rss_bytes().expect("peak rss");
+        let session = CommitSession::open(None, &path);
+        let after = peak_rss_bytes().expect("peak rss");
+
+        assert_eq!(
+            session.hash_index.len(),
+            4096,
+            "every line's checksum must be indexed"
+        );
+        let growth = after.saturating_sub(before);
+        assert!(
+            growth < 8 * 1024 * 1024,
+            "the index must not hold the whole file: the peak grew by {growth} bytes for a ~16 MiB export"
+        );
+    }
+
+    // =========================================================================
     // AI chunk export: resume gate BEFORE batch export (BUG F3-A)
     // =========================================================================
     // The non-AI path (`process_single_item`) decides BEFORE each export;
@@ -1835,6 +2163,114 @@ mod tests {
                 records["https://flush-ai.test/g"].status,
                 PageStatus::Committed,
                 "record promoted back to Committed"
+            );
+        }
+
+        /// #1812: the AI path must never commit a chunk it did not write.
+        ///
+        /// A chunk whose title is empty cannot pass `validate()`, so it never
+        /// reaches the export file. The non-AI path (`process_single_item`)
+        /// records that failure and leaves the record at a non-advanced
+        /// status; the AI path used to drop the chunk SILENTLY and still mark
+        /// it COMMITTED — the resume gate then skipped the page forever,
+        /// although nothing was ever written to the file.
+        #[test]
+        fn ai_export_does_not_commit_a_chunk_it_never_wrote() {
+            let dir = TempDir::new().unwrap();
+            let store =
+                RecordStore::new("ai-invalid.test").with_state_dir(dir.path().to_path_buf());
+            let ctx_store = store.clone();
+            let ctx = ResumeContext::new(&ctx_store).with_resume(false);
+
+            // An empty title fails `validate()` — the chunk never reaches
+            // the file.
+            process_results_with_chunks(
+                &[make_ai_chunk(
+                    "https://ai-invalid.test/a",
+                    "",
+                    "content of the chunk that cannot be validated",
+                )],
+                dir.path().to_path_buf(),
+                ExportFormat::Jsonl,
+                "export",
+                Some(&ctx),
+            )
+            .unwrap();
+
+            assert_eq!(
+                jsonl_lines(dir.path(), "export").len(),
+                0,
+                "an unvalidatable chunk is never written"
+            );
+            let records = store.load().unwrap();
+            let record = &records["https://ai-invalid.test/a"];
+            assert_ne!(
+                record.status,
+                PageStatus::Committed,
+                "a chunk that was never written must NOT be committed"
+            );
+            assert!(
+                record.last_error.is_some(),
+                "the failure must be recorded, not swallowed"
+            );
+        }
+
+        /// #1812 item 1: the page TITLE survives the `--clean-ai` export.
+        ///
+        /// The AI chunk is enriched with the page identity before the export,
+        /// so the title reaches the record — the issue's premise that
+        /// `--clean-ai` loses it is false. The page-level `author`/`excerpt`
+        /// are NOT inherited: that is the archived #800 decision (a
+        /// page-inherited author on a fragment is a FALSE author, obs #162),
+        /// pinned here so it cannot drift silently in either direction.
+        #[test]
+        fn ai_export_keeps_the_page_title_and_does_not_inherit_the_page_author() {
+            let dir = TempDir::new().unwrap();
+            let page = ScrapedContent {
+                title: "The page title".to_string(),
+                content: "the page body".to_string(),
+                url: ValidUrl::parse("https://ai-title.test/a").expect("valid url"),
+                excerpt: Some("the page excerpt".to_string()),
+                author: Some("the page author".to_string()),
+                date: Some("2026-01-01".to_string()),
+                html: None,
+                assets: Vec::new(),
+                correlation_id: None,
+                quality_hint: None,
+            };
+            // What the cleaner produces: no identity, only the cleaned body.
+            // The export path enriches it with the page identity.
+            let chunk =
+                DocumentChunkUnvalidated::new(uuid::Uuid::new_v4(), "", "", "the cleaned body")
+                    .enrich_from_scraped_content(&page);
+
+            process_results_with_chunks(
+                &[chunk],
+                dir.path().to_path_buf(),
+                ExportFormat::Jsonl,
+                "export",
+                None,
+            )
+            .unwrap();
+
+            let lines = jsonl_lines(dir.path(), "export");
+            assert_eq!(lines.len(), 1);
+            let record: serde_json::Value =
+                serde_json::from_str(&lines[0]).expect("the exported line is JSON");
+            assert_eq!(
+                record["title"], "The page title",
+                "the page title must survive the --clean-ai export"
+            );
+            let extra = record["extra_metadata"]
+                .as_object()
+                .expect("extra_metadata object");
+            assert!(
+                !extra.contains_key("author"),
+                "the page author is NOT inherited by an AI chunk (#800)"
+            );
+            assert!(
+                !extra.contains_key("excerpt"),
+                "the page excerpt is NOT inherited by an AI chunk (#800)"
             );
         }
     }
