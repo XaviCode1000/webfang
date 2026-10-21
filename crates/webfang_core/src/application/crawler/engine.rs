@@ -63,6 +63,57 @@ use crate::domain::{
 /// Shared shutdown signal — set to `true` when SIGINT/SIGTERM received.
 type ShutdownSignal = Arc<AtomicBool>;
 
+/// What a termination-source wait means for the run's shutdown (#1835).
+///
+/// ONE decision, TWO authorities: the crawl engine ([`Engine`]) and the CLI
+/// shutdown guard ([`crate::cli::shutdown`]) both map the wait's outcome
+/// through this type, so a REJECTED registration cannot mean "stop the run"
+/// in one site and "keep going" in the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TerminationOutcome {
+    /// A termination event arrived — the run drains.
+    Event(&'static str),
+    /// The OS rejected the registration — the process has NO termination
+    /// source at all. The run keeps going and waits for an explicit cancel
+    /// (#509).
+    RegistrationRejected,
+}
+
+impl TerminationOutcome {
+    /// Classify the result of a termination-source wait.
+    ///
+    /// `None` means the OS refused the handler — never "nothing happened"
+    /// (the same meaning the termination port gives it, #509).
+    #[must_use]
+    pub(crate) fn from_wait(result: Option<&'static str>) -> Self {
+        match result {
+            Some(name) => Self::Event(name),
+            None => Self::RegistrationRejected,
+        }
+    }
+
+    /// Whether this outcome must stop the run.
+    ///
+    /// A REJECTED registration does NOT: the process has no OS termination
+    /// source, and stopping on a transient registration failure would
+    /// silently end an unattended run (#1835). An explicit cancel still
+    /// stops it.
+    #[must_use]
+    pub(crate) fn stops_run(self) -> bool {
+        matches!(self, Self::Event(_))
+    }
+}
+
+/// The single warning both shutdown authorities emit when the OS rejects the
+/// termination-source registration (#1835).
+///
+/// One definition, two call sites: the crawl engine ([`Engine`]) and the CLI
+/// shutdown guard ([`crate::cli::shutdown`]) answer a rejected registration
+/// the SAME way ([`TerminationOutcome`]), so they must also SAY the same
+/// thing — a shared string has to describe shared behaviour.
+pub(crate) const TERMINATION_REGISTRATION_REJECTED: &str =
+    "interrupt handler registration failed — graceful shutdown will only respond to an explicit cancel";
+
 /// Grace added to the longest legitimate worker wait when bounding joins (#509).
 ///
 /// The longest legitimate wait is a fetch (`config.timeout_secs`) or a
@@ -687,6 +738,12 @@ impl Engine {
     /// so workers blocked on rate-limit or resource-governor waits abort
     /// instead of hanging. The source only *fires* it: this token stays the
     /// run's one shutdown authority (ADR-0016).
+    ///
+    /// A REJECTED registration (the OS refused the handler) is not a
+    /// termination event: the run keeps going and waits for an explicit
+    /// cancel. The decision is the shared one ([`TerminationOutcome`]), the
+    /// same one the CLI shutdown guard makes, and both sites say the same
+    /// thing ([`TERMINATION_REGISTRATION_REJECTED`]) — #1835.
     fn spawn_signal_handler(
         shutdown: ShutdownSignal,
         cancel: CancellationToken,
@@ -694,14 +751,26 @@ impl Engine {
     ) -> tokio::task::JoinHandle<()> {
         tokio::spawn(
             async move {
-                match termination_source.wait().await {
-                    Some(name) => info!("Received {name} — initiating graceful shutdown"),
-                    None => warn!(
-                        "interrupt handler registration failed — graceful shutdown will only respond to an explicit cancel"
-                    ),
+                let outcome = TerminationOutcome::from_wait(termination_source.wait().await);
+                match outcome {
+                    TerminationOutcome::Event(name) => {
+                        info!("Received {name} — initiating graceful shutdown");
+                    },
+                    TerminationOutcome::RegistrationRejected => {
+                        // #1835: a rejected registration is NOT a termination
+                        // event. The run keeps going and waits for an explicit
+                        // cancel — the same answer the CLI shutdown guard
+                        // gives, and the same words.
+                        warn!(
+                            authority = "engine",
+                            "{}", TERMINATION_REGISTRATION_REJECTED
+                        );
+                    },
                 }
-                shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
-                cancel.cancel();
+                if outcome.stops_run() {
+                    shutdown.store(true, std::sync::atomic::Ordering::SeqCst);
+                    cancel.cancel();
+                }
             }
             .in_current_span(),
         )
@@ -3149,6 +3218,12 @@ mod tests {
         TerminationSource::new(Arc::new(|| Box::pin(std::future::pending())))
     }
 
+    /// Source whose registration the OS REJECTED: the wait resolves to
+    /// `None` instead of an event name (#509's degradation shape).
+    fn rejected_source() -> TerminationSource {
+        TerminationSource::new(Arc::new(|| Box::pin(async { None::<&'static str> })))
+    }
+
     /// #1808: the engine drains on the source it was given, not on one it
     /// reaches for itself. Before the port existed, `spawn_signal_handler`
     /// named the infrastructure console source directly, so an injected source
@@ -3215,5 +3290,32 @@ mod tests {
         );
         waiter.abort();
         assert!(waiter.await.is_err(), "abort must release the wait");
+    }
+
+    /// #1835: a REJECTED registration is not a termination event. The engine
+    /// must leave the run alone — the shutdown flag unset and the
+    /// cancellation token live — so the run keeps going and waits for an
+    /// explicit cancel. The CLI shutdown guard answers the same way, and both
+    /// say `TERMINATION_REGISTRATION_REJECTED`.
+    #[tokio::test]
+    async fn a_rejected_registration_leaves_the_run_alone() {
+        let shutdown: ShutdownSignal = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let cancel = CancellationToken::new();
+        let handle =
+            Engine::spawn_signal_handler(Arc::clone(&shutdown), cancel.clone(), rejected_source());
+
+        tokio::time::timeout(Duration::from_secs(5), handle)
+            .await
+            .expect("the handler must return once the rejected source reports itself")
+            .expect("the handler task must not panic");
+
+        assert!(
+            !shutdown.load(std::sync::atomic::Ordering::SeqCst),
+            "a rejected registration must not set the shutdown flag (#1835)"
+        );
+        assert!(
+            !cancel.is_cancelled(),
+            "a rejected registration must not cancel the run (#1835)"
+        );
     }
 }

@@ -13,6 +13,8 @@
 //! `select!`-and-drop of the work future — dropping it mid-run is exactly the
 //! data loss this fixes.
 
+use crate::application::crawler::engine::{TerminationOutcome, TERMINATION_REGISTRATION_REJECTED};
+use crate::application::crawler::ports::TerminationWait;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use tracing::Instrument;
@@ -61,17 +63,41 @@ impl Drop for ShutdownGuard {
 /// Returns early — without cancelling — if the token is fired by another path
 /// (e.g. a nested engine shutdown), so the task never outlives its usefulness.
 async fn wait_for_signal(token: CancellationToken) {
+    wait_for_signal_from(token, next_termination_event()).await;
+}
+
+/// Core of [`wait_for_signal`], with the termination wait injected.
+///
+/// `event` resolves to the NAME of the termination event, or to `None` when
+/// the OS rejected the registration. The decision is the shared one
+/// ([`TerminationOutcome`]): a delivered event stops the run, a rejected
+/// registration does not (#1835) — the same answer the crawl engine gives.
+async fn wait_for_signal_from(token: CancellationToken, mut event: TerminationWait) {
     let signalled = tokio::select! {
         () = token.cancelled() => false,
-        () = next_termination_signal() => true,
+        name = &mut event => {
+            let outcome = TerminationOutcome::from_wait(name);
+            match outcome {
+                TerminationOutcome::Event(name) => {
+                    info!("received {name} — draining in-flight work");
+                }
+                TerminationOutcome::RegistrationRejected => {
+                    warn!(authority = "cli", "{}", TERMINATION_REGISTRATION_REJECTED);
+                }
+            }
+            // #1835: the shared decision — a rejected registration is not a
+            // termination event, so the run keeps going and waits for an
+            // explicit cancel, exactly like the crawl engine's handler.
+            outcome.stops_run()
+        },
     };
     if signalled {
         token.cancel();
     }
 }
 
-/// Resolve when a termination event arrives, returning nothing — the caller
-/// only needs to know that one happened, not which.
+/// The termination event this host can observe, by name — or `None` when the
+/// OS rejected the registration.
 ///
 /// Unix: SIGINT + SIGTERM + SIGHUP. SIGHUP joins the set (XP-S-03, #1608):
 /// closing the terminal or dropping the connection no longer kills the run
@@ -79,25 +105,22 @@ async fn wait_for_signal(token: CancellationToken) {
 /// the console close / logoff / shutdown events `ctrl_c()` never sees
 /// (XP-S-02, #1808). A rejected registration must never abort the run:
 /// degrade to whatever registered and say so, matching the engine's handler
-/// (#509).
-async fn next_termination_signal() {
+/// (#509, #1835).
+fn next_termination_event() -> TerminationWait {
     #[cfg(unix)]
-    wait_for_unix_termination_signal().await;
+    {
+        Box::pin(wait_for_unix_termination_signal())
+    }
     #[cfg(not(unix))]
     {
-        match crate::infrastructure::platform::first_termination_event().await {
-            Some(name) => info!("received {name} — draining in-flight work"),
-            None => warn!(
-                "interrupt handler registration failed — shutdown will only respond to an explicit cancel"
-            ),
-        }
+        Box::pin(crate::infrastructure::platform::first_termination_event())
     }
 }
 
 /// Unix signal set: SIGINT + SIGTERM + SIGHUP, degrading per-signal when a
 /// registration is rejected (never panic, always say so — #509).
 #[cfg(unix)]
-async fn wait_for_unix_termination_signal() {
+async fn wait_for_unix_termination_signal() -> Option<&'static str> {
     use tokio::signal::unix::{signal, SignalKind};
 
     let mut sigterm = signal(SignalKind::terminate());
@@ -117,8 +140,10 @@ async fn wait_for_unix_termination_signal() {
     }
     // LCOV_EXCL_STOP
 
+    // SIGINT always registers through tokio's `ctrl_c`, so the set is never
+    // empty: this wait always ends on a real event.
     let name = first_termination_signal(sigterm.as_mut().ok(), sighup.as_mut().ok()).await;
-    info!("received {name} — draining in-flight work");
+    Some(name)
 }
 
 /// Await the FIRST termination signal among those that registered and
@@ -187,5 +212,49 @@ mod tests {
         // The listener is gone, so nothing can cancel the token any more.
         tokio::task::yield_now().await;
         assert!(!token.is_cancelled());
+    }
+
+    /// #1835: a REJECTED registration is not a termination event. The guard
+    /// must NOT cancel the run — it waits for an explicit cancel, exactly
+    /// like the crawl engine's handler, and says the same thing
+    /// (`TERMINATION_REGISTRATION_REJECTED`).
+    #[tokio::test]
+    async fn a_rejected_registration_does_not_cancel_the_run() {
+        let token = CancellationToken::new();
+        let listener = tokio::spawn(wait_for_signal_from(
+            token.clone(),
+            Box::pin(async { None::<&'static str> }),
+        ));
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), listener)
+            .await
+            .expect("the listener must return once the rejected registration reports itself")
+            .expect("the listener task must not panic");
+
+        assert!(
+            !token.is_cancelled(),
+            "a rejected registration must not cancel the run (#1835)"
+        );
+    }
+
+    /// The other half of the same contract: a DELIVERED termination event
+    /// still stops the run. The rejection path must not swallow real events.
+    #[tokio::test]
+    async fn a_delivered_termination_event_still_cancels_the_run() {
+        let token = CancellationToken::new();
+        let listener = tokio::spawn(wait_for_signal_from(
+            token.clone(),
+            Box::pin(async { Some("TEST_TERMINATION_EVENT") }),
+        ));
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), listener)
+            .await
+            .expect("the listener must return once the event arrives")
+            .expect("the listener task must not panic");
+
+        assert!(
+            token.is_cancelled(),
+            "a delivered termination event must stop the run"
+        );
     }
 }
