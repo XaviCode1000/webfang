@@ -107,6 +107,8 @@ jobs:
           persist-credentials: false
       - name: Auto-label semantics harness (offline)
         run: bash scripts/test_auto_label_type.sh
+      - name: Auto-label end-state oracle (offline)
+        run: bash scripts/test_auto_label_type_state.sh
 
   validate:
     name: Validate PR metadata

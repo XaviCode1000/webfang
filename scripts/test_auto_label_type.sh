@@ -51,6 +51,21 @@ SCRIPT="${WEBFANG_AUTO_LABEL_SCRIPT:-$REPO_ROOT/scripts/auto_label_type.sh}"
 AGENTS_MD="$REPO_ROOT/AGENTS.md"
 WORKFLOW="$REPO_ROOT/.github/workflows/pr-validation.yml"
 
+# The end-state oracle: a SECOND, independently written implementation of
+# the same behaviour (its own fake gh, its own state model). It is the
+# witness that the suite above cannot rubber-stamp itself, so the mutation
+# section below demands that it goes RED against every broken script too.
+ORACLE="$REPO_ROOT/scripts/test_auto_label_type_state.sh"
+
+# WHAT THE ORACLE DOES NOT COVER, SAID OUT LOUD.
+# The oracle's nine scenarios (S1-S9) are about the LABEL SET of the PR; none
+# of them uses a title the vocabulary does not know. The mutation that makes
+# the script guess a label for an unknown prefix is therefore invisible to
+# it BY CONSTRUCTION. The oracle is the verifier's file and its semantics may
+# not be changed here, so the mutation stays in this section — the suite
+# above still catches it — and the gap is reported instead of hidden.
+ORACLE_BLIND_SPOT="the oracle's scenarios cover the label set (S1-S9), not the unknown-prefix rule"
+
 # The prefix the PR gate counts ("Require exactly one type:* label").
 TYPE_LABEL_PREFIX='type:'
 
@@ -500,13 +515,20 @@ run_suite() {
   [[ "$FAIL" -eq "$before_fail" ]]
 }
 
-# mutate_and_expect_red <label> <sed-expression>
+# mutate_and_expect_red <label> <sed-expression> [oracle-covers: yes|no]
 #
 # The mutation is applied to a COPY of the script (never to the tree) and the
 # whole suite is re-run against it. Green against a broken script means the
 # harness is decoration, not coverage.
+#
+# The ORACLE is held to the same standard: a mutation that this suite
+# catches must also turn the independent implementation red, or the "second
+# implementation" is not a witness. `oracle-covers` says whether the
+# oracle's own scenarios exercise that rule: when they do not, the gap is
+# PRINTED (a NOTE) instead of being silently tolerated.
 mutate_and_expect_red() {
-  local label="$1" expr="$2" mutant="$WORK/mutant.sh" rc=0
+  local label="$1" expr="$2" oracle_covers="${3:-yes}"
+  local mutant="$WORK/mutant.sh" rc=0
   if ! cp "$SCRIPT" "$mutant"; then
     printf '  FAIL %s — could not copy the script\n' "$label"
     FAIL=$((FAIL + 1))
@@ -532,6 +554,23 @@ mutate_and_expect_red() {
     FAIL=$((FAIL + 1))
   else
     printf '  OK   %s — the suite goes red against the broken script\n' "$label"
+    PASS=$((PASS + 1))
+  fi
+  # The oracle, against the same broken script.
+  if [[ ! -f "$ORACLE" ]]; then
+    printf '  FAIL %s — the end-state oracle is missing (%s)\n' "$label" "$ORACLE"
+    FAIL=$((FAIL + 1))
+    return 0
+  fi
+  if (WEBFANG_AUTO_LABEL_SCRIPT="$mutant" bash "$ORACLE") >"$WORK/oracle.log" 2>&1; then
+    if [[ "$oracle_covers" == "yes" ]]; then
+      printf '  FAIL %s — the ORACLE stayed GREEN against the broken script (it is not a witness)\n' "$label"
+      FAIL=$((FAIL + 1))
+    else
+      printf '  NOTE %s — the ORACLE stayed GREEN: %s\n' "$label" "$ORACLE_BLIND_SPOT"
+    fi
+  else
+    printf '  OK   %s — the oracle goes red against the broken script too\n' "$label"
     PASS=$((PASS + 1))
   fi
 }
@@ -569,12 +608,25 @@ run_suite "$SCRIPT"
 
 echo ""
 echo "-- non-vacuity: the suite must go red against a broken script --"
+# Green-then-red, for the ORACLE too: a witness that is red against the
+# intact script proves nothing when it goes red against a mutant. The
+# order matters — the oracle is checked against the intact script FIRST.
+if [[ ! -f "$ORACLE" ]]; then
+  printf '  FAIL the end-state oracle is missing (%s)\n' "$ORACLE"
+  FAIL=$((FAIL + 1))
+elif bash "$ORACLE" >/dev/null 2>&1; then
+  printf '  OK   the end-state oracle is green against the intact script\n'
+  PASS=$((PASS + 1))
+else
+  printf '  FAIL the end-state oracle is not green against the intact script (its red proves nothing)\n'
+  FAIL=$((FAIL + 1))
+fi
 mutate_and_expect_red "mutation: the existing type:* label is ignored" \
   "s|^TYPE_LABEL_PREFIX=.*|TYPE_LABEL_PREFIX='zzz:'|"
 mutate_and_expect_red "mutation: fix maps to the wrong label" \
   "s|\[fix\]=type:bug|[fix]=type:feature|"
 mutate_and_expect_red "mutation: an unknown prefix is guessed" \
-  "s|^NO_LABEL=.*|NO_LABEL='type:chore'|"
+  "s|^NO_LABEL=.*|NO_LABEL='type:chore'|" "no"
 mutate_and_expect_red "mutation: the stale type label is not removed" \
   "s|--method DELETE|--method PATCH|"
 
