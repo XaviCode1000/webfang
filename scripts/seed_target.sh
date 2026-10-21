@@ -145,6 +145,25 @@ if [ -e "$TARGET_DIR" ] && [ -n "$(ls -A "$TARGET_DIR" 2>/dev/null)" ]; then
   exit 0
 fi
 
+# An EMPTY target dir is not a populated one, but it is still a directory that
+# `cp` would copy INTO: `cp -a SEED DIR` with DIR in existence nests the seed
+# one level deep ($TARGET/<key>/...), so cargo builds cold into a tree that
+# looks seeded, and the verdict said `seeded` while describing a warm tree
+# that does not exist.
+#
+# The empty directory is therefore removed first, so the clone REPLACES the
+# target dir instead of landing inside it. A directory that cannot be removed
+# is not a directory this clone may replace, and the safe outcome is a cold
+# build into the (still empty) dir.
+if [ -e "$TARGET_DIR" ]; then
+  if ! rmdir "$TARGET_DIR" 2>/dev/null; then
+    echo "seed_target.sh: the empty target dir $TARGET_DIR could not be removed." >&2
+    echo "  the clone has to REPLACE the target dir, not land inside it, so a" >&2
+    echo "  cold build into the (still empty) dir is the only safe outcome." >&2
+    cold "target-not-replaceable"
+  fi
+fi
+
 # reflink=always, never =auto (D5): on a filesystem without CoW, =auto silently
 # performs a full copy and exits 0 — measured, 64 MB copied for a 64 MB file on
 # tmpfs. =always fails loudly, and failure here just means a cold build.
@@ -203,6 +222,28 @@ discard_target() {
 
 if ! cp -a --reflink=always "$SEED" "$TARGET_DIR" 2>/dev/null; then
   discard_target "reflink-unavailable"
+fi
+# The clone must BE the seed, not contain it.
+#
+# `seeded` is a promise: the target dir is the seed, so the build that follows
+# is warm. A clone that nests the seed one level down breaks that promise
+# silently — cargo would rebuild everything, cold, and the caller would have
+# no way to tell. The shape is therefore verified, not assumed: the seed's own
+# manifest has to be at the top of the clone, and the clone's top level has to
+# be the seed's top level.
+if [ ! -f "$TARGET_DIR/manifest.toml" ]; then
+  echo "seed_target.sh: the clone does not carry the seed's manifest at its top level." >&2
+  echo "  the seed landed somewhere else inside the target dir; a cold build is" >&2
+  echo "  the only safe outcome, because the tree is not the seed." >&2
+  discard_target "clone-not-the-seed"
+fi
+SEED_TOP="$(cd "$SEED" && ls -A | LC_ALL=C sort | tr '\n' ' ')"
+CLONE_TOP="$(cd "$TARGET_DIR" && ls -A | LC_ALL=C sort | tr '\n' ' ')"
+if [ "$SEED_TOP" != "$CLONE_TOP" ]; then
+  echo "seed_target.sh: the clone's top level does not match the seed's." >&2
+  echo "  seed:  $SEED_TOP" >&2
+  echo "  clone: $CLONE_TOP" >&2
+  discard_target "clone-not-the-seed"
 fi
 # Widen the clone's read-only bits. 555 -> 755: writable so cargo can build, and
 # still executable so the build scripts it inherits can run. Without this the
