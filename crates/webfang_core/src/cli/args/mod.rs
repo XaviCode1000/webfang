@@ -638,49 +638,6 @@ fn url_from_args(args: &Args) -> ValidUrl {
     }
 }
 
-/// Resolve the chunk-size guard from `--max-chars` and the deprecated
-/// `--max-tokens` (ADR-0004).
-///
-/// # Precedence — read this before "simplifying" it
-///
-/// | `--max-chars` chosen | `--max-tokens` given | result | warning |
-/// |---|---|---|---|
-/// | yes | ignored | `max_chars` verbatim | none |
-/// | no | yes | `tokens × [`DEFAULT_CHARS_PER_TOKEN`](crate::domain::options_spec::ai::DEFAULT_CHARS_PER_TOKEN)` | once |
-/// | no | no | the `MAX_CHARS` default (98 304) | none |
-///
-/// Three rules, each load-bearing:
-///
-/// 1. **An explicit `--max-chars` always wins, SILENTLY.** The operator
-///    stated the unit they mean. A deprecation warning here would be noise
-///    about a value they did not use — and the shim value they left in a
-///    script must not override the flag they just typed.
-/// 2. **Only `--max-tokens` warns, and exactly once.** The conversion is
-///    lossy in meaning (a budget in one unit becomes a budget in another), so
-///    the operator must see it; `deprecated_max_tokens` carries the fact
-///    forward to the one place that can speak it (after the tracing
-///    subscriber exists, #796).
-/// 3. **Neither means the spec default, not a conversion.** There is nothing
-///    to deprecate.
-///
-/// The conversion factor lives in
-/// [`options_spec::ai::max_tokens_to_max_chars`](crate::domain::options_spec::ai::max_tokens_to_max_chars),
-/// the single constant the retired `webfang_ai` `ModelConfig::default()` also
-/// read: one constant, or `--max-tokens 4096` and `--max-chars 4096` would mean
-/// different budgets.
-///
-/// Returns `(max_chars, deprecated_max_tokens)`.
-fn resolve_max_chars(args: &Args) -> (usize, Option<usize>) {
-    match (args.ai.max_chars_explicit, args.ai.max_tokens) {
-        (true, _) => (args.ai.max_chars, None),
-        (false, Some(tokens)) => (
-            crate::domain::options_spec::ai::max_tokens_to_max_chars(tokens),
-            Some(tokens),
-        ),
-        (false, None) => (args.ai.max_chars, None),
-    }
-}
-
 /// Build the ungated [`AiConfig`](crate::application::crawl_options::AiConfig) — ONE reader for every cargo configuration
 /// (ADR-0004, slice C).
 ///
@@ -691,13 +648,10 @@ fn resolve_max_chars(args: &Args) -> (usize, Option<usize>) {
 /// `..Default` fallback is precisely the silent-reset shape worth deleting: it
 /// dropped three operator-supplied values without a word.
 fn build_ai_config(args: &Args) -> crate::application::crawl_options::AiConfig {
-    let (max_chars, deprecated_max_tokens) = resolve_max_chars(args);
     crate::application::crawl_options::AiConfig {
         threshold: args.ai.threshold,
-        max_chars,
-        deprecated_max_tokens,
+        max_chars: args.ai.max_chars,
         offline: args.ai.offline,
-        model: args.ai.ai_model.clone().unwrap_or_default(),
     }
 }
 

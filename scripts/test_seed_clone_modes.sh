@@ -112,6 +112,25 @@ else
   bad "consumer mutated the seed: $SEED_MODE_BEFORE -> $SEED_MODE_AFTER"
 fi
 
+# ── the clone REPLACES the target dir; it never lands INSIDE it ─────────────
+# `cp -a SEED DIR` copies INTO a directory that already exists, so seeding
+# into an EMPTY (but existing) target dir nested the seed one level deep
+# ($TARGET/<key>/...). The verdict still said `seeded`, and cargo then built
+# COLD into a tree the verdict had promised was warm — the worst kind of
+# lie, because it costs a full build and reports success.
+TARGET_EMPTY="$SANDBOX/worktree-target-empty"
+mkdir -p "$TARGET_EMPTY"
+OUT_EMPTY="$(SEED_ROOT="$SEEDS" CARGO_TARGET_DIR="$TARGET_EMPTY" bash "$SEEDER" 2>&1)"
+case "$OUT_EMPTY" in
+  *"seeded"*) ok "consumer reports seeded into an existing EMPTY target dir" ;;
+  *) bad "consumer did not report seeded into an empty target dir: $OUT_EMPTY" ;;
+esac
+if [ -f "$TARGET_EMPTY/manifest.toml" ] && [ ! -d "$TARGET_EMPTY/$KEY" ]; then
+  ok "the clone IS the seed (manifest at the top level), not a nested copy"
+else
+  bad "the clone did not replace the target dir: nested=$([ -d "$TARGET_EMPTY/$KEY" ] && echo yes || echo no) manifest=$([ -f "$TARGET_EMPTY/manifest.toml" ] && echo yes || echo no)"
+fi
+
 # ── 5. a chmod that fails must not be reported as `seeded` ───────────────────
 #
 # `chmod -R u+w` is what makes the clone usable, so reporting `seeded` without

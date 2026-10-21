@@ -7,7 +7,7 @@
 //! A flag that renders only under the feature it configures is a flag that
 //! answers "unexpected argument" (exit 64) on the other build, naming
 //! neither the capability nor how to get it. So `--clean-ai`,
-//! `--threshold`, `--offline` and `--ai-model` render in EVERY cargo
+//! `--threshold` and `--offline` render in EVERY cargo
 //! configuration. Post-ADR-0004 paso 6 there is no local-ONNX build any
 //! more: a requested `--clean-ai` whose cleaner wiring failed surfaces at
 //! run time as the export flow's Spanish ConfigError naming
@@ -133,15 +133,15 @@ pub const MAX_CHARS: OptionSpec = OptionSpec {
     value_delimiter: None,
 };
 
-/// Characters per token: the conversion factor from the retired
-/// `--max-tokens` budget to the `--max-chars` budget that replaced it.
+/// Characters per token: the ratio between a model's token budget and the
+/// character budget derived from it.
 ///
-/// **Single source of truth.** `webfang_core` needs it to translate a legacy
-/// `--max-tokens` value at the argv boundary (`cli::args::build_ai_config`),
-/// and the cleaner implementation needs it as the default of its own
-/// `chars_per_token` field. Two independent `3.0` literals would be exactly
-/// the kind of drift that becomes a silent budget bug (the legacy flag would
-/// map to a different budget than the default advertises).
+/// **Single source of truth.** The domain's model profiles need it as the
+/// default of their own `chars_per_token` field, and the chunk-size guard's
+/// default (`DEFAULT_MAX_CHARS`) is derived from it. Two independent `3.0`
+/// literals would be exactly the kind of drift that becomes a silent budget
+/// bug (a profile would advertise a different budget than the guard uses,
+/// and neither number would say so).
 pub const DEFAULT_CHARS_PER_TOKEN: f32 = 3.0;
 
 /// Default chunk budget in characters, derived from Granite's max sequence
@@ -154,67 +154,14 @@ pub const DEFAULT_CHARS_PER_TOKEN: f32 = 3.0;
 /// only shows up as "the flag I did not pass rejected my chunk".
 pub const DEFAULT_MAX_CHARS: usize = 32_768 * 3;
 
-/// Convert a legacy token budget to the equivalent character budget.
-///
-/// `round` (not truncation) so the operator's budget is never silently
-/// lowered by up to half a character per token, and `f64` (not `f32`) so a
-/// large `tokens` does not lose integer precision before scaling. The cast
-/// saturates, so a budget near `usize::MAX` cannot wrap.
-#[must_use]
-pub fn max_tokens_to_max_chars(tokens: usize) -> usize {
-    (tokens as f64 * f64::from(DEFAULT_CHARS_PER_TOKEN)).round() as usize
-}
-
-/// `--max-tokens <MAX_TOKENS>` (env `WEBFANG_MAX_TOKENS`) — DEPRECATED SHIM.
-///
-/// ADR-0004's compat policy is TWO PHASED: release N announces the deprecation
-/// and the flag keeps WORKING (with a warning), release N+1 removes it. This
-/// release is the announcement, so the flag is accepted, parsed by the same
-/// OptionsSpec policy machinery every other numeric flag uses, and translated
-/// to the equivalent character budget by
-/// [`max_tokens_to_max_chars`] — with ONE
-/// deprecation warning, not a rejection.
-///
-/// The hard rejection arrives with the removal, when this entry is deleted.
-/// What must NOT happen in between is silence: the flag stays in [`GROUP`] and
-/// stays ungated so it renders in `--help` (ADR-0004 forbids a deprecation an
-/// operator cannot see), and every use warns.
-///
-/// # The lower bound is unchanged
-///
-/// `>= 1`, exactly as before the rename, with the same Spanish message: a
-/// budget of `0` rejects every non-empty chunk, so accepting it would be the
-/// silent, total denial of the AI path this bound exists to prevent (zero
-/// silent loss). The retired 32 768-token CEILING does not come back: it was
-/// one backend's Max Sequence Length, and the effective ceiling is now the
-/// embedding provider's own context window.
-pub const MAX_TOKENS: OptionSpec = OptionSpec {
-    id: "max_tokens",
-    value_name: "MAX_TOKENS",
-    long: "max-tokens",
-    short: None,
-    aliases: &[],
-    env: Some("WEBFANG_MAX_TOKENS"),
-    default: None,
-    nullable: false,
-    description_override: None,
-    help: "Deprecated: use --max-chars instead. Still accepted for now — the value is converted to characters (tokens x 3.0) and ignored when --max-chars is given",
-    heading: Some("AI Settings"),
-    kind: ValueKind::uint(NumericPolicy::positive(
-        "--max-tokens debe ser >= 1 (0 rechazaría todos los chunks)",
-    )),
-    visible_aliases: &[],
-    feature_gate: None,
-    value_delimiter: None,
-};
-
 /// `--offline` (env `WEBFANG_OFFLINE`, bool SetTrue).
 ///
-/// UNGATED by decision (ADR-0004, slice C), though its effect is local-ONNX
-/// only: "offline" constrains the hf_hub resolver, which is a property of
-/// THIS build's embedding backend. Rendering it in every configuration costs
-/// nothing and keeps the flag discoverable next to `--ai-model`, which it
-/// composes with.
+/// UNGATED by decision (ADR-0004, slice C), but its effect is NOT local-ONNX:
+/// since ADR-0004 step 6 there is no local engine and no hf_hub resolver. The
+/// flag is read by the embeddings preflight, which rejects EVERY resolved
+/// embeddings provider — remote or loopback — with exit 78 (#2166). It gates
+/// the semantic-cleaning providers only; it does not restrict the crawler's
+/// network.
 pub const OFFLINE: OptionSpec = OptionSpec {
     id: "offline",
     value_name: "OFFLINE",
@@ -225,40 +172,9 @@ pub const OFFLINE: OptionSpec = OptionSpec {
     default: Some(DefaultValue::Bool(false)),
     nullable: false,
     description_override: None,
-    help: "Run AI model in offline mode",
+    help: "Reject every embeddings provider (remote or loopback) with exit 78: no local model since 3.0.0",
     heading: Some("AI Settings"),
     kind: ValueKind::Bool,
-    visible_aliases: &[],
-    feature_gate: None,
-    value_delimiter: None,
-};
-
-/// `--ai-model <AI_MODEL>` (env `WEBFANG_AI_MODEL_ID`, `Option<String>`).
-///
-/// Raw string on purpose (#827): validation is deferred to the AI init
-/// path (`build_ai_cleaner`) so a poisoned `AI_MODEL_ID` env var cannot
-/// make unrelated CLI invocations fail at parse time. `AI_MODEL_ID` is
-/// accepted as a hidden CLI alias for backward compatibility, deprecated
-/// for removal in v3.0 (#1587).
-///
-/// UNGATED, and the raw-string policy is what makes that safe rather than
-/// merely convenient: an unparseable value is recorded here and REJECTED by
-/// the AI init path — which exists only on a local-ONNX build — instead of
-/// failing at parse time. On a build without `ai` the flag parses, carries
-/// its value, and the preflight gate names the missing capability by name.
-pub const AI_MODEL: OptionSpec = OptionSpec {
-    id: "ai_model",
-    value_name: "AI_MODEL",
-    long: "ai-model",
-    short: None,
-    aliases: &["AI_MODEL_ID"],
-    env: Some("WEBFANG_AI_MODEL_ID"),
-    default: None,
-    nullable: false,
-    description_override: None,
-    help: "AI model to use: granite-97m (default, fast) or granite-311m (higher quality). Env WEBFANG_AI_MODEL_ID wins; legacy AI_MODEL_ID still accepted but deprecated for removal in v3.0",
-    heading: Some("AI Settings"),
-    kind: ValueKind::Text,
     visible_aliases: &[],
     feature_gate: None,
     value_delimiter: None,
@@ -274,7 +190,7 @@ pub const AI_MODEL: OptionSpec = OptionSpec {
 /// the module docs. `webfang_mcp`'s parity test pins that by asserting the
 /// ungated set equals the WHOLE group, so a future re-gating of any entry
 /// fails there rather than shipping a flag that vanishes on one build.
-pub const GROUP: &[OptionSpec] = &[THRESHOLD, MAX_CHARS, MAX_TOKENS, OFFLINE, AI_MODEL];
+pub const GROUP: &[OptionSpec] = &[THRESHOLD, MAX_CHARS, OFFLINE];
 
 #[cfg(test)]
 mod tests {

@@ -245,6 +245,18 @@ jobs:
       # layering `infrastructure → adapters → application → domain` (inward only).
       # Fails if `application` imports `infrastructure` etc. (see
       # `scripts/check_intra_crate_direction.sh` and ADR-0010 allowlist).
+      # Seed semantics: the publish/clone/recipe contract of the seed chain.
+      # These two are offline and fast; `test_seed_clone_modes.sh` stays local
+      # because it needs a CoW filesystem (`cp --reflink=always`) and FAILS
+      # rather than skips on a non-CoW runner, and
+      # `test_seed_contamination.sh` stays manual because it does a real 2.7 G
+      # build. The assertions of the first one live in the repo, not only in
+      # the audit's local harness.
+      - name: Seed publish atomicity semantics harness
+        run: bash scripts/test_seed_publish_atomicity.sh
+      - name: Seed recipe coherence semantics harness
+        run: bash scripts/test_seed_recipe_coherence.sh
+
       - name: Intra-crate direction gate (strict)
         run: INTRA_CRATE_MODE=strict bash scripts/check_intra_crate_direction.sh
       # The SEMANTICS of the gate above, executed. Before this step existed the
@@ -707,6 +719,16 @@ jobs:
       # Deferred entries live in scripts/guard_coverage_baseline.txt and the
       # list may only shrink: an entry that stops reproducing fails this step
       # and asks to be removed.
+      # Semantic harnesses for the guards the meta-guard below audits. Each one
+      # of these guards had a documented hole ("it needs its own issue"); the
+      # harness is what makes the hole unreachable, and the meta-guard only
+      # accepts a harness that a workflow actually runs.
+      - name: MCP public surface semantics harness
+        run: bash scripts/test_mcp_public_surface.sh
+      - name: Dead tests semantics harness
+        run: bash scripts/test_dead_tests.sh
+      - name: Archive reproducibility semantics harness
+        run: bash scripts/test_archive_reproducibility.sh
       - name: Guard coverage meta-guard
         run: bash scripts/test_guard_coverage.sh
       # Negation harness for the meta-guard above. Eight cases over throwaway
@@ -871,6 +893,30 @@ jobs:
   # Unit tests first (fast), then integration + behavioral (heavier).
   # Runs in parallel with clippy (fan-out from toolchain).
   # ============================================================================
+  # Offline semantics harnesses for the CI-orchestration guards: the merge
+  # waiter, the tag ruleset writer, the CI metrics snapshot and the CI-health
+  # issue closer. Each of those guards had a branch that no test exercised
+  # (a watch without a deadline, an API error read as "not there", a failed
+  # read read as "missing label", a truncated sample printed as complete).
+  merge-metrics-guards:
+    name: Merge and metrics guards
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Merge-when-green wait bounds semantics harness
+        run: bash scripts/test_ci_merge_when_green.sh
+      - name: Tag ruleset idempotency semantics harness
+        run: bash scripts/test_apply_tag_ruleset.sh
+      - name: CI metrics snapshot semantics harness
+        run: bash scripts/test_ci_metrics.sh
+      - name: CI health close semantics harness
+        run: bash scripts/test_ci_health_close.sh
+
   test-core:
     name: Tests (unit + integration + behavioral)
     needs: [toolchain, change-scope]

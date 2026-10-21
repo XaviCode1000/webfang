@@ -581,20 +581,10 @@ AI Settings:
           [env: WEBFANG_MAX_CHARS=]
           [default: 98304]
 
-      --max-tokens <MAX_TOKENS>
-          Deprecated: use --max-chars instead. Still accepted for now — the value is converted to characters (tokens x 3.0) and ignored when --max-chars is given
-          
-          [env: WEBFANG_MAX_TOKENS=]
-
       --offline
-          Run AI model in offline mode
+          Reject every embeddings provider (remote or loopback) with exit 78: no local model since 3.0.0
           
           [env: WEBFANG_OFFLINE=]
-
-      --ai-model <AI_MODEL>
-          AI model to use: granite-97m (default, fast) or granite-311m (higher quality). Env WEBFANG_AI_MODEL_ID wins; legacy AI_MODEL_ID still accepted but deprecated for removal in v3.0
-          
-          [env: WEBFANG_AI_MODEL_ID=]
 
 LLM Extraction:
       --extract-with-llm

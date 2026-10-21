@@ -159,20 +159,47 @@ publish_atomically() {
   # the only valid seed before building its successor — is what this ordering
   # exists to prevent.
   if [ -e "$dest" ]; then
+    # A seed that APPEARED while this one was being built is not the seed this
+    # publication was authorised to replace. The check at the start of the
+    # script can only see the seeds that existed when the build began; a
+    # concurrent publisher that lands DURING the build is invisible to it, and
+    # this transaction used to retire and replace that seed anyway — a
+    # non-force publish destroying a valid, immutable seed it never saw.
+    #
+    # The rule is the same one the lane-start check states: without --force,
+    # publish NEVER replaces an existing seed. Here it is enforced at the
+    # moment of the rename, which is the only moment that counts.
+    if [ "$FORCE" -ne 1 ]; then
+      echo "seed_publish.sh: a seed already exists at $dest" >&2
+      echo "  it appeared while this one was being built, so it was not the one" >&2
+      echo "  the check at the start of this run could see. Seeds are immutable" >&2
+      echo "  after publication (D6): a non-force publish never replaces one." >&2
+      echo "  Pass --force to rebuild it deliberately." >&2
+      return 2
+    fi
     # The key goes IN the retired name. Two renames cannot be made atomic with
     # each other, so a crash between them leaves the key absent; without the key
     # in the name, that backup is an anonymous 2.2 G directory nobody can safely
     # attribute. With it, seed_recover.sh turns recovery into one rename.
     local retired="$SEEDS_ROOT/.retired.$key.$$"
-    # Published seeds are read-only, and unlinking needs write permission on the
-    # CONTAINING directory; chmod -R is belt-and-braces for manual cleanup.
-    chmod -R u+w "$dest" 2>/dev/null || true
+    # Only the TOP entry is made writable, and only because the rename needs
+    # it: renaming a directory updates its own `..`, so the directory being
+    # moved has to permit that. `chmod -R u+w` here went further and made the
+    # whole interior writable — and a retired seed is a seed that seed_recover.sh
+    # can still put back, so its interior has to keep the published contract
+    # (read-only) even while it waits under its retired name.
+    chmod u+w "$dest" 2>/dev/null || true
     mv "$dest" "$retired"
     if ! mv "$ref" "$dest"; then
       mv "$retired" "$dest" 2>/dev/null || true   # put the valid seed back
       echo "seed_publish.sh: publish failed; previous seed restored" >&2
       return 1
     fi
+    # The retired tree is about to be destroyed, so its write bits are
+    # restored HERE — after it is out of the way, and never while it could
+    # still be restored. Unlinking the entries needs write on the directories
+    # that hold them, which is why this is not optional.
+    chmod -R u+w "$retired" 2>/dev/null || true
     rm -rf "$retired" 2>/dev/null || true
   else
     mv "$ref" "$dest"
@@ -212,6 +239,11 @@ echo "==> building the reference (cold; includes BoringSSL's C++)..."
   # without ever reaching cargo.
   mapfile -t CARGO_ARGS < <(seed_recipe_cargo_args)
   mapfile -t BUILD_ENV  < <(seed_recipe_build_env "$REF")
+  # The env args travel through a line-oriented channel, so their values are
+  # encoded on the way out and decoded here, before `env` sees them. Without
+  # this a multi-line RUSTFLAGS is split into several arguments and `env`
+  # reads the tail as a command instead of as an assignment.
+  seed_recipe_env_decode_args BUILD_ENV
   echo "    recipe: ${CARGO_ARGS[*]}"
   ( cd "$REPO_ROOT" \
     && env "${BUILD_ENV[@]}" \
@@ -239,8 +271,62 @@ PRUNE_NAMES="$(printf '%s\n%s\n' "$MEMBERS" "$TARGET_NAMES" | sed '/^$/d' | LC_A
 # which matches nothing.
 PRUNE_NAMES="$PRUNE_NAMES
 $(printf '%s\n' "$PRUNE_NAMES" | tr '-' '_')"
-FP="$REF/debug/.fingerprint"
-[ -d "$FP" ] || { echo "seed_publish.sh: no debug/.fingerprint in $REF" >&2; exit 1; }
+
+# The PROFILE DIRECTORY: where this build's units live inside the target dir.
+#
+# The prune used to hardcode `debug`, which made two perfectly publishable
+# builds unpublishable. A release build writes its units to `release`, and a
+# cross build writes them under `<target>/`; both completed, and both were
+# then refused with "no debug/.fingerprint" — so a release seed and a
+# cross-target seed could never be published at all, no matter how complete
+# the build was.
+#
+# The RECIPE decides the prefix (a cross build writes under its target) and
+# the PROFILE decides the directory inside it. The recipe's own spelling is
+# tried first — cargo writes the dev and test profiles to `debug`, the
+# release and bench profiles to `release`, and a custom profile to a
+# directory named after it — and when this build put its units somewhere
+# else, the directory that HOLDS the fingerprints decides.
+#
+# Two candidates are a refusal, not a guess: the prune deletes trees, and it
+# must never delete the wrong one. No candidate is a refusal too: there is
+# nothing to prune, so there is nothing to publish.
+resolve_profile_dir() {   # $1 = the target dir root -> prints the dir, relative to it
+  local root="$1" prefix cand want
+  local -a found=()
+  prefix="$root"
+  [ -n "$SEED_RECIPE_TARGET" ] && prefix="$root/$SEED_RECIPE_TARGET"
+
+  want="$(seed_recipe_profile_dir_name "$SEED_RECIPE_PROFILE")"
+  if [ -d "$prefix/$want/.fingerprint" ]; then
+    if [ -n "$SEED_RECIPE_TARGET" ]; then printf '%s/%s' "$SEED_RECIPE_TARGET" "$want"
+    else printf '%s' "$want"; fi
+    return 0
+  fi
+
+  for cand in "$prefix"/*/; do
+    [ -d "$cand/.fingerprint" ] && found+=("${cand%/}")
+  done
+  if [ "${#found[@]}" -eq 1 ]; then
+    printf '%s' "${found[0]#"$root"/}"
+    return 0
+  fi
+  if [ "${#found[@]}" -gt 1 ]; then
+    echo "seed_publish.sh: the build produced more than one profile directory under" >&2
+    echo "  $prefix (${found[*]#"$prefix"/}); refusing to guess which one holds the" >&2
+    echo "  units to prune." >&2
+    return 1
+  fi
+  echo "seed_publish.sh: no unit fingerprints under $prefix" >&2
+  echo "  (profile '$SEED_RECIPE_PROFILE', target '${SEED_RECIPE_TARGET:-host}')." >&2
+  echo "  There is nothing to prune, so there is nothing to publish." >&2
+  return 1
+}
+
+PROFILE_REL="$(resolve_profile_dir "$REF")" || exit 1
+PROFILE_DIR="$REF/$PROFILE_REL"
+FP="$PROFILE_DIR/.fingerprint"
+[ -d "$FP" ] || { echo "seed_publish.sh: no .fingerprint in $PROFILE_DIR" >&2; exit 1; }
 
 PRUNED=0
 PRUNED_MEMBERS=0
@@ -258,9 +344,9 @@ while IFS= read -r dir; do
   if grep -aqF -- "$REPO_ROOT" "$dir"/* 2>/dev/null; then embeds=1; fi
   if [ "$is_member" -eq 1 ] || [ "$embeds" -eq 1 ]; then
     rm -rf "${dir:?}"
-    rm -rf "${REF:?}/debug/build/${pkg}-${hash}"*
-    rm -f  "${REF:?}/debug/deps/lib${pkg}-${hash}".* \
-           "${REF:?}/debug/deps/${pkg}-${hash}".* 2>/dev/null || true
+    rm -rf "${PROFILE_DIR:?}/build/${pkg}-${hash}"*
+    rm -f  "${PROFILE_DIR:?}/deps/lib${pkg}-${hash}".* \
+           "${PROFILE_DIR:?}/deps/${pkg}-${hash}".* 2>/dev/null || true
     PRUNED=$((PRUNED + 1))
     if [ "$is_member" -eq 1 ]; then PRUNED_MEMBERS=$((PRUNED_MEMBERS + 1)); fi
   fi
@@ -270,8 +356,8 @@ done < <(find "$FP" -mindepth 1 -maxdepth 1 -type d)
 # 16-hex hash suffix so a package whose name is a prefix of another cannot be
 # caught by the glob.
 for n in $PRUNE_NAMES; do
-  rm -f  "$REF/debug/$n" "$REF/debug/$n.d" "$REF/debug/lib$n".* 2>/dev/null || true
-  rm -f  "$REF/debug/deps/$n-"[0-9a-f]* "$REF/debug/deps/lib$n-"[0-9a-f]* 2>/dev/null || true
+  rm -f  "$PROFILE_DIR/$n" "$PROFILE_DIR/$n.d" "$PROFILE_DIR/lib$n".* 2>/dev/null || true
+  rm -f  "$PROFILE_DIR/deps/$n-"[0-9a-f]* "$PROFILE_DIR/deps/lib$n-"[0-9a-f]* 2>/dev/null || true
 done
 
 AFTER_O="$(find "$REF" -name '*.o' 2>/dev/null | wc -l)"
@@ -311,5 +397,5 @@ fi
 publish_atomically "$REF" "$DEST" "$SEED_RECIPE_KEY"
 
 echo "==> published $DEST"
-echo "    apparent: $(du -sh --apparent-size "$DEST" | cut -f1)   units kept: $(find "$DEST/debug/.fingerprint" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
+echo "    apparent: $(du -sh --apparent-size "$DEST" | cut -f1)   units kept: $(find "$DEST/$PROFILE_REL/.fingerprint" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)"
 echo "    manifest: $DEST/manifest.toml"
