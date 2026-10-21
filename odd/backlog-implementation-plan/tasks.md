@@ -12,8 +12,10 @@ que hace el triage) cuando cada lote aterriza, con el sha de su branch. Ningún 
 - [ ] L1 · S1–S5 — SSRF: encapsulación IPv4 (#2231, #2232) — **OCUPADO por el agente del owner** (worktree `fix-ssrf-this-network-justification`).
 - [x] L2 · S1–S5 — merge y limpieza post-merge (#1970, #1971, #1972) — 3 commits en `fix-merge-when-green-merged-state` (sin PR); harness 25/0, breaking 26/0, ci 17/0, topology verde.
 - [ ] L3 · S1–S5 — el canal del CI Health enmudecido (#2233, #2234, #2162, #1936, #1980) — **L3a HECHO**: `1b49ef71` + `eaa172d7` en `fix-ci-health-w03-classifier` (verificado por el padre: harness 104/0, RED 99/5, semántica de la búsqueda contra la API real; harness partido 468+474; #2162 y #1980 cerrados). **L3b** (#2234, hermeticidad) en curso: RED real capturado con el env venenoso, fix delegado.
-- [ ] L4 · S1–S5 — residuales de guard (#2070: ítems 1-3; el 4º, no hacer nada) — asignado al peer de coordinación; superficies reales: `scripts/bump-support-patch.sh`, `scripts/test_guard_coverage.sh`, `scripts/check_target_isolation.sh`.
-- [ ] L5 · S1–S5 — atribución de commits (#1995) — asignado al peer de coordinación (después de L4).
+- [x] L4 · S1–S5 — residuales de guard (#2070: ítems 1-3; el 4º, no hacer nada) — `b2cf0a94`, `1111cd9d`, `cd333e76` en `fix-guard-residuals` (peer).
+- [x] L5 · S1–S5 — atribución de commits (#1995) — `4a17cb66` en `fix-ai-attribution-exact` (peer).
+- [x] L6 · S1–S5 — señal de mutación (#1844) — `26792e6b` en `chore-mutation-shard-measurement` (peer): 1477 mutantes medidos ⇒ 96 shards.
+- [ ] L11 · S1–S5 — obscura: el veredicto `Unknown` nombra el mínimo (#1710) — peer, `fix-obscura-unknown-verdict`; compila ⇒ serializa el build con L3b.
 - [ ] L6 · S1–S5 — señal de mutación (#1844).
 - [ ] L7 · S1–S5 — MCP: superficie verdadera (#1815, #1817, #1837, #2193).
 - [ ] L8 · S1–S5 — falsos verdes de test (#2066, #1852, #1828, #1833, #1834, #1816) — BLOQUEADO por O1 y O4.
