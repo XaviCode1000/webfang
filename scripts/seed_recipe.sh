@@ -49,8 +49,42 @@ SEED_RECIPE_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # dedupe across target dirs anyway (that is why this whole mechanism exists), so
 # removing it costs nothing here and removes a variable that could otherwise
 # change how rustc is invoked. SCCACHE_DIR/SCCACHE_BASEDIRS go with it.
+#
+# This list is READ by seed_recipe_build_env (which removes exactly these
+# names, on top of the CARGO_*/RUST* prefix sweep) and it is HASHED into the
+# key through seed_recipe_strip_policy. It used to be neither: the variable
+# was defined and never read, the real strip was by prefix — so SCCACHE_DIR
+# and SCCACHE_BASEDIRS reached the build while the policy claimed they had
+# been removed — and the key hashed the literal string "prescribed-empty", so
+# editing the policy re-keyed nothing at all.
 SEED_RECIPE_STRIPPED_ENV="RUSTC_WRAPPER SCCACHE_DIR SCCACHE_BASEDIRS"
 SEED_RECIPE_WRAPPER_POLICY="prescribed-empty"
+
+# The strip policy as it enters the KEY.
+#
+# The list is part of the build contract: it decides which ambient variables
+# are removed from the build, so changing it changes what the build sees.
+# Hashed into the key (as part of the wrapper policy) so that editing the
+# list re-keys every seed, instead of producing artifacts under a key that
+# claims a policy the build did not follow.
+seed_recipe_strip_policy() {
+  printf '%s;stripped-env=%s' "$SEED_RECIPE_WRAPPER_POLICY" "$SEED_RECIPE_STRIPPED_ENV"
+}
+
+# The DIRECTORY a profile's artifacts live in, inside the target dir.
+#
+# This is cargo's mapping, not the recipe's: the dev and test profiles write
+# into `debug`, the release and bench profiles into `release`, and a custom
+# profile into a directory named after it. The recipe knows the PROFILE; the
+# layout is cargo's, and the two are not the same thing — which is why the
+# prune must never hardcode one of them.
+seed_recipe_profile_dir_name() {
+  case "${1:-dev}" in
+    dev|test)          printf 'debug' ;;
+    release|bench)     printf 'release' ;;
+    *)                 printf '%s' "${1:-dev}" ;;
+  esac
+}
 
 # --- resolution -------------------------------------------------------------
 
@@ -410,7 +444,7 @@ seed_recipe_key_args() {
     --features "$SEED_RECIPE_FEATURES_CANON" \
     --profile "$SEED_RECIPE_PROFILE" \
     --recipe-schema "$SEED_RECIPE_SCHEMA" \
-    --wrapper-policy "$SEED_RECIPE_WRAPPER_POLICY" \
+    --wrapper-policy "$(seed_recipe_strip_policy)" \
     --toolchain-id "$SEED_RECIPE_TOOLCHAIN" \
     --rustc-bin "$SEED_RECIPE_RUSTC_BIN" \
     --config-digest "$SEED_RECIPE_CONFIG_DIGEST" \
@@ -491,26 +525,117 @@ seed_recipe_cargo_args() {
 seed_recipe_build_env() {
   local target_dir="$1"
   local -a env_args=()
+  local -a strip=()
+  local -A seen=()
   local name
   while IFS= read -r name; do
     case "$name" in
       CARGO_HOME) continue ;;   # pinned explicitly below, not simply dropped
     esac
-    env_args+=(-u "$name")
+    [ -n "${seen["$name"]:-}" ] && continue
+    seen["$name"]=1
+    strip+=("$name")
   done < <(compgen -v | grep -E '^(CARGO_|RUST)')
 
+  # The strip policy, BY NAME.
+  #
+  # The prefix sweep above covers the whole CARGO_*/RUST* namespace. A
+  # variable that is deliberately not part of the build and is NOT in that
+  # namespace — sccache's own configuration — was never removed at all: the
+  # policy was a comment in a variable nobody read. A policy that is not
+  # applied is not a policy, and the build saw variables the key claimed it
+  # would not.
+  for name in $SEED_RECIPE_STRIPPED_ENV; do
+    [ -n "${seen["$name"]:-}" ] && continue
+    seen["$name"]=1
+    strip+=("$name")
+  done
+
+  for name in "${strip[@]}"; do
+    env_args+=(-u "$name")
+  done
+
+  # The VALUES travel through a line-oriented channel (the args are printed
+  # one per line and read back with `mapfile -t`), so a value containing a
+  # newline does not survive it: it is split into several arguments and `env`
+  # reads the tail as a COMMAND instead of as an assignment. The encoding
+  # below keeps every value on ONE line; seed_recipe_env_decode_args reverses
+  # it at the consumption point, so the value that reaches cargo is the value
+  # the recipe captured, newlines included.
   env_args+=(
-    CARGO_HOME="$SEED_RECIPE_CARGO_HOME"
-    CARGO_TARGET_DIR="$target_dir"
-    CARGO_INCREMENTAL="$SEED_RECIPE_INCREMENTAL"
-    RUSTFLAGS="$SEED_RECIPE_RUSTFLAGS"
+    "CARGO_HOME=$(seed_recipe_env_encode "$SEED_RECIPE_CARGO_HOME")"
+    "CARGO_TARGET_DIR=$(seed_recipe_env_encode "$target_dir")"
+    "CARGO_INCREMENTAL=$(seed_recipe_env_encode "$SEED_RECIPE_INCREMENTAL")"
+    "RUSTFLAGS=$(seed_recipe_env_encode "$SEED_RECIPE_RUSTFLAGS")"
   )
-  [ -n "$SEED_RECIPE_TOOLCHAIN" ] && env_args+=(RUSTUP_TOOLCHAIN="$SEED_RECIPE_TOOLCHAIN")
-  [ -n "${SEED_RECIPE_RUSTUP_HOME:-}" ] && env_args+=(RUSTUP_HOME="$SEED_RECIPE_RUSTUP_HOME")
+  [ -n "$SEED_RECIPE_TOOLCHAIN" ] && env_args+=("RUSTUP_TOOLCHAIN=$(seed_recipe_env_encode "$SEED_RECIPE_TOOLCHAIN")")
+  [ -n "${SEED_RECIPE_RUSTUP_HOME:-}" ] && env_args+=("RUSTUP_HOME=$(seed_recipe_env_encode "$SEED_RECIPE_RUSTUP_HOME")")
   # RUSTC pins the COMPILER cargo runs, so the one the key hashed and the one that
   # compiles are the same binary by construction. Without this the key reads
   # `rustc` from PATH and the build gets whatever cargo picks, and nothing checks
   # that they agree.
-  env_args+=(RUSTC="$SEED_RECIPE_RUSTC_BIN")
+  env_args+=("RUSTC=$(seed_recipe_env_encode "$SEED_RECIPE_RUSTC_BIN")")
   printf '%s\n' "${env_args[@]}"
+}
+
+# --- the env channel --------------------------------------------------------
+#
+# The build environment is handed to `env` as a list of arguments, and that
+# list is produced by PRINTING it: one argument per line, read back with
+# `mapfile -t`. A line-oriented channel cannot carry a value that contains a
+# newline — it splits the value into several arguments, and `env` stops
+# parsing options at the first argument that is not an assignment, so the
+# tail of a multi-line RUSTFLAGS was executed as a COMMAND.
+#
+# The fix is not to forbid newlines (a multi-line RUSTFLAGS is legitimate)
+# and not to hope the value is single-line. The value is encoded on the way
+# out and decoded on the way in, and the round trip is exact.
+seed_recipe_env_encode() {
+  local v="$1"
+  v="${v//\\/\\\\}"
+  v="${v//$'\n'/\\n}"
+  v="${v//$'\r'/\\r}"
+  printf '%s' "$v"
+}
+
+seed_recipe_env_decode() {
+  local s="$1" out="" i=0 n c
+  n=${#s}
+  while [ "$i" -lt "$n" ]; do
+    c="${s:i:1}"
+    if [ "$c" = "\\" ] && [ $((i + 1)) -lt "$n" ]; then
+      case "${s:i+1:1}" in
+        n)  out+=$'\n'; i=$((i + 2)); continue ;;
+        r)  out+=$'\r'; i=$((i + 2)); continue ;;
+        \\) out+="\\";  i=$((i + 2)); continue ;;
+      esac
+    fi
+    out+="$c"
+    i=$((i + 1))
+  done
+  printf '%s' "$out"
+}
+
+# Decode the assignment values of an env-args array, in place.
+#
+# Only the VALUE of an assignment is encoded (`-u NAME` and a bare NAME carry
+# no value), so only that is decoded. The nameref keeps the array the caller
+# holds: the consumer reads it back with `env "${BUILD_ENV[@]}"`, and a
+# decoded copy somewhere else would be a copy nobody uses.
+seed_recipe_env_decode_args() {
+  local -n _seed_env_args="$1"
+  local i v name val
+  local -a decoded=()
+  for i in "${!_seed_env_args[@]}"; do
+    v="${_seed_env_args[$i]}"
+    case "$v" in
+      *=*)
+        name="${v%%=*}"
+        val="${v#*=}"
+        decoded+=("$name=$(seed_recipe_env_decode "$val")")
+        ;;
+      *) decoded+=("$v") ;;
+    esac
+  done
+  _seed_env_args=(${decoded[@]+"${decoded[@]}"})
 }

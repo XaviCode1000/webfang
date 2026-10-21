@@ -125,6 +125,27 @@ if [ -z "$CONFIG_DIGEST_ARG" ]; then
 fi
 CONFIG_DIGEST="$CONFIG_DIGEST_ARG"
 
+# The workspace build contract is required, exactly like the configuration
+# digest, and for the same reason.
+#
+# It used to be optional: omitting it emitted `workspace_contract = ""`, and
+# two workspaces that share a rustc, a configuration and a lock — but not the
+# same manifests, the same profiles or the same dependency features — hashed
+# to the SAME key. A seed built under one build contract was then offered to a
+# consumer compiling under another, which is the whole class of defect this
+# key exists to make impossible.
+#
+# An empty digest is not a weaker statement about the contract; it is the
+# absence of one, and it is refused.
+if [ -z "$WORKSPACE_DIGEST_ARG" ]; then
+  echo "seed_compat_key.sh: --workspace-digest is required and must not be empty." >&2
+  echo "  the workspace contract (profiles, dependency features, workspace" >&2
+  echo "  members) decides what gets compiled. A key computed without it" >&2
+  echo "  cannot tell two different build contracts apart, and a seed that" >&2
+  echo "  cannot be told apart is offered to the wrong consumer." >&2
+  exit 1
+fi
+
 LOCK_DIGEST="absent"
 if [ -f "$REPO_ROOT/Cargo.lock" ]; then
   LOCK_DIGEST="sha256:$(sha256sum "$REPO_ROOT/Cargo.lock" | cut -d' ' -f1)"
