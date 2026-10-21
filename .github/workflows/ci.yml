@@ -893,6 +893,30 @@ jobs:
   # Unit tests first (fast), then integration + behavioral (heavier).
   # Runs in parallel with clippy (fan-out from toolchain).
   # ============================================================================
+  # Offline semantics harnesses for the CI-orchestration guards: the merge
+  # waiter, the tag ruleset writer, the CI metrics snapshot and the CI-health
+  # issue closer. Each of those guards had a branch that no test exercised
+  # (a watch without a deadline, an API error read as "not there", a failed
+  # read read as "missing label", a truncated sample printed as complete).
+  merge-metrics-guards:
+    name: Merge and metrics guards
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - name: Merge-when-green wait bounds semantics harness
+        run: bash scripts/test_ci_merge_when_green.sh
+      - name: Tag ruleset idempotency semantics harness
+        run: bash scripts/test_apply_tag_ruleset.sh
+      - name: CI metrics snapshot semantics harness
+        run: bash scripts/test_ci_metrics.sh
+      - name: CI health close semantics harness
+        run: bash scripts/test_ci_health_close.sh
+
   test-core:
     name: Tests (unit + integration + behavioral)
     needs: [toolchain, change-scope]

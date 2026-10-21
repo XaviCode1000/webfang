@@ -88,6 +88,11 @@ case "$sub" in
     ;;
   "issue view")
     number="${1:-}"
+    # Simulated API failure: the labels of the issue cannot be read at all.
+    if [[ -f "$state/view-fails" ]]; then
+      echo "gh: simulated API failure (500)" >&2
+      exit 1
+    fi
     if [[ -f "$state/issues" ]]; then
       while IFS=$'\t' read -r row_number _title labels; do
         if [[ "$row_number" == "$number" ]]; then
@@ -318,6 +323,34 @@ reset_state
 if run_ci_health close "$TITLE" "$URL" >/dev/null 2>&1; then rc=0; else rc=$?; fi
 check "empty set -> exit 0" "0" "$rc"
 check "empty set -> no close calls" "" "$(closed_list)"
+
+# 3b. A FAILED label read is NOT a missing label (B50). Pre-fix the failed
+#     `gh issue view` made the label condition false, so the helper printed
+#     "Skip #N: missing label" and exited 0: the stale issue stayed open and
+#     the reconcile step reported success. The error must propagate instead.
+reset_state
+printf '77\t%s\tci-health,automated\n' "$TITLE" >"$STATE/issues"
+: >"$STATE/view-fails"
+if run_ci_health close "$TITLE" "$URL" >"$WORK/close-fail-out" 2>&1; then rc=0; else rc=$?; fi
+fail_out="$(cat "$WORK/close-fail-out")"
+check "unreadable labels -> non-zero exit (fail closed)" "yes" \
+  "$([[ $rc -ne 0 ]] && echo yes || echo no)"
+check "unreadable labels -> no close calls" "" "$(closed_list)"
+case "$fail_out" in
+  *"Skip #77"*) check "unreadable labels -> NOT reported as a missing label" "yes" "no" ;;
+  *) check "unreadable labels -> NOT reported as a missing label" "yes" "yes" ;;
+esac
+case "$fail_out" in
+  *"could not read the labels"*) check "unreadable labels -> the read error is reported" "yes" "yes" ;;
+  *) check "unreadable labels -> the read error is reported" "yes" "no" ;;
+esac
+rm -f "$STATE/view-fails"
+# The same issue, readable again, is closed normally: the guard is a fail
+# closed on the READ, not a blanket mute.
+reset_state
+if run_ci_health close "$TITLE" "$URL" >/dev/null 2>&1; then rc=0; else rc=$?; fi
+check "labels readable again -> exit 0" "0" "$rc"
+check "labels readable again -> the issue is closed" "77" "$(closed_list)"
 
 # 4. The origin -> key rule, executed from the workflow's own classifier.
 check "event path: push run -> push key" "CI failed on main (push) [ci-health]" \

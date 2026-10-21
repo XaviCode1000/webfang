@@ -25,7 +25,9 @@
 #      the checks reported so far, so right after a push it can declare GREEN from a
 #      subset while a slow aggregator context has not been queued yet (#1011). If
 #      the required-context list cannot be read, it falls back to that older watch
-#      behaviour and says so on stderr.
+#      behaviour and says so on stderr. That fallback is bounded by the SAME
+#      effective deadline as the polling branch (B46): a deadline that applies to
+#      one branch only is not a deadline.
 #   2. Verifies mergeStateStatus is CLEAN or UNSTABLE (not BEHIND, BLOCKED, or
 #      CONFLICT). UNSTABLE with required checks green is this repo's normal
 #      green state: several jobs are skipped by design on PRs (Deploy Docs,
@@ -366,13 +368,38 @@ if [[ -z "$required" ]]; then
   echo "warning: could not read required contexts from branch protection." >&2
   echo "         Falling back to 'gh pr checks --watch --required', which is the" >&2
   echo "         behaviour that reported a false GREEN in #1011." >&2
+  # The effective deadline bounds THIS branch too (B46). The watch used to run
+  # unbounded here, so `--timeout` was silently ignored and the script blocked
+  # forever whenever branch protection was unreadable. A deadline that applies
+  # to one branch only is not a deadline.
+  echo "    watcher timeout: ${timeout_effective}s (the fallback watch is bounded too)" >&2
+  watch_cmd=()
+  if command -v timeout >/dev/null 2>&1; then
+    watch_cmd=(timeout -k 5 "$timeout_effective" gh pr checks "$pr_number" --watch --required --fail-fast)
+  elif command -v gtimeout >/dev/null 2>&1; then
+    # macOS ships the GNU coreutils timeout as `gtimeout`.
+    watch_cmd=(gtimeout -k 5 "$timeout_effective" gh pr checks "$pr_number" --watch --required --fail-fast)
+  else
+    # Fail closed: without a wrapper the watch cannot be bounded, and an
+    # unbounded wait is exactly the defect this branch exists to remove.
+    echo "error: neither 'timeout' nor 'gtimeout' is on PATH, so the watch cannot be bounded." >&2
+    echo "       Refusing to run an unbounded 'gh pr checks --watch' (--timeout would be ignored)." >&2
+    exit 4
+  fi
   # NOTE: capture the exit status with `cmd || rc=$?`, NOT `if ! cmd; then rc=$?`.
   # Inside the `then` block of a negated command, `$?` is the status of the
   # negated pipeline (always 0 when the body runs), so the real gh status would
   # be lost (#938).
   rc=0
-  gh pr checks "$pr_number" --watch --required --fail-fast >/dev/null || rc=$?
+  "${watch_cmd[@]}" >/dev/null || rc=$?
   if [[ $rc -ne 0 ]]; then
+    if [[ $rc -eq 124 ]]; then
+      # `timeout` reports 124 when it had to kill the watch: the deadline hit
+      # with the checks still unsettled. That is the same class as the
+      # polling branch's deadline, so it is exit 4 (not a verdict).
+      echo "error: the required checks did not settle within ${timeout_effective}s (watch fallback timed out)." >&2
+      exit 4
+    fi
     if [[ $rc -eq 8 ]]; then
       echo "error: checks still pending after watch exit" >&2
       exit 4
@@ -403,7 +430,12 @@ else
       case "$bucket" in
         pass) ;;
         fail) notgreen+=" ${name}=failed" ;;
-        cancelled) notgreen+=" ${name}=cancelled" ;;
+        # The API spells the terminal bucket `cancel`; `cancelled` is accepted
+        # too because a cancelled required check must be terminal in EITHER
+        # spelling (B47). Before, only `cancelled` matched, so the real
+        # `cancel` bucket fell through to the "not reported yet" arm and the
+        # wait ran to the deadline.
+        cancel|cancelled) notgreen+=" ${name}=cancelled" ;;
         # A REQUIRED check that skipped is not a pass. Fail closed rather than
         # merge on a check that never ran.
         skipping) notgreen+=" ${name}=skipped" ;;
