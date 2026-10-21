@@ -223,7 +223,7 @@ resolve_lint_bin() {
     printf '%s' "$candidate"
     return 0
   fi
-  echo "::error::the intra-crate lint extractor was not found — the gate fails closed (there is no fallback scanner). Build it with: cargo build --manifest-path tools/intra-crate-lint/Cargo.toml --locked (searched: ${candidates[*]}, PATH: intra-crate-lint)" >&2
+  echo "::error::the intra-crate lint extractor was not found — the gate fails closed (there is no fallback scanner). Build it with: cargo build --manifest-path tools/intra-crate-lint/Cargo.toml --locked (when CARGO_TARGET_DIR is pinned to a shared target dir, build it with 'env -u CARGO_TARGET_DIR' so the binary lands in tools/intra-crate-lint/target, or point \$INTRA_CRATE_LINT_BIN at the binary). Searched: ${candidates[*]}, PATH: intra-crate-lint" >&2
   return 1
 }
 
