@@ -197,6 +197,19 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           persist-credentials: false
+      # The intra-crate lint tool (tools/intra-crate-lint) is a STANDALONE
+      # cargo project — excluded from the workspace, so it never touches the
+      # product's build graph — but it must be BUILT and TESTED here, or its
+      # 23 tests would be inert (the very shape that let the gate's four
+      # fail-open defects survive: nothing in CI asserted what the gate
+      # decides). The toolchain is the same pinned action the other jobs use.
+      # --locked: the tool commits its own Cargo.lock, and a build that
+      # re-resolves would make CI depend on the registry's current state.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      - name: Build the intra-crate lint tool
+        run: cargo build --manifest-path tools/intra-crate-lint/Cargo.toml --locked
+      - name: Intra-crate lint tool tests
+        run: cargo test --manifest-path tools/intra-crate-lint/Cargo.toml --locked
       # Regression guard for Wave 3 (#402): all tests must be crate-local.
       # Fails if anyone re-adds a .rs file under root tests/ (dead test).
       - name: Dead test detection
@@ -246,6 +259,16 @@ jobs:
 
       - name: Intra-crate direction gate (strict)
         run: INTRA_CRATE_MODE=strict bash scripts/check_intra_crate_direction.sh
+      # The SEMANTICS of the gate above, executed. Before this step existed the
+      # gate's own behaviour was pinned by nothing in CI: the four fail-open
+      # defects of the gate (audit "scripts fail-open" 2026-10-18, B36-B39) were
+      # never caught by a CI run, because no CI step ever asserted what the
+      # gate decides — only that it ran. The harness drives the gate over its
+      # own fixtures and asserts the DECISIONS (site counts, the fail-closed
+      # rows, the lateral blind spot that is deliberately preserved). Offline,
+      # no repo state touched.
+      - name: Intra-crate direction gate semantics harness
+        run: bash scripts/test_intra_crate_direction.sh
       # Regression guard for stabilization-sitemap-regression, re-based by #1328:
       # the ignored-test budget is a frozen baseline (32 rows in
       # docs/test-inventory.md — 26 test attributes + 6 doc/comment mentions),
@@ -440,6 +463,45 @@ jobs:
       # Offline, pure text over the checked-out tree: no cargo, no network.
       - name: Docs version pins wiring harness
         run: bash scripts/test_docs_version_pins_wiring.sh
+      # AI providers doc drift gate (#2136): docs/architecture/ai-providers-design.md
+      # is a NORMATIVE spec cited by 13 code files, and it lives OUTSIDE the
+      # mdBook — so no gate read it. That is how a signature that did not
+      # compile survived months (#2136). This step runs the guard that compares
+      # the doc's claims against the real code, and it runs in `repo-guards`: a
+      # job with no `paths:` filter, already a `needs:` of `gate` in both
+      # scopes — the only place from which a guard can reach the required
+      # `CI Gate`. A workflow behind `paths:` can never be a required context.
+      #
+      # PHASE 2 (required): the guard itself is FAIL-CLOSED (it exits 1 on
+      # drift) and the step no longer absorbs that failure — so a drifting PR
+      # reds `repo-guards`, and with it the required `CI Gate`, and the merge
+      # is BLOCKED. The marker line below is what declares the phase in a form
+      # a machine can read: the semantics harness below requires the phase to
+      # be declared EXACTLY once, either as the `continue-on-error: true` flag
+      # (advisory) or as the `# guard-required` marker (required). Both at once
+      # is a FALSE PROMOTION (the step would still be advisory while the
+      # harness certified it as blocking); neither is a step with no phase at
+      # all.
+      #
+      # The promotion is the OWNER's call, not a mechanical consequence of the
+      # guard's existence: the criterion was already met — the semantics
+      # harness below proves the FAIL-CLOSED behaviour of every check, so a
+      # promoted guard blocks only on real drift. The local mirror
+      # (scripts/ci_fast_gate.sh) runs the same guard in the same, blocking
+      # mode, and the harness rejects a mirror whose mode disagrees with the
+      # phase declared here: a guard that blocks in CI and not locally is a
+      # lie the developer only discovers in the CI run.
+      - name: AI providers doc drift gate (required, #2136)
+        # guard-required
+        run: bash scripts/check_ai_providers_doc.sh
+      # Semantics harness for the gate above — BLOCKING, like the gate step
+      # itself. It is the proof that the guard can still fail: a guard that
+      # stopped recognising drift would leave the gate step permanently green,
+      # which is indistinguishable from not having a guard at all. Same
+      # argument, and the same blocking status, as the docs version pins
+      # harness above. Offline, mktemp fixtures only, no cargo and no network.
+      - name: AI providers doc drift semantics harness
+        run: bash scripts/test_ai_providers_doc.sh
       # The release flow OWNS the docs version pins (#2028), and these three
       # harnesses pin the pieces that make that ownership real: the WRITER
       # (scripts/bump_docs_version_pins.sh — the exact inverse of the gate
