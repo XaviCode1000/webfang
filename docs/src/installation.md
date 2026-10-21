@@ -186,10 +186,17 @@ Building from source works on the normal developer path (Rust 1.88 toolchain,
 cmake for BoringSSL — see [from source](#from-source-developers)). The old
 ONNX excuse no longer applies (ADR-0004 paso 6 removed the `ai` feature and
 the local engine), so a source build has **no semantic holes**: `--clean-ai`
-and `--offline` work via remote embedding endpoints (`--embedding-provider`),
-Obsidian vault search included. What you lose on one machine is only runtime
-network policy — a remote public endpoint is rejected under `--offline`
-(exit 78) unless it is loopback/LAN-allowlisted.
+resolves its endpoint through `--embedding-provider`, Obsidian vault search
+included. What you lose on one machine is only runtime network policy —
+**except** under `--offline`, where NO embeddings provider is usable: the
+guard rejects every one of them, a remote endpoint or a loopback one, and
+the run exits with 78. Since 3.0.0 there is no local engine to fall back
+to, so `--clean-ai` and `--offline` are mutually exclusive. And `--offline`
+gates the SEMANTIC-CLEANING providers, not the crawler's network: it means
+"no semantic cleaning", not "no network" — it only works offline when no
+embeddings provider is selected at all (no `--embedding-provider`, and no
+provider with the `embedding` capability in the config), otherwise the run
+fails with exit 78 (ADR-0004 §46, corrected 2026-10-21).
 
 ### Windows
 

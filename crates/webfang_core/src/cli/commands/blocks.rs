@@ -56,12 +56,17 @@ pub fn print_provider_block(provider: &ProviderConfig, explicit: bool) {
              (un provider remoto sin `model` falla al construir el adapter)"
         ),
     }
+    // `allow_loopback` is the PROVIDER's own network policy — "may this
+    // provider's endpoint live on loopback?" — and NOT the `--offline`
+    // guard's semantics, which reject every embeddings provider (loopback
+    // included) with exit 78. The label says which of the two it is, so the
+    // line cannot be read as "`--offline` allows loopback" (#2166).
     println!(
         "  allow_loopback: {}",
         if provider.allow_loopback {
-            "true (loopback permitido explícitamente)"
+            "true (política de red del provider: permite un endpoint en loopback)"
         } else {
-            "false (loopback bloqueado por defecto)"
+            "false (política de red del provider: loopback bloqueado por defecto)"
         }
     );
 
