@@ -1289,3 +1289,59 @@ intactos), **723G libres**. La spec (`odd/tasks/merge-prs-to-main.md`) queda con
 entradas de Log** y la única pista sin trackear es el propio documento de la spec
 (`?? odd/tasks/merge-prs-to-main.md`), que es de esta sesión y queda a decisión del owner
 si se commitea o se borra.
+**L59.** (publicación del propio registro: la spec entra en `main`) El owner decidió
+publicar este documento, así que el proceso queda registrado en el repo y no solo en la
+copia de trabajo.
+
+- Rama `docs/merge-chain-process-record` desde `main` (`09050142`), commit **`1a4ce90f`**,
+  **un único fichero** (`odd/tasks/merge-prs-to-main.md`, 1288 líneas). Sin código ni
+  configuración: es un solo documento, o sea **una** unidad de revisión.
+- Issue **#2224** creada para dar cobijo al trabajo (el validador exige una issue
+  vinculada con el label protegido `status:approved`), PR **#2225** con `type:docs` y
+  `Closes part of #2224`.
+- **El label lo añadió el owner** (autorización explícita en la sesión): la regla del
+  repo es que el agente **no** se auto-aprueba, y la aprobación del trabajo ya era suya
+  ("ok commitea y mergea"). Queda anotado porque es la excepción, no la regla.
+
+**Sobre el tamaño (1288 líneas):** el aviso de "past the ~400-line slice" aplica a
+unidades de **código** que se puedan revisar por partes; un documento Markdown único es
+una unidad atómica y partirlo produciría PRs sin sentido (un Log partido a la mitad no es
+revisable). El coste real de revisión es el diff de un solo fichero.
+
+**L60.** (CIERRE de la cadena, y un incidente de escritura que casi se lleva un Log)
+**Estado final verificado:** `origin/main` = **`c439902e`** (con este registro dentro),
+**32 merges** de PRs, **0 PRs abiertas**, tracker de la campaña cerrado (#2127 + las seis
+olas #2128–#2133), release **v5.0.0** publicada (tag `972b2cbe`) con la línea de soporte
+5.0 declarada STABLE, job *Support Drift* en `main` en **success**, certificación de las
+ocho clases con **79 casos, 0 defectos confirmados y dos corridas idénticas**, **0
+stashes**, **723G libres** y 4 worktrees vivos (`main` + tres de otras sesiones).
+
+**El incidente.** Al mergear la PR que publica este mismo documento, el script de la
+cadena avisó:
+
+    el untracked odd/tasks/merge-prs-to-main.md DIFIERE de origin/main: no se toca, ff bloqueado
+
+La causa: **la copia local del documento (untracked, en el worktree de `main`) había
+cambiado después de que se copiara al worktree de la PR**, y lo había hecho **mal**: dos
+palabras alteradas —`Tenés` → `Ten��` (dos bytes U+FFFD) y `**cableó**` → `**ibadía**`— y
+**el bloque de corrección de L38 perdido**, todo con el mtime preservado. El worktree de
+`main` lo usa más de una sesión, así que otro escritor tocó el fichero con un buffer
+viejo: el resultado era un **híbrido** (L59 presente y limpio, L38 ausente, dos palabras
+dañadas).
+
+**Tres lecturas que esto deja:**
+
+1. **La versión commiteada es la fuente de verdad; la copia local, no.** Por eso este
+   follow-up se armó sobre `git show origin/main:odd/tasks/merge-prs-to-main.md` (limpio,
+   hasta L58) y **no** sobre el fichero local: sólo se rescató de la copia local el
+   bloque L59, tras comprobar que **no** tenía bytes U+FFFD.
+2. **El guard del script worked as designed.** Se negó a hacer el fast-forward porque el
+   untracked difería del commiteado — es decir, si hubiera hecho el ff a lo bruto, la
+   versión commiteada (sin L59) habría **pisado** el untracked y L59 se habría perdido.
+   Un guard que se niega a actuar y **lo dice** es exactamente lo que evita la pérdida
+   silenciosa.
+3. **Un híbrido no se arregla a mano.** La tentación era "arreglar las dos palabras
+   corruptas en el local y listo"; lo correcto era **descartar el local como fuente** y
+   recomponer desde lo commiteado, porque un fichero con contenido de dos épocas
+   simultáneas no tiene una versión correcta que "reparar" — tiene dos, y la fuente de
+   verdad decide.
