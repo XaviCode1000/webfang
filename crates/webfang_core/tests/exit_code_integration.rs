@@ -56,11 +56,11 @@ fn webfang_path() -> PathBuf {
 
 fn cmd() -> Command {
     let mut c = Command::new(webfang_path());
-    // Hermeticity: remove all WEBFANG_* / WEBFANG_AI_MODEL_ID / AI_MODEL_ID
-    // env vars so poisoned CI environments (bug-discovery workflow) don't
-    // affect arg parsing. Legacy `AI_MODEL_ID` is still honored by the CLI
-    // itself, via `webfang_core::cli::args::ai::LEGACY_AI_MODEL_ENV` — the
-    // `webfang_ai` reader is gone since ADR-0004 paso 6 (#980).
+    // Hermeticity: remove all WEBFANG_* / AI_MODEL_ID env vars so poisoned CI
+    // environments (bug-discovery workflow) don't affect arg parsing. The AI
+    // model env names are ignored by the CLI since the migration shims were
+    // retired (issue #2119), but stripping them keeps the run independent of
+    // whatever the CI environment happens to export.
     let poisoned: Vec<String> = std::env::vars()
         .filter(|(k, _)| k.starts_with("WEBFANG_") || k == "AI_MODEL_ID")
         .map(|(k, _)| k)

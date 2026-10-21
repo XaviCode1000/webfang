@@ -2,9 +2,6 @@
 source: crates/webfang_core/tests/ai_error_propagation.rs
 expression: "redact_nondeterministic(t.out.path(), &stderr)"
 ---
-  <TIMESTAMP>  WARN webfang: ONNX local se retiró en 3.0.0: la feature Cargo `ai` y la inferencia ONNX ya no existen, y `cargo build --features ai` falla en resolución de features. Sin gate desde entonces: `--clean-ai` (resuelve su endpoint por `--embedding-provider` / `WEBFANG_EMBEDDING_PROVIDER`; sin proveedor falla con ConfigError, exit 78) y `--offline` (rechaza cualquier provider de embeddings, remoto o loopback, con exit 78). Estos shims siguen funcionando hasta 3.2.0: `--ai-model`, `--max-tokens`, `WEBFANG_MAX_TOKENS`, `AI_MODEL_ID` / `WEBFANG_AI_MODEL_ID`, `WEBFANG_AI_ENGINE`. Migración: `webfang connect`, `webfang doctor`, `webfang show`., notice: "onnx_deprecation", removed_feature: "ai", removed_capability: "onnx_local", replacement: "webfang connect|webfang doctor|webfang show", removed_in_version: "3.0.0", shims_retire_in_version: "3.2.0"
-    at <FILE>.rs:<LINE>
-
   <TIMESTAMP>  WARN webfang: El umbral de relevancia por defecto (0.3) está calibrado para Granite (ONNX local). Sin modelo local, un endpoint remoto retiene distinto con el mismo número: elegí `--threshold` (o `WEBFANG_THRESHOLD`) según tu modelo. Referencia: ADR-0004, sección «Umbral por defecto huérfano»., notice: "orphan_relevance_threshold", threshold_used: 0.3, calibrated_for: "granite", replacement: "--threshold|WEBFANG_THRESHOLD"
     at <FILE>.rs:<LINE>
 

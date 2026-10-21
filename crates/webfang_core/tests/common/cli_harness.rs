@@ -249,13 +249,15 @@ pub(crate) fn strip_poisoned_env(cmd: &mut Command) {
     }
 }
 
-/// Remove all `WEBFANG_*`, `WEBFANG_AI_MODEL_ID`, and `AI_MODEL_ID` env
-/// vars from a command so tests are hermetic even when CI bug-discovery
-/// workflows poison the environment, and point `XDG_CACHE_HOME` at a fresh
-/// per-invocation temp directory. The legacy `AI_MODEL_ID` is still
-/// honored by the CLI — since ADR-0004 paso 6 the `webfang_ai` crate is
-/// gone, so `webfang_core::cli::args::ai::LEGACY_AI_MODEL_ENV` is the only
-/// reader left (#980 slice 5b) — so a poisoned run exercises that fallback.
+/// Remove all `WEBFANG_*` and `AI_MODEL_ID` env vars from a command so tests
+/// are hermetic even when CI bug-discovery workflows poison the environment,
+/// and point `XDG_CACHE_HOME` at a fresh per-invocation temp directory.
+///
+/// The AI model env names (`WEBFANG_AI_MODEL_ID`, `AI_MODEL_ID`) are kept in
+/// the strip list even though nothing reads them any more — the migration
+/// shims that used to are retired (issue #2119) — because a name that is
+/// stripped today must not start being honoured by a future flag, and
+/// removing it from the list would make that a silent difference.
 ///
 /// Hermetic cache: checkpointing is opt-in (F-01: default flags resolve to
 /// `Disabled`), but an explicit `--resume`/`--state-dir` run still loads
