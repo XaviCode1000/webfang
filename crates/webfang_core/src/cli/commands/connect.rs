@@ -1283,6 +1283,7 @@ model = \"nomic-embed-text\"
     /// the next run degraded EVERYTHING to defaults in silence. The gate must
     /// validate the same document the run loads, so the whole flow (probe OK,
     /// write refused) ends in `CliExit::ConfigError` with the file untouched.
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn connect_refuses_a_config_with_a_mistyped_unrelated_top_level_key() {
         let server = serve_embeddings().await;
@@ -1334,6 +1335,7 @@ model = \"nomic-embed-text\"
     /// table further away: the run loads `model_profiles` through
     /// `ConfigDefaults`, so a value it cannot deserialize must refuse the
     /// write, not pass a providers-only gate (also closes R4-3).
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn connect_refuses_a_config_with_an_invalid_model_profiles_override() {
         let server = serve_embeddings().await;
@@ -1608,6 +1610,7 @@ model = \"m\", capabilities = [\"embedding\"] } ]
         );
     }
 
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn connect_registers_a_provider_that_answers_the_probe() {
         let server = serve_embeddings().await;
@@ -1627,6 +1630,7 @@ model = \"m\", capabilities = [\"embedding\"] } ]
         assert_eq!(loaded.providers[0].id, "connect-a1b2");
     }
 
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn connect_rejects_a_dead_endpoint_and_writes_nothing() {
         // RFC 5737 TEST-NET-1, port 1: nothing listens there.
