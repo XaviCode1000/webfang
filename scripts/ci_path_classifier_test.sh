@@ -156,6 +156,27 @@ expect_kv run_code_jobs false "nothing in the diff is a build input"
 expect_kv affected none "no area flag is set"
 
 # ---------------------------------------------------------------------------
+# 1b. A tool under tools/ is CODE, not an unknown surface.
+#     The intra-crate lint tool (tools/intra-crate-lint) is Rust source. If
+#     tools/ matched no bucket, a tools-only change would fall into the
+#     "unknown path" widening and set all=true — the fast gate would widen
+#     to FULL for a change that is, in fact, a build input.
+# ---------------------------------------------------------------------------
+R="$(new_repo tools_code)"
+mkdir -p "$R/tools/intra-crate-lint/src"
+printf 'pub fn a() {}\n' >"$R/tools/intra-crate-lint/src/lib.rs"
+commit_all "$R" base
+BASE="$(git -C "$R" rev-parse HEAD)"
+printf 'pub fn a() {}\npub fn b() {}\n' >"$R/tools/intra-crate-lint/src/lib.rs"
+commit_all "$R" change
+
+classify "$R" "$BASE" HEAD
+expect_files 1 "tools-only diff reports one file"
+expect_kv code true "a tool under tools/ is a build input"
+expect_kv all false "tools/ is a known surface, not the unknown widening"
+expect_kv run_code_jobs true "a tools-only change runs the code lanes"
+
+# ---------------------------------------------------------------------------
 # 2. The live symptom: CI file + Rust source in ONE diff. Pre-fix the
 #    concatenated pseudo-path started with `.github/` and matched is_ci_file,
 #    so ci_only=true, the unknown widening never fired, run_code_jobs stayed

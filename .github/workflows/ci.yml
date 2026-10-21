@@ -197,6 +197,19 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           persist-credentials: false
+      # The intra-crate lint tool (tools/intra-crate-lint) is a STANDALONE
+      # cargo project — excluded from the workspace, so it never touches the
+      # product's build graph — but it must be BUILT and TESTED here, or its
+      # 23 tests would be inert (the very shape that let the gate's four
+      # fail-open defects survive: nothing in CI asserted what the gate
+      # decides). The toolchain is the same pinned action the other jobs use.
+      # --locked: the tool commits its own Cargo.lock, and a build that
+      # re-resolves would make CI depend on the registry's current state.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      - name: Build the intra-crate lint tool
+        run: cargo build --manifest-path tools/intra-crate-lint/Cargo.toml --locked
+      - name: Intra-crate lint tool tests
+        run: cargo test --manifest-path tools/intra-crate-lint/Cargo.toml --locked
       # Regression guard for Wave 3 (#402): all tests must be crate-local.
       # Fails if anyone re-adds a .rs file under root tests/ (dead test).
       - name: Dead test detection
