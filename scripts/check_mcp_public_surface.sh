@@ -12,7 +12,8 @@
 # So the marker lives in its own one-line file
 # (`crates/webfang_mcp/tests/fixtures/mcp_public_surface.version`), and this
 # guard compares BOTH files against a base commit (see --base; the default is
-# the last commit that touched either file):
+# the state BEFORE the change in front of you — committed or still in the
+# working tree):
 #
 #   surface changed + version unchanged  -> FAIL, with each changed row
 #                                          classified per policy §3.1
@@ -25,13 +26,17 @@
 # Usage:
 #   scripts/check_mcp_public_surface.sh [--base <ref>] [--record]
 #
-#   --base <ref>   compare against <ref>. The default is the last commit that
-#                  touched the fixture OR the marker, which is the semantic
-#                  that actually matters: the guard is about the change sitting
-#                  in front of you, not about the whole branch. A merge-base
-#                  with main is wrong for a feature branch whose fixture was
-#                  introduced mid-stack -- every row would read as "added" and
-#                  the guard would go blind after the introducing commit.
+#   --base <ref>   compare against <ref>. The default is the most recent commit
+#                  that touched the fixture OR the marker AND whose content
+#                  still differs from the working tree, i.e. the state before
+#                  the change in front of you (committed or not). The previous
+#                  default -- the last commit that touched the file -- WAS the
+#                  change under review once it was committed, so the guard
+#                  compared the fixture with itself and read a committed
+#                  breaking edit as "unchanged". A merge-base with main is
+#                  wrong for a feature branch whose fixture was introduced
+#                  mid-stack -- every row would read as "added" and the guard
+#                  would go blind after the introducing commit.
 #   --record       re-derive the fixture from the live router first, then
 #                  run the same check. Recording NEVER touches the version
 #                  marker, so a breaking change recorded this way stays red
@@ -68,10 +73,43 @@ if ! command -v git >/dev/null 2>&1; then
 fi
 
 # --- resolve the base -------------------------------------------------------
-# Default: the last commit that touched either tracked file. See --help for why
-# a merge-base is the wrong default here.
+# Default: the most recent commit that touched either tracked file AND whose
+# content still differs from the working tree. See --help for why a merge-base
+# is the wrong default here, and why "the last commit that touched the file"
+# is not a base at all.
+#
+# The old default was `git log -1 -- $FIXTURE $MARKER`: the last commit that
+# touched the tracked files. Once the change is committed that commit IS the
+# change under review, so the comparison became fixture-at-HEAD against
+# fixture-at-HEAD: the guard compared the fixture with itself and reported
+# "unchanged" for a committed breaking edit with no version bump. ci_fast_gate.sh
+# invokes this script with no --base, so the hole was the local pre-push path;
+# CI passes --base and was never affected.
+#
+# The base is now the newest commit whose tracked content differs from the
+# working tree: the state BEFORE the change in front of you, whether that
+# change is already committed or still unstaged.
+default_base() {
+  local candidate oldest=""
+  while IFS= read -r candidate; do
+    [[ -n "$candidate" ]] || continue
+    [[ -z "$oldest" ]] && oldest="$candidate"
+    # `git diff --quiet <commit> -- <paths>` compares the commit with the
+    # WORKING TREE, so an unstaged edit is part of the comparison and the
+    # repository's own EOL/filter rules decide what "identical" means.
+    if ! git -C "$ROOT" diff --quiet "$candidate" -- "$FIXTURE" "$MARKER" 2>/dev/null; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done < <(git -C "$ROOT" log --format=%H -- "$FIXTURE" "$MARKER" 2>/dev/null || true)
+  # Every candidate carries the current content: the tracked files have not
+  # changed since they were introduced, so the oldest candidate is the honest
+  # base (its content equals the working tree and the surface reads unchanged).
+  printf '%s' "$oldest"
+}
+
 if [[ -z "$BASE" ]]; then
-  BASE="$(git -C "$ROOT" log -1 --format=%H -- "$FIXTURE" "$MARKER" 2>/dev/null || true)"
+  BASE="$(default_base)"
 fi
 [[ -n "$BASE" ]] || fail "no base commit touches $FIXTURE or $MARKER yet; pass --base <ref>"
 
@@ -142,6 +180,16 @@ flatten_sectioned() {
     section == "defs" {
       printf "def\t%s/%s\tconsts=%s\n", $1, $2, $3; next
     }
+    {
+      # Any OTHER section is emitted verbatim under its section name. The three
+      # known sections are normalized into typed identities; an unknown one has
+      # no schema to normalize against, so the raw row is the honest identity.
+      # Dropping it (as this reader used to) removed the row from BOTH sides of
+      # the comparison, so a breaking addition under a new section read as
+      # "the surface did not change" — the guard went blind exactly where it
+      # had no schema to check.
+      printf "row\t%s\t%s\n", section, $0
+    }
   ' "$1"
 }
 
@@ -177,7 +225,7 @@ if [[ "$SURFACE_CHANGED" == "1" && "$CUR_VER" == "$BASE_VER" ]]; then
     echo "    required release in the commit body"
     echo ""
     echo "Changed rows:"
-    diff -u "$WORKDIR/base.flat" "$WORKDIR/cur.flat" | sed -n 's/^+\(tool\|prop\|def\)\t/  /p'
+    diff -u "$WORKDIR/base.flat" "$WORKDIR/cur.flat" | sed -n 's/^+\(tool\|prop\|def\|row\)\t/  /p'
     echo ""
     echo "A property ADDED here is S1 unless the new row says required=required (S2)."
     echo "A property REMOVED here is always S2."

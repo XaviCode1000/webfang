@@ -12,16 +12,14 @@
 # marker and the missing harnesses below are deferred.
 #
 # Open follow-ups the entries imply:
-#   - 6 guards are wired, have no harness, and no task in the ODD yet:
-#     archive_reproducibility, dead_tests, duplication, orphan_snapshots,
-#     regression_naming, release_dispatch. Each needs its own issue.
+#   - 3 guards are wired, have no harness, and no task in the ODD yet:
+#     duplication, orphan_snapshots, regression_naming, release_dispatch.
+#     Each needs its own issue. (archive_reproducibility, dead_tests and
+#     mcp_public_surface left this list: they have semantic harnesses now.)
 #   - mcp_public_surface has wiring-only coverage. A wiring harness proves the
 #     step exists, not that the guard decides anything.
 
-no-harness check_archive_reproducibility.sh    no harness and no ODD task yet — needs its own issue
-no-harness check_dead_tests.sh                 no harness and no ODD task yet — needs its own issue
 no-harness check_duplication.sh                no harness and no ODD task yet — needs its own issue
-no-harness check_mcp_public_surface.sh         wiring-only harness scripts/test_mcp_surface_wiring.sh, not semantic
 no-harness check_release_dispatch.sh           no harness and no ODD task yet — needs its own issue
 
 unwired-guard check_orphan_snapshots.sh   only scripts/ci_fast_gate.sh invokes it, and no workflow runs the fast gate
