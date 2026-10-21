@@ -57,8 +57,8 @@
 | T9 | S8 | `scripts/{merge-when-green,apply-tag-ruleset,ci-health-close,ci_metrics}.sh` + 3 harnesses | #2176 | `c6cf92cd` |
 | T10 | S8 | `scripts/{check_mcp_public_surface,check_concurrency_lints,check_dead_tests,check_archive_reproducibility,check_no_ai_attribution}.sh` + 5 harnesses + baseline encogido | #2172 | `7278f0ac` |
 | T11 | S8 | `scripts/{ci_fast_gate,ci_path_classifier}.sh` + 2 harnesses | #2173 | `717b62e5` |
-| T12 | S2, S8 | el gate local construye el extractor, los harnesses nuevos en el lane CI, y el job nuevo bloquea el merge | PR de cierre | pendiente |
-| T13 | S1–S8 | certificación: las ocho clases del canon a 0 confirmed sobre `main` limpio, dos corridas idénticas | — | pendiente |
+| T12 | S2, S8 | el gate local construye el extractor, los harnesses nuevos en el lane CI, y el job nuevo bloquea el merge | #2204 | `0236b295` |
+| T13 | S1–S8 | certificación: las ocho clases del canon a 0 confirmed sobre `main` limpio, dos corridas idénticas | — (sin PR: es una medición) | `09050142` |
 
 ## Log
 
@@ -143,3 +143,18 @@
   untracked**", que es lo que dice `git status --porcelain`. Para apartar un untracked se mira
   primero el estado; para refrescar uno, `git checkout origin/main -- <ruta>`; y para lo que ya
   está en `main`, la vía es un commit encima, nunca el borrado local.
+
+- **L15** (el certificado hay que renovarlo, y la regla que lo evita): el certificado de la
+  campaña (79 casos, 0 confirmados, dos corridas idénticas) se emitió sobre `0236b295`. `main`
+  avanzó nueve commits después —la release `v5.0.0` #2222, la declaración de la línea 5.0
+  STABLE #2223, el contrato `TenantAiContext` retirado #2220, las trampas FFI/pacing
+  #2211/#2213/#2216 y el router de `AGENTS.md` #2208—, y cinco ficheros de
+  `crates/webfang_core/src` cambiaron: el **golden set** del extractor es una medición del
+  árbol, así que era candidato a caducar. La cadena lo refrescó **en los mismos PR que movieron
+  las líneas** (#2194 y #2213) → el `Repo guards` del CI quedó verde. Recertificado con el ritual
+  entero sobre `09050142` (worktree detached limpio, extractor construido EN ese worktree, las
+  ocho clases dos veces): **release 15/0 · dep_direction 8/0 · intra_crate 11/0 · advisory 6/0 ·
+  policy 4/0 · seed 11/0 · artifact 7/0 · ci 17/0** — 79 casos, cero confirmados, dos corridas
+  idénticas en cada clase. Dos reglas que quedan: **un certificado vale sobre el `main` que se
+  certificó, no sobre el que vino después**; y **el golden set se refresca en el mismo PR que
+  toca `src/`**, porque refrescarlo después es trabajo que el merge anterior dejó pendiente.
