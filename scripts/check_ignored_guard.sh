@@ -12,6 +12,10 @@
 #   * the declared composition in the inventory header, the `Total:` line, and
 #     the live scan state different numbers.
 #
+# The live scan classifies every mention by its COMMENT STATE, not only by the
+# shape of its line: a flush-left `#[ignore` inside a block comment is a
+# commented-out attribute, never a live one (audit B42).
+#
 # Rows are identified by file + test name, never by line number: inserting
 # code above an ignored test must not invalidate its row. Doc/comment
 # mentions are a NAMED category that is checked, not absorbed into the
@@ -106,14 +110,129 @@ if command -v rg >/dev/null 2>&1; then
 else
     (cd "$REPO_ROOT" && grep -rnI '#\[ignore' crates/ --exclude-dir=target) >"$LIVE_FILE" || true
 fi
-# An attribute is a mention whose line starts (after indentation) with
-# `#[ignore`; every other mention is prose (doc comment, comment, string).
-grep -E ':[0-9]+:[[:space:]]*#\[ignore' "$LIVE_FILE" >"$ATTR_FILE" || true
-grep -vE ':[0-9]+:[[:space:]]*#\[ignore' "$LIVE_FILE" >"$PROSE_FILE" || true
+# --- Comment-state aware classification (audit B42) --------------------------
+# A mention is NOT automatically an attribute: the classification has to know
+# whether the mention lives in code or in a comment. The old line-shape test
+# ("the line starts with `#[ignore`) could not tell a commented-out attribute
+# from a live one, so a flush-left `#[ignore` inside a block comment was
+# counted as an ATTRIBUTE, paired with the next `fn` and failed CI on a
+# comment (the audit's repro).
+#
+# Three buckets:
+#   ATTR  — the line's CODE starts with `#[ignore`: a live test attribute.
+#   PROSE — a documentation mention: a sentence, a `//` comment, a string, or
+#           a block comment that is not a commented-out attribute. Catalogued
+#           per file under the Comments/docs category.
+#   EXCL  — a commented-out attribute: the line carries no code and its
+#           block-comment text IS an `#[ignore` attribute. Neither an
+#           attribute nor a sentence anyone has to catalogue, so it is
+#           excluded from the live counts entirely.
+#
+# The extractor is one awk process per file with candidates (the comment
+# state has to be tracked from the first line of the file).
+CLASSIFY_AWK="$TMPDIR_GUARD/classify.awk"
+cat >"$CLASSIFY_AWK" <<'AWK'
+# classify.awk — comment-state aware classification of `#[ignore` mentions.
+#
+# Input : one Rust source file, scanned line by line (the comment state has
+#         to be tracked from the first line of the file).
+#   -v wantfile : newline-separated line numbers to classify
+#   -v relfile  : the path the output identifies the file with
+# Output: "RELFILE:LINE:CLASS" with CLASS in {ATTR, PROSE, EXCL}.
+#
+# The scanner tracks block comments (`/* ... */`), line comments (`//`),
+# double-quoted strings (with escapes) and raw strings (`r"..."`, `r#"..."#`).
+# Rust char literals and lifetimes are NOT tracked: a `'` cannot open a block
+# comment, so skipping them cannot change the block-comment state.
+#
+# A raw string is tracked because its terminator is a QUOTE that is NOT
+# escaped: mis-tracking one would keep the rest of the file in "string" state
+# and blind the block-comment detection after it.
+function trim(s) {
+    gsub(/^[ \t]+/, "", s)
+    gsub(/[ \t]+$/, "", s)
+    return s
+}
+BEGIN {
+    while ((getline n < wantfile) > 0) {
+        if (n ~ /^[0-9]+$/) want[n + 0] = 1
+    }
+    in_block = 0
+    in_str = 0
+}
+{
+    lineno = NR
+    code = ""; blk = ""
+    i = 1; n = length($0)
+    while (i <= n) {
+        ch = substr($0, i, 1)
+        if (in_block) {
+            if (ch == "*" && substr($0, i + 1, 1) == "/") { in_block = 0; i += 2; continue }
+            blk = blk ch; i++; continue
+        }
+        if (in_str) {
+            if (ch == "\\") { code = code substr($0, i, 2); i += 2; continue }
+            if (ch == "\"") in_str = 0
+            code = code ch; i++; continue
+        }
+        if (ch == "/" && substr($0, i + 1, 1) == "/") { i = n + 1; continue }
+        if (ch == "/" && substr($0, i + 1, 1) == "*") { in_block = 1; i += 2; continue }
+        if (ch == "r") {
+            # Raw string: r"..." / r#"..."# — the terminator is a quote that is
+            # NOT escaped, so it has to be consumed as a unit.
+            j = i + 1; hashes = ""
+            while (substr($0, j, 1) == "#") { hashes = hashes "#"; j++ }
+            if (substr($0, j, 1) == "\"") {
+                term = "\"" hashes
+                p = index(substr($0, j + 1), term)
+                if (p == 0) {
+                    code = code substr($0, i); i = n + 1
+                } else {
+                    code = code substr($0, i, j + p + length(term) - i)
+                    i = j + p + length(term)
+                }
+                continue
+            }
+        }
+        if (ch == "\"") { in_str = 1; code = code ch; i++; continue }
+        code = code ch; i++
+    }
+    if (!(lineno in want)) next
+    ct = trim(code)
+    bt = trim(blk)
+    if (ct ~ /^#\[ignore/) {
+        print relfile ":" lineno ":ATTR"
+    } else if (ct == "" && bt ~ /^#\[ignore/) {
+        print relfile ":" lineno ":EXCL"
+    } else {
+        print relfile ":" lineno ":PROSE"
+    }
+}
+AWK
 
-LIVE_TOTAL="$(wc -l <"$LIVE_FILE" | tr -d ' ')"
+CANDIDATE_FILES="$TMPDIR_GUARD/candidate-files.txt"
+CLASSIFIED="$TMPDIR_GUARD/classified.txt"
+awk -F: '{print $1}' "$LIVE_FILE" | sort -u >"$CANDIDATE_FILES"
+: >"$CLASSIFIED"
+while IFS= read -r gf; do
+    awk -F: -v f="$gf" '$1 == f { print $2 }' "$LIVE_FILE" | sort -un >"$TMPDIR_GUARD/want.txt"
+    awk -v wantfile="$TMPDIR_GUARD/want.txt" -v relfile="$gf" -f "$CLASSIFY_AWK" \
+        "$REPO_ROOT/$gf" >>"$CLASSIFIED" || true
+done <"$CANDIDATE_FILES"
+
+: >"$ATTR_FILE"
+: >"$PROSE_FILE"
+awk -F: -v attr="$ATTR_FILE" -v prose="$PROSE_FILE" -v clsfile="$CLASSIFIED" '
+    FILENAME == clsfile { cls[$1 ":" $2] = $3; next }
+    {
+        c = cls[$1 ":" $2]
+        if (c == "ATTR") print $0 > attr
+        else if (c == "PROSE") print $0 > prose
+    }' "$CLASSIFIED" "$LIVE_FILE"
+
 LIVE_ATTR="$(wc -l <"$ATTR_FILE" | tr -d ' ')"
 LIVE_PROSE="$(wc -l <"$PROSE_FILE" | tr -d ' ')"
+LIVE_TOTAL=$((LIVE_ATTR + LIVE_PROSE))
 [[ "$LIVE_TOTAL" =~ ^[0-9]+$ ]] || {
     echo "::error::check_ignored_guard: live #[ignore] count is not numeric ('$LIVE_TOTAL')."
     exit 1
