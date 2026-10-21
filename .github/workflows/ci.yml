@@ -197,6 +197,19 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           persist-credentials: false
+      # The intra-crate lint tool (tools/intra-crate-lint) is a STANDALONE
+      # cargo project — excluded from the workspace, so it never touches the
+      # product's build graph — but it must be BUILT and TESTED here, or its
+      # 23 tests would be inert (the very shape that let the gate's four
+      # fail-open defects survive: nothing in CI asserted what the gate
+      # decides). The toolchain is the same pinned action the other jobs use.
+      # --locked: the tool commits its own Cargo.lock, and a build that
+      # re-resolves would make CI depend on the registry's current state.
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      - name: Build the intra-crate lint tool
+        run: cargo build --manifest-path tools/intra-crate-lint/Cargo.toml --locked
+      - name: Intra-crate lint tool tests
+        run: cargo test --manifest-path tools/intra-crate-lint/Cargo.toml --locked
       # Regression guard for Wave 3 (#402): all tests must be crate-local.
       # Fails if anyone re-adds a .rs file under root tests/ (dead test).
       - name: Dead test detection
@@ -234,6 +247,16 @@ jobs:
       # `scripts/check_intra_crate_direction.sh` and ADR-0010 allowlist).
       - name: Intra-crate direction gate (strict)
         run: INTRA_CRATE_MODE=strict bash scripts/check_intra_crate_direction.sh
+      # The SEMANTICS of the gate above, executed. Before this step existed the
+      # gate's own behaviour was pinned by nothing in CI: the four fail-open
+      # defects of the gate (audit "scripts fail-open" 2026-10-18, B36-B39) were
+      # never caught by a CI run, because no CI step ever asserted what the
+      # gate decides — only that it ran. The harness drives the gate over its
+      # own fixtures and asserts the DECISIONS (site counts, the fail-closed
+      # rows, the lateral blind spot that is deliberately preserved). Offline,
+      # no repo state touched.
+      - name: Intra-crate direction gate semantics harness
+        run: bash scripts/test_intra_crate_direction.sh
       # Regression guard for stabilization-sitemap-regression, re-based by #1328:
       # the ignored-test budget is a frozen baseline (32 rows in
       # docs/test-inventory.md — 26 test attributes + 6 doc/comment mentions),

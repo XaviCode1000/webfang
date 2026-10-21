@@ -11,6 +11,7 @@ use crate::domain::http_port::HttpClientPort;
 use crate::domain::llm::validation::{validate_record, validate_schema};
 use crate::domain::llm_port::{ChatMessage, LlmPort, LlmRequest, LlmResponse};
 use crate::domain::semantic_cleaner::SemanticCleaner;
+pub use crate::domain::ssrf_guard::LLM_SSRF_TEST_HATCH_ENV;
 use crate::domain::text_chunker::TextChunker;
 use crate::error::{Result, ScraperError};
 use serde_json::Value;
@@ -256,14 +257,6 @@ impl LlmConfig {
         }
     }
 }
-
-/// Name of the test-only hatch that disarms this gate (#703, #1615 DF-E9).
-///
-/// The value is irrelevant: this constant exists so the variable is never
-/// spelled out at a call site, and so a rename cannot desynchronize the
-/// writer and the reader (the same rule the SSRF hatches in
-/// `webfang_test_utils` follow).
-pub const LLM_SSRF_TEST_HATCH_ENV: &str = "WEBFANG_DISABLE_SSRF";
 
 /// SSRF gate for the LLM base URL (#703): scheme allow-list http/https plus
 /// literal-host rejection via

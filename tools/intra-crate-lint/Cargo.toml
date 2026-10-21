@@ -1,0 +1,31 @@
+[package]
+name = "intra-crate-lint"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT OR Apache-2.0"
+publish = false
+description = "AST-based extractor of intra-crate layer references and port-choke constructs"
+
+# The dependency set is deliberately minimal: `syn` parses, `proc-macro2` carries
+# the spans (and the token stream the macro walker consumes) and `unicode-ident`
+# validates the identifiers the macro walker reconstructs. No serde, no anyhow,
+# no thiserror, no clap — the CLI contract is hand-rolled.
+[dependencies]
+proc-macro2 = { version = "1", features = ["span-locations"] }
+syn = { version = "=2.0.119", default-features = false, features = [
+    "parsing",
+    "full",
+    "visit",
+    "extra-traits",
+    "clone-impls",
+] }
+unicode-ident = "1"
+
+[lib]
+name = "intra_crate_lint"
+path = "src/lib.rs"
+
+[[bin]]
+name = "intra-crate-lint"
+path = "src/main.rs"
