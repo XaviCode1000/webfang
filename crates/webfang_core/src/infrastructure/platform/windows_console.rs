@@ -164,11 +164,21 @@ async fn first_named_source(mut waits: Vec<SourceWait>) -> Option<&'static str> 
         if let Some(name) = name {
             return Some(name);
         }
-        // A degraded source is dropped and the remaining ones keep waiting.
-        warn!(
-            remaining_sources = waits.len(),
-            "termination source degraded to no event — dropped, the remaining sources keep waiting"
-        );
+        // A degraded source is dropped. When sources remain they keep
+        // waiting; when none remain, the guard above ends the wait with no
+        // event on the next turn. Two different consequences, so two
+        // different messages — a single one would be false in one of them.
+        if waits.is_empty() {
+            warn!(
+                remaining_sources = 0,
+                "every termination source degraded to no event — the wait ends, the caller falls back to its explicit-cancel path"
+            );
+        } else {
+            warn!(
+                remaining_sources = waits.len(),
+                "termination source degraded to no event — dropped, the remaining sources keep waiting"
+            );
+        }
     }
 }
 
@@ -482,6 +492,16 @@ mod tests {
     #[tokio::test]
     async fn every_degraded_source_yields_no_event() {
         let observed = first_named_source(vec![degraded_source(), degraded_source()]).await;
+        assert_eq!(observed, None);
+    }
+
+    /// The production shape on Unix: exactly ONE source, and it degrades.
+    /// The list empties and the caller gets no event, so it falls back to
+    /// its explicit-cancel path (#509) instead of waiting forever on a
+    /// source that will never deliver.
+    #[tokio::test]
+    async fn a_single_degraded_source_yields_no_event() {
+        let observed = first_named_source(vec![degraded_source()]).await;
         assert_eq!(observed, None);
     }
 }
