@@ -56,11 +56,11 @@ fn webfang_path() -> PathBuf {
 
 fn cmd() -> Command {
     let mut c = Command::new(webfang_path());
-    // Hermeticity: remove all WEBFANG_* / WEBFANG_AI_MODEL_ID / AI_MODEL_ID
-    // env vars so poisoned CI environments (bug-discovery workflow) don't
-    // affect arg parsing. Legacy `AI_MODEL_ID` is still honored by the CLI
-    // itself, via `webfang_core::cli::args::ai::LEGACY_AI_MODEL_ENV` — the
-    // `webfang_ai` reader is gone since ADR-0004 paso 6 (#980).
+    // Hermeticity: remove all WEBFANG_* / AI_MODEL_ID env vars so poisoned CI
+    // environments (bug-discovery workflow) don't affect arg parsing. The AI
+    // model env names are ignored by the CLI since the migration shims were
+    // retired (issue #2119), but stripping them keeps the run independent of
+    // whatever the CI environment happens to export.
     let poisoned: Vec<String> = std::env::vars()
         .filter(|(k, _)| k.starts_with("WEBFANG_") || k == "AI_MODEL_ID")
         .map(|(k, _)| k)
@@ -394,7 +394,7 @@ async fn test_clean_ai_without_embedding_provider_fails_before_fetch() {
 /// Stable head of the offline guard's user-facing message.
 ///
 /// Source: the `offline` arm of `build_embedding_provider`
-/// (`crates/webfang_core/src/cli/llm_wire.rs:141-147`), rendered by
+/// (`crates/webfang_core/src/cli/llm_wire.rs:138-150`), rendered by
 /// `CliExit::ConfigError` as `Error: {msg}` (`cli/error.rs:426-429`).
 /// Only the stable head of the sentence is asserted: the tail names the
 /// remedy and is free to change with the wording.
@@ -432,7 +432,7 @@ model = "text-embedding-test"
 /// exit 78 BEFORE any request leaves the process (ADR-0004 S10).
 ///
 /// S10 — "`--offline` + remoto: exit 78 (guard de regresión, no criterio
-/// nuevo; `cli/error.rs:36`, `llm_wire.rs:141-147`)" (ADR:116).
+/// nuevo; `cli/error.rs:36`, `llm_wire.rs:138-150`)" (ADR:116).
 ///
 /// The guard lives in the provider RESOLUTION path, so it only fires once a
 /// provider IS resolvable — which is exactly why this test needs a
@@ -496,29 +496,29 @@ async fn test_clean_ai_offline_with_remote_embedding_provider_exits_78() {
 }
 
 /// `--clean-ai --offline` with a CONFIGURED LOOPBACK embedding provider is
-/// ALSO rejected today — a DISCREPANCY with the documented semantics, pinned
-/// here on purpose.
+/// rejected too — with exit 78 and without dialing it.
 ///
-/// The notice the CLI prints on every run states the rule as "loopback
-/// permitido, remoto público -> exit 78"
-/// (`crates/webfang_core/src/cli/args/ai.rs:263`), and the ADR repeats it.
-/// The implementation does not implement that rule: the `offline` arm of
-/// `build_embedding_provider`
-/// (`crates/webfang_core/src/cli/llm_wire.rs:141-147`) rejects EVERY
-/// resolved `open_ai_compatible` provider, loopback included, because the
-/// guard never looks at the endpoint's host. The guard was introduced
-/// unconditional in #1518, so this is a prose/implementation mismatch, not a
-/// paso-6 regression.
+/// This pins the OWNER DECISION of 2026-10-21 ("rechazar todo y corregir el
+/// texto"): `--offline` rejects EVERY embeddings provider, a loopback
+/// endpoint included, and the run exits 78 before any socket opens. The
+/// `offline` arm of `build_embedding_provider`
+/// (`crates/webfang_core/src/cli/llm_wire.rs`) fires BEFORE the endpoint is
+/// inspected, so it never sees the host and never had a loopback carve-out.
 ///
-/// This test therefore pins the CURRENT behavior and names the criterion it
-/// does not yet satisfy. When the guard learns to exempt loopback, THIS test
-/// is the one that must change — that is the reason it exists.
+/// The published prose was aligned to this decision in the same change
+/// (#2166): the deprecation notice, the guard's own error message, the
+/// `allow_loopback` line of `webfang doctor`, the migration guide and
+/// ADR-0004 §46 (dated correction) now all state the same rule. Before that,
+/// the texts promised "loopback permitido, remoto público -> exit 78" while
+/// the code had rejected both — and this test is the guard for the decision
+/// that replaced that promise, so a future change that exempts loopback
+/// would break it here.
 ///
 /// The endpoint is the mock server itself, so the zero-request assertion
 /// below is a REAL proof that the guard fired before the dial: without it,
 /// the adapter would build and POST to `/v1/embeddings`.
 #[tokio::test]
-async fn test_clean_ai_offline_with_loopback_embedding_provider_is_rejected_today() {
+async fn test_clean_ai_offline_with_loopback_embedding_provider_is_rejected() {
     let mock_server = MockServer::start().await;
 
     // Method-agnostic catch-all: the provider endpoint IS this server, so a

@@ -250,7 +250,6 @@ fn numeric_binding(id: &str) -> Option<ValueParser> {
         "selector" => Some(str_fn(super::args::crawler::parse_selector)),
         "max_depth" => Some(str_fn(super::args::crawler::parse_max_depth)),
         "max_chars" => Some(str_fn(super::args::ai::parse_max_chars)),
-        "max_tokens" => Some(str_fn(super::args::ai::parse_max_tokens)),
         "download_timeout" => Some(str_fn(super::args::crawler::parse_download_timeout)),
         "delay_ms"
         | "backoff_base_ms"
@@ -297,14 +296,12 @@ enum AiSlot {
 /// There is deliberately no "gated" counterpart any more (ADR-0004, slice C).
 /// Both `cfg` arms used to render a subset behind a cargo-feature gate
 /// and let the rest render ungated, so a build without the feature advertised
-/// a DIFFERENT CLI than one with it and answered `--threshold` / `--offline` /
-/// `--ai-model` with clap's "unexpected argument" (exit 64) instead of naming
-/// the missing capability. One list, one build path, no drift.
+/// a DIFFERENT CLI than one with it and answered `--threshold` / `--offline`
+/// with clap's "unexpected argument" (exit 64) instead of naming the
+/// missing capability. One list, one build path, no drift.
 const AI_SPEC_LAYOUT: &[AiSlot] = &[
     AiSlot::Spec(&options_spec::ai::MAX_CHARS),
-    AiSlot::Spec(&options_spec::ai::MAX_TOKENS),
     AiSlot::Spec(&options_spec::ai::OFFLINE),
-    AiSlot::Spec(&options_spec::ai::AI_MODEL),
 ];
 
 /// Total AI args: the hand-built `threshold`, then every spec slot. Shared by
@@ -623,20 +620,14 @@ mod tests {
 
     /// The AI group's EXACT id list, shared by every assertion below so the
     /// two cargo configurations cannot drift apart by restating it.
-    const EXPECTED_AI_IDS: [&str; 5] = [
-        "threshold",
-        "max_chars",
-        "max_tokens",
-        "offline",
-        "ai_model",
-    ];
+    const EXPECTED_AI_IDS: [&str; 3] = ["threshold", "max_chars", "offline"];
 
     /// The AI surface is IDENTICAL in every cargo configuration and for both
     /// heading shapes (ADR-0004 slice C, terminal state after paso 6: the
     /// flag is pure and there is no cargo feature to split the surface).
     ///
     /// This used to be split: without `ai` the group collapsed to the ungated
-    /// pair (`max_chars`, `max_tokens`), and each `cfg` arm asserted its own
+    /// pair, and each `cfg` arm asserted its own
     /// count. That asymmetry was the bug the slice closed — a build without
     /// `ai` advertised a different CLI than one with it. One helper, one list,
     /// no `cfg`: if a future entry is added, gated or not, both builds show it
@@ -655,35 +646,36 @@ mod tests {
         }
     }
 
-    /// The AI group renders exactly five entries in every configuration.
+    /// The AI group renders exactly three entries in every configuration.
     #[test]
-    fn ai_args_has_five_entries() {
+    fn ai_args_has_three_entries() {
         assert_ai_layout_in_every_shape("always");
         assert_eq!(
             expected_ai_arg_count(),
             EXPECTED_AI_IDS.len(),
-            "one hand-built `threshold` + four spec-built slots, ungated in \
+            "one hand-built `threshold` + two spec-built slots, ungated in \
              every configuration (ADR-0004 slice C)"
         );
     }
 
     /// The ungated slots render in EVERY configuration (ADR-0004). Before
-    /// paso 6 the group collapsed to exactly `max_chars` and the `max_tokens`
-    /// deprecation shim on a build without the `ai` feature — never to zero,
-    /// or the shim would be invisible and an operator's stale flag would come
-    /// back as "unexpected argument".
+    /// paso 6 the group collapsed to exactly `max_chars` on a build without
+    /// the `ai` feature — never to zero, or the chunk-size guard would be
+    /// invisible and an operator's stale flag would come back as
+    /// "unexpected argument".
     #[test]
     fn ungated_ai_args_render_without_the_feature() {
         for headings in [Headings::Omitted, Headings::Applied] {
             let owned = ai_arg_ids(headings);
             let ids: Vec<&str> = owned.iter().map(String::as_str).collect();
-            // The migration surface: `max_chars` and the `max_tokens` shim must
-            // render in EVERY configuration. If they ever stop, the shim
-            // becomes invisible and a stale `--max-tokens` comes back as
-            // "unexpected argument" instead of a migration message.
+            // The chunk-size guard must render in EVERY configuration. If it
+            // ever stops, the guard becomes invisible and a stale
+            // `--max-chars` comes back as "unexpected argument" instead of a
+            // budget the cleaner enforces.
             assert!(
-                ids.contains(&"max_chars") && ids.contains(&"max_tokens"),
-                "the ungated pair must render in every configuration ({headings:?}); got {ids:?}"
+                ids.contains(&"max_chars"),
+                "the chunk-size guard must render in every configuration \
+                 ({headings:?}); got {ids:?}"
             );
             // And since slice C, so must the rest of the group — no AI flag is
             // feature-gated any more.

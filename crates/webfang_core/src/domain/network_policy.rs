@@ -24,7 +24,12 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 /// fail on it. The NAT64/6to4 translation prefixes are here so an allowlist
 /// can never blanket-permit a whole translation range (the embedded IPv4
 /// must be allowlisted individually instead).
-const NEVER_ALLOWABLE: &[(IpAddr, u8, &str)] = &[
+///
+/// `pub(crate)` so the dial layer can read the very same table instead of
+/// keeping a second copy of it: `ssrf_guard`'s always-denied set is the
+/// runtime half of this invariant, and the test that ties the two together
+/// lives there (#1965, A4).
+pub(crate) const NEVER_ALLOWABLE: &[(IpAddr, u8, &str)] = &[
     (IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 32, "unspecified"),
     (
         IpAddr::V4(Ipv4Addr::new(169, 254, 0, 0)),

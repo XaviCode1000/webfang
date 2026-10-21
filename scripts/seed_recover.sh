@@ -54,8 +54,20 @@ for retired in "$SEEDS_ROOT"/.retired.*; do
   if [ "$DRY" -eq 1 ]; then
     echo "  →  would restore $key from $base"
   else
-    chmod -R u+w "$retired" 2>/dev/null || true
+    # Only the TOP entry is made writable before the rename: renaming a
+    # directory updates its own `..`, so the directory being moved has to
+    # permit that. The INTERIOR keeps the published contract (read-only)
+    # while the seed waits under its retired name — a retired seed is a seed
+    # that can still be restored, and `chmod -R u+w` here left the interior
+    # writable, so a restored seed was NOT the published seed it claimed to
+    # be: its files could be modified, and a modified seed is not a seed.
+    chmod u+w "$retired" 2>/dev/null || true
     if mv "$retired" "$SEEDS_ROOT/$key"; then
+      # The restored seed goes back to the published contract: contents
+      # read-only, only the top writable (the rename needs it, and the
+      # consumer widens the COPY it clones out of it).
+      chmod -R a-w "$SEEDS_ROOT/$key" 2>/dev/null || true
+      chmod u+w "$SEEDS_ROOT/$key" 2>/dev/null || true
       echo "  ✓  restored $key from $base"
     else
       echo "  ✗  could not restore $key from $base — left in place" >&2

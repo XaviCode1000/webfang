@@ -214,44 +214,11 @@ async fn __main() -> CliExit {
         tracing::warn!(preflight_note = %note, "{note}");
     }
 
-    // ADR-0004 step 5, deprecation announcements (spec T4 + T5). Split out of
-    // `__main` for the same reason `dispatch_subcommand` is: the complexity and
-    // length ratchets (#516) apply per function, and two `if` blocks plus their
-    // comment belong in a function named after what they do.
-    emit_adr0004_deprecation_notices(pending_notices);
-
-    // The `--max-tokens` deprecation warning lives HERE, not where the value is
-    // resolved, for the same #796 reason the notes above are replayed: argv
-    // resolution runs before `init_logging_dual`, so a `warn!` emitted there
-    // would be dropped and the deprecation would be silent (ADR-0004). It is
-    // emitted exactly once, at the one point that has both the provenance
-    // (`AiConfig::deprecated_max_tokens`) and a live subscriber.
-    //
-    // Shape follows the existing env-var deprecation: English structured
-    // field names, user-facing message text in Spanish, with the migration
-    // target and the removal schedule stated.
-    if let Some(max_tokens) = opts.ai_config.deprecated_max_tokens {
-        tracing::warn!(
-            flag = "--max-tokens",
-            env = "WEBFANG_MAX_TOKENS",
-            replacement = "--max-chars",
-            max_tokens,
-            chars_per_token = webfang_core::domain::options_spec::ai::DEFAULT_CHARS_PER_TOKEN,
-            max_chars = opts.ai_config.max_chars,
-            "--max-tokens está obsoleto y se eliminará en la próxima versión principal. \
-             Migrado a --max-chars ({} tokens × {} caracteres/token = {} caracteres). \
-             Usa --max-chars directamente.",
-            max_tokens,
-            webfang_core::domain::options_spec::ai::DEFAULT_CHARS_PER_TOKEN,
-            opts.ai_config.max_chars,
-        );
-    }
-
-    // The `--ai-model` shim (ADR-0004 paso 6). Same rule as `--max-tokens`
-    // above, for the same reason (#796): the flag still PARSES, but the local
-    // ONNX model it selected is gone, so the value is IGNORED — and a silently
-    // ignored flag is precisely what this notice exists to prevent.
-    emit_ai_model_shim_notice(&opts);
+    // ADR-0004 step 5, the orphan-threshold announcement (spec T5). Split out
+    // of `__main` for the same reason `dispatch_subcommand` is: the complexity
+    // and length ratchets (#516) apply per function, and the `if` block plus
+    // its comment belong in a function named after what it does.
+    emit_orphan_threshold_notice(pending_notices);
 
     // 6c. JS strategy dependency preflight (#685): --js-strategy full needs
     // Chrome installed — fail fast with exit 78 before any crawl starts.
@@ -317,39 +284,25 @@ async fn __main() -> CliExit {
     build_and_run(opts).await
 }
 
-/// Render ADR-0004 step 5's in-execution deprecation announcements (spec T4 +
-/// T5) as `WARN` events, if this run owes any.
+/// Render ADR-0004 step 5's orphan-threshold announcement (spec T5) as a
+/// `WARN` event, if this run owes it.
 ///
 /// MUST be called after `init_logging_dual`: argv resolution runs before the
 /// subscriber exists, so a `warn!` emitted at parse time would be silently
-/// dropped (#796). Which notices are owed was decided at parse time —
+/// dropped (#796). Whether the notice is owed was decided at parse time —
 /// `webfang_core::cli::args::ai::PendingNotices` — because the trigger needs a
-/// `value_source` distinction and two env vars that do not survive into
-/// `CrawlOptions`.
+/// `value_source` distinction that does not survive into `CrawlOptions`.
 ///
-/// Shape follows the `--max-tokens` deprecation: English structured fields
-/// carrying the facts, the Spanish prose as the event message. The prose
-/// appears EXACTLY once. The earlier cut of this feature routed the notices
-/// through `preflight_notes`, whose replay is `warn!(preflight_note = %note,
-/// "{note}")` — the compact formatter then printed the same ~600 characters
-/// twice per line (message plus field value), which is invisible for the short
-/// substitution notices that buffer was built for and unreadable here. The
-/// fields below carry only what is meant to be QUERIED: which notice, what
-/// disappears, where to migrate, where to object, when. Never a second copy
-/// of the sentence.
-fn emit_adr0004_deprecation_notices(pending: webfang_core::cli::args::ai::PendingNotices) {
-    if pending.onnx_deprecation {
-        tracing::warn!(
-            notice = "onnx_deprecation",
-            removed_feature = webfang_core::cli::args::ai::REMOVED_AI_FEATURE,
-            removed_capability = "onnx_local",
-            replacement = "webfang connect|webfang doctor|webfang show",
-            removed_in_version = "3.0.0",
-            shims_retire_in_version = "3.2.0",
-            "{}",
-            webfang_core::cli::args::ai::ONNX_DEPRECATION_NOTICE,
-        );
-    }
+/// Shape: English structured fields carrying the facts, the Spanish prose as
+/// the event message. The prose appears EXACTLY once. The earlier cut of this
+/// feature routed the notices through `preflight_notes`, whose replay is
+/// `warn!(preflight_note = %note, "{note}")` — the compact formatter then
+/// printed the same ~600 characters twice per line (message plus field value),
+/// which is invisible for the short substitution notes that buffer was built
+/// for and unreadable here. The fields below carry only what is meant to be
+/// QUERIED: which notice, what value is in play, what it was calibrated for,
+/// what replaces it. Never a second copy of the sentence.
+fn emit_orphan_threshold_notice(pending: webfang_core::cli::args::ai::PendingNotices) {
     if let Some(threshold) = pending.orphan_threshold {
         tracing::warn!(
             notice = "orphan_relevance_threshold",
@@ -364,48 +317,6 @@ fn emit_adr0004_deprecation_notices(pending: webfang_core::cli::args::ai::Pendin
             webfang_core::cli::args::ai::orphan_threshold_notice(threshold),
         );
     }
-}
-
-/// Emit the ONE `--ai-model` migration notice (ADR-0004 paso 6).
-///
-/// `--ai-model` — and its env vars `WEBFANG_AI_MODEL_ID` / `AI_MODEL_ID` —
-/// still PARSE: they are shims, not errors. But the local ONNX model they
-/// used to select is GONE, so the value is IGNORED, and a silently ignored
-/// flag is exactly what this notice exists to prevent. The operator is told,
-/// in Spanish, which knob replaced it: the remote provider.
-///
-/// Fires ONLY when the operator actually used the shim, and exactly once per
-/// run:
-/// - the flag or `WEBFANG_AI_MODEL_ID` — both reach `AiConfig::model`
-///   (clap binds the env var to the arg), and
-/// - the legacy `AI_MODEL_ID`, which is NOT clap-bound and therefore never
-///   reaches `CrawlOptions`; it is read here, from the same constant the
-///   core module uses.
-///
-/// Shape follows the `--max-tokens` deprecation: English structured fields
-/// carrying the facts, the Spanish prose as the event message.
-fn emit_ai_model_shim_notice(opts: &CrawlOptions) {
-    let requested = opts.ai_config.model.trim();
-    let legacy = std::env::var(webfang_core::cli::args::ai::LEGACY_AI_MODEL_ENV).ok();
-    if requested.is_empty() && legacy.is_none() {
-        return;
-    }
-    let requested_model = if requested.is_empty() {
-        legacy.as_deref().unwrap_or_default()
-    } else {
-        requested
-    };
-    tracing::warn!(
-        flag = "--ai-model",
-        env = "WEBFANG_AI_MODEL_ID",
-        legacy_env = webfang_core::cli::args::ai::LEGACY_AI_MODEL_ENV,
-        replacement = "--embedding-provider",
-        requested_model,
-        "el modelo local ya no existe: `--ai-model` (y `WEBFANG_AI_MODEL_ID` / \
-         `AI_MODEL_ID`) se ignoran. La limpieza semántica ahora la resuelve un \
-         provider remoto: pasá `--embedding-provider <id>` (o exportá \
-         `WEBFANG_EMBEDDING_PROVIDER`).",
-    );
 }
 
 /// Handle the `connect` subcommand (issue #1933, ADR-0004 step 4).

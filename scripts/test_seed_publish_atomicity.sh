@@ -133,7 +133,7 @@ check "no .retired left behind" "$(ls -A "$SEEDS" | grep -c '^\.retired' || true
 # of the retired name, so seed_recover.sh can attribute the orphan without
 # guessing. Simulated here by performing the retire by hand, exactly as the
 # transaction does, and leaving the publish undone.
-S="$(mkstage x crash-donor)"
+mkstage x crash-donor
 chmod -R a-w "$S"; chmod 555 "$S"
 chmod -R u+w "$DEST" 2>/dev/null || true
 mv "$DEST" "$SEEDS/.retired.$KEY.99999"
@@ -146,6 +146,26 @@ check "crash: restored seed still valid" "$(seed_is_valid "$DEST" && echo yes ||
 check "crash: no backup left" "$(ls -A "$SEEDS" | grep -c '^\.retired' || true)" "0"
 case "$OUT" in *restored=1*) ok "crash: recovery reported the restore" ;;
   *) bad "crash: recovery did not report the restore ($OUT)" ;; esac
+
+# The restored seed must be the PUBLISHED seed, mode for mode. A published
+# seed keeps its CONTENTS read-only and only its top writable (the rename
+# needs the top, and a consumer widens the copy it clones out of it).
+#
+# The recovery used to `chmod -R u+w` the retired seed before renaming it
+# back, so a restored seed was writable all the way down — a seed whose
+# interior can be modified is not the published seed it claims to be. The
+# atomicity test only checked that the restored seed still verified, and a
+# seed verifies no matter what its mode is.
+RESTORED_MODE="$(stat -c '%a' "$DEST/debug/.fingerprint/dep-foo/marker.txt" 2>/dev/null || echo missing)"
+case "$RESTORED_MODE" in
+  *2*|*3*|*6*|*7*) bad "crash: the restored seed's CONTENTS are writable (mode $RESTORED_MODE)" ;;
+  *) ok "crash: the restored seed's CONTENTS are read-only (mode $RESTORED_MODE)" ;;
+esac
+RESTORED_TOP="$(stat -c '%a' "$DEST" 2>/dev/null || echo missing)"
+case "$RESTORED_TOP" in
+  6*|7*) ok "crash: the restored seed's top level is writable (mode $RESTORED_TOP)" ;;
+  *) bad "crash: the restored seed's top level is read-only (mode $RESTORED_TOP)" ;;
+esac
 
 # A stale backup must be reported, never silently deleted: a seed at the same key
 # means something was published after it, and deciding which to keep is not this
@@ -167,6 +187,47 @@ mkdir -p "$SEEDS/.staging.orphan"
 OUT="$(bash "$SCRIPT_DIR/seed_recover.sh" --seeds-root "$SEEDS" 2>&1)"
 check "orphan staging: not restored" "$([ -d "$SEEDS/.staging.orphan" ] && echo yes || echo no)" "yes"
 check "orphan staging: reported" "$(printf '%s' "$OUT" | grep -c 'orphaned staging' || true)" "1"
+
+# --- 7. a NON-force publish never replaces a seed that appeared meanwhile ----
+# The lane-start check can only see the seeds that existed when the run
+# began. A seed published by somebody else DURING the build is invisible to
+# it, and the transaction used to retire and replace it anyway: a non-force
+# publish destroying a valid, immutable seed it never saw, under a verdict
+# that said "published".
+#
+# The race is made deterministic instead of timed: the transaction verifies
+# the staged manifest before the rename, and the verification hashes the
+# lock, so a sha256sum that takes a second widens the window to a size no
+# scheduling accident can close. The "other publisher" fires the moment the
+# staged manifest exists — which is, by construction, after the lane-start
+# check has already passed.
+REAL_SHA256SUM="$(command -v sha256sum)"
+mkdir -p "$SANDBOX/bin"
+cat >"$SANDBOX/bin/sha256sum" <<STUB
+#!/usr/bin/env bash
+sleep 1
+exec "$REAL_SHA256SUM" "\$@"
+STUB
+chmod +x "$SANDBOX/bin/sha256sum"
+
+mkstage window-donor
+SEEDS_WINDOW="$SANDBOX/seeds-window"
+mkdir -p "$SEEDS_WINDOW"
+DEST_WINDOW="$SEEDS_WINDOW/$KEY"
+( while [ ! -f "$S/manifest.toml" ]; do sleep 0.05; done
+  mkdir -p "$DEST_WINDOW"; echo concurrent >"$DEST_WINDOW/concurrent.txt" ) &
+BG=$!
+PATH="$SANDBOX/bin:$PATH" bash "$PUBLISH" --seeds-root "$SEEDS_WINDOW" \
+  --test-transaction "$S" >"$SANDBOX/window.out" 2>&1
+RC_WINDOW=$?
+wait "$BG" 2>/dev/null
+check "mid-window: the publish refuses (exit 2)" "$RC_WINDOW" "2"
+check "mid-window: the concurrent seed survived" \
+  "$([ -f "$DEST_WINDOW/concurrent.txt" ] && echo yes || echo no)" "yes"
+check "mid-window: nothing was retired" \
+  "$(ls -A "$SEEDS_WINDOW" | grep -c '^\.retired' || true)" "0"
+check "mid-window: the concurrent seed was not overwritten by a manifest" \
+  "$([ -f "$DEST_WINDOW/manifest.toml" ] && echo yes || echo no)" "no"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"
