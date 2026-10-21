@@ -61,7 +61,10 @@ case "$REAL_CARGO" in
 esac
 
 SANDBOX="$(mktemp -d)"
-trap 'rm -rf "$SANDBOX"' EXIT
+# The sandbox holds PUBLISHED seeds, and a published seed is read-only by
+# contract: the cleanup has to restore the write bits before it can remove
+# them, or it leaves the tree behind and reports a failure that is not one.
+trap 'chmod -R u+w "$SANDBOX" 2>/dev/null; rm -rf "$SANDBOX"' EXIT
 mkdir -p "$SANDBOX/bin" "$SANDBOX/seeds" "$SANDBOX/safety"
 # NOT named CARGO_*: the recipe deliberately unsets every CARGO_* for the build,
 # and this test had its log file wiped by that policy — the policy was right
@@ -104,6 +107,12 @@ fi
 {
   printf 'ARGV\t%s\n' "$*"
   printf 'RUSTFLAGS\t%s\n' "${RUSTFLAGS-<unset>}"
+  # The RUSTFLAGS are logged QUOTED: the value can contain newlines (a
+  # multi-line RUSTFLAGS is legitimate), and a line-oriented log would turn
+  # one value into several lines and hide exactly the defect the round-trip
+  # case below looks for.
+  printf 'RUSTFLAGS_Q\t%s\n' "$(printf '%q' "${RUSTFLAGS-<unset>}")"
+  printf 'SCCACHE_DIR\t%s\n' "${SCCACHE_DIR-<unset>}"
   printf 'CARGO_INCREMENTAL\t%s\n' "${CARGO_INCREMENTAL-<unset>}"
   printf 'RUSTUP_TOOLCHAIN\t%s\n' "${RUSTUP_TOOLCHAIN-<unset>}"
   printf 'CARGO_TARGET_DIR\t%s\n' "${CARGO_TARGET_DIR-<unset>}"
@@ -136,7 +145,7 @@ manifest_field() {  # $1=field -> the value the key recorded
   local d="$SANDBOX/mf"; mkdir -p "$d"
   bash "$SCRIPT_DIR/seed_compat_key.sh" --features "" --profile dev \
     --recipe-schema 1 --wrapper-policy prescribed-empty --toolchain-id "" \
-    --config-digest "x" --emit-manifest "$d" >/dev/null 2>&1
+    --config-digest "x" --workspace-digest "y" --emit-manifest "$d" >/dev/null 2>&1
   sed -n "s/^$1 = \"\(.*\)\"/\1/p" "$d/manifest.toml" | head -1; }
 
 echo "recipe coherence: the key must describe the build"
@@ -651,6 +660,154 @@ if [ "$RC17" -ne 0 ] \
   ok "a failed reference build fails the publication and surfaces cargo's message"
 else
   bad "the publication did not fail closed on a failed build (exit $RC17)"
+fi
+
+# --- 18. the workspace build contract is REQUIRED by the key ------------------
+# The digest was optional, so omitting it emitted `workspace_contract = ""`:
+# two workspaces that shared a rustc, a configuration and a lock — but not
+# the same manifests, profiles or dependency features — hashed to the SAME
+# key, and a seed built under one build contract was offered to a consumer
+# compiling under another.
+#
+# NEGATION: with a digest the key is computed, so the refusal below is a
+# real refusal and not a script that never works.
+KEY_ARGS_BASE=(--features "" --profile dev --recipe-schema 1
+               --wrapper-policy prescribed-empty --toolchain-id ""
+               --config-digest "sha256:deadbeef")
+for variant in "omitted" "empty"; do
+  if [ "$variant" = "omitted" ]; then
+    OUT18="$(bash "$SCRIPT_DIR/seed_compat_key.sh" "${KEY_ARGS_BASE[@]}" 2>&1)"; RC18=$?
+  else
+    OUT18="$(bash "$SCRIPT_DIR/seed_compat_key.sh" "${KEY_ARGS_BASE[@]}" \
+              --workspace-digest "" 2>&1)"; RC18=$?
+  fi
+  if [ "$RC18" -ne 0 ]; then
+    ok "the key refuses a $variant --workspace-digest (exit $RC18)"
+  else
+    bad "the key was computed with a $variant workspace digest: $OUT18"
+  fi
+done
+K_WITH_DIGEST="$(bash "$SCRIPT_DIR/seed_compat_key.sh" "${KEY_ARGS_BASE[@]}" \
+                 --workspace-digest "sha256:abc" 2>/dev/null | tail -1)"
+if [ -n "$K_WITH_DIGEST" ]; then
+  ok "the key is computed when the workspace digest IS present"
+else
+  bad "the key refuses a present workspace digest too; the case above proves nothing"
+fi
+
+# --- 19. the env-strip policy is LIVE, and it is HASHED ----------------------
+# The policy listed RUSTC_WRAPPER, SCCACHE_DIR and SCCACHE_BASEDIRS, and the
+# real strip was by PREFIX (CARGO_*/RUST*), so the two SCCACHE_* variables
+# reached the build while the policy claimed they had been removed. The list
+# was also a variable nobody read, and the key hashed the literal
+# "prescribed-empty", so editing the policy re-keyed nothing.
+: >"$SEED_TEST_LOG"
+SCCACHE_DIR=/probe SCCACHE_BASEDIRS=/probe2 pub >/dev/null 2>&1
+if [ "$(cargo_field SCCACHE_DIR)" = "<unset>" ]; then
+  ok "the build ran without the policy-listed SCCACHE_DIR"
+else
+  bad "SCCACHE_DIR reached the build: $(cargo_field SCCACHE_DIR)"
+fi
+# And the policy is part of the contract, so changing it changes the key.
+STRIP_SANDBOX="$SANDBOX/strip"
+mkdir -p "$STRIP_SANDBOX/scripts"
+cp "$SCRIPT_DIR/seed_recipe.sh" "$SCRIPT_DIR/seed_compat_key.sh" \
+   "$SCRIPT_DIR/seed_workspace_contract.py" "$STRIP_SANDBOX/scripts/"
+key_with_strip_list() {  # $1 = the scripts dir -> the key it computes
+  SEED_REPO_ROOT="$REPO_ROOT" bash -c '. "$1/seed_recipe.sh"
+    seed_recipe_parse "$2" --features "" >/dev/null 2>&1
+    seed_recipe_compute_key "$2"
+    printf "%s" "$SEED_RECIPE_KEY"' _ "$1" "$REPO_ROOT"
+}
+K_STRIP_A="$(key_with_strip_list "$STRIP_SANDBOX/scripts")"
+sed -i 's/SEED_RECIPE_STRIPPED_ENV="RUSTC_WRAPPER SCCACHE_DIR SCCACHE_BASEDIRS"/SEED_RECIPE_STRIPPED_ENV="RUSTC_WRAPPER SCCACHE_DIR SCCACHE_BASEDIRS COHERENCE_PROBE_VAR"/' \
+  "$STRIP_SANDBOX/scripts/seed_recipe.sh"
+K_STRIP_B="$(key_with_strip_list "$STRIP_SANDBOX/scripts")"
+if [ -n "$K_STRIP_A" ] && [ "$K_STRIP_A" != "$K_STRIP_B" ]; then
+  ok "editing the strip list re-keys the seed ($K_STRIP_A -> $K_STRIP_B)"
+else
+  bad "the strip policy is not hashed into the key ($K_STRIP_A -> $K_STRIP_B);"
+  echo "       the policy can change without the artifacts changing"
+fi
+
+# --- 20. a multi-line RUSTFLAGS survives the env handshake -------------------
+# The build environment travels as a printed list, one argument per line, so
+# a value containing a newline was SPLIT into several arguments — and `env`
+# reads the tail of a split value as a COMMAND, not as an assignment. The
+# value has to reach cargo exactly as the recipe captured it.
+MULTI_RUSTFLAGS=$'-A\ndead_code\n-C debuginfo=0'
+: >"$SEED_TEST_LOG"
+RUSTFLAGS="$MULTI_RUSTFLAGS" pub >/dev/null 2>&1
+GOT_RF="$(cargo_field RUSTFLAGS_Q)"
+WANT_RF="$(printf '%q' "$MULTI_RUSTFLAGS")"
+if [ -n "$GOT_RF" ] && [ "$GOT_RF" = "$WANT_RF" ]; then
+  ok "a multi-line RUSTFLAGS reaches the build byte-exact"
+else
+  bad "the multi-line RUSTFLAGS was altered on the way to the build:"
+  echo "       got:  $GOT_RF"
+  echo "       want: $WANT_RF"
+fi
+
+# --- 21. a release and a cross-target build can be PUBLISHED ------------------
+# The prune hardcoded `debug`, so a complete release build and a complete
+# cross-target build were both refused ("no debug/.fingerprint"): those two
+# recipes could never produce a seed at all, however complete the build was.
+#
+# The stub below creates the layout cargo creates — the profile directory
+# inside the target directory, under the target's own prefix — so the
+# publish is exercised against a real tree instead of a reimplementation.
+mkdir -p "$SANDBOX/layout/bin"
+cat >"$SANDBOX/layout/bin/cargo" <<'STUB'
+#!/usr/bin/env bash
+if [ "${1:-}" = "metadata" ]; then exec "$WEBFANG_SAFETY_CARGO" "$@"; fi
+case " $* " in
+  *" build "*)
+    prof=dev; tgt=""
+    argv=("$@"); i=0
+    while (( i < ${#argv[@]} )); do
+      case "${argv[$i]}" in
+        --profile) prof="${argv[$((i+1))]}"; ((i+=2)) ;;
+        --target)  tgt="${argv[$((i+1))]}";  ((i+=2)) ;;
+        *) ((i+=1)) ;;
+      esac
+    done
+    dir="$CARGO_TARGET_DIR"
+    [ -n "$tgt" ] && dir="$dir/$tgt"
+    case "$prof" in
+      dev|test)      dir="$dir/debug" ;;
+      release|bench) dir="$dir/release" ;;
+      *)             dir="$dir/$prof" ;;
+    esac
+    mkdir -p "$dir/.fingerprint/third-fake-0beef00d"
+    printf 'registry-path\n' >"$dir/.fingerprint/third-fake-0beef00d/output"
+    exit 0 ;;
+esac
+echo "layout-cargo: unsupported invocation: $*" >&2
+exit 1
+STUB
+chmod +x "$SANDBOX/layout/bin/cargo"
+export WEBFANG_SAFETY_CARGO="$SANDBOX/safety/cargo"
+LAYOUT_SEEDS="$SANDBOX/layout-seeds"
+layout_publish() {  # $@ = the recipe flags -> prints the exit code
+  chmod -R u+w "$LAYOUT_SEEDS" 2>/dev/null || true
+  rm -rf "$LAYOUT_SEEDS"; mkdir -p "$LAYOUT_SEEDS"
+  PATH="$SANDBOX/layout/bin:$PATH" bash "$SCRIPT_DIR/seed_publish.sh" \
+    --seeds-root "$LAYOUT_SEEDS" "$@" >"$SANDBOX/layout.out" 2>&1
+  echo $?
+}
+RC_REL="$(layout_publish --profile release)"
+K_REL="$(sed -n 's/^==> key \(v[0-9]-[0-9a-f]*\).*/\1/p' "$SANDBOX/layout.out" | head -1)"
+if [ "$RC_REL" -eq 0 ] && [ -d "$LAYOUT_SEEDS/$K_REL/release/.fingerprint" ]; then
+  ok "a complete RELEASE build publishes, and the seed carries the release profile"
+else
+  bad "the release publish failed (exit $RC_REL): $(tail -3 "$SANDBOX/layout.out")"
+fi
+RC_TGT="$(layout_publish --target aarch64-unknown-linux-gnu)"
+K_TGT="$(sed -n 's/^==> key \(v[0-9]-[0-9a-f]*\).*/\1/p' "$SANDBOX/layout.out" | head -1)"
+if [ "$RC_TGT" -eq 0 ] && [ -d "$LAYOUT_SEEDS/$K_TGT/aarch64-unknown-linux-gnu/debug/.fingerprint" ]; then
+  ok "a complete CROSS-TARGET build publishes, and the seed carries the target prefix"
+else
+  bad "the cross-target publish failed (exit $RC_TGT): $(tail -3 "$SANDBOX/layout.out")"
 fi
 
 printf '\nharness: %d ok, %d fail\n' "$PASS" "$FAIL"

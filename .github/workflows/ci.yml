@@ -245,6 +245,18 @@ jobs:
       # layering `infrastructure → adapters → application → domain` (inward only).
       # Fails if `application` imports `infrastructure` etc. (see
       # `scripts/check_intra_crate_direction.sh` and ADR-0010 allowlist).
+      # Seed semantics: the publish/clone/recipe contract of the seed chain.
+      # These two are offline and fast; `test_seed_clone_modes.sh` stays local
+      # because it needs a CoW filesystem (`cp --reflink=always`) and FAILS
+      # rather than skips on a non-CoW runner, and
+      # `test_seed_contamination.sh` stays manual because it does a real 2.7 G
+      # build. The assertions of the first one live in the repo, not only in
+      # the audit's local harness.
+      - name: Seed publish atomicity semantics harness
+        run: bash scripts/test_seed_publish_atomicity.sh
+      - name: Seed recipe coherence semantics harness
+        run: bash scripts/test_seed_recipe_coherence.sh
+
       - name: Intra-crate direction gate (strict)
         run: INTRA_CRATE_MODE=strict bash scripts/check_intra_crate_direction.sh
       # The SEMANTICS of the gate above, executed. Before this step existed the
@@ -707,6 +719,16 @@ jobs:
       # Deferred entries live in scripts/guard_coverage_baseline.txt and the
       # list may only shrink: an entry that stops reproducing fails this step
       # and asks to be removed.
+      # Semantic harnesses for the guards the meta-guard below audits. Each one
+      # of these guards had a documented hole ("it needs its own issue"); the
+      # harness is what makes the hole unreachable, and the meta-guard only
+      # accepts a harness that a workflow actually runs.
+      - name: MCP public surface semantics harness
+        run: bash scripts/test_mcp_public_surface.sh
+      - name: Dead tests semantics harness
+        run: bash scripts/test_dead_tests.sh
+      - name: Archive reproducibility semantics harness
+        run: bash scripts/test_archive_reproducibility.sh
       - name: Guard coverage meta-guard
         run: bash scripts/test_guard_coverage.sh
       # Negation harness for the meta-guard above. Eight cases over throwaway
@@ -717,6 +739,15 @@ jobs:
       # defect one level up. Offline, pure bash, never touches this tree.
       - name: Guard coverage meta-guard semantics harness
         run: bash scripts/tests/test_guard_coverage.sh
+      # Semantic harnesses for two policy guards. `check-topology.sh` decides
+      # the branch topology of every PR (an enforcing required check), and
+      # `check_intra_crate_direction.sh` decides the intra-crate layering:
+      # both had branches that a test never exercised, which is the shape the
+      # guard-coverage meta-guard below audits.
+      - name: Branch topology semantics harness
+        run: bash scripts/test_topology.sh
+      - name: Intra-crate allowlist semantics harness
+        run: bash scripts/test_intra_crate_allowlist.sh
 
   # ============================================================================
   # TIER 1: FORMAT GATE (30-60 seconds)
@@ -776,6 +807,53 @@ jobs:
       # Enabling these two lints + the existing -D warnings fails the build on
       # any function above those thresholds. DESCENDING ratchet — never raise.
       - run: cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines
+
+  # ============================================================================
+  # ARTIFACT GUARDS: the artifact producers are fail-closed and reproducible
+  # (audit B21, B26-B31). Five semantics harnesses, one per producer, each
+  # driving the REAL script against a fixture and asserting the CONTRACT
+  # (published whole or not at all, atomic swap, reproducible bytes, data
+  # never as program text) rather than the implementation.
+  # OFFLINE: no toolchain, no cargo, no network — the harnesses stub the
+  # binaries they need (rustdoc-markdown, cargo, the CLI) and read the real
+  # scripts from the checkout. Each one is a plain `bash` invocation: a red
+  # harness fails the step.
+  # ============================================================================
+  artifact-guards:
+    name: Artifact guards (fail-closed + reproducible producers)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      # B21 (atomic publication), B29 (fence flavour), B30 (derived date)
+      - name: LLM bundle producer
+        run: |
+          set -euo pipefail
+          bash scripts/test_artifact_llm_bundle.sh
+      # B26 (the licence expression is never shortened)
+      - name: Third-party notices producer
+        run: |
+          set -euo pipefail
+          bash scripts/test_artifact_notices.sh
+      # B27 (the chapter is staged in its own directory: same-fs rename)
+      - name: CLI reference producer
+        run: |
+          set -euo pipefail
+          bash scripts/test_artifact_cli_reference.sh
+      # B28 (the trace id reaches jq as data, never as program text)
+      - name: Trace analyzer
+        run: |
+          set -euo pipefail
+          bash scripts/test_artifact_analyze_trace.sh
+      # B31 (the archive is staged and published with an atomic replace)
+      - name: Deterministic zip writer
+        run: |
+          set -euo pipefail
+          bash scripts/test_artifact_deterministic_zip.sh
 
   # ============================================================================
   # CODE QUALITY: dead deps + duplication ratchet (issue #516).
@@ -1118,7 +1196,7 @@ jobs:
   # ============================================================================
   gate:
     name: CI Gate
-    needs: [change-scope, toolchain, repo-guards, fmt, clippy, code-quality, test-core, test-full, test-release-provenance, security, doc-quality]
+    needs: [change-scope, toolchain, repo-guards, artifact-guards, fmt, clippy, code-quality, test-core, test-full, test-release-provenance, security, doc-quality]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1132,7 +1210,8 @@ jobs:
           # Path-aware gate semantics: full scope requires every producer to
           # succeed; narrow scope (run_code_jobs=false) requires only the
           # always-applicable producers (change-scope, toolchain, repo-guards,
-          # security, doc-quality) to succeed while the skipped code producers
+          # artifact-guards, security, doc-quality) to succeed while the skipped
+          # code producers
           # (fmt, clippy, code-quality, test-core, test-full,
           # test-release-provenance) must be `skipped` — skipped
           # non-applicable producers are explicitly allowed only from
@@ -1150,7 +1229,7 @@ jobs:
             fi
             echo "All required CI jobs succeeded (full scope)."
           else
-            for job in change-scope toolchain repo-guards security doc-quality; do
+            for job in change-scope toolchain repo-guards artifact-guards security doc-quality; do
               r="$(echo "$RESULTS" | jq -r --arg j "$job" '.[$j].result')"
               if [ "$r" != "success" ]; then
                 echo "::error::Applicable producer '$job' did not succeed in narrow scope (result=$r)."

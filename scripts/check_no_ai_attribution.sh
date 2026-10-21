@@ -57,6 +57,16 @@ ALLOWED_CO_AUTHORS=(
 scan_message() {
   local msg="$1"
   local trailers subject
+  # Normalize the message the way the production reader hands it over: a
+  # command substitution (`msg="$(gh api ...)"`) strips every trailing newline.
+  # The --fixture reader does NOT -- a NUL-separated record keeps the newline
+  # that precedes the NUL -- so the trailer block was read from different
+  # bytes than production reads, and a message already ending in a newline had
+  # its trailer block reset by the blank line that followed it. A marker read
+  # as clean. Stripping here makes both readers see the same bytes.
+  while [[ "$msg" == *$'\n' ]]; do
+    msg="${msg%$'\n'}"
+  done
   trailers="$(printf '%s\n' "$msg" | awk 'BEGIN{buf=""} /^[[:space:]]*$/{buf=""; next} {buf = (buf == "" ? $0 : buf ORS $0)} END{print buf}')"
   subject="$(printf '%s' "$msg" | head -1)"
 

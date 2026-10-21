@@ -285,7 +285,13 @@ finish_case "negative control: gate does not depend on repo-guards"
 
 # Case 6: negative control — the job drops out of the narrow-scope applicable
 # set, which is the docs-only PR path.
-sed 's/for job in change-scope toolchain repo-guards security doc-quality; do/for job in change-scope toolchain security doc-quality; do/' "$CI_YML" > "$tmp/ci-narrow-blind.yml"
+# The injection is SEMANTIC, not textual: it removes 'repo-guards' from the
+# FIRST narrow-scope producer list wherever the entry sits. The previous
+# literal ('... repo-guards security doc-quality; do') stopped matching the
+# moment another always-applicable producer joined the list, and a case
+# whose fixture does not apply proves nothing — it must fail loudly, not
+# silently pass.
+sed -E '0,/^[[:space:]]*for job in /{ s/(for job in [^;]*)[[:space:]]+repo-guards/\1/ }' "$CI_YML" > "$tmp/ci-narrow-blind.yml"
 if cmp -s "$CI_YML" "$tmp/ci-narrow-blind.yml"; then
   echo "  FAIL: fixture injection did not apply — this case proved nothing"
   case_fail=1
