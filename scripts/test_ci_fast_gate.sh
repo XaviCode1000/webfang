@@ -312,10 +312,21 @@ make_fixture() {
     test_docs_version_pins.sh test_docs_version_pins_wiring.sh \
     test_bump_docs_version_pins.sh test_apply_release_pins.sh \
     test_release_pins_wiring.sh test_declare_pending_publication.sh \
-    test_mcp_surface_wiring.sh test_merge_when_green_breaking.sh; do
+    test_mcp_surface_wiring.sh test_merge_when_green_breaking.sh \
+    test_ci_merge_when_green.sh test_apply_tag_ruleset.sh test_ci_metrics.sh; do
     mkdir -p "$dir/scripts/$(dirname "$harness")"
     printf '#!/usr/bin/env bash\nexit 0\n' >"$dir/scripts/$harness"
   done
+  # The intra-crate direction gate CONSUMES the AST extractor and fails closed
+  # when the binary is absent (there is no fallback scanner), and the local
+  # gate builds it before running the gate. The fixture provides a fake
+  # executable so the build step does not run cargo: the case under test is
+  # the LANE SHAPE, not the extractor's semantics, and a real build in a
+  # fixture would fail for a reason that has nothing to do with the case.
+  mkdir -p "$dir/tools/intra-crate-lint/target/debug"
+  printf '#!/usr/bin/env bash\necho "fixture: fake intra-crate lint extractor"\n' \
+    >"$dir/tools/intra-crate-lint/target/debug/intra-crate-lint"
+  chmod +x "$dir/tools/intra-crate-lint/target/debug/intra-crate-lint"
   # A real source tree, so the pinned greps of the fmt+guards lane have
   # something to scan. The scan now fails CLOSED (B53), so a missing tree
   # would fail the step for a reason that has nothing to do with the case.
