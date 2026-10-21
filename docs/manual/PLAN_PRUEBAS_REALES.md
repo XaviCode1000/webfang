@@ -185,7 +185,7 @@ source of truth for which site tests what.
 | 6.19 | malformed JSON-RPC | garbage body → JSON-RPC error object, server keeps running |
 | 6.20 | robots.txt enforcement | crawl tool against a site with Disallow → blocked URLs skipped; **cross-check #749/#724** to see which of the 5 tools are fixed in THIS build |
 | 6.21 | stdio transport | `mcp_server_stdio` spawned by a client (or manual stdin JSON-RPC echo): initialize → tools/list → one scrape works; stdout pure JSON-RPC, logs on stderr |
-| 6.22 | obsidian tools | vault detect + search on a test vault (needs embeddings → without `--enable-ai` expect honest feature error, not crash) |
+| 6.22 | obsidian tools | vault detect + search on a test vault (needs embeddings → without a configured provider expect the honest "funcionalidad no disponible" error, not crash) |
 | 6.23 | concurrency hammer | 10 simultaneous scrape_url to S1 | all complete or rate-limited; no panics, no connection-pool deadlock |
 
 **Bug classes:** auth fail-open, SSRF gaps, export-roots bypass (#696 regression), honest-error contracts broken, stdio/stdout pollution.
@@ -206,7 +206,7 @@ source of truth for which site tests what.
 | 7.8 | ChunkTooLarge | feed a page with a single >32768-token text block (craft or find) | SemanticError::ChunkTooLarge honest message |
 | 7.9 | AI + batch | 2 URLs batch + `--clean-ai` | both processed, vectors per URL |
 | 7.10 | AI without feature (BIN1) | `webfang --clean-ai` on BIN1 | flag hidden/ignored honestly per cfg(placeholder) — verify no "unknown flag" crash either way |
-| 7.11 | MCP AI tools | `mcp_server --enable-ai` → `semantic_cleaner` + `search_obsidian` over HTTP | real embeddings, honest when disabled |
+| 7.11 | MCP AI tools | `mcp_server` (no flag — `--enable-ai` was retired in #2123) → `semantic_cleaner` + `search_obsidian` over HTTP | real embeddings from the configured provider, honest error when none is configured |
 | 7.12 | Memory footprint | `--clean-ai` on S4 with `/usr/bin/time -v` | RSS sane (<~2 GB), mmap used not loaded |
 
 **Bug classes:** download-failure panics, offline-mode lies, dimension mismatches, memory blowups, cache corruption handling.
