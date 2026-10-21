@@ -361,10 +361,11 @@ pub enum Commands {
     },
     /// Diagnose the embedding path — config, credential, network, budget
     Doctor,
-    /// Dump the configured profile and budget, with provenance
+    /// Dump the effective embeddings provider, the configured budget, and the
+    /// historical model-profile metadata
     ///
-    /// The numbers reflect the configuration; consuming the profile in the
-    /// cleaner is Tramo D of ADR-0004 and is not wired into the run yet.
+    /// The provider is what a run actually uses; the profile metadata is
+    /// historical (ADR-0004 step 4) and no run consumes it.
     Show,
 }
 
@@ -373,9 +374,9 @@ pub enum Commands {
 pub struct SubcommandArgs {
     /// The provider id the operator named via `--embedding-provider`, if any.
     ///
-    /// `doctor` resolves this provider directly. `show` interprets the same id
-    /// as a model-profile name, because no `--model-profile` flag exists yet;
-    /// that namespace conflation is a known gap, not a design choice.
+    /// Both `doctor` and `show` resolve it as an embeddings-provider id — the
+    /// same provider the scrape path would dial. The model-profile namespace
+    /// lives in the `[[model_profiles]]` config block, not in this flag.
     pub provider_id: Option<String>,
     /// Whether the operator chose `--max-chars` (or `WEBFANG_MAX_CHARS`).
     pub max_chars_explicit: bool,

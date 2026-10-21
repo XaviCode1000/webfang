@@ -1,11 +1,16 @@
-//! `webfang show` — dump the effective model profile and character budget the
-//! operator has configured, with provenance per value (issue #1933, ADR-0004
+//! `webfang show` — dump the effective embeddings provider, the configured
+//! budget, and the historical model-profile metadata (issue #2106, ADR-0004
 //! step 4).
 //!
-//! Each numeric value that ships from the repo is marked `verified`; anything
-//! the operator overrode in their config drops the profile to
-//! `operator-override` (the citation is kept for traceability). The budget
-//! knobs report whether they came from the operator or from the spec default.
+//! The **provider** is the identity of the run: it is the endpoint a scrape
+//! would dial, resolved through the very same path the run uses
+//! ([`crate::cli::llm_wire::resolve_embedding_config`]). The budget knobs
+//! report whether they came from the operator or from the spec default.
+//!
+//! The `[[model_profiles]]` layer is **historical metadata** and is printed
+//! as such: it describes the LOCAL ONNX models that ADR-0004 step 6 retired,
+//! and no run consumes it. Presenting `granite-97m` as "the profile of the
+//! run" was the false-provenance defect #2106 closes.
 //!
 //! This subcommand performs **no network I/O**: it reads the user's config and
 //! prints what will be used. Probing an endpoint is `connect` / `doctor`'s job.
@@ -17,25 +22,26 @@
 //! means. **Consuming** a profile (deriving the cleaner's chunk budget from
 //! `context × chars_per_token`, pinning the vault dimension from `dim`) is
 //! Tramo D, steps 2–3. Until that wiring lands, this output describes the
-//! profile the configuration declares — it does **not** claim the run already
-//! reads it.
+//! historical profile metadata — it does **not** claim the run reads it.
 
 use std::path::Path;
 
 use crate::cli::args::SubcommandArgs;
 use crate::cli::error::CliExit;
-use crate::domain::model_profile::{
-    ModelProfile, ModelProfileRegistry, ProfileProvenance, GRANITE_97M_PROFILE_ID,
-};
+use crate::domain::model_profile::ModelProfileRegistry;
+use crate::domain::providers::{ProviderConfig, ProvidersConfig};
 
-/// Print the configured profile + budget.
+/// Print the effective provider, the budget and the historical profile
+/// metadata.
 ///
-/// The profile is named by `args.provider_id` when the operator gave one;
-/// otherwise the repo default (`granite-97m`) is shown and labelled as the
-/// default, not a choice the operator made.
+/// The provider is resolved exactly as the scrape path resolves it, so the
+/// identity `show` prints is the identity the run uses. An id the operator
+/// named (`--embedding-provider` / `WEBFANG_EMBEDDING_PROVIDER`) that does
+/// not resolve to an embedding-capable provider is a hard `ConfigError`,
+/// never a silent fallback to the config-order default.
 ///
 /// The config itself is loaded with the diagnostic policy
-/// [`crate::cli::config::load_config_defaults_or_diag`]: a config the run
+/// [`crate::cli::config::load_diagnostic_defaults_or_exit`]: a config the run
 /// could not load is a hard `ConfigError` naming the file, never a degraded
 /// render about defaults the operator never wrote.
 pub fn run(args: &SubcommandArgs, config_path: &Path) -> CliExit {
@@ -43,69 +49,68 @@ pub fn run(args: &SubcommandArgs, config_path: &Path) -> CliExit {
         Ok(defaults) => defaults,
         Err(exit) => return exit,
     };
-    let registry = ModelProfileRegistry::new(defaults.model_profiles.clone());
 
-    let profile_id = args
-        .provider_id
-        .as_deref()
-        .unwrap_or(GRANITE_97M_PROFILE_ID);
-
-    let profile = match registry.resolve(profile_id) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Perfil de modelo '{profile_id}' desconocido: {e}");
-            return CliExit::ConfigError(format!("perfil de modelo '{profile_id}' desconocido"));
+    println!("\n=== show: provider de embeddings efectivo ===\n");
+    match resolve_effective_provider(args, &defaults) {
+        Ok(Some(provider)) => {
+            crate::cli::commands::blocks::print_provider_block(
+                &provider,
+                args.provider_id.is_some(),
+            );
         },
-    };
-
-    println!("\n=== show: perfil de modelo ===\n");
-    if args.provider_id.is_none() {
-        println!("(sin perfil indicado — se muestra el default del repo: {profile_id})");
+        Ok(None) => print_no_provider(),
+        // The `ConfigError` payload is rendered by the binary boundary
+        // (`Error: {msg}` on stderr, exit 78) — never duplicated here.
+        Err(exit) => return exit,
     }
-    print_profile(&profile);
-    print_budget(&profile, args);
+
+    print_budget(args);
+
+    let registry = ModelProfileRegistry::new(defaults.model_profiles.clone());
+    println!("\n=== show: metadata histórica de perfiles de modelo (ADR-0004 paso 4) ===\n");
+    crate::cli::commands::blocks::print_historical_profiles(&registry);
+
+    print_notes();
 
     CliExit::Success
 }
 
-fn print_profile(profile: &ModelProfile) {
-    let provenance_label = match profile.provenance {
-        ProfileProvenance::RepoVerified => "repo-verified",
-        ProfileProvenance::OperatorOverride => "operator-override",
+/// Resolve the embeddings provider the run would use.
+///
+/// The SAME resolution the scrape path performs — flag (or
+/// `WEBFANG_EMBEDDING_PROVIDER`) first, then the first embedding-capable
+/// provider in config order. `Ok(None)` means no embedding provider is
+/// configured at all; `Err` is the hard configuration error the operator must
+/// see (exit 78).
+fn resolve_effective_provider(
+    args: &SubcommandArgs,
+    defaults: &crate::cli::config::ConfigDefaults,
+) -> Result<Option<ProviderConfig>, CliExit> {
+    let providers = ProvidersConfig {
+        providers: defaults.providers.clone(),
     };
-
-    println!("id: {}", profile.id);
-    println!("provenance: {provenance_label}");
-    println!("  citation: {}", profile.citation);
-    println!("  schema_version: {}", profile.schema_version);
-    println!("  dim (nativa): {}", profile.dim);
-    println!("  matryoshka: {}", profile.matryoshka);
-    println!("  output_dim (efectiva en vault): {}", profile.output_dim());
-    match profile.batch_max {
-        Some(batch) => println!("  batch_max: {batch}"),
-        None => println!("  batch_max: no declarado por el repo"),
-    }
-    println!("  context: {} tokens", profile.context);
-    println!("  chars_per_token: {}", profile.chars_per_token);
-    match profile.query_prefix.as_deref() {
-        Some(prefix) => println!("  query_prefix: {prefix:?}"),
-        None => println!("  query_prefix: no declarado por el repo"),
-    }
-    match profile.passage_prefix.as_deref() {
-        Some(prefix) => println!("  passage_prefix: {prefix:?}"),
-        None => println!("  passage_prefix: no declarado por el repo"),
-    }
-
-    if profile.provenance == ProfileProvenance::OperatorOverride {
-        println!("\nATENCIÓN: el operador sobrescribió la identidad auditada (dim / matryoshka).");
-        println!("  El perfil ya no es repo-verified; la cita sigue siendo del repo por");
-        println!("  rastreabilidad, y el valor declarado es el del operador.");
-    }
+    let opts = crate::application::crawl_options::CrawlOptions {
+        embedding_provider: args.provider_id.clone(),
+        ..crate::application::crawl_options::CrawlOptions::default()
+    };
+    crate::cli::llm_wire::resolve_embedding_config(&opts, &providers)
 }
 
-fn print_budget(profile: &ModelProfile, args: &SubcommandArgs) {
-    let derived = (profile.context as f64 * profile.chars_per_token as f64).round() as usize;
+/// No embedding provider is configured: say so, and say what a run would do.
+fn print_no_provider() {
+    println!("(sin provider de embeddings configurado)");
+    println!();
+    println!("Ninguna corrida puede limpiar semánticamente: `--clean-ai` exige un provider");
+    println!("remoto de embeddings (`--embedding-provider <id>` o WEBFANG_EMBEDDING_PROVIDER,");
+    println!("con el provider declarado en la config) y falla con ConfigError (exit 78) sin él.");
+}
 
+/// The budget the cleaner is CONFIGURED with, with its provenance.
+///
+/// Only the knobs the run really honours live here: `--max-chars` (or
+/// `WEBFANG_MAX_CHARS`) and the relevance threshold. The budget derived from
+/// a model profile is historical metadata and is printed with the profiles.
+fn print_budget(args: &SubcommandArgs) {
     let max_chars = args
         .max_chars_value
         .unwrap_or(crate::domain::options_spec::ai::DEFAULT_MAX_CHARS);
@@ -125,29 +130,25 @@ fn print_budget(profile: &ModelProfile, args: &SubcommandArgs) {
     println!("\n=== show: budget efectivo ===\n");
     println!("max_chars: {max_chars}");
     println!("  origen: {max_chars_origin}");
-    println!("  budget derivado del perfil (contexto × chars_per_token): {derived}");
     println!("threshold: {threshold}");
     println!("  origen: {threshold_origin}");
+}
 
+/// Closing notes: what the numbers are, and what they are not.
+fn print_notes() {
     println!("\nNotas:");
-    println!(
-        "  - '{0}' es el perfil de modelo declarado en la configuración.",
-        profile.id
-    );
-    println!("  - El techo del cleaner lo da --max-chars (o WEBFANG_MAX_CHARS); el número");
-    println!("    del perfil (contexto × chars_per_token) es el presupuesto derivado.");
+    println!("  - La sección de metadata histórica es lo único que queda de los perfiles de");
+    println!("    modelo: ninguna corrida los consume (ADR-0004 paso 6 retiró el runtime local).");
     println!(
         "  - Ningún valor viene de models.dev: los números salen del repo (profile.citation)."
     );
-    println!("  - Consumir el perfil en el cleaner (budget real, dim de vault) es Tramo D");
-    println!("    (pasos 2–3 del ADR-0004); todavía no está cableado al run.");
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use crate::domain::model_profile::ModelProfilesConfig;
+    use crate::domain::model_profile::{ModelProfilesConfig, ProfileProvenance};
 
     fn subcmd(
         provider_id: Option<&str>,
@@ -179,25 +180,57 @@ mod tests {
         run(&args, &dir.path().join("config.toml"))
     }
 
+    /// No configured provider: `show` still succeeds, and the identity of the
+    /// run is "no provider" — never a shipped model profile (#2106).
+    ///
+    /// The rendered stdout is pinned by the integration test
+    /// (`tests/show_provider_identity_test.rs`); here the contract is the
+    /// resolution the render is built from.
     #[test]
-    fn show_defaults_to_granite_97m_when_no_profile_is_named() {
+    fn show_without_configured_providers_still_succeeds() {
         let dir = temp_config("");
         let exit = run_show(&dir, None);
         assert!(matches!(exit, CliExit::Success));
+
+        let defaults = crate::cli::config::ConfigDefaults::load(&dir.path().join("config.toml"));
+        let resolved = resolve_effective_provider(&subcmd(None, None, false, None), &defaults);
+        assert!(
+            matches!(resolved, Ok(None)),
+            "without a configured provider the run identity is empty — \
+             granite-97m must never stand in for it"
+        );
     }
 
+    /// An id the operator named that resolves to nothing is a hard
+    /// configuration error naming the id (#2106).
     #[test]
-    fn show_rejects_an_unknown_profile_id() {
+    fn show_rejects_an_unknown_provider_id() {
         let dir = temp_config("");
         let exit = run_show(&dir, Some("no-such-model"));
         assert!(matches!(exit, CliExit::ConfigError(_)));
     }
 
+    /// A shipped PROFILE id is not a provider id: `--embedding-provider` names
+    /// the provider namespace, and the model-profile namespace lives in the
+    /// `[[model_profiles]]` config block (#2106).
     #[test]
-    fn show_resolves_a_named_shipped_profile() {
+    fn show_rejects_a_shipped_profile_id_used_as_a_provider_id() {
         let dir = temp_config("");
         let exit = run_show(&dir, Some("granite-311m"));
-        assert!(matches!(exit, CliExit::Success));
+        match exit {
+            CliExit::ConfigError(msg) => {
+                assert!(
+                    msg.contains("embedding"),
+                    "the error must name the missing embedding capability, got: {msg}"
+                );
+                assert!(
+                    !msg.contains("perfil de modelo"),
+                    "the error must not talk about a model profile — the id names a \
+                     provider, got: {msg}"
+                );
+            },
+            other => panic!("expected ConfigError, got {other:?}"),
+        }
     }
 
     #[test]
@@ -213,7 +246,9 @@ dim = 512
         );
         let defaults = crate::cli::config::ConfigDefaults::load(&dir.path().join("config.toml"));
         let registry = ModelProfileRegistry::new(defaults.model_profiles);
-        let profile = registry.resolve(GRANITE_97M_PROFILE_ID).expect("resolve");
+        let profile = registry
+            .resolve(crate::domain::model_profile::GRANITE_97M_PROFILE_ID)
+            .expect("resolve");
         assert_eq!(profile.provenance, ProfileProvenance::OperatorOverride);
         assert_eq!(profile.dim, 512);
         assert!(!profile.verified);
