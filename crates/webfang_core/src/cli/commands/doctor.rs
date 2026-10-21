@@ -10,14 +10,14 @@
 //!    the endpoint cannot be probed (DNS, connection, status, parse).
 //!
 //! Each prints a human-readable block and exits non-zero only when the path is
-//! broken: `ConfigError` (78) for config/credential, `NetworkError` (69) for
-//! reachability. A fully healthy path exits 0 with a summary.
+//! broken (`ConfigError` 78, `NetworkError` 69); a healthy path exits 0.
 //!
-//! # What "reachable" means
+//! # The provider is the run identity; the profile block is history
 //!
-//! Reachability is measured by the SAME preflight the scrape path uses
-//! ([`llm_wire::build_embedding_provider`]): build the real adapter and run its
-//! startup `probe_dim`. A provider that passes here is one that will start.
+//! The provider block IS the identity of the run. The `[[model_profiles]]`
+//! metadata is historical — ADR-0004 paso 6 retired the local ONNX runtime —
+//! and no run consumes it (issue #2106). Reachability is measured by the SAME
+//! preflight the scrape path uses ([`llm_wire::build_embedding_provider`]).
 
 use std::path::Path;
 
@@ -25,10 +25,10 @@ use crate::cli::args::SubcommandArgs;
 use crate::cli::error::CliExit;
 use crate::cli::llm_wire;
 use crate::domain::model_profile::{
-    ModelProfileRegistry, ModelProfilesConfig, GRANITE_97M_PROFILE_ID,
+    ModelProfileRegistry,
+    ModelProfilesConfig, // sin el id del perfil (ADR-0004 paso 6)
 };
-use crate::domain::network_policy::NetworkPolicyMode;
-use crate::domain::options_spec::ai::{DEFAULT_CHARS_PER_TOKEN, DEFAULT_MAX_CHARS};
+use crate::domain::options_spec::ai::DEFAULT_MAX_CHARS;
 use crate::domain::providers::{Capability, ProviderConfig, ProviderRegistry, ProvidersConfig};
 
 /// Run the diagnosis against the providers declared in `config_path`.
@@ -121,7 +121,7 @@ async fn diagnose_provider(
     profiles: &ModelProfilesConfig,
 ) -> CliExit {
     println!("\n=== doctor: ruta de embeddings ===\n");
-    print_provider_block(provider);
+    crate::cli::commands::blocks::print_provider_block(provider, args.provider_id.is_some());
     print_profile_and_budget(args, profiles);
 
     // 1. Credential — a hard failure blocks the run before any network hop.
@@ -203,97 +203,19 @@ async fn diagnose_reachability(provider: &ProviderConfig) -> CliExit {
     }
 }
 
-/// The provider block: identity, capabilities, model, loopback, network policy.
-fn print_provider_block(provider: &ProviderConfig) {
-    println!("Provider configurado:");
-    println!("  id: {}", provider.id);
-    println!("  display_name: {}", provider.display_name);
-    println!("  kind: {:?}", provider.kind);
-    println!("  base_url: {}", provider.base_url);
-    println!(
-        "  capabilities: {:?}",
-        provider
-            .capabilities
-            .iter()
-            .map(|c| format!("{c:?}"))
-            .collect::<Vec<_>>()
-    );
-    match provider.model.as_deref() {
-        Some(model) => println!("  model: {model} (declarado en la config)"),
-        None => println!(
-            "  model: NO declarado — el endpoint remoto lo exige en cada request \
-             (un provider remoto sin `model` falla al construir el adapter)"
-        ),
-    }
-    // `allow_loopback` is the PROVIDER's own network policy — "may this
-    // provider's endpoint live on loopback?" — and NOT the `--offline`
-    // guard's semantics, which reject every embeddings provider (loopback
-    // included) with exit 78. The label says which of the two it is, so the
-    // line cannot be read as "`--offline` allows loopback" (#2166).
-    println!(
-        "  allow_loopback: {}",
-        if provider.allow_loopback {
-            "true (política de red del provider: permite un endpoint en loopback)"
-        } else {
-            "false (política de red del provider: loopback bloqueado por defecto)"
-        }
-    );
-
-    let policy = &provider.network_policy;
-    if matches!(policy.mode, NetworkPolicyMode::Allowlist) {
-        let cidrs: Vec<String> = policy.allow_cidrs.iter().map(|c| c.to_string()).collect();
-        let hosts: Vec<String> = policy.allow_hosts.clone();
-        println!(
-            "  network_policy: allowlist ({} CIDR(s), {} host(s))",
-            cidrs.len(),
-            hosts.len()
-        );
-        for c in &cidrs {
-            println!("    allow_cidr: {c}");
-        }
-        for h in &hosts {
-            println!("    allow_host: {h}");
-        }
-    } else {
-        println!("  network_policy: restringida (solo endpoints públicos, con guard SSRF)");
-    }
-}
-
-/// The profile / budget block: the budget the cleaner is CONFIGURED with.
+/// The budget block plus the historical profile metadata.
 ///
-/// It is **not** what a scrape run uses today. ADR-0004 schedules wiring
-/// `[[model_profiles]]` into the semantic-cleaner run path for Tramo D (steps
-/// 2–3); step 4 — this subcommand — only added the connect/doctor/show surface
-/// and the config key. Claiming otherwise would hand the operator a number the
-/// run would not honour, which is exactly the false-provenance defect this
-/// block must not reintroduce.
+/// The budget block keeps ONLY what the run really honours: `--max-chars`
+/// (or `WEBFANG_MAX_CHARS`) and the relevance threshold, each with its
+/// origin. The `[[model_profiles]]` numbers are **historical metadata** —
+/// they describe the local ONNX models ADR-0004 paso 6 retired, and no run
+/// consumes them, so they are printed with the profiles and labelled as
+/// history (issue #2106).
 ///
 /// Reads the same inputs `show` does — the operator's `[[model_profiles]]`
 /// overrides and the argv budget knobs — so the two diagnostics cannot
 /// contradict each other on identical input.
 fn print_profile_and_budget(args: &SubcommandArgs, profiles: &ModelProfilesConfig) {
-    let registry = ModelProfileRegistry::new(profiles.clone());
-    let profile = match registry.resolve(GRANITE_97M_PROFILE_ID) {
-        Ok(profile) => profile,
-        // The shipped profiles are repo constants; a miss here is a build bug,
-        // not operator input. Fall back to the spec context so doctor still
-        // prints a coherent budget rather than panicking.
-        Err(_) => {
-            let max_chars = args.max_chars_value.unwrap_or(DEFAULT_MAX_CHARS);
-            println!("\nBudget del cleaner:");
-            println!("  --max-chars (o WEBFANG_MAX_CHARS): {max_chars}");
-            println!("  chars_per_token (default del spec): {DEFAULT_CHARS_PER_TOKEN}");
-            println!(
-                "  umbral de relevancia: {}",
-                args.threshold_value.unwrap_or(0.3)
-            );
-            println!("  (no se pudo resolver el perfil {GRANITE_97M_PROFILE_ID})");
-            println!("  Nota: consumir el perfil en el cleaner es Tramo D del ADR-0004;");
-            println!("  todavía no está cableado al run.\n");
-            return;
-        },
-    };
-
     let max_chars = args.max_chars_value.unwrap_or(DEFAULT_MAX_CHARS);
     let max_chars_origin = if args.max_chars_explicit {
         "operatorio"
@@ -305,32 +227,17 @@ fn print_profile_and_budget(args: &SubcommandArgs, profiles: &ModelProfilesConfi
     } else {
         "default del spec"
     };
-    let context_origin = if profile.provenance
-        == crate::domain::model_profile::ProfileProvenance::OperatorOverride
-    {
-        "operatorio"
-    } else {
-        "default del repo"
-    };
 
     println!("\nBudget del cleaner:");
     println!("  --max-chars (o WEBFANG_MAX_CHARS): {max_chars} ({max_chars_origin})");
     println!(
-        "  chars_per_token (perfil {}): {} ({context_origin})",
-        profile.id, profile.chars_per_token
-    );
-    println!(
-        "  contexto del perfil: {} tokens ({context_origin})",
-        profile.context
-    );
-    let derived = (profile.context as f64 * f64::from(profile.chars_per_token)).round() as usize;
-    println!("  budget derivado (contexto × chars_per_token): {derived} caracteres");
-    println!(
         "  umbral de relevancia: {} ({threshold_origin})\n",
         args.threshold_value.unwrap_or(0.3)
     );
-    println!("  Nota: consumir el perfil en el cleaner (budget real, dim de vault) es");
-    println!("  Tramo D (pasos 2–3 del ADR-0004); todavía no está cableado al run.\n");
+
+    let registry = ModelProfileRegistry::new(profiles.clone());
+    println!("\nMetadata histórica de perfiles de modelo (ADR-0004 paso 4):\n");
+    crate::cli::commands::blocks::print_historical_profiles(&registry);
 }
 
 #[cfg(test)]
