@@ -629,6 +629,32 @@ EOF
   else
     skip_step "breaking-marker guard semantics" "no merge-when-green files changed"
   fi
+  # The wait bounds of the merge waiter: every branch must be bounded by the
+  # effective timeout, and a cancelled required check is terminal. Before the
+  # fix, the fallback watch (the one that runs when branch protection cannot
+  # be read) had no timeout at all, so `--timeout` was silently ignored and
+  # the watch blocked forever. Offline fake `gh`, no network, <1s.
+  if grep -Eq '^(scripts/merge-when-green\.sh|scripts/test_ci_merge_when_green\.sh)$' "$UNION_TMP" 2>/dev/null || [[ "$CI_HARNESS_MODE" == "always" ]]; then
+    run_step "merge-when-green wait bounds harness (offline)" bash scripts/test_ci_merge_when_green.sh
+  else
+    skip_step "merge-when-green wait bounds harness" "no merge-when-green files changed"
+  fi
+  # The tag ruleset writer must never turn an API failure into "there is no
+  # ruleset": that path POSTed a DUPLICATE ruleset on a 500. Offline fake
+  # `gh`, no network, <1s.
+  if grep -Eq '^(scripts/apply-tag-ruleset\.sh|scripts/test_apply_tag_ruleset\.sh)$' "$UNION_TMP" 2>/dev/null || [[ "$CI_HARNESS_MODE" == "always" ]]; then
+    run_step "tag ruleset idempotency harness (offline)" bash scripts/test_apply_tag_ruleset.sh
+  else
+    skip_step "tag ruleset idempotency harness" "no apply-tag-ruleset files changed"
+  fi
+  # The metrics snapshot must report every required context and account for
+  # every listed run: a `jq` failure used to shrink the sample in silence
+  # while the snapshot still printed as complete. Offline fake `gh`, <1s.
+  if grep -Eq '^(scripts/ci_metrics\.sh|scripts/test_ci_metrics\.sh)$' "$UNION_TMP" 2>/dev/null || [[ "$CI_HARNESS_MODE" == "always" ]]; then
+    run_step "ci metrics snapshot harness (offline)" bash scripts/test_ci_metrics.sh
+  else
+    skip_step "ci metrics snapshot harness" "no ci_metrics files changed"
+  fi
 }
 
 # run_pinned_lint_changed_scope: degraded local equivalent of CI's
@@ -717,6 +743,57 @@ run_zizmor_cached_only() {
 # (e.g. check_dependency_direction.sh is -rw-r--r-- in main) must not
 # skip the guard locally while CI still runs it. Avoids the
 # `A && B || C` idiom (shellcheck SC2015).
+# ensure_intra_crate_lint: make the AST extractor available for the
+# intra-crate direction gate.
+#
+# The gate CONSUMES the extractor (tools/intra-crate-lint) and fails CLOSED
+# when the binary is absent: by design there is no fallback scanner, because
+# a gate that degrades to the weak scanner when the strong one is missing is
+# the same fail-open this campaign closed. CI's repo-guards job builds the
+# extractor before it runs the gate; the local gate does the same, and points
+# the gate at the binary through the variable the gate documents.
+#
+# The resolution mirrors the gate's own, so the two never disagree about
+# where the binary is. The build keeps CARGO_TARGET_DIR as it is (the
+# repository's isolation guard requires it) and therefore lands in the
+# tree's own target dir, not in the tool's; the gate is pointed at it
+# explicitly instead.
+INTRA_CRATE_LINT_BIN_PATH=""
+ensure_intra_crate_lint() {
+  if [[ -n "${INTRA_CRATE_LINT_BIN:-}" ]]; then
+    if [[ -x "$INTRA_CRATE_LINT_BIN" ]]; then
+      INTRA_CRATE_LINT_BIN_PATH="$INTRA_CRATE_LINT_BIN"
+      return 0
+    fi
+    echo "::error::INTRA_CRATE_LINT_BIN is set to '$INTRA_CRATE_LINT_BIN' but that path is not an executable file" >&2
+    return 1
+  fi
+  local candidate
+  for candidate in "$ROOT/tools/intra-crate-lint/target/release/intra-crate-lint" \
+                   "$ROOT/tools/intra-crate-lint/target/debug/intra-crate-lint"; do
+    if [[ -x "$candidate" ]]; then
+      INTRA_CRATE_LINT_BIN_PATH="$candidate"
+      return 0
+    fi
+  done
+  candidate="$(command -v intra-crate-lint || true)"
+  if [[ -n "$candidate" && -x "$candidate" ]]; then
+    INTRA_CRATE_LINT_BIN_PATH="$candidate"
+    return 0
+  fi
+  echo "building the intra-crate lint extractor (the gate needs it and has no fallback scanner)"
+  cargo build --manifest-path tools/intra-crate-lint/Cargo.toml --locked || return 1
+  local target="${CARGO_TARGET_DIR:-$ROOT/tools/intra-crate-lint/target}"
+  for candidate in "$target/release/intra-crate-lint" "$target/debug/intra-crate-lint"; do
+    if [[ -x "$candidate" ]]; then
+      INTRA_CRATE_LINT_BIN_PATH="$candidate"
+      return 0
+    fi
+  done
+  echo "::error::the intra-crate lint extractor was built but its binary is not where it was expected" >&2
+  return 1
+}
+
 run_guard() {
   local name="$1" script="$2"
   shift 2
@@ -747,8 +824,9 @@ lane_fmt_and_guards() {
   '
   run_guard "dependency direction gate (#513)" scripts/check_dependency_direction.sh \
     bash scripts/check_dependency_direction.sh
+  run_step "build the intra-crate lint extractor" ensure_intra_crate_lint
   run_guard "intra-crate direction gate, strict (ADR-0010)" scripts/check_intra_crate_direction.sh \
-    env INTRA_CRATE_MODE=strict bash scripts/check_intra_crate_direction.sh
+    env INTRA_CRATE_MODE=strict INTRA_CRATE_LINT_BIN="$INTRA_CRATE_LINT_BIN_PATH" bash scripts/check_intra_crate_direction.sh
   run_guard "ignored-test inventory guard" scripts/check_ignored_guard.sh \
     bash scripts/check_ignored_guard.sh
   run_guard "ignored-test guard semantics harness (#1328)" scripts/test_ignored_guard.sh \
