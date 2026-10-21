@@ -245,6 +245,7 @@ is_code_file() {
     # shadow them (same match, lost documentation of intent).
     */build.rs | build.rs | \
       *.rs | crates/* | tests/* | */tests/* | benches/* | examples/* | fuzz/* | \
+      tools/* | \
       *Cargo.toml | *Cargo.lock | \
       clippy.toml | rustfmt.toml | rust-toolchain.toml | deny.toml | \
       nextest.toml | .cargo/* | Dockerfile* | *.dockerfile | docker-compose*)
@@ -283,18 +284,19 @@ classify() {
   else
     local root
     root="$(git rev-parse --show-toplevel 2>/dev/null || dirname "$0")"
-    # Resolve the base: the requested ref, then main for local runs. HEAD~1 is
-    # deliberately NOT a candidate (#2058): it is not the PR base, so falling
-    # back to it classified the branch tip instead of the branch, and a PR
-    # whose last commit was a docs edit read as docs-only while the branch also
-    # touched Rust. Anything else is fail-closed (all=true).
+    # Resolve the base: the REQUESTED ref, and nothing else (B45/S1). It is
+    # the PR base, and nothing else is:
+    #   - `main` is not a substitute: a local main can be stale or ahead of
+    #     the real base, so the diff would not be the PR's range;
+    #   - HEAD~1 is not a base at all (#2058): it is the branch tip, so the
+    #     diff would be the last commit instead of the branch, and a PR whose
+    #     last commit was a docs edit read as docs-only while the branch also
+    #     touched Rust — the Rust change was never compiled.
+    # Anything else is fail-closed (all=true).
     local resolved=""
-    for candidate in "$base" "main"; do
-      if git -C "$root" rev-parse --verify --quiet "$candidate" >/dev/null 2>&1; then
-        resolved="$candidate"
-        break
-      fi
-    done
+    if git -C "$root" rev-parse --verify --quiet "$base" >/dev/null 2>&1; then
+      resolved="$base"
+    fi
     if [[ -z "$resolved" ]]; then
       diff_ok=false
     else

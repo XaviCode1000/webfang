@@ -14,6 +14,17 @@ set -euo pipefail
 #   4. a new ignored test without an inventory row fails naming file|test;
 #   5. rows are keyed by file + test name: inserting lines above an ignored
 #      test does not invalidate its row (the old file:line drift).
+#   6. a flush-left `#[ignore` inside a BLOCK comment is a commented-out
+#      attribute: it is neither a live attribute nor a documentation
+#      sentence, so it changes nothing (audit B42 — the old classification
+#      counted it as an attribute, paired it with the next `fn` and failed
+#      CI on a comment);
+#   7. a SENTENCE inside a block comment that mentions `#[ignore` is still a
+#      documentation mention and still has to be catalogued (the exclusion of
+#      case 6 is narrow on purpose);
+#   8. a RAW STRING (`r"a\b"`, `r#"a"b"#`) before the block comment does not
+#      blind the block-comment detection: the comment state has to survive
+#      string literals.
 #
 # Exit 0 = all checks pass. Exit 1 = at least one failed.
 #
@@ -153,6 +164,88 @@ reset_fixture
 } >"$SRC.new" && mv "$SRC.new" "$SRC"
 run_guard
 if [[ "$RC" -eq 0 ]]; then ok "5 rows keyed by file+name survive line insertions"; else bad "5 line drift broke the guard (rc=$RC): $OUT"; fi
+
+# --- 6. a commented-out attribute is not a live attribute --------------------
+# Audit B42: a flush-left `#[ignore` inside a block comment was classified as
+# an ATTRIBUTE, paired with the next `fn` and failed CI on a comment. It is a
+# commented-out attribute: excluded from the live counts.
+reset_fixture
+cat >"$SRC" <<'EOF'
+#[cfg(test)]
+mod tests {
+    // prose mention of #[ignore] in a comment
+    /*
+#[ignore
+prose line inside a block comment — the attribute is commented out
+*/
+    #[test]
+    #[ignore = "requires network"]
+    fn net_one() {}
+}
+EOF
+run_guard
+if [[ "$RC" -eq 0 ]]; then
+    ok "6 a commented-out #[ignore attribute changes nothing (rc=0)"
+    case "$OUT" in
+        *"2 mentions (1 attributes + 1 doc/comment)"*) ok "6b the commented-out attribute is excluded from the counts" ;;
+        *) bad "6b the counts do not exclude the commented-out attribute: $OUT" ;;
+    esac
+else
+    bad "6 a commented-out #[ignore attribute failed the guard (rc=$RC): $OUT"
+fi
+
+# --- 7. a SENTENCE inside a block comment is still a doc mention ------------
+# The exclusion of case 6 is narrow: only a commented-out ATTRIBUTE is
+# excluded. A sentence mentioning #[ignore still has to be catalogued.
+reset_fixture
+cat >"$SRC" <<'EOF'
+#[cfg(test)]
+mod tests {
+    // prose mention of #[ignore] in a comment
+    /*
+    The `#[ignore]` attribute marks a skipped test.
+    */
+    #[test]
+    #[ignore = "requires network"]
+    fn net_one() {}
+}
+EOF
+run_guard
+if [[ "$RC" -ne 0 ]]; then
+    case "$OUT" in
+        *"Comments/docs"*) ok "7 a block-comment sentence is still a doc mention to catalogue" ;;
+        *) bad "7 output does not name Comments/docs: $OUT" ;;
+    esac
+else
+    bad "7 a block-comment sentence mentioning #[ignore passed silently"
+fi
+
+# --- 8. a raw string does not blind the comment-state tracking ---------------
+# The classifier tracks strings while it tracks comments: a raw string whose
+# content carries a quote (`r#"a"b"#`) must not leave the scanner in "string"
+# state for the rest of the file, or the block comment below would be read as
+# code and the commented-out attribute would be counted as a live one.
+reset_fixture
+cat >"$SRC" <<'EOF'
+#[cfg(test)]
+mod tests {
+    // prose mention of #[ignore] in a comment
+    const RAW: &str = r"a\b";
+    const RAW2: &str = r#"a"b"#;
+    /*
+#[ignore
+*/
+    #[test]
+    #[ignore = "requires network"]
+    fn net_one() {}
+}
+EOF
+run_guard
+if [[ "$RC" -eq 0 ]]; then
+    ok "8 a raw string does not blind the block-comment detection (rc=0)"
+else
+    bad "8 a raw string broke the comment-state tracking (rc=$RC): $OUT"
+fi
 
 if [[ "$fail" -eq 0 ]]; then
     echo "test_ignored_guard: all checks passed."

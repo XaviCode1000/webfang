@@ -121,6 +121,12 @@ pub fn resolve_embedding_config(
 ///
 /// `offline` is explicit (not read from `opts`) so the MCP lazy path —
 /// which owns no `CrawlOptions` — shares this preflight.
+///
+/// The `--offline` guard below is UNCONDITIONAL and fires BEFORE the endpoint
+/// is inspected: every resolved embeddings provider is refused with exit 78,
+/// a loopback one included. The published texts used to promise the opposite
+/// ("loopback permitido, remoto público -> exit 78"); the implementation
+/// never had that carve-out, so the texts were the defect (#2166).
 pub async fn build_embedding_provider(
     opts: &CrawlOptions,
     providers: &ProvidersConfig,
@@ -130,9 +136,24 @@ pub async fn build_embedding_provider(
         return Ok(None);
     };
     if offline {
+        // The head of the sentence is a STABLE contract: the integration test
+        // `crates/webfang_core/tests/exit_code_integration.rs` asserts it
+        // verbatim (only the remedy tail is free to change). Keep it.
+        //
+        // The remedies are the two REAL ones. `--clean-ai` is NOT one of
+        // them: the guard runs on the SELECTION of an embeddings provider
+        // (`resolve_embedding_config` resolves `--embedding-provider`, or the
+        // first `embedding`-capable provider in the config), and that
+        // selection does not depend on `--clean-ai` — so dropping the flag
+        // alone leaves the run failing with exit 78.
         return Err(CliExit::ConfigError(
-            "modo offline con provider remoto de embeddings: sin red no hay vectores \
-             (quitá `--offline` o usá el modelo local)"
+            "modo offline con provider remoto de embeddings: sin red no hay vectores. \
+             El guard de `--offline` rechaza cualquier provider de embeddings \
+             (endpoint remoto o loopback) y sale con exit 78. \
+             Quitá `--offline` para usar el provider configurado, o quitá la \
+             selección del provider de embeddings (sin `--embedding-provider` y sin \
+             ningún provider con capacidad `embedding` en la config) para correr sin \
+             limpieza semántica: la inferencia ONNX local se retiró en 3.0.0."
                 .to_string(),
         ));
     }
@@ -575,6 +596,82 @@ mod tests {
             server.received_requests().await.unwrap_or_default().len(),
             0,
             "offline fast-fail must never dial"
+        );
+    }
+
+    /// #2166: `--offline` rejects EVERY embeddings provider, loopback
+    /// included — and the message says so.
+    ///
+    /// The provider below is the friendliest case the guard can meet: its
+    /// `base_url` points at loopback AND its own network policy opts into
+    /// loopback (`allow_loopback = true`), so nothing but the `--offline`
+    /// guard stands between the run and a reachable endpoint. The guard fires
+    /// BEFORE the endpoint is inspected, so the run refuses with exit 78 and
+    /// never dials.
+    ///
+    /// The published texts used to promise the opposite ("loopback permitido,
+    /// remoto público -> exit 78"), so this case was the one the notice
+    /// contradicted. The MESSAGE is therefore part of the contract: it must
+    /// name the rule that covers loopback, must NOT send the operator to a
+    /// local model that was removed in 3.0.0, and must offer only remedies
+    /// that actually work.
+    ///
+    /// Why `--clean-ai` is NOT one of them: the guard runs on the SELECTION
+    /// of an embeddings provider, not on `--clean-ai`. `resolve_embedding_config`
+    /// resolves `--embedding-provider`, or else the first `embedding`-capable
+    /// provider in the config — either way the provider is selected without
+    /// `--clean-ai`, so "quitá `--clean-ai`" would leave the run failing with
+    /// the same exit 78. A remedy that does not work is a false promise, and
+    /// this message exists to stop publishing those.
+    #[tokio::test]
+    async fn embedding_offline_plus_loopback_provider_fails_fast_without_dial() {
+        use wiremock::MockServer;
+        let server = MockServer::start().await;
+        // No mock mounted: any dial would 404 and count as a request.
+        let mut cfg = emb_provider(
+            "ollama-local",
+            ProviderKind::OpenAiCompatible,
+            AuthSource::Env {
+                var: "WEBFANG_TEST_EMB_OK".to_string(),
+            },
+        );
+        cfg.base_url = url::Url::parse(&format!("{}/v1", server.uri())).expect("mock uri parses");
+        cfg.allow_loopback = true;
+        let providers = ProvidersConfig {
+            providers: vec![cfg],
+        };
+        let _guard = webfang_test_utils::EnvGuard::with(&[("WEBFANG_TEST_EMB_OK", "test-key")]);
+
+        let err = match build_embedding_provider(&opts_with_embedding(None), &providers, true).await
+        {
+            Err(e) => e,
+            Ok(_) => panic!("offline + loopback provider must fail fast"),
+        };
+        assert!(matches!(err, CliExit::ConfigError(_)));
+        let message = config_message(&err);
+        assert!(message.contains("offline"), "{err:?}");
+        assert!(
+            message.contains("loopback"),
+            "the message must state that the guard covers loopback providers too: {message}"
+        );
+        assert!(
+            !message.contains("modelo local"),
+            "the message must not send the operator to a local model removed in 3.0.0: {message}"
+        );
+        assert!(
+            message.contains("--offline"),
+            "the message must offer a REAL remedy — remove `--offline`: {message}"
+        );
+        assert!(
+            !message.contains("--clean-ai"),
+            "the message must NOT offer `--clean-ai` as a remedy: the guard runs on \
+             provider SELECTION, not on `--clean-ai`, so dropping the flag alone does \
+             not avoid the failure; {message}"
+        );
+        assert_eq!(
+            server.received_requests().await.unwrap_or_default().len(),
+            0,
+            "offline fast-fail must never dial, loopback provider or not"
         );
     }
 

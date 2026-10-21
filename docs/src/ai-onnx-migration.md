@@ -52,10 +52,12 @@ deja un shim detrás. Un shim detrás de la feature que se borra no existe, en n
    ```
 
    En `--offline` no hay provider de embeddings que sirva: el guard rechaza cualquier endpoint —uno
-   remoto público o uno en `127.0.0.1`— y sale con exit 78. El "loopback permitido" del aviso del
-   paso 5 se refería al modelo local ONNX, que este paso eliminó; sin ese camino, `--offline` solo
-   sirve para corridas sin limpieza semántica. Un endpoint LAN sigue necesitando la allowlist por
-   CIDR (`allow_cidrs`), que **no** incluye `100.64.0.0/10` salvo opt-in explícito.
+   remoto público o uno en `127.0.0.1`— y sale con exit 78. El "loopback permitido" que decía el
+   aviso del paso 5 se refería al modelo local ONNX, que este paso eliminó; el aviso ya no lo dice y
+   ahora nombra la regla real (rechaza cualquier provider de embeddings, remoto o loopback). Sin ese
+   camino, `--offline` solo sirve para corridas sin limpieza semántica. Un endpoint LAN sigue
+   necesitando la allowlist por CIDR (`allow_cidrs`), que **no** incluye `100.64.0.0/10` salvo
+   opt-in explícito.
 
 3. **Re-indexá los vaults** que tengan vectores de Granite. No hay forma de detectar la mezcla: el
    fail-closed por dimensión no puede dispararse sobre los vaults que nunca tuvieron `model_id`, que

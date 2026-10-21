@@ -108,10 +108,11 @@ pub struct AiArgs {
     /// a value is "the spec default" when the operator typed it.
     pub threshold_explicit: bool,
 
-    /// Run AI model in offline mode.
+    /// Reject every embeddings provider (remote or loopback) with exit 78: no local model since 3.0.0
     ///
-    /// UNGATED, though its effect is local-ONNX only: "offline" constrains the
-    /// hf_hub resolver, a property of THIS build's embedding backend.
+    /// UNGATED. Since ADR-0004 paso 6 there is no local backend to constrain:
+    /// the flag is read by the embeddings preflight, which rejects EVERY
+    /// embeddings provider — loopback included — with exit 78 (#2166).
     pub offline: bool,
 
     /// ADR-0004 step-5 announcements this run owes, decided at parse time.

@@ -156,10 +156,12 @@ pub const DEFAULT_MAX_CHARS: usize = 32_768 * 3;
 
 /// `--offline` (env `WEBFANG_OFFLINE`, bool SetTrue).
 ///
-/// UNGATED by decision (ADR-0004, slice C), though its effect is local-ONNX
-/// only: "offline" constrains the hf_hub resolver, which is a property of
-/// THIS build's embedding backend. Rendering it in every configuration costs
-/// nothing and keeps the flag discoverable next to the other AI flags.
+/// UNGATED by decision (ADR-0004, slice C), but its effect is NOT local-ONNX:
+/// since ADR-0004 step 6 there is no local engine and no hf_hub resolver. The
+/// flag is read by the embeddings preflight, which rejects EVERY resolved
+/// embeddings provider — remote or loopback — with exit 78 (#2166). It gates
+/// the semantic-cleaning providers only; it does not restrict the crawler's
+/// network.
 pub const OFFLINE: OptionSpec = OptionSpec {
     id: "offline",
     value_name: "OFFLINE",
@@ -170,7 +172,7 @@ pub const OFFLINE: OptionSpec = OptionSpec {
     default: Some(DefaultValue::Bool(false)),
     nullable: false,
     description_override: None,
-    help: "Run AI model in offline mode",
+    help: "Reject every embeddings provider (remote or loopback) with exit 78: no local model since 3.0.0",
     heading: Some("AI Settings"),
     kind: ValueKind::Bool,
     visible_aliases: &[],

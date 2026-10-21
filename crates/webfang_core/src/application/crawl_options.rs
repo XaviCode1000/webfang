@@ -27,7 +27,10 @@ pub struct AiConfig {
     /// Maximum characters per chunk for AI processing (the chunk-rejection
     /// guard, not a context-window setting).
     pub max_chars: usize,
-    /// Run AI model in offline mode.
+    /// Reject every embeddings provider (remote or loopback) with exit 78.
+    ///
+    /// No local model since 3.0.0: the flag gates the semantic-cleaning
+    /// providers only, not the crawler's network (#2166).
     pub offline: bool,
 }
 

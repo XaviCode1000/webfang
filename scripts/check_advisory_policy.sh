@@ -95,8 +95,15 @@
 #     Only a line containing the literal `Expires:` inside the array is read as
 #     an expiry marker, so a justification sentence that merely mentions
 #     "expiry" is harmless — but do not write "Expires:" in a justification.
-#   * Only `id = "..."` entries are collected; `reason` is documentation and is
-#     ignored by the parser.
+#   * Only the id bound to the `id` KEY is collected; `reason` is documentation
+#     and is ignored by the parser. A TOML inline table is UNORDERED, so the
+#     first advisory id quoted on the line is NOT necessarily the entry's id
+#     (`{ reason = "RUSTSEC-2025-0141", id = "RUSTSEC-2026-9999" }` declares
+#     RUSTSEC-2026-9999), and the id may be written with either quote style
+#     (`"RUSTSEC-..."` or the literal `'RUSTSEC-...'`).
+#   * A table header may be indented and may carry a trailing comment
+#     (`   [advisories] # policy`): both are valid TOML. A file that is NOT
+#     valid TOML is still a hard failure, with the same error as before.
 #
 # STYLE: user-facing errors are Spanish (repo convention for this scripts/
 # family); internal output is English.
@@ -220,53 +227,202 @@ trap 'rm -rf "$WORK"' EXIT
 # Parse deny.toml
 # ---------------------------------------------------------------------------
 
+# Shared awk helpers for the two deny.toml parsers. ONE definition, used by
+# both, so the two parsers can never disagree about what a TOML table header
+# is.
+#
+# The helpers live in a QUOTED heredoc, so the awk source is taken literally:
+# a single quote and a `$` inside it are awk code, not shell syntax. (A
+# single-quoted shell string would break on the first apostrophe and silently
+# drop the text around it.)
+IFS= read -r -d '' AWK_COMMON <<'AWK_COMMON_EOF' || true
+# skip_blanks(line, i) — the first index at or after i that is neither a space
+# nor a tab.
+function skip_blanks(line, i,   n, c) {
+    n = length(line)
+    while (i <= n) {
+        c = substr(line, i, 1)
+        if (c != " " && c != "\t") break
+        i++
+    }
+    return i
+}
+
+# section_name(line) — the table name when the line is a TOML table header,
+# "" when it is not a header.
+#
+# A header may be INDENTED and may carry a TRAILING COMMENT: both are valid
+# TOML, and the old parser only recognised /^\[.*\]$/, so a valid
+# `[advisories] # policy` (or an indented `   [advisories]`) left the section
+# unknown and NOTHING was parsed out of the file (B41). A line that is not a
+# header returns "" and the caller keeps its previous section, so a malformed
+# header never invents one: a real parse error still fails closed.
+function section_name(line,   n, i, c, name) {
+    n = length(line)
+    i = skip_blanks(line, 1)
+    if (substr(line, i, 1) != "[") return ""
+    if (substr(line, i + 1, 1) == "[") {
+        # Array of tables: [[name]]
+        i = i + 2
+        name = ""
+        while (i <= n && substr(line, i, 1) != "]") {
+            name = name substr(line, i, 1)
+            i++
+        }
+        if (substr(line, i, 1) != "]") return ""
+        i = i + 1
+        if (substr(line, i, 1) != "]") return ""
+        i = i + 1
+    } else {
+        i = i + 1
+        name = ""
+        while (i <= n && substr(line, i, 1) != "]") {
+            name = name substr(line, i, 1)
+            i++
+        }
+        if (substr(line, i, 1) != "]") return ""
+        i = i + 1
+    }
+    # Only whitespace and a comment may follow the closing bracket.
+    i = skip_blanks(line, i)
+    if (i > n) return name
+    if (substr(line, i, 1) == "#") return name
+    return ""
+}
+
+# read_string_value(line, eq) — the quoted value of the key whose `=` sits at
+# index eq, when that value is a RUSTSEC advisory id; "" otherwise.
+#
+# Both quote styles are accepted: a TOML literal string ('RUSTSEC-...') is as
+# valid as a basic one ("RUSTSEC-..."), and the old parser dropped the literal
+# form entirely (B40).
+function read_string_value(line, eq,   n, i, c, q, val) {
+    n = length(line)
+    i = skip_blanks(line, eq + 1)
+    c = substr(line, i, 1)
+    if (c != "\"" && c != "'") return ""
+    q = c
+    i = i + 1
+    val = ""
+    while (i <= n) {
+        c = substr(line, i, 1)
+        if (q == "\"" && c == "\\" && i < n) {
+            val = val substr(line, i + 1, 1)
+            i = i + 2
+            continue
+        }
+        i = i + 1
+        if (c == q) break
+        val = val c
+    }
+    if (val ~ /^RUSTSEC-[0-9]{4}-[0-9]{4}$/) return val
+    return ""
+}
+
+# find_id_value(line) — the advisory id bound to the `id` KEY of a TOML inline
+# table, or "" when the line declares no such id.
+#
+# A TOML inline table is UNORDERED, so the first advisory id quoted on the line
+# is NOT necessarily the id of the entry: `{ reason = "RUSTSEC-2025-0141", id =
+# "RUSTSEC-2026-9999" }` declares RUSTSEC-2026-9999. The old parser took the
+# first QUOTED id on the line, so it told cargo audit to ignore a DIFFERENT
+# advisory than the one the policy declares (B40).
+#
+# The scan is string-aware on purpose: a `reason` may quote another advisory
+# id, and may even contain the text `id = "RUSTSEC-..."`; neither is a key. A
+# `#` outside a string starts a comment, so a commented-out entry is not an
+# entry.
+function find_id_value(line,   n, i, c, q, val, key, start, j) {
+    n = length(line)
+    i = 1
+    while (i <= n) {
+        c = substr(line, i, 1)
+        if (c == "#") return ""
+        if (c == "\"" || c == "'") {
+            # A quoted token: a quoted key, or a string value.
+            q = c
+            i = i + 1
+            val = ""
+            while (i <= n) {
+                c = substr(line, i, 1)
+                if (q == "\"" && c == "\\" && i < n) {
+                    val = val substr(line, i + 1, 1)
+                    i = i + 2
+                    continue
+                }
+                i = i + 1
+                if (c == q) break
+                val = val c
+            }
+            j = skip_blanks(line, i)
+            if (substr(line, j, 1) == "=" && val == "id") {
+                return read_string_value(line, j)
+            }
+            continue
+        }
+        if (c ~ /[A-Za-z0-9_-]/) {
+            start = i
+            while (i <= n && substr(line, i, 1) ~ /[A-Za-z0-9_-]/) i++
+            key = substr(line, start, i - start)
+            j = skip_blanks(line, i)
+            if (substr(line, j, 1) == "=" && key == "id") {
+                return read_string_value(line, j)
+            }
+            continue
+        }
+        i = i + 1
+    }
+    return ""
+}
+AWK_COMMON_EOF
+
 # Ignore entries, one "id<TAB>expiry" record per line, in file order.
 # Inside the [advisories] ignore array: a line containing `Expires:` sets the
 # pending expiry, and the next RUSTSEC- id consumes it. An unparseable expiry
 # is carried through verbatim so the check below can report it as unparseable
 # rather than silently as missing.
 parse_ignore_entries() {
-    awk -F'\t' -v OFS='\t' '
-        /^\[.*\]$/ {
-            section = $0
-            sub(/^\[/, "", section)
-            sub(/\]$/, "", section)
-            in_ignore = 0
-            next
-        }
-        section == "advisories" && !in_ignore && $0 ~ /^[[:space:]]*ignore[[:space:]]*=/ { in_ignore = 1 }
-        in_ignore && $0 ~ /^[[:space:]]*\]/ { in_ignore = 0; next }
-        !in_ignore { next }
-        /Expires:/ {
-            value = $0
-            sub(/^.*Expires:[[:space:]]*/, "", value)
-            sub(/[[:space:]]*$/, "", value)
-            pending = value
-            next
-        }
-        match($0, /"RUSTSEC-[0-9]{4}-[0-9]{4}"/) && $0 ~ /id[[:space:]]*=[[:space:]]*"RUSTSEC-/ {
-            # `id =` is required here because a `reason` string may legitimately
-            # quote another advisory id (e.g. "same path as RUSTSEC-2026-0183")
-            # and that must not be counted as a second entry.
-            quoted = substr($0, RSTART, RLENGTH)
-            gsub(/"/, "", quoted)
-            print quoted, (pending == "" ? "-" : pending)
-            pending = ""
-            next
+    awk -F'\t' -v OFS='\t' "$AWK_COMMON"'
+        {
+            hdr = section_name($0)
+            if (hdr != "") {
+                section = hdr
+                in_ignore = 0
+                pending = ""
+                next
+            }
+            if (section == "advisories" && !in_ignore && $0 ~ /^[[:space:]]*ignore[[:space:]]*=/) {
+                in_ignore = 1
+            } else if (in_ignore && $0 ~ /^[[:space:]]*\]/) {
+                in_ignore = 0
+                next
+            }
+            if (!in_ignore) next
+            if ($0 ~ /Expires:/) {
+                value = $0
+                sub(/^.*Expires:[[:space:]]*/, "", value)
+                sub(/[[:space:]]*$/, "", value)
+                pending = value
+                next
+            }
+            id = find_id_value($0)
+            if (id != "") {
+                print id, (pending == "" ? "-" : pending)
+                pending = ""
+            }
         }
     ' "$1"
 }
 
 # "section.key=value" for every top-level `key = "value"` line in the file.
 parse_scalar_keys() {
-    awk '
-        /^\[.*\]$/ {
-            section = $0
-            sub(/^\[/, "", section)
-            sub(/\]$/, "", section)
-            next
-        }
+    awk "$AWK_COMMON"'
         {
+            hdr = section_name($0)
+            if (hdr != "") {
+                section = hdr
+                next
+            }
             line = $0
             sub(/^[[:space:]]+/, "", line)
             eq = index(line, "=")
