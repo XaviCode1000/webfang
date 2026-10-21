@@ -1,0 +1,77 @@
+# Feature: AGENTS.md como router — poda a Engram con destino verificado
+
+**Issue:** #2206 (`docs: AGENTS.md como router — poda a Engram (1752 → 725 líneas) y corrección de ~26 hechos falsos`) — requiere `status:approved` del owner antes de abrir el PR.
+**Labels:** `type:docs`
+**Branch:** `docs/agents-routerization` (worktree `~/Projects/Rust/webfang-worktrees/agents-md-routerization`), base `origin/main` @ `7c391c1e`
+**Ruta de entrega:** `single-pr` (este repo no admite stacked PRs — ver AGENTS.md "No stacked PRs")
+**Alcance:** un solo archivo del repo (`AGENTS.md`) + 7 observaciones nuevas en Engram. Ningún cambio de código de producción.
+
+## Objetivo
+
+Convertir `AGENTS.md` de 1.752 líneas / 130 KB en un **router** de ~480 líneas: conserva las reglas del proyecto y las políticas que el harness no provee (incluidos `codedb`/`codegraph` y la política de worktrees, por decisión explícita del owner), y manda **todo lo demás** a Engram con un puntero consultable. Ningún contenido se borra sin destino verificado.
+
+## Specs
+
+- **S1** — El pedido del owner, verbatim: *"necesito un analisis profundo sobre el archivo @AGENTS.md , porque creo que no estamos siguiendo las mejores practicas relacionadas con este tipo de archivos, y porque creo que incluye mucha informacion irrelevante para agentes y lo mas peligroso informaciones falsas."*
+
+- **S2** — La decisión de destino, verbatim: *"vamos a utilizar (A) y no mover nada a /docs solo engram y mencionar en agentes.md como consultar cada informacoin en engram. asi conservamos lo importante."* ⇒ **Engram es el único destino del contenido podado.** No se crea ningún archivo nuevo bajo `docs/`. Los `docs/` existentes (`ssrf-layers.md`, `persistence-resume.md`, `error-classification-matrix.md`, `merge-queue-manual.md`, `release-tag-ruleset.md`, `ci-slo.md`, `docs/src/**`) **no se tocan** — ya están referenciados por el repo, por scripts y por usuarios.
+
+- **S3** — La instrucción sobre SDD, verbatim: *"1- sdd ya esta deprecado eso eliminalo por completo."* ⇒ la fila `SDD planning phases | sdd-*` de la Skill Routing Matrix y el bloque `Gate 0 freeze — RETIRED` se eliminan; el heading `## 🚧 Sprint 0 — StateStore resume contract (sdd/stabilization-sprint0-baseline)` se reescribe sin la referencia `sdd/`. **Las observaciones históricas con `topic_key` `sdd/*` en Engram no se borran** (obs #1131, #1193, #1194, #1206 contienen diseño válido y referenciado): lo deprecado es el *método*, no el conocimiento.
+
+- **S4** — La corrección del owner, verbatim: *"manten codedb + codegraph y nuestra politica de worktree en egents.md el resto aplica tus recomendaciones."* ⇒ **dos bloques se conservan completos en `AGENTS.md`**: (a) la sección `🔬 Intelligence Stack` (routing `codedb`/`codegraph` + gates + rutas absolutas en worktrees) y (b) la **política de worktrees** (reglas, placement, bootstrap, protocolo de identidad, cleanup, seeds, recursos compartidos, namespace, contaminación, historia inmutable). Se conservan *condensados* — se van los post-mortems de incidentes, no las reglas.
+
+- **S5** — Antes de podar, **cada bloque saliente tiene destino verificado**: 7 observaciones nuevas en Engram + las 8 ya existentes que cubren worktrees. Nada se borra sin destino.
+
+- **S6** — El archivo **renderiza**: balance de fences verificado por script (hoy hay 67 fences, número impar ⇒ 1.221 líneas de prosa se renderizan como código y 9 de 13 H2 no son headings). El archivo nuevo tiene fences pareados y todos sus H2 son headings.
+
+- **S7** — **Cero citas por número de línea** en el archivo. La regla del propio documento lo exige (*"a line-number citation in this file is invalidated by any edit above it"*) y hoy hay ~40. Se cita el **símbolo** (`WreqDownloader::fetch_inner`, `RateLimiterConfig::new`), no la línea. Los paths de archivo sí se conservan.
+
+- **S8** — **Cero tablas de estado mutable** copiadas en prosa. El estado de las líneas de soporte vive en `.github/support.json` y se consulta con `jq`; el conteo de tools vive en `crates/webfang_mcp/tests/stdio_handshake.rs`; las aristas de dependencia se derivan de `cargo metadata`. El documento **enlaza** esas fuentes, no las replica.
+
+- **S9** — Los ~26 facts falsos detectados por la auditoría del 2026-10-21 están **corregidos o eliminados**. Los verificablemente falsos a corregir o borrar: support.json declara 4.0 STABLE / 3.0 MAINTENANCE (el doc decía 2.12/2.11/2.10); `CrawlCheckpoint` **sí** está cableado a `--resume`; los shims de IA **ya no existen** (`--ai-model` y `--max-tokens` dan error de clap "unexpected argument" exit 64; los envs `WEBFANG_AI_MODEL_ID`/`AI_MODEL_ID`/`WEBFANG_MAX_TOKENS`/`WEBFANG_AI_ENGINE` se ignoran en silencio; sin aviso) y la superficie real es `--threshold`/`--max-chars`/`--offline`; `InfraError` tiene 15 variantes (no 13) y `DomainError` 7 (correcto); el downloader vive en `infrastructure/downloader/` (no `infrastructure/crawler/`); `infrastructure/mcp_server/mod.rs` **no existe** (el real es `crates/webfang_mcp/src/mcp_server/mod.rs`, 443 líneas) y los archivos realmente grandes son `application/crawler/engine.rs` (3.219), `cli/preflight.rs` (3.192), `infrastructure/http/waf_engine.rs` (2.570), `mcp_server/handlers/scraping.rs` (2.513), `src/error.rs` (2.158); la arista `cli → mcp` **no existe**; el código de CLI vive en `crates/webfang_core/src/cli/` (`webfang_cli/` es un único `main.rs`); la regex de branch real incluye `hotfix|release|support`; `test_support_drift.sh` tiene 29 casos (no 50); `.cargo/config.toml` **existe**; `[profile.dev.build-override]` **no existe** (es un experimento planificado); `ExportState.version` es un type-state `StateVersion`; git local es 2.56; existe el label `type:testing`; las job keys son `release-plz-pr`/`release-plz-release` (no `update`); `.envrc` está en `.gitignore:139`; los skills `codedb`/`codegraph`/`sdd-*` **no existen** (los CLIs sí: `codedb 0.2.5849`, `codegraph 1.6.2`).
+
+- **S10** — La tabla de consulta a Engram está **verificada**: cada fila nombra la query que se ejecutó con `mem_search` y las observaciones que devuelve. Ningún puntero a algo que no se comprobó.
+
+- **S11** — La sección `💾 Engram` **crece** en lugar de reducirse: es el mapa de la memoria del proyecto. Pierde la limpieza histórica puntual ("27 sesiones obsoletas cerradas el 2026-09-26") y gana el mecanismo de consulta.
+
+- **S12** — El archivo arranca con **comandos ejecutables** (best practice #1: los comandos van arriba, no al final) y con la tabla de punteros a Engram, para que un agente sepa dónde mirar sin recorrer 1.700 líneas.
+
+## Tareas
+
+| ID | Spec | Descripción | Ruta | Commit |
+|---|---|---|---|---|
+| T1 | S5 | Escribir las observaciones nuevas en Engram (destino del contenido podado) | inline (obs #2306, #2307, #2308, #2309, #2311, #2312, #2313, #2316) | — (memoria) |
+| T2 | S1-S4, S6-S9 | Reescribir `AGENTS.md` como router | inline (padre) | 1 |
+| T3 | S6, S7, S8, S10, S11 | Verificar: fences pareados, cero citas por línea, cero tablas de estado, queries de Engram resuelven, facts correctos | inline + verifier independiente | — |
+| T4 | S1 | Crear issue + PR (`Closes #N`, label `type:docs`, base `main`) | inline | — |
+| T5 | — | Fase 2 (fuera de alcance, requiere decisión aparte): guard `scripts/check_agents_doc.sh` fail-closed en `repo-guards` (fences + asserts de facts + budget de tamaño) | — | — |
+
+## Log
+
+- **L1 (2026-10-21)** — Pedido original, verbatim: *"necesito un analisis profundo sobre el archivo @AGENTS.md , porque creo que no estamos siguiendo las mejores practicas relacionadas con este tipo de archivos, y porque creo que incluye mucha informacion irrelevante para agentes y lo mas peligroso informaciones falsas."*
+
+- **L2 (2026-10-21)** — El owner pregunta por la fuente: *"en engram esta guardad informacion como se crean y las mejores practicas para este tipo de archivos,"* ⇒ existe `obs #368` (`research/webfang/agents-md-best-practices`, 2026-08-23, 11 best practices de 2 fuentes + auditoría previa del mismo archivo) y `obs #370` (`decision/webfang/knowledge-architecture`, decisión vinculante del owner: metodología NO va en AGENTS.md; repo = sólo reglas específicas del proyecto).
+
+- **L3 (2026-10-21)** — Resultado de la auditoría: 67 fences (impar) ⇒ 1.221 líneas (70%) de prosa renderizadas como código; 9 de 13 H2 no son headings; ~26 facts falsos; el archivo triplicó desde la auditoría de agosto (688 → 1.752 líneas) sin que se aplicara la decisión de L2. Detalle en `obs #368` rev 2, `#2302`, `#2303`.
+
+- **L4 (2026-10-21)** — Decisión de destino, verbatim: *"vamos a utilizar (A) y no mover nada a /docs solo engram y mencionar en agentes.md como consultar cada informacoin en engram. asi conservamos lo importante."* + nota 1: *"sdd ya esta deprecado eso eliminalo por completo"* + nota 2: *"necesito que me digas antes creando una lista que vamos a aliminar y conservar y porque. para decidir antes de podarlo"*.
+
+- **L5 (2026-10-21)** — La lista de eliminar/conservar se entregó y fue aprobada con una corrección, verbatim: *"manten codedb + codegraph y nuestra politica de worktree en egents.md el resto aplica tus recomendaciones. adelante"* ⇒ S4. Las 4 decisiones(DB) se aplican: obs primero y a la vista; 6 líneas para RDD; perfil de workstation con `scope=personal`; guard en fase aparte (T5).
+
+- **L6 (2026-10-21)** — Hecho contra `origin/main` @ `7c391c1e` (post-#2184): los shims de IA **ya no existen** (obs #849, T2 de la campaña ADR-0004). `crates/webfang_core/src/cli/args/ai.rs:449-467` lo pinea: *"The retired shims are GONE (issue #2119): they are not flags any more, so clap answers with its standard 'unexpected argument' error"* y *"The retired env doors are IGNORED, not rejected"*. `ONNX_DEPRECATION_NOTICE` no existe en el árbol. La superficie AI real es `--threshold` / `--max-chars` / `--offline`. AGENTS.md (1752 líneas, 67 fences, 131.568 bytes) no cambió entre `726921b9` y `7c391c1e` salvo 1 línea.
+
+- **L7 (2026-10-21)** — Decisión de implementación: el guard (T5) queda **fuera** de este PR — es un PR con su propio harness y no debe bloquear la poda. La poda y el guard son slices secuenciales, no stacked.
+
+- **L8 (2026-10-21)** — **El guard de aislamiento me cazó a mí.** Escribí el `.envrc` del worktree con `$TREE` literal sin sustituir (por escapar el `$` del heredoc), y `scripts/ci_fast_gate.sh` lo rechazó con `reason=unregistered-target` — exactamente la falla documentada en `obs #2205` y en la sección de bootstrap del propio AGENTS.md. Corrección: el `$TREE` se sustituye al escribir el archivo; el `$HOME` es lo único que queda literal. **La propia política del repo detectó mi error**: es el argumento a favor del guard de fase 2 (T5).
+
+- **L9 (2026-10-21)** — Verificador independiente (8 checks) sobre el resultado. **2 BLOCKER**: (a) la sección de estratificación de errores estaba **invertida**: `DomainError`/`InfraError` convergen **hacia** `ScraperError` vía `From` (no se apilan), `CliError` es independiente, `HttpError` es un enum de **dominio**, `WafError` no es un tipo de error (es una variante de `FetchBehavior`) y `ParseError` **no existe**; (b) 4 reglas durables sin destino: "commit frequently", reglas de verificación en la nube (timeout de `gh run watch`, ≥180 s + reintento, push con timeout → verificar con `git ls-remote`), el **main-push gate** y el wiring de `core.hooksPath` ("nunca matchear un gate contra la prosa de git"). 5 SHOULD-FIX: la afirmación "ningún head prefix puede apuntar a otra branch de trabajo" era falsa (`fix/*` → `release/X.Y` y `hotfix/*` → `support/X.Y` sí están admitidos); `.atl/skill-registry.md` es gitignored y no existe en un clone nuevo; `src/error.rs` es 2.158 líneas (~2.200); la sección Sprint 0/StateStore se borró en vez de reescribirse (spec S3); "Skills del repo" etiquetaba 6 skills de scope user como de repo. 3 NIT: atribución de `RateLimiterConfig::new` (ya corregida antes, el verifier leyó la versión previa), issue TBD, branch 1 commit atrás de main.
+
+- **L10 (2026-10-21)** — Correcciones aplicadas: el diagrama de errores reescrito como embudo con los cuatro `From` reales; las 4 reglas durables recuperadas (una volvió a AGENTS.md, tres a la obs **#2316** `project/webfang/delivery-gates-and-ci-verification`, con query verificada); la afirmación de topología acotada a los head prefixes de feature; la nota de que `.atl/skill-registry.md` es generado por árbol; `src/error.rs` a ~2.200; los scopes de skills corregidos; la sección Sprint 0 sustituida por un puntero a `docs/persistence-resume.md` + obs #216/#1341 (el texto viejo era falso: `version` es un type-state `StateVersion` y el `CURRENT_VERSION` que vale 2 vive en `record_store.rs`). Cada corrección fue verificada con CodeDB antes de aplicarla, no sobre el reporte.
+
+- **L11 (2026-10-21)** — `origin/main` avanzó 2 commits durante el trabajo; rebase aplicado. `AGENTS.md` no fue tocado por esos commits, así que el rebase fue limpio.
+
+- **L12 (2026-10-21)** — El owner lo afirmó de forma explícita: *"utiliza codedb siempre"*. Registrado como `obs #2315` (`preference/webfang/use-codedb-always`). En la práctica detectó 2 atribuciones de símbolo erróneas (`until_ready_or_cancel_observed` y `RateLimiterConfig` estaban atribuidas al módulo del call-site en vez del de la definición) que el grep no había cazado.
+
+- **L13 (2026-10-21)** — **Límite de slice (respuesta al aviso del pre-commit hook).** El hook avisó: *"Commit slice: 2374 authored changed lines in 1 commit ... Past the ~400-line slice"*. La estrategia de entrega de esta feature es **un único work-unit**: el deliverable es *un* archivo (`AGENTS.md`) reescrito, más su feature doc y su mirror. Dividir la reescritura de un router en commits parciales produciría commits donde el archivo **no renderiza** (fences desbalanceados a mitad de camino) o donde los punteros a Engram apuntan a contenido que todavía no existe — es decir, commits en un estado que no es ni viejo ni nuevo. El diff es −1614/+760 sobre un solo archivo, que es la consecuencia mechanical de podar, no evidencia de alcance descontrolado. **El límite de slice se reestablece acá**: el próximo slice es el guard `scripts/check_agents_doc.sh` (T5, fase 2), que va en su propio PR, y ese sí entra holgadamente en el presupuesto de ~400 líneas.
+
+- **L14 (2026-10-21)** — El proxy de identidad del worktree dio MISMATCH en el primer commit: el directorio era `agents-md-routerization` y la branch `docs/agents-routerization` (el proxy exige `docs-agents-routerization`). El commit **no** se exceptuó: como era local y sin pushear, se resolvió **estructuralmente** con `git worktree remove` + `git worktree add` bajo el nombre correcto (la vía que prescribe la política del repo; `git worktree move` está prohibido). El commit sobrevivió al re-add y el proxy ahora pasa. Lección: el proxy no es burocracia — el directorio es la convención de nombres de branch, y un desvío silencioso rompe la correspondence que hace legible un repo con muchas worktrees.
