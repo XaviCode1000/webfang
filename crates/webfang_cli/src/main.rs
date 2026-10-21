@@ -829,40 +829,39 @@ mod wiring_tests {
     ///
     /// What this test does NOT claim: it does not prove the inspector is
     /// *prevented* from reaching the vault slot. `vault_slot` below is built
-    /// and then never handed to anything — `remote.embedded() == 0` is true by
-    /// construction, not by an observed refusal. That invariant is carried by
-    /// the type system: `semantic_inspector` takes `Option<Tier2EmbeddingPort>`
-    /// while `VaultAiPorts::embedding_port` is `Option<Arc<dyn EmbeddingPort>>`,
-    /// so passing the slot is a compile error (issue #1977). Compile-time
-    /// evidence is the T1 swap experiment, not this test.
+    /// and then never handed to anything — `vault_provider.embedded() == 0` is
+    /// true by construction, not by an observed refusal. That invariant is
+    /// carried by the type system: `semantic_inspector` takes
+    /// `Option<Tier2EmbeddingPort>` while `VaultAiPorts::embedding_port` is
+    /// `Option<Arc<dyn EmbeddingPort>>`, so passing the slot is a compile
+    /// error (issue #1977). Compile-time evidence is the T1 swap experiment,
+    /// not this test.
     ///
     /// What it does prove: the port the inspector embeds through is the one
     /// handed in, all the way down to the adapter — the part that would break
     /// first if `semantic_inspector` or `EmbeddingSemanticInspector::new`
     /// started resolving its own port.
     ///
-    /// The LOCAL pool it models is gone (ADR-0004 paso 6); what the test still
-    /// pins is the TYPE separation — `Tier2EmbeddingPort::Local` and the vault
-    /// slot are different types, so the vault slot can never reach the
+    /// The LOCAL pool this test used to model is gone (ADR-0004 paso 6); what
+    /// the test still pins is the TYPE separation — the Tier 2 slot and the
+    /// vault slot are different types, so the vault slot can never reach the
     /// inspector by accident (issue #1977).
     #[test]
-    fn tier2_inspector_stays_bound_to_the_local_port() {
-        let local = Arc::new(CountingEmbedder::new(vec![1.0, 0.0]));
-        let remote = Arc::new(CountingEmbedder::new(vec![0.0, 1.0]));
+    fn tier2_inspector_stays_bound_to_the_port_it_was_handed() {
+        let handed = Arc::new(CountingEmbedder::new(vec![1.0, 0.0]));
+        let vault_provider = Arc::new(CountingEmbedder::new(vec![0.0, 1.0]));
 
-        let shared =
-            Some(webfang_core::domain::embedding_port::LocalEmbeddingPort::new(local.as_port()));
+        let tier2_port =
+            Some(webfang_core::domain::embedding_port::Tier2EmbeddingPort::new(handed.as_port()));
 
         // Models the composition order: the vault slot holds a DIFFERENT
         // provider than the one the inspector was handed. The inspector only
-        // ever sees `shared`.
+        // ever sees `tier2_port`.
         let vault_slot: Option<Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort>> =
-            Some(remote.as_port());
+            Some(vault_provider.as_port());
 
-        let tier2_port =
-            shared.map(webfang_core::domain::embedding_port::Tier2EmbeddingPort::Local);
         let inspector = semantic_inspector(tier2_port, &AdaptiveSelectorOptions::default())
-            .expect("a shared local port must produce an inspector");
+            .expect("a wired Tier 2 port must produce an inspector");
 
         // Drive one Tier 2 call through the port-backed inspector.
         let ctx = SemanticContext {
@@ -877,11 +876,11 @@ mod wiring_tests {
         let outcome = runtime.block_on(inspector.find_semantic_match(ctx));
 
         assert!(
-            local.embedded() > 0,
+            handed.embedded() > 0,
             "the inspector must embed through the port it was handed"
         );
         assert_eq!(
-            remote.embedded(),
+            vault_provider.embedded(),
             0,
             "the inspector reached a port it was never given"
         );
@@ -921,12 +920,10 @@ fn build_adaptive_engine(
 
 /// Build the Tier 2 semantic inspector with an explicit embedding port (ADR-0004).
 ///
-/// The slot is either:
-/// - [`Tier2EmbeddingPort::Local`](webfang_core::domain::embedding_port::Tier2EmbeddingPort::Local)
-///   — the shared LOCAL embedding port when `--tier2-embedding-provider` is NOT
-///   set, OR
-/// - [`Tier2EmbeddingPort::Remote`](webfang_core::domain::embedding_port::Tier2EmbeddingPort::Remote)
-///   — a dedicated remote adapter when it IS set.
+/// The slot holds the provider resolved for the Tier 2 semantic repair — the
+/// remote adapter built when `--tier2-embedding-provider` IS set. Without that
+/// flag there is no Tier 2 provider at all, and the engine degrades to Tier 1
+/// (lexical) repair.
 ///
 /// This is SEPARATE from the vault-search embedding slot (`vault_ports.embedding_port`)
 /// which is controlled by `--embedding-provider`. Vault search and Tier 2 repair
@@ -1207,7 +1204,7 @@ async fn build_and_run(opts: CrawlOptions) -> CliExit {
     let tier2_remote: Option<webfang_core::domain::embedding_port::Tier2EmbeddingPort> = {
         match resolve_tier2_remote_embedding(&opts).await {
             Ok(Some(adapter)) => Some(
-                webfang_core::domain::embedding_port::Tier2EmbeddingPort::Remote(
+                webfang_core::domain::embedding_port::Tier2EmbeddingPort::new(
                     adapter as Arc<dyn webfang_core::domain::embedding_port::EmbeddingPort>,
                 ),
             ),
@@ -1238,7 +1235,7 @@ async fn build_and_run(opts: CrawlOptions) -> CliExit {
         // (`Tier2EmbeddingPort` vs `Option<Arc<dyn EmbeddingPort>>`), so
         // `vault_ports.embedding_port` cannot reach `semantic_inspector` even
         // by accident. The local ONNX pool that used to serve this slot is
-        // gone (ADR-0004 paso 6), so the explicit remote is the only arm left.
+        // gone (ADR-0004 paso 6), so the explicit remote is the only producer.
         let semantic = semantic_inspector(tier2_remote.clone(), &engine_options);
         // Build adaptive engine inside the cfg block so semantic and engine_options are in scope
         let adaptive_engine = build_adaptive_engine(&opts, semantic, engine_options);
