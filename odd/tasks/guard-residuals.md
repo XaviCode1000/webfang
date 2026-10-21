@@ -191,8 +191,47 @@ lote **no** edita `odd/backlog-implementation-plan/**`: deja su propio doc de lo
 duplicar el plan. Un solo escritor por path, en la práctica: el owner del plan no toca los
 scripts de este lote, y este lote no toca el ledger.
 
-L14 — Los dos `test_guard_coverage.sh` (corrección del owner del plan al plan): el fix de
+L14 — **Los dos `test_guard_coverage.sh`** (corrección del owner del plan al plan): el fix de
 `harness_wired` va en `scripts/test_guard_coverage.sh` — el **único** que define esa función
 — y el caso de negación en `scripts/tests/test_guard_coverage.sh`, el harness de semántica
 del meta-guard, que es el archivo que nombra el criterio de aceptación del issue. Los dos
 están cableados en `ci.yml`; este lote no necesita ningún step nuevo.
+
+L15 — **El review nativo de L4 queda ABIERTO y sin veredicto, y no bloquea la entrega.**
+Receta verificada por el owner del plan (sesión `01a1607b`, lineage `review-98b70a936ebd4207`),
+que cierra el diagnostico:
+1. El binding que hay que entregar es el string IMPRESO por el facade en el STATUS
+   (`collectBindings[].collectBinding`), VERBATIM: camelCase y con las keys ordenadas
+   alfabeticamente (así lo imprime `canonicalReviewCaptureBinding`).
+2. `artifactSubject.schema` es el **nativo** (`gentle-ai.review-artifact-subject/v2`), no la
+   schema del reviewer. (El facade lo imprime asi y asi se copio: ese punto no era el fallo.)
+3. El tool de un slot acepta el objeto y devuelve el forecast
+   (`reviewer-model-run-forecast`, `model_runs=1`) — reproduce aca. Ahi se traba: al reenviar
+   el MISMO binding con `reviewerRunAcknowledged=true`, el provider responde
+   `collectBinding is missing or stale for current STATUS`.
+4. La causa: despues del forecast el slot queda consumido, y el STATUS que devuelve el facade
+   esta **cacheado** (mismo binding, misma revision) mientras el capture pide un status
+   FRESCO. El CLI nativo (`gentle-ai review status --next-transition=true ...`) si lo da, en
+   snake_case, y hay que mapearlo a la forma canonica.
+5. El GROUP exige las cadenas canonicas: un objeto serializado sin ordenar keys no matchea.
+
+Lo que se intento desde esta sesion (siete intentos, sin mutacion): el grupo con objetos
+(rechazado: "must be the complete distinct current reviewer group in exact provider order"),
+el grupo con la cadena canonica (rechazado igual), y el slot unico con el objeto (forecast
+OK; el reenvio con `reviewerRunAcknowledged` rechazado como "missing or stale"). El artefacto
+del reviewer de la unica corrida que llego al relay fue rechazado en admision por el provider
+("reviewer artifact admission out_of_scope: reviewer inspection includes paths outside the
+frozen candidate", `inspection_coverage`), con el payload preservado en
+`.git/gentle-ai/rejected-results/review-ead5e692fc9ea607/`.
+
+**Lo que NO se hace, y por que**: el camino que el owner del plan describe para cerrar esto
+(releer el STATUS con el CLI nativo y reconstruir el binding a mano) se saltea la regla que
+gobierna este harness: Pi no reconstruye bindings opacos emitidos por el provider ni corre
+STATUS crudo; el provider tiene que aceptar bytes que EL emitio, no bytes compuestos a mano
+por el cliente. Con lo que el facade si entrega (el STATUS cacheado) el capture no cierra.
+
+**Consecuencia, medida**: el review nativo no es una puerta de entrega. Los commits de este
+lote pasaron el gate con el lineage abierto (`[review-gate] OK: no review authority governs
+this candidate`), y el `assess` ya fijo el plan que corresponde a la evidencia real
+(`writerSelfVerification`, sin verificador independiente). El lineage queda abierto para que
+el maintainer lo inspeccione: `gentle-ai review status --lineage=review-ead5e692fc9ea607`.
