@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.0] - 2026-10-21
+
+
+### ⚠️ Breaking Changes
+
+- Retira --enable-ai de los dos binarios MCP ([#2145](https://github.com/XaviCode1000/webfang/pull/2145))
+
+### 🏗️ Architecture Improvements
+
+- Colapsar Tier2EmbeddingPort a un newtype y borrar LocalEmbeddingPort ([#2154](https://github.com/XaviCode1000/webfang/pull/2154))
+
+### 🔧 Fixed
+
+- Show and doctor report the effective embeddings provider, not a retired local model ([#2161](https://github.com/XaviCode1000/webfang/pull/2161))
+- La constante del hatch SSRF vive en domain, no se reexporta desde application (Ola 3, S3) ([#2164](https://github.com/XaviCode1000/webfang/pull/2164))
+- La semántica de --offline dice lo que el guard hace ([#2178](https://github.com/XaviCode1000/webfang/pull/2178))
 ## [4.0.1] - 2026-10-20
 
 
