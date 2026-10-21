@@ -81,19 +81,19 @@ una decisión del owner).
 | **L0** | Cierres por evidencia + backlog sin dueño | #2105, #1996, #1423, #2224, #1826, #1936 + nuevas **#2233**, **#2234**, **#2235** | cerrar con evidencia; abrir lo que no tenía dueño | evidencia citada por issue | 0 código | inline | **HECHO** |
 | **L1** | SSRF: encapsulación IPv4 | #2231, #2232 | ISATAP y la forma IPv4-compatible revalidan la IPv4 embebida; Teredo primero; ISATAP **fuera** del set always-denied | `ssrf_a5_a6_family_test.rs` | +150/−51 | agente del owner | **OCUPADO** |
 | **L2** | Merge y limpieza post-merge | #1970, #1971, #1972 | `state`+`mergeStateStatus` en una llamada ⇒ "already merged" exit 0; `rm` standalone con path literal; el registro de misión se escribe en el worktree | `scripts/test_merge_when_green_merged_state.sh` | +180/−15 | worker | **HECHO** (`d16ffef2`, `67ff6128`, `66f23d63`) |
-| **L3** | **CI Health: el canal enmudecido** | #2233, #2234, #2162, #1936, #1980 | el clasificador matchea una línea de **FALLO**, no una mención; el test parsea hermético; el observer cierra por **subtítulo** de título | `scripts/test_ci_health_close.sh` (caso nuevo) | +40/−15 | worker | **EN CURSO** (L3a en `fix-ci-health-w03-classifier`; L3b = #2234, necesita cargo) |
+| **L3** | **CI Health: el canal enmudecido** | #2233, #2234, #2162, #1936, #1980 | el clasificador matchea una línea de **FALLO**, no una mención; el test parsea hermético; el observer cierra por **subtítulo** de título | `scripts/test_ci_health_close.sh` (caso nuevo) | +40/−15 | worker | **EN CURSO** (L3a: el clasificador y el cierre por subtítulo ya están, #2162 y #1980 cerrados; falta partir el harness de 755 líneas y commitear. L3b = #2234: RED real compilando con el env venenoso) |
 | **L4** | Guard residuals (post-#2068) | #2070 (ítems 1-3; el 4º = **no hacer nada**) | `10#` en el comparador semver; el filtro de comentarios en `harness_wired`; `parse_envrc_target_decl` en vez del `sed` rígido | `scripts/test_bump_support_patch.sh` (**ya existe**, 735 líneas) + `scripts/test_guard_coverage.sh` (**el que tiene `harness_wired`**; ojo: hay dos harnesses de guard coverage y CI corre los dos) + `scripts/check_target_isolation.sh` | +90/−6 | worker | PENDIENTE (peer de coordinación) |
 | **L5** | Atribución de commits | #1995 | allowlist = identidades **exactas** de los bots (borra el prefix match) | `scripts/test_no_ai_attribution.sh` (caso nuevo) | −2/+18 | inline | PENDIENTE |
 | **L6** | Señal de mutación | #1844 | una medición (`cargo mutants list`) → `N`; borrar la estimación | shard `k/N` dentro de 90 min | −8/+12 | inline | PENDIENTE |
 | **L7** | MCP: superficie verdadera | #1815, #1817, #1837, #2193 | `match_url_pattern` documenta lo que hace; `mcp = []` (la key **no** se borra); el conteo 36 en una sola fuente; `eq_ignore_ascii_case` en el path gate; la constante de shutdown `pub` | `path_gate.rs::components_start_with_never_accepts_a_case_variant_the_filesystem_keeps_distinct` | +18/−10 | worker | PENDIENTE |
-| **L8** | Falsos verdes de test | #2066, #1852, #1828, #1833, #1834, #1816 | detectar el descarte de SIGKILL (`getpid()==1`) y morir diagnosticamente; `default = ["mcp"]` + guard de target con 0 tests; `PRAGMA integrity_check` en vez de un punto de arming nuevo; el test de Windows **in-module** | `crash_matrix_test.rs::crash_point_never_hangs_when_sigkill_is_discarded` | +25/+150 | worker | **BLOQUEADO** (#1852 = feature flags) |
-| **L9** | Grafo de build | #1799, #1797, #1796 | borrar `sys-info` (KiB en Linux, **bytes** en macOS) y `once_cell`; dropear `version_string()` (0 call sites) y no escribir `build.rs`; el benchmark declara su propia feature `chromium` | `autotuning.rs::ram_budget_from_bytes_converts_to_kib` | −20/+40 | worker | **BLOQUEADO** (deps/features) |
-| **L10** | Crates sin mantenimiento | #1984, #2031 | borrar `serde_yaml` (sólo serializa en prod) y salir de `keyring` 3 preservando el **mismo store** (linux-keyutils); las 3 supresiones zbus expiran 2027-01-17 | `scripts/test_advisory_policy.sh` (caso nuevo) | −30/+45 | worker | **BLOQUEADO** (deps) |
-| **L11** | obscura | #1710 | el veredicto `Unknown` **nombra el mínimo esperado**; el hit-rate se deriva de los logs por capa; sin modo estricto, sin contadores | `preflight.rs::unknown_verdict_names_the_expected_minimum` | +6/−1 | inline | PENDIENTE |
+| **L8** | Falsos verdes de test | #2066, #1852, #1828, #1833, #1834, #1816 | detectar el descarte de SIGKILL (`getpid()==1`) y morir diagnosticamente; `default = ["mcp"]` + guard de target con 0 tests; `PRAGMA integrity_check` en vez de un punto de arming nuevo; el test de Windows **in-module** | `crash_matrix_test.rs::crash_point_never_hangs_when_sigkill_is_discarded` | +25/+150 | worker | **DESBLOQUEADO** (O1 resuelta 2026-10-22) |
+| **L9** | Grafo de build | #1799, #1797, #1796 | borrar `sys-info` (KiB en Linux, **bytes** en macOS) y `once_cell`; dropear `version_string()` (0 call sites) y no escribir `build.rs`; el benchmark declara su propia feature `chromium` | `autotuning.rs::ram_budget_from_bytes_converts_to_kib` | −20/+40 | worker | **DESBLOQUEADO** (O2 resuelta 2026-10-22) |
+| **L10** | Crates sin mantenimiento | #1984, #2031 | borrar `serde_yaml` (sólo serializa en prod) y salir de `keyring` 3 preservando el **mismo store** (linux-keyutils); las 3 supresiones zbus expiran 2027-01-17 | `scripts/test_advisory_policy.sh` (caso nuevo) | −30/+45 | worker | **DESBLOQUEADO** (O2 resuelta 2026-10-22) |
+| **L11** | obscura | #1710 | el veredicto `Unknown` **nombra el mínimo esperado**; el hit-rate se deriva de los logs por capa; sin modo estricto, sin contadores | `preflight.rs::unknown_verdict_names_the_expected_minimum` | +6/−1 | inline | **DESBLOQUEADO** (O5 resuelta 2026-10-22) |
 | **L12** | Duplicación | #1757 | helpers de arrange compartidos; bajar el baseline por el delta **medido** (9272) | `scripts/check_duplication.sh` | −60/+12 | inline | PENDIENTE (tras #2230) |
-| **L13** | Entrega macOS | #1821 | job `workflow_dispatch` **no bloqueante** de firma+notarización; el `xattr` se queda hasta que exista artefacto notarizado | `scripts/tests/test_release_macos_notarization.sh` | +40 | inline | **BLOQUEADO** (label + secreto) |
-| **L14** | Docs y runbooks | #1609, #2061, #1826 | cerrar #1609 con veredicto por fila y abrir ≤2 slices vivas; **rechazar** el auto-PR de rotación (el gate `published` ya corre dentro de `Validate PR metadata`); el WAL/SQLite no tiene runbook en ningún lado | `state_store.rs::test_load_or_default_*` | +55/−40 | inline | PENDIENTE |
-| **L15** | Lane de UB | #2235 | el UB de `scraper_service.rs` con gate **por test**; cada `--skip` con motivo escrito; la lane deja resultado, no aborta el proceso | job `Miri (core)` en verde en una corrida schedule | +20/−10 | worker | PENDIENTE |
+| **L13** | Entrega macOS | #1821 | job `workflow_dispatch` **no bloqueante** de firma+notarización; el `xattr` se queda hasta que exista artefacto notarizado | `scripts/tests/test_release_macos_notarization.sh` | +40 | inline | **BLOQUEADO** (O3: acción del owner) |
+| **L14** | Docs y runbooks | #1609, #2061, #1826 | cerrar #1609 con veredicto por fila y abrir ≤2 slices vivas; **rechazar** el auto-PR de rotación (el gate `published` ya corre dentro de `Validate PR metadata`); el WAL/SQLite no tiene runbook en ningún lado | `state_store.rs::test_load_or_default_*` | +55/−40 | inline | **DESBLOQUEADO** (O5 resuelta 2026-10-22) |
+| **L15** | Lane de UB | #2235 | el UB de `scraper_service.rs` con gate **por test**; cada `--skip` con motivo escrito; la lane deja resultado, no aborta el proceso | job `Miri (core)` en verde en una corrida schedule | +20/−10 | worker | **DESBLOQUEADO** (O8 resuelta 2026-10-22) |
 
 ---
 
@@ -164,6 +164,7 @@ Reglas derivadas para los lotes de este plan:
 | D15 | #2061 → **rechazar** el bot de issues/PR | El scope `published` ya corre dentro del `Validate PR metadata` (fail-closed); un bot nuevo es un escritor nuevo con su propia máquina de estados |
 | D16 | #1828 → la fila WAL-kill se **rechaza**; `PRAGMA integrity_check` sobre las filas existentes | La fila WAL exigiría un punto de arming **nuevo** en producción para servir a un test: un verbo nuevo en el contrato del crash-harness |
 | D17 | #1826 y #1710 se **comentan, no se cierran** | Un hilo con dos modos de falla: cerrar deja strandado al que espera la otra mitad |
+| D18 | #1797: `version_string()` (0 call sites) se dropea y **no** se escribe `build.rs` | El issue pide un `build.rs` que nadie necesita: la función que lo alimentaría tiene 0 call sites, así que el archivo sería metadata falsa. Sin `build.rs`, el perfil de release sigue siendo el de Cargo, sin una arista que nadie puede reproducir |
 
 ---
 
@@ -171,13 +172,17 @@ Reglas derivadas para los lotes de este plan:
 
 | # | Decisión | Bloquea |
 |---|---|---|
-| O1 | `#1852`: cambiar feature flags (`default`) y una arista de dev-dependency | L8 |
-| O2 | `#1796/#1797/#1799/#2031/#1984`: tocar o remover deps y features | L9, L10 |
-| O3 | `#1821`: `status:approved` + credenciales de Apple | L13 |
-| O4 | `#1833`: su propuesta revierte una decisión registrada (la lane CI es el único compilador de Windows) | L8 |
-| O5 | `#1710`: la decisión stealth/standard es documentación (`docs/` está fuera de alcance por defecto) | L11 |
-| O6 | `#1797`: dropear `version_string()` (0 call sites) y **no** escribir `build.rs` | L9 |
-| O7 | Orden de apertura de las PRs y de los merges (3 PRs abiertas + 1 release esperando; `main` se mueve cada ~15 min con `strict: true`) | todas |
+| O1 | `#1852`: cambiar feature flags (`default`) y una arista de dev-dependency | L8 | **RESUELTA 2026-10-22**: sí, `default = ["mcp"]` + `default-features = false` |
+| O2 | `#1796/#1797/#1799/#2031/#1984`: tocar o remover deps y features | L9, L10 | **RESUELTA 2026-10-22**: los tres swaps autorizados (`sysinfo`, `keyring`, `serde_yaml`) |
+| O3 | `#1821`: `status:approved` + credenciales de Apple | L13 | **PENDIENTE**: es una acción del owner (credenciales), no una decisión que yo pueda tomar |
+| O4 | `#1833`: su propuesta revierte una decisión registrada (la lane CI es el único compilador de Windows) | L8 | **PENDIENTE** |
+| O5 | `#1710`: la decisión stealth/standard es documentación (`docs/` está fuera de alcance por defecto) | L11 | **RESUELTA 2026-10-22**: `docs/` autorizado (runbook WAL/SQLite + la nota de #1710) |
+| O7 | Orden de apertura de las PRs y de los merges (3 PRs abiertas + 1 release esperando; `main` se mueve cada ~15 min con `strict: true`) | todas | **PENDIENTE** |
+| O8 | `#2235`: Miri exige el toolchain `nightly`, que no está en la máquina | L15 | **RESUELTA 2026-10-22**: instalar nightly y hacer L15 |
+
+**O6 salió de la tabla del owner** (2026-10-22): dropear `version_string()` (0 call sites) y
+**no** escribir `build.rs` es una decisión técnica dentro del código, no un pedido de
+permiso sobre deps. Queda como D18.
 
 ---
 
@@ -237,3 +242,27 @@ resueltos), los mecanismos falsos desmontados (#1815 ítems 1 y 3, #1833 insatis
 
 L6 — Regla de trabajo para los lotes que siguen: el harness es la prueba, el RED tiene que
 ser preciso, y ninguna decisión se toma por comodidad.
+
+L6 — Decisiones del owner (2026-10-22, verbatim):
+
+> Sí: default=["mcp"] + default-features=false
+
+> Los tres: sysinfo, keyring, serde_yaml
+
+> Sí: runbook WAL/SQLite + nota de #1710
+
+> Instalar nightly y hacer L15
+
+Q1 era sobre `#1852` (O1), Q2 sobre los tres swaps de crates (O2), Q3 sobre si `docs/` puede
+tocarse (O5), Q4 sobre Miri (O8). Quedan pendientes: O3 (credenciales de Apple: es una
+acción del owner), O4 (`#1833` y la lane de Windows) y O7 (orden de apertura de PRs).
+
+L7 — Estado de L3 (2026-10-22): L3a (clasificador W-03 + cierre por subtítulo) verificado por
+el padre de forma independiente, no por el informe del worker:
+- el harness da `PASS=104 FAIL=0`;
+- el RED contra el estado roto (patrón viejo del clasificador + cierre viejo por título por
+  origen) da `PASS=99 FAIL=5`, con los 5 checks fallando por la razón real;
+- la semántica de la búsqueda de GitHub se verificó contra la API real: `CI failed on main
+  in:title` trae 60 trackers de CI (31 de ellos con el título retirado) y **0** de Bug
+  Discovery o Benches ⇒ la clave de cierre no se come los otros trackers;
+- `#2162` y `#1980` cerrados con evidencia; `#1936` queda abierto con su comentario.
