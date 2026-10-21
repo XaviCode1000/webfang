@@ -304,6 +304,11 @@ pub fn is_always_denied_ip(ip: &IpAddr) -> bool {
 ///    The loopback exemption does NOT travel through a translation prefix:
 ///    `64:ff9b::7f00:1` reaches `127.0.0.1` through a NAT64 gateway, and
 ///    the B1 flag is for the literal loopback only (#1965).
+///    The denial is unconditional — a translated loopback is refused even
+///    with the flag off. The only verdict it changes is one a hand-built
+///    policy could reach by allowlisting `127.0.0.0/8`, and the config
+///    layer rejects loopback prefixes outright, so in production this can
+///    only ever turn "permitted" into "forbidden".
 /// 5. An address inside an allowlisted CIDR allows — RFC1918, ULA and
 ///    CGNAT are reachable only through this explicit opt-in.
 #[must_use]
@@ -1356,8 +1361,8 @@ mod tests {
 
     /// A4 (#1965): the config-validation never-allowable table
     /// (`network_policy::NEVER_ALLOWABLE`) and the dial-layer always-denied
-    /// set ([`is_always_denied_ip`]) are two representations of the same
-    /// never-allowable set, and nothing tied them together.
+    /// set ([`is_always_denied_ip`]) cover the same ground — the ranges no
+    /// allowlist may open — and nothing tied them together.
     ///
     /// They are NOT the same set and must never be asserted equal: the two
     /// translation prefixes live only in the config table, because their
