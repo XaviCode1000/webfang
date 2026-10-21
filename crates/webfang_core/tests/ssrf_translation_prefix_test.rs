@@ -45,7 +45,7 @@ fn lan() -> NetworkPolicy {
 // network_policy::NEVER_ALLOWABLE.
 fn never_allowable() -> Vec<(IpAddr, u8, &'static str)> {
     vec![
-        (ip("0.0.0.0"), 32, "unspecified"),
+        (ip("0.0.0.0"), 8, "this-network (routes to the local host)"),
         (ip("169.254.0.0"), 16, "link-local (cloud metadata)"),
         (ip("224.0.0.0"), 4, "multicast"),
         (ip("240.0.0.0"), 4, "reserved"),
@@ -54,7 +54,7 @@ fn never_allowable() -> Vec<(IpAddr, u8, &'static str)> {
         (ip("fe80::"), 10, "link-local"),
         (ip("ff00::"), 8, "multicast"),
         (ip("2001:0::"), 32, "Teredo"),
-        (ip("64:ff9b::"), 96, "NAT64 translation prefix"),
+        (ip("64:ff9b::"), 32, "NAT64 translation prefix"),
         (ip("2002::"), 16, "6to4 translation prefix"),
     ]
 }
@@ -269,28 +269,116 @@ fn probe_a4_never_allowable_relation() {
     }
     assert_eq!(
         only_in_config, 2,
-        "A4: exactly the two translation prefixes differ"
+        "A4: exactly the two canonical translation prefixes differ (the NAT64 space is split — see the A6 assertions below)"
     );
     assert!(!is_always_denied_ip(&ip("100.64.0.0")));
     assert!(is_forbidden_ip(&ip("100.64.0.0")));
+    // A6 (#1965): the NAT64 class is SPLIT — the canonical Well-Known Prefix
+    // keeps the embedded-IPv4 verdict (absent from the dial-layer set on
+    // purpose), while the Network-Specific Prefix space is denied BY it.
+    assert!(
+        !is_always_denied_ip(&ip("64:ff9b::8.8.8.8")),
+        "A6: the canonical Well-Known Prefix must stay absent from the dial set"
+    );
+    assert!(
+        is_always_denied_ip(&ip("64:ff9b:1::7f00:1")),
+        "A6: the non-canonical NAT64 space must be denied by the dial set"
+    );
 }
 
+/// A5 (#1965): the "this network on this host" family 0.0.0.0/8 is denied
+/// as a family on every path, and a hand-built allowlist cannot reach it.
 #[test]
-fn probe_boundaries_outside_the_named_scope() {
+fn probe_a5_this_network_family_is_denied() {
+    let p = policy(&["0.0.0.0/8"], &["probe.lan"]);
+    for lit in ["0.0.0.0", "0.0.0.1", "0.0.255.255", "0.1.0.1"] {
+        let a = ip(lit);
+        assert!(
+            is_forbidden_ip(&a),
+            "A5: {lit} must be forbidden (flat path)"
+        );
+        assert!(
+            is_forbidden_ip_with_policy(&a, false, &p),
+            "A5: {lit} must stay forbidden under a hand-built allowlist"
+        );
+        assert!(
+            is_forbidden_ip_with_policy(&a, true, &p),
+            "A5: {lit} must stay forbidden under a hand-built allowlist (flag on)"
+        );
+        assert!(
+            is_forbidden_resolved_address(&a, "probe.lan", false, &p),
+            "A5: {lit} must stay forbidden (resolved path)"
+        );
+        assert!(
+            is_forbidden_resolved_address(&a, "probe.lan", true, &p),
+            "A5: {lit} must stay forbidden (resolved path, flag on)"
+        );
+    }
+    // The translated forms carry the IPv4 hole into both translation paths.
+    for lit in ["64:ff9b::0:1", "2002:0:1::"] {
+        let a = ip(lit);
+        assert!(
+            is_forbidden_ip(&a),
+            "A5: {lit} must be forbidden (flat path)"
+        );
+        for flag in [false, true] {
+            assert!(
+                is_forbidden_ip_with_policy(&a, flag, &p),
+                "A5: {lit} must stay forbidden (policy path, flag={flag})"
+            );
+            assert!(
+                is_forbidden_resolved_address(&a, "probe.lan", flag, &p),
+                "A5: {lit} must stay forbidden (resolved path, flag={flag})"
+            );
+        }
+    }
+}
+
+/// A6 (#1965): a NAT64 Network-Specific Prefix does not encode where the
+/// embedded IPv4 sits (RFC 6052 §2.2), so it cannot be validated and fails
+/// closed on every path.
+#[test]
+fn probe_a6_non_canonical_nat64_is_denied() {
     let p = lan();
-    // 0.0.0.0/8 family: the "this host" range. Pre-existing, flag-independent.
-    for lit in ["0.0.0.1", "64:ff9b::0:1", "2002:0:1::"] {
+    for lit in ["64:ff9b:1::7f00:1", "64:ff9b:1::a00:1", "64:ff9b:0:1::1"] {
         let a = ip(lit);
-        let flat = is_forbidden_ip(&a);
-        let pol = is_forbidden_ip_with_policy(&a, true, &p);
-        let res = is_forbidden_resolved_address(&a, "vllm.lan", true, &p);
-        println!("BOUND {lit}: flat={flat} policy(flag=1)={pol} resolved(flag=1)={res}");
+        assert!(
+            is_forbidden_ip(&a),
+            "A6: {lit} must be forbidden (flat path)"
+        );
+        for flag in [false, true] {
+            assert!(
+                is_forbidden_ip_with_policy(&a, flag, &p),
+                "A6: {lit} must stay forbidden (policy path, flag={flag})"
+            );
+            assert!(
+                is_forbidden_resolved_address(&a, "vllm.lan", flag, &p),
+                "A6: {lit} must stay forbidden (resolved path, flag={flag})"
+            );
+        }
     }
-    // A NAT64 prefix length other than /96 (RFC 6052 allows /32../64).
-    for lit in ["64:ff9b:1::7f00:1", "64:ff9b::1:7f00:1"] {
-        let a = ip(lit);
-        let flat = is_forbidden_ip(&a);
-        let pol = is_forbidden_ip_with_policy(&a, true, &p);
-        println!("BOUND {lit}: flat={flat} policy(flag=1)={pol}");
-    }
+}
+
+/// A6 (#1965) positive control: the legitimate translation cases keep
+/// working — the canonical NAT64 Well-Known Prefix of a public address and
+/// the 6to4 form of a public address stay allowed, while the canonical
+/// prefix of a forbidden embedded address stays forbidden (A2, unchanged).
+#[test]
+fn probe_a6_positive_control_legitimate_translation_forms() {
+    assert!(
+        !is_forbidden_ip(&ip("64:ff9b::8.8.8.8")),
+        "A6: the NAT64 of a public address must stay allowed"
+    );
+    assert!(
+        !is_forbidden_ip(&ip("2002:808:808::")),
+        "A6: the 6to4 of a public address must stay allowed"
+    );
+    assert!(
+        is_forbidden_ip(&ip("64:ff9b::7f00:1")),
+        "A6: the NAT64 of the loopback must stay forbidden (A2)"
+    );
+    assert!(
+        is_forbidden_ip(&ip("64:ff9b::a00:1")),
+        "A6: the NAT64 of a private address must stay forbidden"
+    );
 }

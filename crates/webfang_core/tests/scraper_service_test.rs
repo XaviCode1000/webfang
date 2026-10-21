@@ -16,6 +16,19 @@ use webfang_core::{ScraperConfig, ScraperError};
 mod mock_http;
 use crate::mock_http::MockHttpClient;
 
+// --- Shared pacing-event collector (tests/common/pacing_events.rs) ---
+//
+// #1962: the batch-pacing tests assert the EVENT the batch publishes, not
+// a wall-clock budget. The collector is scoped to the calling thread and
+// to the call, so it never observes another test's events.
+
+#[path = "common/pacing_events.rs"]
+mod pacing_events;
+use crate::pacing_events::{
+    assert_one_granted_wait_per_url, with_pacing_collector, PacingWaitCollector, BATCH_SCOPE,
+    CONTROL_SCOPE,
+};
+
 // ---------------------------------------------------------------------
 // Local arrange helpers (T7 slice-15, #1890)
 //
@@ -1333,8 +1346,20 @@ async fn test_download_assets_disabled_returns_empty_immediately() {
 /// a shared burst-1 bucket with a 50 ms refill take at least (N-1)×50 ms of
 /// wall time. The bucket is the SAME `SharedRateLimiter` type the crawl
 /// engine and the CLI scrape phase use — no second limiter implementation.
-#[tokio::test]
-async fn test_batch_pacing_spaces_fetches_before_the_dial() {
+///
+/// #1962: the instrument is the EVENT, not the clock. A paced batch
+/// publishes one `http.rate_limit.wait` per URL (#1610), so "this batch
+/// waited" is an observable fact instead of a latency budget. The wall
+/// clock survives only as the LOWER bound — the limiter enforces the real
+/// delay, so that one is deterministic — and as a stall guard, never as a
+/// performance bound.
+///
+/// The test is a plain `#[test]` (not `#[tokio::test]`) because the
+/// collector must own the subscriber scope that covers the whole batch:
+/// `with_pacing_collector` runs the body on its own current-thread runtime
+/// under a thread-local subscriber.
+#[test]
+fn test_batch_pacing_spaces_fetches_before_the_dial() {
     use std::time::Duration;
 
     use webfang_core::application::rate_limiter::{RateLimiterConfig, SharedRateLimiter};
@@ -1367,12 +1392,22 @@ async fn test_batch_pacing_spaces_fetches_before_the_dial() {
         .map(|i| url::Url::parse(&format!("https://pacing.example/{i}")).expect("valid url"))
         .collect();
 
-    let start = std::time::Instant::now();
-    let outcome =
-        scrape_multiple_with_limit_paced(&mock, &urls, &config, None, None, false, Some(&limiter))
-            .await
-            .expect("all URLs should scrape");
-    let elapsed = start.elapsed();
+    let collector = PacingWaitCollector::new();
+    let (outcome, elapsed) = with_pacing_collector(&collector, || async {
+        let start = std::time::Instant::now();
+        let outcome = scrape_multiple_with_limit_paced(
+            &mock,
+            &urls,
+            &config,
+            None,
+            None,
+            false,
+            Some(&limiter),
+        )
+        .await
+        .expect("all URLs should scrape");
+        (outcome, start.elapsed())
+    });
 
     assert_eq!(outcome.results.len(), 4, "all URLs scraped");
     assert!(
@@ -1380,25 +1415,39 @@ async fn test_batch_pacing_spaces_fetches_before_the_dial() {
         "no URL may fail: {:?}",
         outcome.failed
     );
-    // 3 gaps × 50 ms of deliberate pre-dial waits.
+
+    // THE instrument: exactly one pacing wait per URL, every one granted.
+    let waits = collector.waits_in_scope(BATCH_SCOPE);
+    let batch_urls: Vec<&str> = urls.iter().map(|u| u.as_str()).collect();
+    assert_one_granted_wait_per_url(&waits, &batch_urls);
+
+    // 3 gaps × 50 ms of deliberate pre-dial waits. The limiter enforces the
+    // delay, so this lower bound is deterministic — it is the real delay,
+    // not a performance budget.
     assert!(
         elapsed >= Duration::from_millis(150),
         "paced batch must spend at least (N-1)*delay waiting before dials, took {elapsed:?}"
     );
-    // It is pacing, not transport latency: the mock answers instantly, so a
-    // run far above the lower bound would mean a stall, not spacing.
+    // Stall guard, NOT a performance budget: the mock answers instantly, so
+    // only a stalled bucket can push the run anywhere near this ceiling. It
+    // is deliberately loose enough to survive a saturated runner (#1962).
     assert!(
-        elapsed < Duration::from_secs(5),
+        elapsed < Duration::from_secs(30),
         "paced batch must not stall — spacing only, took {elapsed:?}"
     );
 }
 
 /// `delay_ms == 0` semantics: no bucket is built, no await is performed —
 /// the unthrottled path is byte-identical to the pre-G2 behavior.
-#[tokio::test]
-async fn test_batch_without_pacing_runs_unthrottled() {
-    use std::time::Duration;
-
+///
+/// #1962: the instrument is the EVENT. A paced batch publishes one
+/// `http.rate_limit.wait` per URL (#1610); an unpaced batch must publish
+/// NONE. The wall-clock budget this test used to assert (`elapsed < 150
+/// ms`) measured the runner, not the behaviour — it failed 3/3 on a loaded
+/// runner with a 4% overshoot — so it is gone, and the property it was
+/// trying to prove is now pinned by the sibling paced test.
+#[test]
+fn test_batch_without_pacing_runs_unthrottled() {
     use webfang_core::application::scraper_service::scrape_multiple_with_limit_paced;
 
     let html = r#"<!DOCTYPE html>
@@ -1423,16 +1472,39 @@ async fn test_batch_without_pacing_runs_unthrottled() {
         .map(|i| url::Url::parse(&format!("https://unthrottled.example/{i}")).expect("valid url"))
         .collect();
 
-    let start = std::time::Instant::now();
-    let outcome = scrape_multiple_with_limit_paced(&mock, &urls, &config, None, None, false, None)
-        .await
-        .expect("all URLs should scrape");
-    let elapsed = start.elapsed();
+    let collector = PacingWaitCollector::new();
+    let outcome = with_pacing_collector(&collector, || async {
+        let outcome =
+            scrape_multiple_with_limit_paced(&mock, &urls, &config, None, None, false, None)
+                .await
+                .expect("all URLs should scrape");
+
+        // Zero pacing events: this batch waited for nothing.
+        assert!(
+            collector.waits().is_empty(),
+            "unthrottled batch must not pace, observed: {:?}",
+            collector.waits()
+        );
+
+        // Positive control, still inside the collector's scope: the
+        // PRODUCTION emitter must reach this collector. Without it the zero
+        // above could be a silent "nothing was collected" — a vacuous pass.
+        collector.emit_control();
+
+        outcome
+    });
 
     assert_eq!(outcome.results.len(), 4, "all URLs scraped");
-    assert!(
-        elapsed < Duration::from_millis(150),
-        "unthrottled batch must not pace, took {elapsed:?}"
+
+    let waits = collector.waits();
+    assert_eq!(
+        waits.len(),
+        1,
+        "only the control event may be observed, got: {waits:?}"
+    );
+    assert_eq!(
+        waits[0].scope, CONTROL_SCOPE,
+        "the observed event must be the control, got: {waits:?}"
     );
 }
 

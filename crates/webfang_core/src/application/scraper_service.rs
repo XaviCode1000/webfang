@@ -784,6 +784,14 @@ pub async fn scrape_multiple_with_limit_paced(
     .await
 }
 
+/// Pacing scope of the batch path.
+///
+/// Exported so the tests that assert on the published pacing events bind to
+/// the PRODUCTION value instead of mirroring the literal (#2214): a mirrored
+/// string can drift, and a drifted scope makes the test fail for the wrong
+/// reason.
+pub const BATCH_SCOPE: &str = "batch_scrape";
+
 /// Shared body of both batch entries: collect per-URL outcomes with bounded
 /// concurrency, optionally gating every fetch behind the shared token bucket
 /// BEFORE its dial (guard-chain stage 2, RC-1 slice 4).
@@ -834,7 +842,7 @@ async fn scrape_multiple_inner(
                 // emitted, so a slow batch can be told apart from a batch
                 // that was being paced.
                 if let Some(limiter) = pacing {
-                    let wait_ctx = PacingContext::bare("batch_scrape").with_url(url.as_str());
+                    let wait_ctx = PacingContext::bare(BATCH_SCOPE).with_url(url.as_str());
                     limiter.until_ready_observed(&wait_ctx).await;
                 }
                 let result = scrape_with_config(
