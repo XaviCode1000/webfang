@@ -439,7 +439,6 @@ pub(crate) async fn export_phase(
         ai_threshold: opts.ai_config.threshold,
         ai_max_chars: opts.ai_config.max_chars,
         ai_offline: opts.ai_config.offline,
-        ai_model: opts.ai_config.model.clone(),
     };
 
     let export_result = run_export(export_config, ai_cleaner).await;
@@ -737,9 +736,7 @@ mod tests {
             ai_config: crate::application::crawl_options::AiConfig {
                 threshold: 0.7,
                 max_chars: 2048,
-                deprecated_max_tokens: None,
                 offline: true,
-                model: "granite-311m".to_string(),
             },
             ..Default::default()
         };
@@ -767,7 +764,6 @@ mod tests {
         assert_eq!(opts.ai_config.threshold, 0.3);
         assert_eq!(opts.ai_config.max_chars, 98_304);
         assert!(!opts.ai_config.offline);
-        assert_eq!(opts.ai_config.model, "");
     }
 
     #[test]

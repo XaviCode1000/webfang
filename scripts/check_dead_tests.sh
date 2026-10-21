@@ -28,8 +28,10 @@ DEAD=0
 # Reachability rules:
 #   1. The entry itself (cargo metadata `src_path`).
 #   2. Files reachable transitively via `mod foo;` declarations, which resolve
-#      to either `<dir>/foo.rs` or `<dir>/foo/mod.rs`. Each submodule file
-#      can declare more submodules, so we recurse.
+#      the way Rust resolves them: a crate root keeps its children in its own
+#      directory, and a non-root module file `foo.rs` (or `foo/mod.rs`) keeps
+#      them in `foo/`. Each submodule file can declare more submodules, so we
+#      recurse.
 #   3. Files matched by `trybuild::TestCases::compile_fail("...glob...")` calls
 #      in any reachable file — these are test INPUTS consumed by trybuild,
 #      not Rust modules, so cargo doesn't compile them but they still belong
@@ -54,13 +56,53 @@ MOD_RE = re.compile(
 COMPILE_FAIL_RE = re.compile(r'compile_fail\(\s*"(?P<g>[^"]+)"\s*\)')
 
 entries: dict[Path, Path] = {}  # entry → crate root
+target_roots: set[Path] = set()  # every cargo target entry point (a crate ROOT)
 for pkg in meta["packages"]:
     crate_root = Path(pkg["manifest_path"]).parent.resolve()
     for t in pkg["targets"]:
+        src = Path(t["src_path"]).resolve()
+        target_roots.add(src)
         if t["kind"] == ["test"]:
-            entries[Path(t["src_path"]).resolve()] = crate_root
+            entries[src] = crate_root
 
 reachable: set[Path] = set()
+
+
+def module_dirs(rp: Path) -> list:
+    """Every directory a module's CHILDREN can live in, per Rust's own rules.
+
+    A file can play two roles at once, and Rust resolves the children
+    differently in each:
+
+    * crate root -- any cargo target entry point (lib.rs, main.rs, a test
+      target's entry file, and also `tests/foo.rs`, which cargo auto-discovers
+      as its own test target). Its children live in the file's own directory.
+    * non-root module -- `foo.rs` (or `foo/mod.rs`) declared as `mod foo;` by
+      another file. Its children live in `foo/`.
+
+    `tests/sub.rs` is BOTH (cargo discovers it as a test target, and an entry
+    test may also declare `mod sub;`), so its children are looked for in
+    `tests/` AND in `tests/sub/`. Every candidate found is compiled by one of
+    those compilations, so every candidate found is reachable.
+
+    The old resolution used the declaring file's directory for every case, so a
+    `mod leaf;` inside `tests/sub.rs` looked for `tests/leaf.rs` and never for
+    `tests/sub/leaf.rs` -- the file Rust actually compiles. Live files were
+    reported dead, and (in the mirror shape) dead files stayed reachable.
+    """
+    dirs = []
+    if rp in target_roots:
+        dirs.append(rp.parent)
+    if rp.name == "mod.rs":
+        dirs.append(rp.parent)
+    else:
+        dirs.append(rp.parent / rp.stem)
+    out = []
+    for d in dirs:
+        if d not in out:
+            out.append(d)
+    return out
+
 
 def visit(rs_path: Path) -> None:
     rp = rs_path.resolve()
@@ -74,13 +116,12 @@ def visit(rs_path: Path) -> None:
     except (OSError, UnicodeDecodeError):
         return
 
-    rs_dir = rp.parent
-    for m in MOD_RE.finditer(text):
-        name = m.group(1)
-        for candidate in (rs_dir / f"{name}.rs", rs_dir / name / "mod.rs"):
-            if candidate.is_file():
-                visit(candidate)
-                break
+    for child_dir in module_dirs(rp):
+        for m in MOD_RE.finditer(text):
+            name = m.group(1)
+            for candidate in (child_dir / f"{name}.rs", child_dir / name / "mod.rs"):
+                if candidate.is_file():
+                    visit(candidate)
 
     crate_root = entries.get(rp)
     if crate_root is not None:

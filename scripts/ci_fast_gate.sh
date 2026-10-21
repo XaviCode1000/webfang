@@ -229,18 +229,20 @@ skip_step() {
 
 range_files() {
   local base="$1" head="$2" resolved=""
-  local candidate
-  # HEAD~1 is deliberately NOT a candidate (#2058): it is not the PR base, so
-  # falling back to it classified the branch tip instead of the branch. A base
-  # that does not resolve must WIDEN the run, never narrow it.
-  for candidate in "$base" "main"; do
-    if git rev-parse --verify --quiet "$candidate" >/dev/null 2>&1; then
-      resolved="$candidate"
-      break
-    fi
-  done
+  # The REQUESTED base is the only candidate (B45/S1). It is the PR base, and
+  # nothing else is:
+  #   - `main` is not a substitute: a local main can be stale (behind the real
+  #     base, so the diff is wider than the PR — harmless) or ahead of it (so
+  #     the diff MISSES the PR's own commits, which is the dangerous case);
+  #   - HEAD~1 is not a base at all (#2058): it is the branch tip, so the diff
+  #     would be the last commit instead of the branch — a branch that also
+  #     touched Rust read as documentation-only and skipped cargo.
+  # A base that does not resolve must WIDEN the run, never narrow it.
+  if git rev-parse --verify --quiet "$base" >/dev/null 2>&1; then
+    resolved="$base"
+  fi
   if [[ -z "$resolved" ]]; then
-    echo "fast-gate: cannot resolve base '$base' (or 'main') — widening to FULL" >&2
+    echo "fast-gate: cannot resolve base '$base' — widening to FULL" >&2
     return 1
   fi
   git diff --name-only "${resolved}...${head}" -- 2>/dev/null \
@@ -396,9 +398,68 @@ EOF
     bash scripts/check_ai_providers_doc.sh
 }
 
+# collect_shell_files: print, one per line, the changed files that are shell.
+#
+# Two shapes count (B51):
+#   - every `scripts/**.sh` (the historical filter);
+#   - every OTHER file under `scripts/` that starts with a shell shebang.
+#     `scripts/githooks/pre-push` and `scripts/githooks/pre-commit` are bash
+#     WITHOUT the `.sh` suffix, so the `^scripts/.*\.sh$` filter never saw
+#     them: they were classified `ci_only` and then skipped as "no changed
+#     scripts", so `bash -n` and shellcheck never looked at them and the
+#     local gate linted LESS than CI's repo-guards job lints.
+#
+# A path that is gone (a deleted script) is not a script to lint (#A15), and a
+# file that is not shell (a python helper, a markdown file) is not either.
+collect_shell_files() {
+  local f first interp
+  local -a shebang
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    [[ -f "$f" ]] || continue
+    case "$f" in
+      scripts/*.sh) printf '%s\n' "$f"; continue ;;
+      scripts/*) ;;
+      *) continue ;;
+    esac
+    first="$(head -n 1 "$f" 2>/dev/null || true)"
+    case "$first" in
+      '#!'*) ;;
+      *) continue ;;
+    esac
+    # `#!/usr/bin/env bash` and `#!/bin/bash` are both bash; with `env` the
+    # interpreter is the word AFTER it.
+    shebang=()
+    read -r -a shebang <<<"${first#\#!}"
+    interp="${shebang[0]:-}"
+    if [[ "$interp" == "env" || "$interp" == */env ]]; then
+      interp="${shebang[1]:-}"
+    fi
+    interp="$(basename "$interp" 2>/dev/null || printf '%s' "$interp")"
+    case "$interp" in
+      bash | sh | dash | ksh | zsh) printf '%s\n' "$f" ;;
+    esac
+  done <"$UNION_TMP"
+}
+
 # --- lane: ci-only (NO cargo) ----------------------------------------------------
+# CI_HARNESS_MODE decides how the semantics harnesses below are triggered:
+#   "triggered" (the default) runs a harness when the files it pins changed;
+#   "always" runs EVERY harness, unconditionally.
+# The FULL lane sets it to "always" (B52): its scope is unknown, so "the files
+# that pin this harness changed" is a question an unknown scope cannot answer
+# — and a harness that only ever runs in the cheap CI lane is skipped exactly
+# when the scope is unknown, while the FULL lane's banner claims "nothing
+# skipped". The trigger itself stays a plain `grep -Eq` over the changed-file
+# union, so the wiring harnesses that read this lane keep seeing it.
+CI_HARNESS_MODE="triggered"
+
 lane_ci() {
-  echo "fast-gate lane: CI-ONLY (shell + workflow validation, no cargo)"
+  if [[ "$CI_HARNESS_MODE" == "always" ]]; then
+    echo "fast-gate lane: FULL (the CI-ONLY lane's semantics harnesses, run unconditionally)"
+  else
+    echo "fast-gate lane: CI-ONLY (shell + workflow validation, no cargo)"
+  fi
   # Same ignore vocabulary as the repo-guards job in .github/workflows/ci.yml
   # (#1070): structural findings stay fatal, style debt stays ignored.
   local ignore="SC2010,SC2012,SC2027,SC2034,SC2046,SC2086,SC2126,SC2129"
@@ -407,16 +468,22 @@ lane_ci() {
   # mapfile returns non-zero on empty input, hence `|| true` under `set -u`.
   # scripts/ is matched at any depth: scripts/githooks/ and scripts/tests/ hold
   # real shell that CI's repo-guards job lints, so a top-level-only glob left
-  # nested scripts unlinted locally (#1635).
+  # nested scripts unlinted locally (#1635). The shebang files without a .sh
+  # suffix count too (B51) — see collect_shell_files above.
   # The union lists DELETED paths too (git diff --name-only reports them), and a
   # deleted file is not something `bash -n` or shellcheck can read. Measured
   # 2026-10-20: retiring one script made BOTH steps fail with "No such file or
   # directory" — a legitimate deletion reported as a defect, which blocks the
   # local gate and with it the pre-push. A path that is gone is not a script to
   # lint; only the ones still on disk are.
-  mapfile -t script_files < <(grep -E '^scripts/.*\.sh$' "$UNION_TMP" | while read -r f; do [ -f "$f" ] && printf '%s\n' "$f"; done) || true
+  mapfile -t script_files < <(collect_shell_files) || true
   mapfile -t workflow_files < <(grep -E '^\.github/workflows/[^/]*\.ya?ml$' "$UNION_TMP" | while read -r f; do [ -f "$f" ] && printf '%s\n' "$f"; done) || true
-  if [[ ${#script_files[@]} -gt 0 ]]; then
+  if [[ "$CI_HARNESS_MODE" == "always" ]]; then
+    # The FULL lane already ran this lint through lane_fmt_and_guards
+    # (run_pinned_lint_changed_scope): running it twice would report every
+    # step twice for no extra coverage.
+    skip_step "shell syntax/shellcheck (CI lane)" "already covered by the FULL lane's pinned lint"
+  elif [[ ${#script_files[@]} -gt 0 ]]; then
     run_step "bash syntax (changed scripts)" bash -n "${script_files[@]}"
     if command -v shellcheck >/dev/null 2>&1; then
       run_step "shellcheck (changed scripts, shared ignore list)" shellcheck -x --exclude="$ignore" --format=gcc "${script_files[@]}"
@@ -426,7 +493,9 @@ lane_ci() {
   else
     skip_step "shell syntax/shellcheck" "no changed scripts"
   fi
-  if [[ ${#workflow_files[@]} -gt 0 ]]; then
+  if [[ "$CI_HARNESS_MODE" == "always" ]]; then
+    skip_step "workflow validation (CI lane)" "already covered by the FULL lane's pinned lint"
+  elif [[ ${#workflow_files[@]} -gt 0 ]]; then
     if command -v actionlint >/dev/null 2>&1; then
       run_step "actionlint (changed workflows)" actionlint -ignore SC2010 -ignore SC2012 -ignore SC2027 -ignore SC2034 -ignore SC2046 -ignore SC2086 -ignore SC2126 -ignore SC2129 "${workflow_files[@]}"
     elif python3 -c "import yaml" 2>/dev/null; then
@@ -445,7 +514,7 @@ EOF
   # CI Health close semantics harness (slice4-branch-guard): offline fake-gh
   # proof that the shared close_mine owns all close behavior. Runs only when a
   # file in the close path changed; cheap enough (<1s) to never skip otherwise.
-  if grep -Eq '^(scripts/ci-health-close\.sh|scripts/test_ci_health_close\.sh|\.github/workflows/ci-health\.yml)$' "$UNION_TMP" 2>/dev/null; then
+  if grep -Eq '^(scripts/ci-health-close\.sh|scripts/test_ci_health_close\.sh|\.github/workflows/ci-health\.yml)$' "$UNION_TMP" 2>/dev/null || [[ "$CI_HARNESS_MODE" == "always" ]]; then
     run_step "ci-health close harness (offline)" bash scripts/test_ci_health_close.sh
   else
     skip_step "ci-health close harness" "no ci-health close files changed"
@@ -455,7 +524,7 @@ EOF
   # the log before a FAIL, the crawl availability branch never degrades into a
   # compile-only pass, and the --output-vectors contract is derived per combo
   # instead of matched against a list of combos. <1s, so it never skips.
-  if grep -Eq '^(scripts/check_compatibility\.sh|scripts/tests/test_check_compatibility\.sh)$' "$UNION_TMP" 2>/dev/null; then
+  if grep -Eq '^(scripts/check_compatibility\.sh|scripts/tests/test_check_compatibility\.sh)$' "$UNION_TMP" 2>/dev/null || [[ "$CI_HARNESS_MODE" == "always" ]]; then
     run_step "compatibility harness semantics (offline)" bash scripts/tests/test_check_compatibility.sh
   else
     skip_step "compatibility harness semantics" "no compatibility harness files changed"
@@ -469,7 +538,7 @@ EOF
   # `scripts/**`, so a PR touching only one of them still lands in this
   # CI-ONLY lane. Hermetic, no cargo, ~1s — cheap enough that it is never
   # skipped once triggered.
-  if grep -Eq '^(scripts/check_target_isolation\.sh|scripts/tests/test_check_target_isolation\.sh)$' "$UNION_TMP" 2>/dev/null; then
+  if grep -Eq '^(scripts/check_target_isolation\.sh|scripts/tests/test_check_target_isolation\.sh)$' "$UNION_TMP" 2>/dev/null || [[ "$CI_HARNESS_MODE" == "always" ]]; then
     run_step "target isolation guard semantics (offline)" bash scripts/tests/test_check_target_isolation.sh
   else
     skip_step "target isolation guard semantics" "no target-guard files changed"
@@ -483,7 +552,7 @@ EOF
   # cargo, <1s — cheap enough that it is never skipped once triggered.
   # Mirrors the `repo-guards` step of the same
   # harness in .github/workflows/ci.yml.
-  if grep -Eq '^(scripts/ci_path_classifier\.sh|scripts/ci_path_classifier_test\.sh)$' "$UNION_TMP" 2>/dev/null; then
+  if grep -Eq '^(scripts/ci_path_classifier\.sh|scripts/ci_path_classifier_test\.sh)$' "$UNION_TMP" 2>/dev/null || [[ "$CI_HARNESS_MODE" == "always" ]]; then
     run_step "path classifier harness semantics (offline)" bash scripts/ci_path_classifier_test.sh
   else
     skip_step "path classifier harness semantics" "no path classifier files changed"
@@ -507,7 +576,7 @@ EOF
   # exactly what a `scripts/**`-only change can break. It asserts that
   # `repo-guards` stays unfiltered and unconditional, that `gate` waits on it in
   # both scopes, and that both steps below are still wired into this block.
-  if grep -Eq '^(scripts/check_docs_version_pins\.sh|scripts/test_docs_version_pins\.sh|scripts/test_docs_version_pins_wiring\.sh)$' "$UNION_TMP" 2>/dev/null; then
+  if grep -Eq '^(scripts/check_docs_version_pins\.sh|scripts/test_docs_version_pins\.sh|scripts/test_docs_version_pins_wiring\.sh)$' "$UNION_TMP" 2>/dev/null || [[ "$CI_HARNESS_MODE" == "always" ]]; then
     run_step "docs version pins semantics (offline)" bash scripts/test_docs_version_pins.sh
     run_step "docs version pins wiring (offline)" bash scripts/test_docs_version_pins_wiring.sh
   else
@@ -529,7 +598,7 @@ EOF
   # lane; `lane_docs` never runs for a `scripts/**` change, which is the only
   # kind of change that can break them. Offline: mktemp fixtures, a local bare
   # git repo and a fake `gh` on PATH — no cargo, no network.
-  if grep -Eq '^(scripts/(bump_docs_version_pins|test_bump_docs_version_pins|apply_release_pins|test_apply_release_pins|test_release_pins_wiring|declare_pending_publication|test_declare_pending_publication)\.sh|\.github/workflows/(release-plz|ci)\.yml)$' "$UNION_TMP" 2>/dev/null; then
+  if grep -Eq '^(scripts/(bump_docs_version_pins|test_bump_docs_version_pins|apply_release_pins|test_apply_release_pins|test_release_pins_wiring|declare_pending_publication|test_declare_pending_publication)\.sh|\.github/workflows/(release-plz|ci)\.yml)$' "$UNION_TMP" 2>/dev/null || [[ "$CI_HARNESS_MODE" == "always" ]]; then
     run_step "docs pins writer semantics (offline)" bash scripts/test_bump_docs_version_pins.sh
     run_step "release pins orchestrator semantics (offline)" bash scripts/test_apply_release_pins.sh
     run_step "release pins wiring (offline)" bash scripts/test_release_pins_wiring.sh
@@ -543,7 +612,7 @@ EOF
   # or feed the guard a base that makes the comparison vacuous — and every one of
   # those shapes is valid YAML that runs green. `ci.yml` is in the trigger
   # because it is the file the harness reads.
-  if grep -Eq '^(scripts/check_mcp_public_surface\.sh|scripts/test_mcp_surface_wiring\.sh|\.github/workflows/ci\.yml)$' "$UNION_TMP" 2>/dev/null; then
+  if grep -Eq '^(scripts/check_mcp_public_surface\.sh|scripts/test_mcp_surface_wiring\.sh|\.github/workflows/ci\.yml)$' "$UNION_TMP" 2>/dev/null || [[ "$CI_HARNESS_MODE" == "always" ]]; then
     run_step "mcp surface wiring (offline)" bash scripts/test_mcp_surface_wiring.sh
   else
     skip_step "mcp surface wiring" "no mcp surface guard files changed"
@@ -555,10 +624,36 @@ EOF
   # merge). Triggered by the script or its harness, both `scripts/**` — a PR
   # touching only one of them still lands in this lane. Offline fake `gh`,
   # mktemp fixtures, no cargo, <1s.
-  if grep -Eq '^(scripts/merge-when-green\.sh|scripts/test_merge_when_green_breaking\.sh)$' "$UNION_TMP" 2>/dev/null; then
+  if grep -Eq '^(scripts/merge-when-green\.sh|scripts/test_merge_when_green_breaking\.sh)$' "$UNION_TMP" 2>/dev/null || [[ "$CI_HARNESS_MODE" == "always" ]]; then
     run_step "breaking-marker guard semantics (offline)" bash scripts/test_merge_when_green_breaking.sh
   else
     skip_step "breaking-marker guard semantics" "no merge-when-green files changed"
+  fi
+  # The wait bounds of the merge waiter: every branch must be bounded by the
+  # effective timeout, and a cancelled required check is terminal. Before the
+  # fix, the fallback watch (the one that runs when branch protection cannot
+  # be read) had no timeout at all, so `--timeout` was silently ignored and
+  # the watch blocked forever. Offline fake `gh`, no network, <1s.
+  if grep -Eq '^(scripts/merge-when-green\.sh|scripts/test_ci_merge_when_green\.sh)$' "$UNION_TMP" 2>/dev/null || [[ "$CI_HARNESS_MODE" == "always" ]]; then
+    run_step "merge-when-green wait bounds harness (offline)" bash scripts/test_ci_merge_when_green.sh
+  else
+    skip_step "merge-when-green wait bounds harness" "no merge-when-green files changed"
+  fi
+  # The tag ruleset writer must never turn an API failure into "there is no
+  # ruleset": that path POSTed a DUPLICATE ruleset on a 500. Offline fake
+  # `gh`, no network, <1s.
+  if grep -Eq '^(scripts/apply-tag-ruleset\.sh|scripts/test_apply_tag_ruleset\.sh)$' "$UNION_TMP" 2>/dev/null || [[ "$CI_HARNESS_MODE" == "always" ]]; then
+    run_step "tag ruleset idempotency harness (offline)" bash scripts/test_apply_tag_ruleset.sh
+  else
+    skip_step "tag ruleset idempotency harness" "no apply-tag-ruleset files changed"
+  fi
+  # The metrics snapshot must report every required context and account for
+  # every listed run: a `jq` failure used to shrink the sample in silence
+  # while the snapshot still printed as complete. Offline fake `gh`, <1s.
+  if grep -Eq '^(scripts/ci_metrics\.sh|scripts/test_ci_metrics\.sh)$' "$UNION_TMP" 2>/dev/null || [[ "$CI_HARNESS_MODE" == "always" ]]; then
+    run_step "ci metrics snapshot harness (offline)" bash scripts/test_ci_metrics.sh
+  else
+    skip_step "ci metrics snapshot harness" "no ci_metrics files changed"
   fi
 }
 
@@ -576,14 +671,15 @@ run_pinned_lint_changed_scope() {
   local -a script_files=()
   local -a workflow_files=()
   # mapfile returns non-zero on empty input, hence `|| true` under `set -u`.
-  # Any depth under scripts/, for the same reason as lane_ci (#1635).
+  # Any depth under scripts/, for the same reason as lane_ci (#1635), and the
+  # shebang files without a .sh suffix too (B51) — see collect_shell_files.
   # The union lists DELETED paths too (git diff --name-only reports them), and a
   # deleted file is not something `bash -n` or shellcheck can read. Measured
   # 2026-10-20: retiring one script made BOTH steps fail with "No such file or
   # directory" — a legitimate deletion reported as a defect, which blocks the
   # local gate and with it the pre-push. A path that is gone is not a script to
   # lint; only the ones still on disk are.
-  mapfile -t script_files < <(grep -E '^scripts/.*\.sh$' "$UNION_TMP" | while read -r f; do [ -f "$f" ] && printf '%s\n' "$f"; done) || true
+  mapfile -t script_files < <(collect_shell_files) || true
   mapfile -t workflow_files < <(grep -E '^\.github/workflows/[^/]*\.ya?ml$' "$UNION_TMP" | while read -r f; do [ -f "$f" ] && printf '%s\n' "$f"; done) || true
   if [[ ${#script_files[@]} -eq 0 && ${#workflow_files[@]} -eq 0 ]]; then
     skip_step "pinned lint (changed scope)" "no changed scripts/workflows"
@@ -647,6 +743,57 @@ run_zizmor_cached_only() {
 # (e.g. check_dependency_direction.sh is -rw-r--r-- in main) must not
 # skip the guard locally while CI still runs it. Avoids the
 # `A && B || C` idiom (shellcheck SC2015).
+# ensure_intra_crate_lint: make the AST extractor available for the
+# intra-crate direction gate.
+#
+# The gate CONSUMES the extractor (tools/intra-crate-lint) and fails CLOSED
+# when the binary is absent: by design there is no fallback scanner, because
+# a gate that degrades to the weak scanner when the strong one is missing is
+# the same fail-open this campaign closed. CI's repo-guards job builds the
+# extractor before it runs the gate; the local gate does the same, and points
+# the gate at the binary through the variable the gate documents.
+#
+# The resolution mirrors the gate's own, so the two never disagree about
+# where the binary is. The build keeps CARGO_TARGET_DIR as it is (the
+# repository's isolation guard requires it) and therefore lands in the
+# tree's own target dir, not in the tool's; the gate is pointed at it
+# explicitly instead.
+INTRA_CRATE_LINT_BIN_PATH=""
+ensure_intra_crate_lint() {
+  if [[ -n "${INTRA_CRATE_LINT_BIN:-}" ]]; then
+    if [[ -x "$INTRA_CRATE_LINT_BIN" ]]; then
+      INTRA_CRATE_LINT_BIN_PATH="$INTRA_CRATE_LINT_BIN"
+      return 0
+    fi
+    echo "::error::INTRA_CRATE_LINT_BIN is set to '$INTRA_CRATE_LINT_BIN' but that path is not an executable file" >&2
+    return 1
+  fi
+  local candidate
+  for candidate in "$ROOT/tools/intra-crate-lint/target/release/intra-crate-lint" \
+                   "$ROOT/tools/intra-crate-lint/target/debug/intra-crate-lint"; do
+    if [[ -x "$candidate" ]]; then
+      INTRA_CRATE_LINT_BIN_PATH="$candidate"
+      return 0
+    fi
+  done
+  candidate="$(command -v intra-crate-lint || true)"
+  if [[ -n "$candidate" && -x "$candidate" ]]; then
+    INTRA_CRATE_LINT_BIN_PATH="$candidate"
+    return 0
+  fi
+  echo "building the intra-crate lint extractor (the gate needs it and has no fallback scanner)"
+  cargo build --manifest-path tools/intra-crate-lint/Cargo.toml --locked || return 1
+  local target="${CARGO_TARGET_DIR:-$ROOT/tools/intra-crate-lint/target}"
+  for candidate in "$target/release/intra-crate-lint" "$target/debug/intra-crate-lint"; do
+    if [[ -x "$candidate" ]]; then
+      INTRA_CRATE_LINT_BIN_PATH="$candidate"
+      return 0
+    fi
+  done
+  echo "::error::the intra-crate lint extractor was built but its binary is not where it was expected" >&2
+  return 1
+}
+
 run_guard() {
   local name="$1" script="$2"
   shift 2
@@ -661,15 +808,25 @@ lane_fmt_and_guards() {
   run_step "cargo fmt --check" cargo fmt --all -- --check
   run_guard "dead test detection" scripts/check_dead_tests.sh \
     bash scripts/check_dead_tests.sh
-  run_step "forbid anyhow in webfang_core (#428)" bash -c "
-    if grep -rn 'use anyhow' crates/webfang_core/src/ --include='*.rs'; then
-      echo 'webfang_core must use typed errors, not anyhow'; exit 1
-    fi
-    echo 'OK: no anyhow imports in webfang_core/src'"
+  # The anyhow guard is a PINNED grep, and `if grep ...; then fail; fi; echo OK`
+  # conflates grep's exit 1 (nothing found) with its exit 2 (the scan could
+  # not run): an unreadable source tree printed the clean message and the
+  # step passed. The exit status is inspected explicitly — >= 2 means the scan
+  # did not run, which is a FAILURE, never "nothing found" (B53/S9).
+  # The payload is single-quoted ON PURPOSE: inside double quotes the
+  # enclosing shell would expand `$?` before the payload ever runs, and the
+  # status under test would be the wrong one.
+  run_step "forbid anyhow in webfang_core (#428)" bash -c '
+    if grep -rn "use anyhow" crates/webfang_core/src/ --include="*.rs"; then
+      echo "webfang_core must use typed errors, not anyhow"; exit 1
+    elif [ $? -ge 2 ]; then echo "cannot scan crates/webfang_core/src/ - the scan did not run, failing closed"; exit 1; fi
+    echo "OK: no anyhow imports in webfang_core/src"; exit 0
+  '
   run_guard "dependency direction gate (#513)" scripts/check_dependency_direction.sh \
     bash scripts/check_dependency_direction.sh
+  run_step "build the intra-crate lint extractor" ensure_intra_crate_lint
   run_guard "intra-crate direction gate, strict (ADR-0010)" scripts/check_intra_crate_direction.sh \
-    env INTRA_CRATE_MODE=strict bash scripts/check_intra_crate_direction.sh
+    env INTRA_CRATE_MODE=strict INTRA_CRATE_LINT_BIN="$INTRA_CRATE_LINT_BIN_PATH" bash scripts/check_intra_crate_direction.sh
   run_guard "ignored-test inventory guard" scripts/check_ignored_guard.sh \
     bash scripts/check_ignored_guard.sh
   run_guard "ignored-test guard semantics harness (#1328)" scripts/test_ignored_guard.sh \
@@ -712,11 +869,15 @@ lane_fmt_and_guards() {
   # cargo lanes; this one needs the base commit, which a test cannot see.
   run_guard "mcp public-surface version marker (#1614)" scripts/check_mcp_public_surface.sh \
     bash scripts/check_mcp_public_surface.sh
-  run_step "forbid sitemap string-match coupling" bash -c "
-    if grep -rn 'contains(\"no URLs found\")' crates/*/src/ --include='*.rs'; then
-      echo 'use ScraperError::SitemapEmpty, never message matching'; exit 1
-    fi
-    echo 'OK: no string-match sitemap coupling'"
+  # Same shape as the anyhow guard above, for the same reason (B53/S9): a
+  # scan that could not run is a failure, not a clean result. The payload is
+  # single-quoted so `$?` reaches the payload unexpanded.
+  run_step "forbid sitemap string-match coupling" bash -c '
+    if grep -rn "contains(\"no URLs found\")" crates/*/src/ --include="*.rs"; then
+      echo "use ScraperError::SitemapEmpty, never message matching"; exit 1
+    elif [ $? -ge 2 ]; then echo "cannot scan crates/*/src/ - the scan did not run, failing closed"; exit 1; fi
+    echo "OK: no string-match sitemap coupling"; exit 0
+  '
   # Release hand-off gate (as-is via run_guard, same pass/fail as CI).
   run_guard "release hand-off gate" scripts/check_release_dispatch.sh \
     bash scripts/check_release_dispatch.sh
@@ -843,6 +1004,13 @@ lane_full() {
   echo "fast-gate lane: FULL (unknown scope — nothing skipped)"
   log_nextest_env
   lane_fmt_and_guards
+  # The CI-ONLY lane's semantics harnesses belong here too (B52): this lane
+  # claims "nothing skipped", and a harness that only ever runs in the cheap
+  # CI lane is skipped exactly when the scope is unknown — the case this lane
+  # exists for. The mode is "always": the scope IS unknown, so every harness
+  # runs, unconditionally.
+  CI_HARNESS_MODE="always"
+  lane_ci
   run_step "cargo check (workspace, all targets+features)" cargo check --workspace --all-targets --all-features
   run_step "clippy strict (workspace)" cargo clippy --workspace --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines
   run_step "pre-build webfang binary" cargo build -p webfang_cli --bin webfang --all-features

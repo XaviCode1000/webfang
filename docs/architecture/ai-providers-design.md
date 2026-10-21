@@ -385,7 +385,7 @@ Estado real de cada punto del diseño, verificado contra el árbol.
 4. [x] **`OpenAiLlmClient::with_http(http, base_url, api_key)`** — `crates/webfang_core/src/infrastructure/llm/client.rs:119`.
 5. [x] **`ProvidersConfig` + `ProviderRegistry`** — `crates/webfang_core/src/domain/providers.rs` (`ProvidersConfig` `:201`, `ProviderRegistry` `:232`); viven en `domain/`, no en `application/`.
 6. [x] **`OpenAiCompatibleProvider`** — `crates/webfang_core/src/infrastructure/llm/provider.rs:113`.
-7. [x] **Integración con container** — el wiring real está en `crates/webfang_core/src/cli/llm_wire.rs:45` (`build_llm_provider`) y `:124` (`build_embedding_provider`), no en `container.rs`.
+7. [x] **Integración con container** — el wiring real está en `crates/webfang_core/src/cli/llm_wire.rs:45` (`build_llm_provider`) y `:130` (`build_embedding_provider`), no en `container.rs`.
 8. [x] **Tests de integración** — `crates/webfang_core/tests/auth_source_none_test.rs` (`:33`, `:452`).
 9. [ ] **`TenantAiContext`** — **no implementado**, ver §6 e issue **#2018**.
 10. [ ] **Fixtures de contrato** (`crates/webfang_core/tests/fixtures/{openai,openrouter,freellm,groq}.json`) — se mantienen por decisión del owner: la cobertura cross-proveedor sigue siendo necesaria.
@@ -538,7 +538,7 @@ claim  | crates/webfang_core/src/domain/local_secret_store.rs | 37 | pub recomme
 claim  | crates/webfang_core/src/domain/local_secret_store.rs | 48 | pub fn detect() -> Self {
 # --- wiring binario ----------------------------------------------------------
 claim  | crates/webfang_core/src/cli/llm_wire.rs | 45 | pub fn build_llm_provider(
-claim  | crates/webfang_core/src/cli/llm_wire.rs | 124 | pub async fn build_embedding_provider(
+claim  | crates/webfang_core/src/cli/llm_wire.rs | 130 | pub async fn build_embedding_provider(
 claim  | crates/webfang_core/src/cli/llm_wire.rs | 97 | registry.resolve(id, Capability::Embedding)
 claim  | crates/webfang_core/src/cli/llm_wire.rs | 103 | registry.resolve_default_embedding()
 claim  | crates/webfang_core/src/cli/commands/doctor.rs | 59 | registry.resolve(id, Capability::Embedding)

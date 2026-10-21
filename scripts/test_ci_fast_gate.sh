@@ -12,10 +12,18 @@
 #       nothing: a stray foo.rs, Cargo.toml or Cargo.lock passed the assert;
 #   B45 an unresolvable base ref fell back to HEAD~1, which is not the PR
 #       base: the branch tip got classified instead of the branch, NARROWING
-#       the check where it had to widen.
+#       the check where it had to widen;
+#   B51 the changed-scripts filter was `^scripts/.*\.sh$`, so the git hooks
+#       — bash WITH a shebang and WITHOUT the .sh suffix — were classified
+#       `ci_only` and then skipped as "no changed scripts": never linted;
+#   B52 `all=true` ran the FULL lane, which never ran the CI lane's
+#       semantics harnesses while its banner claimed "nothing skipped";
+#   B53 the pinned grep arms conflated grep's exit 1 (nothing found) with
+#       its exit 2 (the scan could not run): an unreadable source tree
+#       printed the clean message and the step passed.
 #
 # A gate that cannot fail is indistinguishable from a gate that is not there,
-# and the audit that found these three called that shape CRITICAL. This
+# and the audit that found these shapes called the first of them CRITICAL. This
 # harness pins them by OBSERVABLE BEHAVIOUR only: the gate's exit code, the
 # lane it selected, the error it printed, and the steps it reported as failed.
 # It never greps the gate's source for a string.
@@ -165,6 +173,7 @@ fixture_git() {
 #   crash    exits non-zero without a verdict (A1: the exit status)
 #   partial  exits zero with an INCOMPLETE verdict (A1: a missing key)
 #   docs     exits zero claiming docs-only (A2: the re-assertion's input)
+#   full     exits zero claiming the UNKNOWN scope (B52: the FULL lane)
 write_classifier() {
   local path="$1" mode="$2"
   case "$mode" in
@@ -239,6 +248,41 @@ done
 exit 0
 CLS
       ;;
+    full)
+      cat >"$path" <<'CLS'
+#!/usr/bin/env bash
+# Fixture stub: a classifier that reports the UNKNOWN scope.
+#
+# This is the verdict the gate gets when the changed-file set proves
+# nothing about the scope, and it is the only way to reach the FULL lane
+# without also failing on an unresolvable base (B52).
+out=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --github-output) out="${2:-}"; shift 2 ;;
+    --base-ref | --head-ref | --format | --files) shift 2 ;;
+    *) shift ;;
+  esac
+done
+{
+  echo "docs_only=false"
+  echo "ci_only=false"
+  echo "code_changed=false"
+  echo "ai_changed=false"
+  echo "mcp_changed=false"
+  echo "cli_changed=false"
+  echo "core_changed=false"
+  echo "crawler_changed=false"
+  echo "downloader_changed=false"
+  echo "tests_changed=false"
+  echo "release_changed=false"
+  echo "lock_changed=false"
+  echo "lib_src_changed=false"
+  echo "all=true"
+} >>"$out"
+exit 0
+CLS
+      ;;
     *)
       echo "harness: unknown classifier mode '$mode'" >&2
       exit 2
@@ -259,6 +303,35 @@ make_fixture() {
   # fixture provides a no-op instead of letting the step fail for a reason
   # that has nothing to do with the case under test.
   printf '#!/usr/bin/env bash\nexit 0\n' >"$dir/scripts/test_release_provenance.sh"
+  # The FULL lane runs the CI-ONLY lane's semantics harnesses too (B52), so
+  # the fixture provides a no-op for each of them: the case under test is the
+  # LANE SHAPE, not the harnesses' own semantics, and a missing script would
+  # fail the step for a reason that has nothing to do with the case.
+  for harness in test_ci_health_close.sh tests/test_check_compatibility.sh \
+    tests/test_check_target_isolation.sh ci_path_classifier_test.sh \
+    test_docs_version_pins.sh test_docs_version_pins_wiring.sh \
+    test_bump_docs_version_pins.sh test_apply_release_pins.sh \
+    test_release_pins_wiring.sh test_declare_pending_publication.sh \
+    test_mcp_surface_wiring.sh test_merge_when_green_breaking.sh \
+    test_ci_merge_when_green.sh test_apply_tag_ruleset.sh test_ci_metrics.sh; do
+    mkdir -p "$dir/scripts/$(dirname "$harness")"
+    printf '#!/usr/bin/env bash\nexit 0\n' >"$dir/scripts/$harness"
+  done
+  # The intra-crate direction gate CONSUMES the AST extractor and fails closed
+  # when the binary is absent (there is no fallback scanner), and the local
+  # gate builds it before running the gate. The fixture provides a fake
+  # executable so the build step does not run cargo: the case under test is
+  # the LANE SHAPE, not the extractor's semantics, and a real build in a
+  # fixture would fail for a reason that has nothing to do with the case.
+  mkdir -p "$dir/tools/intra-crate-lint/target/debug"
+  printf '#!/usr/bin/env bash\necho "fixture: fake intra-crate lint extractor"\n' \
+    >"$dir/tools/intra-crate-lint/target/debug/intra-crate-lint"
+  chmod +x "$dir/tools/intra-crate-lint/target/debug/intra-crate-lint"
+  # A real source tree, so the pinned greps of the fmt+guards lane have
+  # something to scan. The scan now fails CLOSED (B53), so a missing tree
+  # would fail the step for a reason that has nothing to do with the case.
+  mkdir -p "$dir/crates/webfang_core/src"
+  printf 'pub fn fixture() {}\n' >"$dir/crates/webfang_core/src/lib.rs"
   # The target registry the isolation guard reads: the fixture's own .envrc
   # declares the scratch target, so the guard allows it (own registration)
   # without any real worktree being involved.
@@ -444,6 +517,133 @@ CLS_OUT="$SCRATCH/classifier.out"
   bash scripts/ci_path_classifier.sh --base-ref origin/main --head-ref HEAD --format github
 ) >"$CLS_OUT" 2>/dev/null
 has "$CLS_OUT" "all=true" "B45: the classifier widens to all=true on an unresolvable base"
+
+# ── 5b. B45: a local `main` is NOT a substitute for the requested base ──────
+# NEGATION: the fallback chain was "<base> -> main -> HEAD~1". The HEAD~1 half
+# is gone, but the `main` half was not: a local main can be stale or AHEAD
+# of the real base, so the diff would not be the PR's range — and a branch
+# whose tip is a documentation commit read as documentation-only, so the
+# Rust change was never compiled. The requested base is the only candidate.
+D="$(make_fixture b45-main-exists main real)"
+# A branch whose tip is a documentation commit: the old fallback to the local
+# `main` would diff against main and classify that commit as docs-only.
+fixture_git "$D" checkout -q -b topic
+printf 'more\n' >>"$D/docs/guide.rst"
+fixture_git "$D" commit -qam "fixture: a documentation commit on top of main"
+touch_worktree "$D"
+run_gate "$D" --base-ref origin/nonexistent --head-ref HEAD
+if [ "$GATE_RC" -ne 0 ]; then
+  ok "B45: an unresolvable base fails the gate even when a local main exists"
+else
+  bad "B45: an unresolvable base left the gate GREEN (the local main was used as the base)"
+fi
+has "$GATE_ERR" "widening to FULL" "B45: the gate says it is widening to FULL"
+has "$GATE_OUT" "fast-gate lane: FULL" "B45: the gate selected the FULL lane"
+has "$GATE_OUT" "  - base resolution" "B45: 'base resolution' is a failed step"
+lacks "$GATE_OUT" "fast-gate lane: docs" "B45: the local main did not narrow the lane to docs"
+# The classifier half: asked about the same unresolvable base, it must report
+# the unknown scope instead of diffing against the local main.
+CLS_OUT="$SCRATCH/classifier-main-exists.out"
+(
+  cd "$D" || exit 127
+  bash scripts/ci_path_classifier.sh --base-ref origin/nonexistent --head-ref HEAD --format github
+) >"$CLS_OUT" 2>/dev/null
+has "$CLS_OUT" "all=true" "B45: the classifier widens to all=true even when a local main exists"
+lacks "$CLS_OUT" "docs_only=true" "B45: the classifier did not diff against the local main"
+
+# ── 7. B51: a bash file WITHOUT the .sh suffix is linted, not skipped ───────
+# NEGATION: pre-fix the changed-scripts list came from `^scripts/.*\.sh$`.
+# `scripts/githooks/pre-push` is bash WITH a shebang and WITHOUT the .sh
+# suffix, so it was classified `ci_only` and then skipped as "no changed
+# scripts": `bash -n` and shellcheck never saw it, and the local gate linted
+# LESS than CI's repo-guards job lints.
+D="$(make_fixture b51-githook main real)"
+mkdir -p "$D/scripts/githooks"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$D/scripts/githooks/pre-push"
+fixture_git "$D" add -A
+fixture_git "$D" commit -q -m "fixture: a git hook without the .sh suffix"
+printf '# touched\n' >>"$D/scripts/githooks/pre-push"
+run_gate "$D" --base-ref HEAD --head-ref HEAD
+if [ "$GATE_RC" -eq 0 ]; then
+  ok "B51: a touched git hook leaves the gate GREEN"
+else
+  bad "B51: a touched git hook failed the gate (rc=$GATE_RC): $(tail -3 "$GATE_OUT")"
+fi
+has "$GATE_OUT" "PASS: bash syntax (changed scripts)" \
+  "B51: the git hook went through the syntax step"
+has "$GATE_OUT" "PASS: shellcheck (changed scripts" \
+  "B51: the git hook went through the shellcheck step"
+lacks "$GATE_OUT" "SKIP: shell syntax/shellcheck" \
+  "B51: the git hook was not skipped as 'no changed scripts'"
+# The control: a .sh file under scripts/ was linted before the fix, so its
+# presence here proves the new path did not break the old one.
+D="$(make_fixture b51-control main real)"
+printf '#!/usr/bin/env bash\nexit 0\n' >"$D/scripts/ordinary.sh"
+fixture_git "$D" add -A
+fixture_git "$D" commit -q -m "fixture: an ordinary .sh script"
+printf '# touched\n' >>"$D/scripts/ordinary.sh"
+run_gate "$D" --base-ref HEAD --head-ref HEAD
+has "$GATE_OUT" "PASS: bash syntax (changed scripts)" \
+  "B51: the control .sh file still goes through the syntax step"
+
+# ── 8. B52: the FULL lane runs the CI lane's semantics harnesses ────────────
+# NEGATION: pre-fix `all=true` ran `lane_full`, which never ran the CI lane's
+# harnesses (the path-classifier, compatibility and target-isolation ones)
+# while its banner claimed "nothing skipped". A FULL run therefore verified
+# LESS than a cheap CI run of the same change.
+D="$(make_fixture b52-full main full)"
+touch_worktree "$D"
+run_gate "$D" --base-ref HEAD --head-ref HEAD
+if [ "$GATE_RC" -eq 0 ]; then
+  ok "B52: the FULL lane is GREEN with every harness wired"
+else
+  bad "B52: the FULL lane failed (rc=$GATE_RC): $(tail -3 "$GATE_OUT")"
+fi
+has "$GATE_OUT" "fast-gate lane: FULL" "B52: the gate selected the FULL lane"
+has "$GATE_OUT" "PASS: path classifier harness semantics (offline)" \
+  "B52: the FULL lane runs the path-classifier harness"
+has "$GATE_OUT" "PASS: compatibility harness semantics (offline)" \
+  "B52: the FULL lane runs the compatibility harness"
+has "$GATE_OUT" "PASS: target isolation guard semantics (offline)" \
+  "B52: the FULL lane runs the target-isolation harness"
+# The control: the cheap CI lane runs the same harness when it is triggered.
+D="$(make_fixture b52-ci main real)"
+printf '# touched\n' >>"$D/scripts/ci_path_classifier.sh"
+run_gate "$D" --base-ref HEAD --head-ref HEAD
+has "$GATE_OUT" "PASS: path classifier harness semantics (offline)" \
+  "B52: the control CI lane still runs the path-classifier harness"
+
+# ── 10. B53: a scan that could NOT run is a failure, not a clean result ─────
+# NEGATION: pre-fix the pinned grep arms were `if grep ...; then fail; fi;
+# echo OK`, which cannot tell grep's exit 1 (nothing found) from its exit 2
+# (the scan could not run): an unreadable source tree printed the clean
+# message and the step PASSED.
+D="$(make_fixture b53-scan main full)"
+touch_worktree "$D"
+run_gate "$D" --base-ref HEAD --head-ref HEAD
+if [ "$GATE_RC" -eq 0 ]; then
+  ok "B53: the FULL lane is GREEN when the scan can run"
+else
+  bad "B53: the FULL lane failed with a readable source tree (rc=$GATE_RC): $(tail -3 "$GATE_OUT")"
+fi
+has "$GATE_OUT" "PASS: forbid anyhow in webfang_core" \
+  "B53: the pinned scan passed on a readable tree"
+lacks "$GATE_OUT" "::error::FAIL: forbid anyhow in webfang_core" \
+  "B53: the pinned scan did not fail on a readable tree"
+# Now the source tree cannot be read: the scan does not run, which is a
+# FAILURE and never "nothing found".
+chmod 000 "$D/crates/webfang_core/src"
+run_gate "$D" --base-ref HEAD --head-ref HEAD
+chmod 755 "$D/crates/webfang_core/src"
+if [ "$GATE_RC" -ne 0 ]; then
+  ok "B53: an unreadable source tree makes the gate fail"
+else
+  bad "B53: an unreadable source tree left the gate GREEN"
+fi
+has "$GATE_OUT" "::error::FAIL: forbid anyhow in webfang_core" \
+  "B53: the unreadable tree failed the scan step"
+has "$GATE_OUT" "  - forbid anyhow in webfang_core" \
+  "B53: the failed scan step is named in the summary"
 
 # ── 6. the resource contract: nothing was compiled, nothing was real ─────────
 # NEGATION: pre-fix no harness existed, so nothing observed what the gate

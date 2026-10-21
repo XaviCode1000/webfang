@@ -183,7 +183,8 @@ webfang --url https://example.com --clean-ai --export-format jsonl
 > `--embedding-provider` (env `WEBFANG_EMBEDDING_PROVIDER`): necesitás un endpoint propio
 > (BYO-key, el coste es tuyo), y el zero-config offline-total con inferencia se perdió.
 > Los shims `--ai-model`, `--max-tokens`, `AI_MODEL_ID`, `WEBFANG_AI_MODEL_ID`, `WEBFANG_AI_ENGINE`
-> y `WEBFANG_MAX_TOKENS` emiten un aviso de migración en cada corrida. Los vaults con vectores de
+> y `WEBFANG_MAX_TOKENS` se retiraron: los flags ya no parsean (error estándar de clap, exit 64) y
+> las env se ignoran en silencio. Los vaults con vectores de
 > Granite conviene re-indexarlos. En `--offline` no hay provider de embeddings que sirva: el guard
 > rechaza cualquier endpoint (también uno en `127.0.0.1`) y sale con exit 78. El "loopback" del
 > aviso del paso 5 era el modelo local ONNX, que este paso eliminó. Detalle paso a paso en

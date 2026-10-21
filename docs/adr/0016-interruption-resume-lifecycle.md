@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-09-10
 - **Deciders:** Project Architect (owner decisions relayed via orchestrator), AGENTE-1 (SDD mission)
-- **Related:** issue #1292 (F-07 / F-39 / P8-4 / P8-5 / P8-6 / F-R3-7), issues #1230, #1234, PR #1247, ADR-0013, ADR-0014, issue #1289 (checkpoint IO — out of scope here), issue #509 (cancellation token), AUDIT-01/02
+- **Related:** issue #1292 (F-07 / F-39 / P8-4 / P8-5 / P8-6 / F-R3-7), issues #1230, #1234, PR #1247, ADR-0013, ADR-0014, issue #1289 (checkpoint IO — out of scope here), issue #509 (cancellation token), issue #1835 (rejected termination-source registration), AUDIT-01/02
 
 ## Context
 
@@ -38,6 +38,61 @@ The issue mandates ONE unified design before any per-finding PR.
 | **Termination-event source** (which OS event was observed) | `infrastructure::platform` — the process-wide console-event source. It only *fires* the owning token; it never owns one. | One `SetConsoleCtrlHandler` registration for the whole process, four awaiters, zero second authorities. |
 | **Durable page lifecycle truth** | `RecordStore` — the 8-state `PageStatus` (`DISCOVERED → … → COMMITTED`) persisted per domain. | The record survives crashes and signals; it is the only cross-run truth. Skip-on-resume happens ONLY from `COMMITTED`-proven records through the typed gate (`application/resume.rs::filter_committed`). |
 | **Scheduling state** (visited/frontier/banned domains) | `CrawlCheckpoint` — engine-internal, versioned, bounded. | It is an execution artefact, not a lifecycle map (already documented in `domain/page_state/mod.rs`). Its IO mechanics belong to #1289. |
+
+### 1.1 Rejected termination-source registration (amendment — #1835)
+
+**Decision: a rejected registration does NOT stop the run. Both shutdown
+authorities answer it the same way, and they say the same thing.**
+
+The OS refused the handler, so the process has **no** OS termination source at
+all — the concern the ownership table above assigns to
+`infrastructure::platform` is simply absent. Two shutdown authorities used to
+disagree about what that means:
+
+| Site | Before #1835 | After #1835 |
+| :--- | :--- | :--- |
+| `Engine::spawn_signal_handler` (`application/crawler/engine.rs`) | warned, then set the shutdown flag AND fired the cancellation token | warns; the run keeps going |
+| CLI shutdown guard (`cli/shutdown.rs`) | **on Windows**: warned, then the wait ended and the guard fired its token. On Unix the wait only ends on a real signal, so a per-signal registration rejection never reached the guard | warns; the run keeps going |
+
+**One fact the issue recorded was wrong, and it changed the shape of the fix.**
+#1835 described the CLI guard as "does not cancel". On **Windows** it did
+cancel: the wait returning resolved the `select!` arm, which the guard read as
+"a termination event happened" and fired the token. On Unix the premise held —
+the Unix wait degrades per signal and only ends on a real signal, so a
+rejected registration never reached the guard at all. So on Windows the
+disagreement was not "one stops, one keeps going" — it was "both stop, while
+both promised the opposite". The
+choice is therefore not "who was right" but "what is right", and the answer is
+the one the CLI guard's own doc comment, the MCP server's message and this
+ADR's *Degradation, never panic* bullet already state: a rejected registration
+keeps the explicit-cancel path (#509). The engine was the outlier; both sites
+now implement it.
+
+**One decision, two authorities.** `TerminationOutcome`
+(`application/crawler/engine.rs`) classifies the wait's result and answers
+`stops_run()`; both sites route their outcome through it, and both print the
+single `TERMINATION_REGISTRATION_REJECTED` message (with an `authority` field
+naming the reporting site). The decision is shared code, not two
+implementations that happen to agree — and a shared string describes shared
+behaviour.
+
+**The cost, stated plainly.** A run whose handler registration was rejected
+cannot be stopped by Ctrl+C: the operator's remaining options are an explicit
+`cancel()` (#509) or escalating to the OS (`SIGKILL` / `Terminate Process`).
+That is the accepted trade-off — an unattended run that ends by itself on a
+transient registration failure is worse than an attended run the operator must
+escalate.
+
+**Evidence.** `a_rejected_registration_leaves_the_run_alone` (engine) and
+`a_rejected_registration_does_not_cancel_the_run` (CLI guard) pin the
+behaviour at the shutdown-path level — the run's shutdown flag and its
+cancellation token, not a log line;
+`a_delivered_termination_event_still_cancels_the_run` pins that a real event
+still stops the run.
+
+**Not changed:** the Unix path. SIGINT always registers through
+`tokio::signal::ctrl_c`, so the degraded case there is per-signal
+(SIGTERM/SIGHUP), and each site keeps degrading per-signal.
 
 ### 2. Interruption precedence (pinned order — deviations are bugs)
 
@@ -132,6 +187,9 @@ documentation beats a control that only appears to close it.
 
 - The lifecycle has exactly one place to reason about for each concern (owner
   table above); future fetch paths inherit the precedence chain by construction.
+- A rejected termination-source registration stops nothing: the decision, the
+  message and the evidence live in one place, shared by both shutdown
+  authorities (#1835).
 - P8-4/P8-5/F-39 behavior is pinned by E2E tests that cannot pass vacuously
   (real process, real signal, request-counted wiremock).
 - The 8-state `PageStatus` enum is frozen by policy: adding a state requires a new
