@@ -38,7 +38,10 @@ pub struct AiConfig {
     /// before `init_logging_dual`, where a `warn!` would be dropped (#796) —
     /// without re-parsing anything.
     pub deprecated_max_tokens: Option<usize>,
-    /// Run AI model in offline mode.
+    /// Reject every embeddings provider (remote or loopback) with exit 78.
+    ///
+    /// No local model since 3.0.0: the flag gates the semantic-cleaning
+    /// providers only, not the crawler's network (#2166).
     pub offline: bool,
     /// AI model identifier (empty = default).
     pub model: String,

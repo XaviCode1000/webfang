@@ -587,7 +587,7 @@ AI Settings:
           [env: WEBFANG_MAX_TOKENS=]
 
       --offline
-          Run AI model in offline mode
+          Reject every embeddings provider (remote or loopback) with exit 78: no local model since 3.0.0
           
           [env: WEBFANG_OFFLINE=]
 

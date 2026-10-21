@@ -153,10 +153,11 @@ pub struct AiArgs {
     /// a value is "the spec default" when the operator typed it.
     pub threshold_explicit: bool,
 
-    /// Run AI model in offline mode.
+    /// Reject every embeddings provider (remote or loopback) with exit 78: no local model since 3.0.0
     ///
-    /// UNGATED, though its effect is local-ONNX only: "offline" constrains the
-    /// hf_hub resolver, a property of THIS build's embedding backend.
+    /// UNGATED. Since ADR-0004 paso 6 there is no local backend to constrain:
+    /// the flag is read by the embeddings preflight, which rejects EVERY
+    /// embeddings provider — loopback included — with exit 78 (#2166).
     pub offline: bool,
 
     /// ADR-0004 step-5 announcements this run owes, decided at parse time.
@@ -226,8 +227,9 @@ pub const ORPHAN_THRESHOLD_NOTICE_MARKER: &str = "calibrado para Granite";
 ///    resolve at compile time, so no shim could keep the flag alive);
 /// 2. what survives un-gated — `--clean-ai` (now resolving its endpoint
 ///    through `--embedding-provider` / `WEBFANG_EMBEDDING_PROVIDER`) and
-///    `--offline` (semantics unchanged: loopback allowed, public remote →
-///    exit 78);
+///    `--offline` (which rejects EVERY embeddings provider, remote or
+///    loopback, with exit 78 — the guard fires before the endpoint is
+///    inspected, so "loopback allowed" was never true; #2166);
 /// 3. the shims that keep working until 3.2.0 —
 ///    `--ai-model`, `--max-tokens`, `WEBFANG_MAX_TOKENS`,
 ///    `AI_MODEL_ID` / `WEBFANG_AI_MODEL_ID`, `WEBFANG_AI_ENGINE`;
@@ -248,7 +250,7 @@ pub const ONNX_DEPRECATION_NOTICE: &str = concat!(
     "y `cargo build --features ai` falla en resolución de features. ",
     "Sin gate desde entonces: `--clean-ai` (resuelve su endpoint por `--embedding-provider` / ",
     "`WEBFANG_EMBEDDING_PROVIDER`; sin proveedor falla con ConfigError, exit 78) y `--offline` ",
-    "(misma semántica: loopback permitido, remoto público -> exit 78). ",
+    "(rechaza cualquier provider de embeddings, remoto o loopback, con exit 78). ",
     "Estos shims siguen funcionando hasta 3.2.0: ",
     "`--ai-model`, `--max-tokens`, `WEBFANG_MAX_TOKENS`, ",
     "`AI_MODEL_ID` / `WEBFANG_AI_MODEL_ID`, `WEBFANG_AI_ENGINE`. ",
