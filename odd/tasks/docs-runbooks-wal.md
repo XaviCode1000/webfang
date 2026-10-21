@@ -132,3 +132,56 @@ L4 — El plan de este lote dice "inline" (ruta) y "+55/−40" (delta): el inlin
 estimación previa a que el owner autorizara `docs/` y a que se supiera que el triage de
 #1609 exige lectura por REST. Con la autorización, la ruta pasa a worker y el padre hace las
 escrituras en GitHub.
+
+L5 — Trabajo del worker (route: `gentle-ai-worker`, superficies acotadas a cuatro archivos),
+**verificado por el padre** (no por el informe): el runbook nuevo
+`docs/src/state-recovery-runbook.md` con su entrada en `docs/src/SUMMARY.md`; la sección de
+Obscura en `docs/src/cli-reference.md` **fuera** del bloque auto-generado (después de
+`<!-- CLI-REFERENCE:END -->`, así que `gen-cli-reference.sh` no la pisa); y el comentario del
+módulo de `obscura_downloader.rs`, que además tenía el **piso viejo** (0.2.0) contra el real
+(0.2.5) — un hallazgo que el worker reportó y el padre verificó contra la constante.
+
+L6 — **Corrección del padre (1/3): dos afirmaciones de la nota NO eran ciertas hoy.** La nota
+decía que el veredicto `Unknown` "nombra el mínimo esperado"; el código de hoy dice
+`"obscura_version_unreadable: --version probe failed or unparseable — continuing best-effort"`,
+o sea que el mínimo lo nombra el **lote L11**, que todavía no aterriza. Una documentación que
+promete lo que el código no hace es un defecto: si el owner abre la PR de L14 antes que la de
+L11, la afirmación queda falsa en `main`. Se reescribieron las dos frases para que sean ciertas
+hoy ("degrada a warning y la corrida sigue best-effort") y la consecuencia #2 de la lista
+sigue siendo una consecuencia (la lista sigue teniendo cuatro). La frase que sí describirá el
+naming del mínimo llega **con el código**, en el lote L11.
+
+L7 — **Corrección del padre (2/3): el conteo de tools del libro.** `docs/src/overview.md`
+decía "MCP server (35 tools)" mientras el número real y pineado es **36** (lo fija
+`crates/webfang_mcp/tests/stdio_handshake.rs` y lo dice `AGENTS.md`). Corregido en este lote
+(el drift de docs es de este lote; la consolidación del conteo en una sola fuente es de L7).
+
+L8 — **Corrección del padre (3/3): una sugerencia de `troubleshooting.md` era falsa.** La
+sección de WAF sugería "Try a different TLS fingerprint profile (`--tls-emulation`) **or JS
+rendering**" contra un desafío WAF. Pero `hybrid_router.rs` lo dice: *"WAF detection at **any**
+layer short-circuits with an error — escalation is never attempted against a WAF challenge"* →
+nunca se escala a la capa que renderiza, así que el render con JavaScript no puede
+esquivar un desafío. Se quitó esa mitad de la sugerencia y se dejó el hecho.
+
+L9 — **El lado issues es del owner del plan** (reparto final: specs + libro mayor + lado issues
+son suyos; toda la implementación es del padre). El worker redactó los comentarios de #2061,
+#1826 y #1710 y el veredicto por fila de #1609 con sus ≤2 slices; el padre los revisó y los
+dejó en `odd/docs-runbooks-wal/issue-drafts.md` para que el owner del plan los publique. Ninguna
+de las cuatro issues se cierra: dos quedan comentadas con su estado real y #1609 se cierra con
+veredicto por fila más las slices (su tabla de sub-issues está desactualizada: #1647 y #1622
+ya están cerradas).
+
+L10 — Verificación del padre, en el worktree: el diff toca exactamente cuatro archivos y las
+superficies declaradas; `cargo fmt --all -- --check` en verde (el único `.rs` es un comentario);
+la sección de `cli-reference.md` fuera del bloque auto-generado; el piso del comentario
+(0.2.5) igual a la constante real; el conteo del libro (36) igual al pineado; la afirmación
+del router sobre el WAF, verificada en `hybrid_router.rs`; y los enlaces del runbook resueltos
+(sin `mdbook build`, que escribiría `docs/book/`, fuera de superficie).
+
+L11 — **Corte de slice de este lote**: el branch suma ~650 líneas autorales repartidas en tres
+commits (spec 157 · docs 284 · evidencia 209), cada uno debajo del corte de ~400. La estrategia
+de entrega: **un PR por lote** (la documentación del libro y su evidencia ODD viajan juntas, como
+en los lotes anteriores), re-aplicado sobre el `main` nuevo. Si el owner prefiere dividirlo al
+abrir la PR, el corte natural es (1) spec + evidencia (`docs(odd)`) y (2) runbook + nota +
+correcciones (`docs`). El orden de los PRs lo fija el owner (O7) y este lote **no** toca
+`ci.yml`, así que no colisiona con la re-aplicación de los steps de L9/L7/L15.
