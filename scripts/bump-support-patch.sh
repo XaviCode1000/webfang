@@ -126,7 +126,7 @@ resolve_hotfix_base() {
 #
 # The sanctioned flow puts the bump inside the HOTFIX PR whose base is
 # support/X.Y — the HEAD of that PR is `hotfix/*`, not `support/X.Y`, and
-# check-topology.sh admits ONLY hotfix/* -> support/*. A guard that demands
+# check-topology.sh admits ONLY hotfix/* -> support/X.Y (numeric). A guard that demands
 # the head to BE the support branch therefore makes the sanctioned patch
 # release unrunnable, so a hotfix branch is accepted when its base is
 # PROVABLY the support line (resolve_hotfix_base below).
