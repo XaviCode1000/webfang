@@ -719,6 +719,16 @@ jobs:
       # Deferred entries live in scripts/guard_coverage_baseline.txt and the
       # list may only shrink: an entry that stops reproducing fails this step
       # and asks to be removed.
+      # Semantic harnesses for the guards the meta-guard below audits. Each one
+      # of these guards had a documented hole ("it needs its own issue"); the
+      # harness is what makes the hole unreachable, and the meta-guard only
+      # accepts a harness that a workflow actually runs.
+      - name: MCP public surface semantics harness
+        run: bash scripts/test_mcp_public_surface.sh
+      - name: Dead tests semantics harness
+        run: bash scripts/test_dead_tests.sh
+      - name: Archive reproducibility semantics harness
+        run: bash scripts/test_archive_reproducibility.sh
       - name: Guard coverage meta-guard
         run: bash scripts/test_guard_coverage.sh
       # Negation harness for the meta-guard above. Eight cases over throwaway
