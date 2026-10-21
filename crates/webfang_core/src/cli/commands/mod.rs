@@ -8,7 +8,12 @@
 //! live in their own files under this module; the shared preflight helper below
 //! stays here because it is used by the main dispatch path, not by a
 //! subcommand.
+//!
+//! `blocks` holds the render blocks `show` and `doctor` SHARE (the effective
+//! embeddings provider and the historical model-profile metadata, issue
+//! #2106): two commands must never disagree about the identity of the run.
 
+mod blocks;
 pub mod connect;
 pub mod doctor;
 pub mod show;
