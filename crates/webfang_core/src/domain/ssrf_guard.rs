@@ -301,6 +301,9 @@ pub fn is_always_denied_ip(ip: &IpAddr) -> bool {
 /// 4. NAT64/6to4-embedded IPv4 re-validates the embedded address against
 ///    the same policy, so an allowlist is applied to the address the
 ///    socket actually dials, never to the translation prefix as a blanket.
+///    The loopback exemption does NOT travel through a translation prefix:
+///    `64:ff9b::7f00:1` reaches `127.0.0.1` through a NAT64 gateway, and
+///    the B1 flag is for the literal loopback only (#1965).
 /// 5. An address inside an allowlisted CIDR allows — RFC1918, ULA and
 ///    CGNAT are reachable only through this explicit opt-in.
 #[must_use]
@@ -320,6 +323,13 @@ pub fn is_forbidden_ip_with_policy(
     }
     if let IpAddr::V6(v6) = ip {
         if let Some(v4) = ipv6_nat64_embedded_v4(v6).or_else(|| ipv6_6to4_embedded_v4(v6)) {
+            // The loopback exemption does not travel through a translation
+            // prefix: `64:ff9b::7f00:1` reaches `127.0.0.1` through a NAT64
+            // gateway, and the flag exempts the literal loopback only
+            // (#1965, A2).
+            if is_permitted_loopback(&IpAddr::V4(v4)) {
+                return true;
+            }
             return is_forbidden_ip_with_policy(&IpAddr::V4(v4), allow_loopback, policy);
         }
     }
@@ -494,6 +504,13 @@ pub fn is_forbidden_resolved_address(
     }
     if let IpAddr::V6(v6) = ip {
         if let Some(v4) = ipv6_nat64_embedded_v4(v6).or_else(|| ipv6_6to4_embedded_v4(v6)) {
+            // Same invariant as in `is_forbidden_ip_with_policy`: the
+            // loopback exemption does not travel through a translation
+            // prefix (#1965, A2). This is the live path — the resolver and
+            // the redirect policy both dial through it.
+            if is_permitted_loopback(&IpAddr::V4(v4)) {
+                return true;
+            }
             return is_forbidden_resolved_address(&IpAddr::V4(v4), host, allow_loopback, policy);
         }
     }
@@ -1064,6 +1081,52 @@ mod tests {
         assert!(!is_forbidden_ip_with_policy(&addr("::1"), true, &policy));
     }
 
+    /// A2 (#1965): the `allow_loopback` permit must not travel through the
+    /// translation forms. `64:ff9b::7f00:1` (NAT64) and `2002:7f00:1::`
+    /// (6to4) dial `127.0.0.1` on a NAT64/6to4 network, so the embedded
+    /// address is judged as the plain IPv4 it encodes — WITHOUT the permit.
+    /// The plain forms keep working: the flag is for a self-hosted endpoint
+    /// on this machine, not for a wider hole.
+    #[test]
+    fn translation_forms_of_loopback_stay_denied_under_the_flag() {
+        let policy = hand_built_policy(&["10.0.0.0/8"]);
+        // The embedded loopback is denied on both translation forms.
+        assert!(is_forbidden_ip_with_policy(
+            &addr("64:ff9b::7f00:1"),
+            true,
+            &policy
+        ));
+        assert!(is_forbidden_ip_with_policy(
+            &addr("2002:7f00:1::"),
+            true,
+            &policy
+        ));
+        // ... and with the flag off, nothing changes for them.
+        assert!(is_forbidden_ip_with_policy(
+            &addr("64:ff9b::7f00:1"),
+            false,
+            &policy
+        ));
+        assert!(is_forbidden_ip_with_policy(
+            &addr("2002:7f00:1::"),
+            false,
+            &policy
+        ));
+        // The plain loopback forms stay permitted under the flag.
+        assert!(!is_forbidden_ip_with_policy(
+            &addr("127.0.0.1"),
+            true,
+            &policy
+        ));
+        assert!(!is_forbidden_ip_with_policy(&addr("::1"), true, &policy));
+        // The IPv4-mapped form is not a translation form and stays denied.
+        assert!(is_forbidden_ip_with_policy(
+            &addr("::ffff:127.0.0.1"),
+            true,
+            &policy
+        ));
+    }
+
     #[test]
     fn public_addresses_unchanged_under_empty_policy() {
         let empty = NetworkPolicy::default();
@@ -1255,6 +1318,131 @@ mod tests {
             false,
             &net
         ));
+    }
+
+    /// A2 (#1965) on the LIVE resolution path: the validating resolver asks
+    /// this verdict for every DNS answer, so the loopback permit must not
+    /// travel through the translation forms here either.
+    #[test]
+    fn resolved_address_denies_translation_forms_of_loopback_under_the_flag() {
+        let net = hand_built_policy_with_hosts(&["10.0.0.0/8"], &["vllm.lan"]);
+        assert!(is_forbidden_resolved_address(
+            &addr("64:ff9b::7f00:1"),
+            "vllm.lan",
+            true,
+            &net
+        ));
+        assert!(is_forbidden_resolved_address(
+            &addr("2002:7f00:1::"),
+            "vllm.lan",
+            true,
+            &net
+        ));
+        // The plain loopback stays reachable for the permitted client.
+        assert!(!is_forbidden_resolved_address(
+            &addr("127.0.0.1"),
+            "vllm.lan",
+            true,
+            &net
+        ));
+        // The IPv4-mapped form stays denied.
+        assert!(is_forbidden_resolved_address(
+            &addr("::ffff:127.0.0.1"),
+            "vllm.lan",
+            true,
+            &net
+        ));
+    }
+
+    /// A4 (#1965): the config-validation never-allowable table
+    /// (`network_policy::NEVER_ALLOWABLE`) and the dial-layer always-denied
+    /// set ([`is_always_denied_ip`]) are two representations of the same
+    /// never-allowable set, and nothing tied them together.
+    ///
+    /// They are NOT the same set and must never be asserted equal: the two
+    /// translation prefixes live only in the config table, because their
+    /// dial-time verdict comes from the embedded IPv4. What is pinned here is
+    /// the RELATIONSHIP — no range the config layer refuses to allowlist is
+    /// reachable through the policy verdict path, not even under a blanket
+    /// allowlist.
+    #[test]
+    fn never_allowable_ranges_stay_unreachable_through_the_policy_verdict() {
+        // The strongest allowlist a config could carry: everything allowed.
+        let blanket = hand_built_policy(&["0.0.0.0/0", "::/0"]);
+        for (range_addr, prefix_len, class) in crate::domain::network_policy::NEVER_ALLOWABLE {
+            let probe = *range_addr;
+            let range = format!("{probe}/{prefix_len} ({class})");
+            assert!(
+                is_forbidden_ip_with_policy(&probe, false, &blanket),
+                "{range} must stay unreachable under a blanket allowlist"
+            );
+            assert!(
+                is_forbidden_ip_with_policy(&probe, true, &blanket),
+                "{range} must stay unreachable under a blanket allowlist, even with the loopback flag"
+            );
+            assert!(
+                is_forbidden_resolved_address(&probe, "probe.lan", false, &blanket),
+                "{range} must stay unreachable under a blanket allowlist"
+            );
+            assert!(
+                is_forbidden_resolved_address(&probe, "probe.lan", true, &blanket),
+                "{range} must stay unreachable under a blanket allowlist, even with the loopback flag"
+            );
+        }
+    }
+
+    /// A4 (#1965), second half: the dial-layer always-denied set covers every
+    /// never-allowable range EXCEPT the two translation prefixes, whose
+    /// absence is deliberate — their verdict derives from the embedded IPv4.
+    /// The asymmetry is pinned here so a future unification of the two tables
+    /// breaks loudly instead of silently changing a verdict.
+    #[test]
+    fn the_dial_layer_always_denied_set_covers_every_never_allowable_range() {
+        for (range_addr, prefix_len, class) in crate::domain::network_policy::NEVER_ALLOWABLE {
+            let probe = *range_addr;
+            let is_translation = match probe {
+                IpAddr::V6(v6) => {
+                    ipv6_nat64_embedded_v4(&v6).is_some() || ipv6_6to4_embedded_v4(&v6).is_some()
+                },
+                IpAddr::V4(_) => false,
+            };
+            if is_translation {
+                assert!(
+                    !is_always_denied_ip(&probe),
+                    "{class} ({probe}/{prefix_len}): the translation prefixes stay absent from the dial-layer set on purpose"
+                );
+            } else {
+                assert!(
+                    is_always_denied_ip(&probe),
+                    "{class} ({probe}/{prefix_len}): the dial-layer always-denied set must cover it"
+                );
+            }
+        }
+    }
+
+    /// A4 (#1965): a translation prefix is never allowable as a blanket, and
+    /// its verdict IS the embedded IPv4's verdict — computed WITHOUT the
+    /// loopback permit, so a translation form never reaches something the
+    /// plain embedded address could not reach under the same policy.
+    #[test]
+    fn translation_prefixes_inherit_the_embedded_ipv4_verdict() {
+        let lan = hand_built_policy(&["10.0.0.0/8"]);
+        for (translation, embedded) in [
+            (addr("64:ff9b::7f00:1"), addr("127.0.0.1")),
+            (addr("2002:7f00:1::"), addr("127.0.0.1")),
+            (addr("64:ff9b::a00:5"), addr("10.0.0.5")),
+            (addr("2002:a00:5::"), addr("10.0.0.5")),
+            (addr("64:ff9b::a9fe:a9fe"), addr("169.254.169.254")),
+            (addr("2002:a9fe:a9fe::"), addr("169.254.169.254")),
+        ] {
+            for allow_loopback in [false, true] {
+                assert_eq!(
+                    is_forbidden_ip_with_policy(&translation, allow_loopback, &lan),
+                    is_forbidden_ip_with_policy(&embedded, false, &lan),
+                    "{translation} must inherit the {embedded} verdict (allow_loopback={allow_loopback})"
+                );
+            }
+        }
     }
 
     #[test]
