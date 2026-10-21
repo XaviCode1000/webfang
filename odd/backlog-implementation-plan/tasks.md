@@ -11,7 +11,7 @@ que hace el triage) cuando cada lote aterriza, con el sha de su branch. Ningún 
 - [x] L0 · S1–S5 — cierres por evidencia (#2105, #1996, #1423, #2224) + comentarios (#1936, #1826) + 3 issues nuevas (#2233, #2234, #2235).
 - [ ] L1 · S1–S5 — SSRF: encapsulación IPv4 (#2231, #2232) — **OCUPADO por el agente del owner** (worktree `fix-ssrf-this-network-justification`).
 - [x] L2 · S1–S5 — merge y limpieza post-merge (#1970, #1971, #1972) — 3 commits en `fix-merge-when-green-merged-state` (sin PR); harness 25/0, breaking 26/0, ci 17/0, topology verde.
-- [ ] L3 · S1–S5 — el canal del CI Health enmudecido (#2233, #2234, #2162, #1936, #1980) — **L3a** (clasificador W-03 + cierre por subtítulo) en curso en `fix-ci-health-w03-classifier`; **L3b** (#2234, hermeticidad) necesita build cargo: avisa antes de correrlo.
+- [ ] L3 · S1–S5 — el canal del CI Health enmudecido (#2233, #2234, #2162, #1936, #1980) — **L3a HECHO**: `1b49ef71` + `eaa172d7` en `fix-ci-health-w03-classifier` (verificado por el padre: harness 104/0, RED 99/5, semántica de la búsqueda contra la API real; harness partido 468+474; #2162 y #1980 cerrados). **L3b** (#2234, hermeticidad) en curso: RED real capturado con el env venenoso, fix delegado.
 - [ ] L4 · S1–S5 — residuales de guard (#2070: ítems 1-3; el 4º, no hacer nada) — asignado al peer de coordinación; superficies reales: `scripts/bump-support-patch.sh`, `scripts/test_guard_coverage.sh`, `scripts/check_target_isolation.sh`.
 - [ ] L5 · S1–S5 — atribución de commits (#1995) — asignado al peer de coordinación (después de L4).
 - [ ] L6 · S1–S5 — señal de mutación (#1844).
