@@ -142,7 +142,7 @@ Commands:
   completions  Generate shell completion scripts
   connect      Detect and validate a remote embedding endpoint, then write its config
   doctor       Diagnose the embedding path — config, credential, network, budget
-  show         Dump the configured profile and budget, with provenance
+  show         Dump the effective embeddings provider, the configured budget, and the historical model-profile metadata
   help         Print this message or the help of the given subcommand(s)
 
 Arguments:
