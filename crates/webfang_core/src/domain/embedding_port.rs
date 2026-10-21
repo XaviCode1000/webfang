@@ -16,10 +16,8 @@
 //! - **Separate from `SemanticCleaner`**: the cleaner is a sealed, HTML-only
 //!   pipeline. This port exposes the raw embedding primitive needed by vault
 //!   search (issue #386) and any future semantic feature.
-//! - **Origin AND slot are part of the type, not of the value**: the trait
-//!   object alone erases both *where* a port points and *which slot* it
-//!   occupies. [`LocalEmbeddingPort`] carries origin so a remote provider can
-//!   never be substituted where only the local stack is legitimate (#1977);
+//! - **The slot is part of the type, not of the value**: the trait object
+//!   alone erases *which slot* a port occupies.
 //!   [`Tier2EmbeddingPort`] carries the slot so the vault-search port can
 //!   never be substituted where only the Tier 2 slot is legitimate (F1 in
 //!   `odd/tasks/tier2-port-backed-inspector.md`, restored here); and
@@ -101,44 +99,35 @@ pub trait EmbeddingPort: Send + Sync {
     }
 }
 
-/// An [`EmbeddingPort`] whose origin is known to be the LOCAL embedding stack.
+/// The Tier 2 semantic embedding slot — *which slot* a port occupies.
 ///
-/// # Why the newtype exists
+/// # Why this exists
 ///
-/// `VaultAiPorts::embedding_port` is `Option<Arc<dyn EmbeddingPort>>`, and
-/// `resolve_remote_embedding` overwrites that slot with a remote adapter the
-/// user opted into for **vault search only**. The slot is a `OnceCell` that
-/// records no origin, so after the overwrite nothing in the type system
-/// distinguishes "local ONNX" from "third-party endpoint".
+/// `VaultAiPorts::embedding_port` is `Option<Arc<dyn EmbeddingPort>>` — the
+/// same erased type a Tier 2 port would carry, so `semantic_inspector`
+/// accepted the vault slot and it compiled with exit 0, feeding DOM fragments
+/// to whatever the vault slot had been overwritten with (issue #1977, ADR-0004
+/// §Egress). A distinct type is what keeps the two slots
+/// non-interchangeable: the vault slot is not assignable to
+/// `Option<Tier2EmbeddingPort>`.
 ///
-/// That matters because Tier 2 semantic repair feeds DOM fragments to whatever
-/// port it holds. Both sides have the SAME type, so the slot is a valid
-/// argument for the inspector: `semantic_inspector(&vault_ports.embedding_port, …)`
-/// compiles with exit 0 and ships page content off-box without consent
-/// (issue #1977, ADR-0004 §Egress).
+/// Deliberately does NOT implement [`EmbeddingPort`]: [`port`](Self::port) is
+/// the only way out, so the erased form cannot be reached by an implicit
+/// coercion.
 ///
-/// Wrapping the local port gives the two origins different types.
+/// # What it does NOT carry
 ///
-/// That alone does NOT close the hole: the Tier 2 slot was separately erased
-/// to `Arc<dyn EmbeddingPort>` by 79ca0b66, which re-opened it from the other
-/// side. Origin and slot are two axes, and each needs its own type — see
-/// [`Tier2EmbeddingPort`].
-///
-/// # Why the constructor is `pub` and there is no sealer
-///
-/// Rust visibility is per *crate*: a `pub(crate)` marker inside `webfang_core`
-/// would not constrain `webfang_cli` or `webfang_ai`, which are exactly the
-/// crates that must not mint one. A `pub` constructor is therefore the correct
-/// surface, and the constraint that matters is review of its call sites —
-/// exactly one **production** call site, the CLI composition root
-/// (`build_ai_cleaner`), which wraps the port the ONNX stack handed back;
-/// tests mint their own. This boundary is a convention backed by the compiler
-/// where it can be (the newtype), and a reviewed convention where it cannot.
+/// The "origin" axis (local stack vs remote provider) is gone: ADR-0004 paso 6
+/// removed the local ONNX stack, so the only producer today is a remote
+/// provider the operator consented to — consent is the caller's contract
+/// (`build_tier2_embedding_provider` in `crate::cli::llm_wire` refuses before
+/// the dial). This type marks the SLOT, not the origin: it says nothing about
+/// where the port points, and it does not prove that consent was given.
 #[derive(Clone)]
-pub struct LocalEmbeddingPort(Arc<dyn EmbeddingPort>);
+pub struct Tier2EmbeddingPort(Arc<dyn EmbeddingPort>);
 
-impl LocalEmbeddingPort {
-    /// Wrap a port already known to be the local ONNX stack.
+impl Tier2EmbeddingPort {
+    /// Wrap a port resolved for the Tier 2 semantic slot.
     #[must_use]
     pub fn new(port: Arc<dyn EmbeddingPort>) -> Self {
         Self(port)
@@ -148,72 +137,6 @@ impl LocalEmbeddingPort {
     #[must_use]
     pub fn port(&self) -> &Arc<dyn EmbeddingPort> {
         &self.0
-    }
-}
-
-impl EmbeddingPort for LocalEmbeddingPort {
-    fn embed<'a>(&'a self, text: &'a str) -> BoxFuture<'a, Result<Vec<f32>, SemanticError>> {
-        self.0.embed(text)
-    }
-
-    fn embed_batch<'a>(
-        &'a self,
-        texts: &'a [String],
-    ) -> BoxFuture<'a, Result<Vec<Vec<f32>>, SemanticError>> {
-        self.0.embed_batch(texts)
-    }
-
-    fn embedding_dim(&self) -> usize {
-        self.0.embedding_dim()
-    }
-
-    fn as_any(&self) -> &dyn std::any::Any {
-        self.0.as_any()
-    }
-}
-
-/// The Tier 2 semantic embedding slot — *which slot* a port occupies.
-///
-/// [`LocalEmbeddingPort`] marks the other axis, *where* a port points. The two
-/// are orthogonal, and both were needed: a Tier 2 slot may legitimately hold
-/// either the local ONNX stack (`Local`, with its origin still carried one
-/// level down) or a remote provider the operator consented to (`Remote`).
-/// Neither may hold the vault-search port.
-///
-/// # Why this exists
-///
-/// `VaultAiPorts::embedding_port` is `Option<Arc<dyn EmbeddingPort>>` — the
-/// same type the Tier 2 slot used to carry, so `semantic_inspector` accepted
-/// the vault slot and it compiled with exit 0, feeding DOM fragments to
-/// whatever the vault slot had been overwritten with (#1977, ADR-0004
-/// §Egress). Fix F1 closed exactly that with `&Option<LocalEmbeddingPort>`,
-/// pinned by a checked E0308. The remote Tier 2 path (79ca0b66) then widened
-/// the parameter back to the erased type, because `LocalEmbeddingPort` cannot
-/// express a remote arm — reverting the guard without updating the doc that
-/// promised it. This enum is F1 restored, with the arm F1 had no way to state.
-///
-/// Deliberately does NOT implement [`EmbeddingPort`]: [`port`](Self::port) is
-/// the only way out, so the erased form cannot be reached by an implicit
-/// coercion.
-#[derive(Clone)]
-pub enum Tier2EmbeddingPort {
-    /// The local ONNX stack, with its origin still carried by the inner type.
-    Local(LocalEmbeddingPort),
-    /// A remote provider resolved for the Tier 2 slot.
-    ///
-    /// Consent is the caller's contract — see `build_tier2_embedding_provider`
-    /// in `crate::cli::llm_wire`, which refuses before the dial.
-    Remote(Arc<dyn EmbeddingPort>),
-}
-
-impl Tier2EmbeddingPort {
-    /// Borrow the wrapped port, whichever arm it came from.
-    #[must_use]
-    pub fn port(&self) -> &Arc<dyn EmbeddingPort> {
-        match self {
-            Self::Local(local) => local.port(),
-            Self::Remote(remote) => remote,
-        }
     }
 }
 
@@ -339,24 +262,18 @@ mod tests {
         assert_dyn_compatible(&embedder);
     }
 
-    /// Both arms hand back the port they were built from, so a caller never
-    /// has to match on the arm just to embed. The `Local` arm is the load-
-    /// bearing one: it must forward to the same allocation the newtype was
-    /// built from, not to a clone with a different refcount.
+    /// The newtype hands back the SAME port it was built from, so a caller
+    /// never has to unwrap it to embed: it must forward to the allocation the
+    /// newtype was built from, not to a clone with a different refcount.
     #[test]
-    fn tier2_port_borrows_the_underlying_port_from_either_arm() {
+    fn tier2_port_borrows_the_underlying_port() {
         let erased: Arc<dyn EmbeddingPort> = Arc::new(MockEmbedder { dim: 384 });
 
-        let local_slot = Tier2EmbeddingPort::Local(LocalEmbeddingPort::new(Arc::clone(&erased)));
-        let remote_slot = Tier2EmbeddingPort::Remote(Arc::clone(&erased));
+        let slot = Tier2EmbeddingPort::new(Arc::clone(&erased));
 
         assert!(
-            Arc::ptr_eq(local_slot.port(), &erased),
-            "the Local arm must forward, not copy"
-        );
-        assert!(
-            Arc::ptr_eq(remote_slot.port(), &erased),
-            "the Remote arm must hand back its own port"
+            Arc::ptr_eq(slot.port(), &erased),
+            "the newtype must forward, not copy"
         );
     }
 }
