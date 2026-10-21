@@ -28,6 +28,29 @@ set -euo pipefail
 # `/*` blinding the rest of the file, five invisible `use` path forms, and a
 # choke-point pattern that real Rust never emits) survived for months
 # because nothing in CI executed these cases.
+#
+# === The gate consumes an AST extractor (Ola 3, S1-S6) ===
+# The gate no longer scans source text: it consumes the AST extractor
+# (`tools/intra-crate-lint`) and applies the SAME policy to the sites it
+# reports. This harness therefore also pins the SWAP itself:
+#
+#   - the extractor absent        => the gate fails closed, naming it;
+#   - the extractor unable to parse a file => the gate fails closed, naming
+#     the file;
+#   - the six path forms of B38    => every one of them is a violation;
+#   - the test region is decided STRUCTURALLY (a doc comment mentioning
+#     `#[cfg(test)]` blinds nothing; production code after a test module is
+#     still scanned);
+#   - the choke rule decides on the REFERENCES (any mention of the concrete
+#     `ValidatingResolver`);
+#   - the stale-allowlist rule (B44) still fails the gate;
+#   - NO text scanner is left in the gate: there is no fallback path.
+#
+# Every fixture lives in a mktemp tree: this harness asserts the gate's
+# DECISIONS on scratch inputs and never pins a value measured against the
+# repository tree (a count of sites in the real tree rots with every change
+# to the tree — the acceptance of the swap is a live comparison of the two
+# implementations over the same tree, not a remembered number).
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GATE="$SCRIPT_DIR/check_intra_crate_direction.sh"
@@ -50,11 +73,31 @@ run_gate() {
 # count_sites <output> <file-basename> -> number of ::error:: rows naming that file
 count_sites() { printf '%s\n' "$1" | grep -c "::error::.*$2" || true; }
 
+# run_gate_at <root> <allowlist-file> -> prints gate stdout+stderr, exits with
+# the gate status
+run_gate_at() {
+  INTRA_CRATE_ROOT="$1" INTRA_CRATE_ALLOWLIST="$2" bash "$GATE" 2>&1 || true
+}
+
 # A module-path entry needs an ADR reason or the gate rejects the entry itself.
 REASONED_ALLOW="$T/reasoned.txt"
 printf '%s\n' 'infrastructure::crawler::resource_downloader # ADR-0010 segment-anchor test' > "$REASONED_ALLOW"
 EMPTY_ALLOW="$T/empty.txt"
 : > "$EMPTY_ALLOW"
+
+# ---------------------------------------------------------------------------
+# 0. Preflight: the gate consumes the AST extractor. If it is not available
+# every case below would fail for the wrong reason, so say so once — with the
+# build command — instead of reporting a wall of red.
+# ---------------------------------------------------------------------------
+PREFLIGHT_ROOT="$T/preflight_root"
+mkdir -p "$PREFLIGHT_ROOT"
+preflight_out="$(run_gate_at "$PREFLIGHT_ROOT" "$EMPTY_ALLOW")"
+if printf '%s\n' "$preflight_out" | grep -q "extractor was not found\|INTRA_CRATE_LINT_BIN is set"; then
+  echo "FAIL: the intra-crate lint extractor is not available — the gate cannot run."
+  echo "      build it with: cargo build --manifest-path tools/intra-crate-lint/Cargo.toml --locked"
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
 # 1. Brace imports expand to one site per symbol
@@ -228,11 +271,230 @@ printf '/// See crate::infrastructure::probe::Probe for details.\n// crate::infr
   > "$T/application/docced.rs"
 out="$(run_gate "$EMPTY_ALLOW")"
 if printf '%s\n' "$out" | grep -q "docced.rs"; then
-  bad "doc-comment path got flagged — // lines must be dropped by the awk filter"
+  bad "doc-comment path got flagged — // lines are not code (the extractor drops them)"
 else
   ok "doc-comment path ignored"
 fi
 rm -f "$T/application/docced.rs"
+
+# ---------------------------------------------------------------------------
+# 13. The extractor is ABSENT => the gate fails closed, naming it (S6).
+#     There is no fallback scanner: a gate that degrades to the weak scanner
+#     when the strong one is unavailable is the same fail-open being closed.
+# ---------------------------------------------------------------------------
+OUT="$(INTRA_CRATE_ROOT="$T" INTRA_CRATE_ALLOWLIST="$EMPTY_ALLOW" \
+      INTRA_CRATE_LINT_BIN="$T/no-such-extractor" bash "$GATE" 2>&1)" && RC=0 || RC=$?
+if [ "$RC" -ne 0 ] && printf '%s\n' "$OUT" | grep -q "no-such-extractor"; then
+  ok "an absent extractor fails the gate closed and names the missing binary (rc=$RC)"
+else
+  bad "an absent extractor did not fail closed with a named error (rc=$RC): $OUT"
+fi
+
+# The same, with NO candidate at all: an isolated copy of the gate (so the
+# repository-local build paths do not exist) and a PATH that carries no
+# `intra-crate-lint`.
+MINBIN="$T/minbin"
+mkdir -p "$MINBIN"
+for tool in bash env mktemp sed grep rm dirname; do
+  tool_path="$(command -v "$tool" || true)"
+  if [ -n "$tool_path" ]; then
+    ln -sf "$tool_path" "$MINBIN/$tool"
+  fi
+done
+ISOLATED="$T/isolated"
+mkdir -p "$ISOLATED/scripts"
+cp "$GATE" "$ISOLATED/scripts/check_intra_crate_direction.sh"
+# `env -u` so an INTRA_CRATE_LINT_BIN inherited from the environment cannot
+# make this case find a binary: the point is that NO candidate exists.
+OUT="$(cd "$T" && env -u INTRA_CRATE_LINT_BIN PATH="$MINBIN" INTRA_CRATE_ROOT="$T" \
+      INTRA_CRATE_ALLOWLIST="$EMPTY_ALLOW" \
+      bash "$ISOLATED/scripts/check_intra_crate_direction.sh" 2>&1)" && RC=0 || RC=$?
+if [ "$RC" -ne 0 ] && printf '%s\n' "$OUT" | grep -q "extractor was not found"; then
+  ok "with no extractor anywhere the gate fails closed and says so (rc=$RC)"
+else
+  bad "with no extractor anywhere the gate did not fail closed (rc=$RC): $OUT"
+fi
+
+# ---------------------------------------------------------------------------
+# 14. The extractor cannot PARSE a file => the gate fails closed, NAMING the
+#     file (exit 2 of the extractor contract).
+# ---------------------------------------------------------------------------
+PARSE_ROOT="$T/parse_root"
+mkdir -p "$PARSE_ROOT/application"
+printf 'pub fn broken( {\n' > "$PARSE_ROOT/application/broken.rs"
+rc=0
+INTRA_CRATE_ROOT="$PARSE_ROOT" INTRA_CRATE_ALLOWLIST="$EMPTY_ALLOW" \
+  bash "$GATE" >"$T/gate_parse.out" 2>&1 || rc=$?
+out="$(<"$T/gate_parse.out")"
+if [ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -q "broken.rs"; then
+  ok "an unparseable file fails the gate closed and names the file (rc=$rc)"
+else
+  bad "an unparseable file did not fail closed naming the file (rc=$rc): $out"
+fi
+if printf '%s\n' "$out" | grep -q "^OK:"; then
+  bad "the gate reported OK on a tree it could not fully scan"
+else
+  ok "the gate does not report OK on a tree it could not fully scan"
+fi
+rm -rf "$PARSE_ROOT"
+
+# ---------------------------------------------------------------------------
+# 15. The six path forms of B38 are violations (the previous matcher saw
+#     none of them: a brace group, the bare module, a glob, an alias, a
+#     rooted group and the spaces around `::`).
+# ---------------------------------------------------------------------------
+b38_forms=(
+  "use crate::infrastructure::probe::{Alpha, Beta};"
+  "use crate::infrastructure;"
+  "use crate::infrastructure::*;"
+  "use crate::infrastructure as infra;"
+  "use crate::{infrastructure::probe::Alpha};"
+  "use crate :: infrastructure :: probe :: Alpha;"
+)
+b38_index=0
+for b38_form in "${b38_forms[@]}"; do
+  b38_index=$((b38_index + 1))
+  printf '%s\n' "$b38_form" > "$T/application/form$b38_index.rs"
+  out="$(run_gate "$EMPTY_ALLOW")"
+  if printf '%s\n' "$out" | grep -q "::error::.*application/form$b38_index\.rs:"; then
+    ok "B38 form $b38_index is a violation: $b38_form"
+  else
+    bad "B38 form $b38_index was NOT reported: $b38_form"
+    printf '%s\n' "$out" | grep "::error::" | sed 's/^/      /' || true
+  fi
+  rm -f "$T/application/form$b38_index.rs"
+done
+
+# ---------------------------------------------------------------------------
+# 16. The test region is decided STRUCTURALLY (B36): a doc comment that
+#     mentions `#[cfg(test)]` blinds nothing, and the production code that
+#     FOLLOWS a test module is still scanned.
+# ---------------------------------------------------------------------------
+cat > "$T/application/doc_trap.rs" <<'EOF'
+//! Handler layer. The `#[cfg(test)]` below marks the test module.
+use crate::infrastructure::probe::Alpha;
+EOF
+cat > "$T/application/test_region.rs" <<'EOF'
+pub fn before() {}
+
+#[cfg(test)]
+mod tests {
+    use crate::infrastructure::probe::Alpha;
+}
+
+pub fn after() {
+    let _ = crate::infrastructure::probe::Beta;
+}
+EOF
+out="$(run_gate "$EMPTY_ALLOW")"
+doc_line=$(grep -n "probe::Alpha" "$T/application/doc_trap.rs" | cut -d: -f1)
+inside_line=$(grep -n "probe::Alpha" "$T/application/test_region.rs" | cut -d: -f1)
+after_line=$(grep -n "probe::Beta" "$T/application/test_region.rs" | cut -d: -f1)
+if printf '%s\n' "$out" | grep -q "::error::.*application/doc_trap\.rs:$doc_line:"; then
+  ok "a doc comment mentioning #[cfg(test)] blinds nothing (line $doc_line is reported)"
+else
+  bad "a doc comment mentioning #[cfg(test)] still truncates the scan"
+fi
+if printf '%s\n' "$out" | grep -q "application/test_region\.rs:$inside_line:"; then
+  bad "a site inside a #[cfg(test)] module was reported (line $inside_line)"
+else
+  ok "a site inside a #[cfg(test)] module is not reported (line $inside_line)"
+fi
+if printf '%s\n' "$out" | grep -q "::error::.*application/test_region\.rs:$after_line:"; then
+  ok "production code after a test module is still scanned (line $after_line is reported)"
+else
+  bad "production code after a test module is not scanned (line $after_line missing)"
+fi
+rm -f "$T/application/doc_trap.rs" "$T/application/test_region.rs"
+
+# ---------------------------------------------------------------------------
+# 17. The port-choke rule (B39) decides on the REFERENCES: any mention of the
+#     concrete `ValidatingResolver` outside the guard modules is a violation.
+# ---------------------------------------------------------------------------
+cat > "$T/application/choke.rs" <<'EOF'
+pub fn build(resolver: ValidatingResolver) -> Client {
+    ValidatingResolver::new()
+}
+EOF
+out="$(run_gate "$EMPTY_ALLOW")"
+if printf '%s\n' "$out" | grep -q "::error::.*application/choke\.rs:1:.*choke point"; then
+  ok "a mention of ValidatingResolver is a port-adoption violation"
+else
+  bad "a mention of ValidatingResolver was not reported: $out"
+fi
+cat > "$T/application/choke_path.rs" <<'EOF'
+pub fn build() {
+    let _ = crate::infrastructure::ssrf::ValidatingResolver::new();
+}
+EOF
+out="$(run_gate "$EMPTY_ALLOW")"
+if printf '%s\n' "$out" | grep -q "::error::.*application/choke_path\.rs:2:.*choke point"; then
+  ok "a qualified path mentioning ValidatingResolver is a port-adoption violation"
+else
+  bad "a qualified path mentioning ValidatingResolver was not reported: $out"
+fi
+rm -f "$T/application/choke.rs" "$T/application/choke_path.rs"
+
+# ---------------------------------------------------------------------------
+# 18. The stale-allowlist rule (B44) still fails the gate: an entry that
+#     absorbs ZERO sites is a removal request, not a permanent exemption.
+# ---------------------------------------------------------------------------
+LIVE_ROOT="$T/stale_live_root"
+mkdir -p "$LIVE_ROOT/application"
+printf 'use crate::infrastructure::evil::direct as _;\n' > "$LIVE_ROOT/application/new_file.rs"
+printf '%s\n' 'infrastructure::evil::direct # ADR-3000 live entry, removal condition: repro' > "$T/live_entry.txt"
+rc=0
+INTRA_CRATE_ROOT="$LIVE_ROOT" INTRA_CRATE_ALLOWLIST="$T/live_entry.txt" \
+  bash "$GATE" >"$T/gate_live.out" 2>&1 || rc=$?
+out="$(<"$T/gate_live.out")"
+if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -q "allowlisted 1"; then
+  ok "a live allowlist entry still absorbs its site and keeps the gate green"
+else
+  bad "a live allowlist entry stopped working (rc=$rc): $out"
+fi
+STALE_ROOT="$T/stale_root"
+mkdir -p "$STALE_ROOT/application"
+printf '%s\n' 'nonexistent::subsystem::path # ADR-9999 stale entry, removal condition: repro' > "$T/stale_entry.txt"
+rc=0
+INTRA_CRATE_ROOT="$STALE_ROOT" INTRA_CRATE_ALLOWLIST="$T/stale_entry.txt" \
+  bash "$GATE" >"$T/gate_stale.out" 2>&1 || rc=$?
+out="$(<"$T/gate_stale.out")"
+if [ "$rc" -ne 0 ] && printf '%s\n' "$out" | grep -q "nonexistent::subsystem::path"; then
+  ok "a stale allowlist entry (zero sites) fails the gate and is named (rc=$rc)"
+else
+  bad "a stale allowlist entry passed silently (rc=$rc): $out"
+fi
+if printf '%s\n' "$out" | grep -q "absorbed 0 sites"; then
+  ok "the stale entry is reported as an error, not as a warning"
+else
+  bad "the stale entry is not reported as an error: $out"
+fi
+
+# ---------------------------------------------------------------------------
+# 19. NO text scanner is left in the gate (S6): the AST extractor is the only
+#     path, and the gate still decides (it was not neutered by the swap).
+# ---------------------------------------------------------------------------
+if grep -qiE '(^|[^[:alnum:]_])awk([^[:alnum:]_]|$)' "$GATE"; then
+  bad "the gate still contains a text-scanner invocation — there must be no fallback"
+  grep -niE '(^|[^[:alnum:]_])awk([^[:alnum:]_]|$)' "$GATE" | sed 's/^/      /' || true
+else
+  ok "the gate contains no text scanner: the AST extractor is the only path"
+fi
+if grep -q "filter_and_match" "$GATE"; then
+  bad "the deleted scanner is still present in the gate"
+else
+  ok "the deleted scanner is gone from the gate"
+fi
+if ! grep -q "intra-crate-lint" "$GATE"; then
+  bad "the gate does not consume the AST extractor"
+else
+  ok "the gate consumes the AST extractor"
+fi
+if printf '%s\n' "$out" | grep -q "^OK:"; then
+  bad "the gate reported OK on a tree with a stale allowlist entry"
+else
+  ok "the gate still decides (it is not neutered by the swap)"
+fi
 
 echo
 if [ "$fail" = "0" ]; then

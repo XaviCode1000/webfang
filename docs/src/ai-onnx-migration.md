@@ -11,6 +11,7 @@ le afectó y qué hacer ahora**, en el orden de los pasos. La decisión y su sec
 | Aviso (2 minors antes del corte) | Se **anunció**. No se borró nada: los shims seguían funcionando y `--clean-ai` seguía usando ONNX local |
 | Ventana de migración | El `--embedding-provider` resolvió el slot de vault search mientras el ONNX seguía vivo |
 | Corte (paso 6 del ADR-0004) | ONNX local, el crate `webfang_ai` y la feature `ai` **se eliminaron**. Este es el estado actual |
+| Retiro de los shims | Los shims de migración **se eliminaron**: ya no parsean. Un flag retirado responde con el error estándar de clap (`unexpected argument`, exit 64) |
 
 `cargo build --features ai` falla ahora en la resolución de features: la feature desapareció, y no
 deja un shim detrás. Un shim detrás de la feature que se borra no existe, en ningún lenguaje.
@@ -21,8 +22,8 @@ deja un shim detrás. Un shim detrás de la feature que se borra no existe, en n
 | :--- | :--- |
 | `--clean-ai` con el modelo local (Granite 97M / 311M) | **Te afecta.** El cleaner resuelve su endpoint por `--embedding-provider`. Perdiste el offline total |
 | `--clean-ai` + `--embedding-provider` ya configurado | Sirve hoy: el flag mueve el slot de vault search **y** alimenta el cleaner vía el `EmbeddingPort` des-gateado |
-| `--ai-model`, `AI_MODEL_ID`, `WEBFANG_AI_MODEL_ID`, `WEBFANG_AI_ENGINE` | Shims: aceptados, pero emiten un aviso de migración en cada corrida. No vuelvas a usarlos |
-| `--max-tokens`, `WEBFANG_MAX_TOKENS` | Shim de un shim: renombrado a `--max-chars`. Migralo ya |
+| `--ai-model`, `AI_MODEL_ID`, `WEBFANG_AI_MODEL_ID`, `WEBFANG_AI_ENGINE` | **Retirados.** Ya no son flags: `--ai-model` responde con el error estándar de clap (`unexpected argument`, exit 64) y las env se ignoran en silencio. Usá `--embedding-provider` / `WEBFANG_EMBEDDING_PROVIDER` |
+| `--max-tokens`, `WEBFANG_MAX_TOKENS` | **Retirados.** `--max-tokens` ya no parsea (error estándar de clap, exit 64) y `WEBFANG_MAX_TOKENS` se ignora. Usá `--max-chars` / `WEBFANG_MAX_CHARS` |
 | Vaults con vectores de Granite | Hay que **re-indexar**: el endpoint nuevo no produce vectores comparables. El coste (y el BYO-key) lo pagás vos |
 | No usás la superficie AI | Nada. Los avisos no aparecen en corridas que no la tocan |
 
@@ -51,16 +52,19 @@ deja un shim detrás. Un shim detrás de la feature que se borra no existe, en n
    ```
 
    En `--offline` no hay provider de embeddings que sirva: el guard rechaza cualquier endpoint —uno
-   remoto público o uno en `127.0.0.1`— y sale con exit 78. El "loopback permitido" del aviso del
-   paso 5 se refería al modelo local ONNX, que este paso eliminó; sin ese camino, `--offline` solo
-   sirve para corridas sin limpieza semántica. Un endpoint LAN sigue necesitando la allowlist por
-   CIDR (`allow_cidrs`), que **no** incluye `100.64.0.0/10` salvo opt-in explícito.
+   remoto público o uno en `127.0.0.1`— y sale con exit 78. El "loopback permitido" que decía el
+   aviso del paso 5 se refería al modelo local ONNX, que este paso eliminó; el aviso ya no lo dice y
+   ahora nombra la regla real (rechaza cualquier provider de embeddings, remoto o loopback). Sin ese
+   camino, `--offline` solo sirve para corridas sin limpieza semántica. Un endpoint LAN sigue
+   necesitando la allowlist por CIDR (`allow_cidrs`), que **no** incluye `100.64.0.0/10` salvo
+   opt-in explícito.
 
 3. **Re-indexá los vaults** que tengan vectores de Granite. No hay forma de detectar la mezcla: el
    fail-closed por dimensión no puede dispararse sobre los vaults que nunca tuvieron `model_id`, que
    son justamente los afectados. Vas a ver un aviso de "legado"; re-indexar es lo que lo cierra.
 
-4. **Renombrá `--max-tokens` → `--max-chars`.** El shim sigue aceptado pero avisa en cada corrida.
+4. **Renombrá `--max-tokens` → `--max-chars`.** El shim se retiró: `--max-tokens` ya no parsea y
+   `WEBFANG_MAX_TOKENS` se ignora en silencio.
 
 ## Qué sigue funcionando
 

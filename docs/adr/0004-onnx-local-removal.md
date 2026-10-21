@@ -45,6 +45,8 @@ Superficie, toda verificada bajo gate `ai` hoy (`options_spec/ai.rs:77,102,127`)
 
 `--offline` conserva su semántica (loopback permitido, remoto público → exit 78). Un release **minor** previo anuncia todo esto (aviso en ejecución + release notes —los work PRs no tocan `CHANGELOG.md`, lo escribe release-plz—); el borrado llega dos minors más adelante, y es **ese** commit el que lleva el marker de ruptura. Nunca `ConfigError` genérico ni silencio.
 
+**Corrección 2026-10-21 (#2166): `--offline` rechaza TODOS los providers de embeddings, loopback incluido.** El párrafo anterior dice que "`--offline` conserva su semántica (loopback permitido, remoto público → exit 78)"; esa frase registra una promesa que la implementación **nunca** cumplió. El guard de `--offline` (la rama `offline` de `build_embedding_provider`, `crates/webfang_core/src/cli/llm_wire.rs`) se dispara **antes** de inspeccionar el endpoint, así que rechaza cualquier provider resuelto —uno remoto público o uno en `127.0.0.1`— con exit 78 (`EXIT_CONFIG`); la excepción de loopback que el paso 5 anunciaba se refería al modelo local ONNX, que el paso 6 eliminó, y sin ese camino `--offline` sólo sirve para corridas sin limpieza semántica. **Decisión del owner (2026-10-21): el guard no cambia; se corrigen los textos publicados** —el aviso por corrida, el mensaje del guard, la línea `allow_loopback` de `webfang doctor` y la guía de migración—, y se agrega una prueba que fija el caso loopback + `--offline` → exit 78 sin dial. La decisión original **no** se reescribe: el párrafo de arriba queda como el registro de lo que se anunció en su momento, y esta corrección es la que empieza a decir la verdad.
+
 ### Enmienda 2026-10-16 — el marker de ruptura pertenece al paso 6 (#1998)
 
 La redacción anterior de esta sección pedía el trailer `BREAKING CHANGE:` en el commit del release previo, "para que both el version bump y la sección ⚠️ se generen". En este repo el marker de ruptura —título `!` o footer `BREAKING CHANGE:`— **dispara el bump**, así que leído al pie de la letra el paso 5 salía como MAJOR (3.0.0) y no como minor. Eso contradecía la condición 5 del owner ("el release del paso 5 salió al menos una minor antes del borrado") y la *Reversibilidad*, que asume shims con ventana de ≥2 releases minor.
@@ -56,6 +58,10 @@ La redacción anterior de esta sección pedía el trailer `BREAKING CHANGE:` en 
 ## Umbral por defecto huérfano
 
 El 0.3 está calibrado para Granite y vive en cuatro sitios (`options_spec/ai.rs:37`, `threshold_config.rs:49`, `semantic_cleaner_impl.rs:124`, `relevance_scorer.rs:333`); retirado el único modelo calibrado, cualquier remoto retiene distinto con el mismo número. Mitigación obligatoria con **criterio de salida**: mientras el umbral sea el default y el modelo no esté calibrado, aviso una vez por corrida + `threshold_used` en el summary; la mitigación termina en el flip anunciado con tope de 2 releases minor —si no hay golden set para entonces, el owner decide (aviso permanente documentado o mantener 0.3 con riesgo firmado) y lo registra aquí. Sin salida con fecha, el huérfano se vuelve permanente.
+
+**Corrección 2026-10-21 (#2167): el 0.3 ya no vive en cuatro sitios.** El párrafo anterior los enumera (`options_spec/ai.rs:37`, `threshold_config.rs:49`, `semantic_cleaner_impl.rs:124`, `relevance_scorer.rs:333`): tres de esos ficheros都属于 al crate `webfang_ai`, que este mismo ADR borró en el paso 6, así que la lista describe un árbol que ya no existe — y la línea que sobrevive (`options_spec/ai.rs`) ya no es la del default. Los **cuatro sitios reales** del default son `domain/options_spec/ai.rs:47` (`DEFAULT_THRESHOLD`, la fuente única del valor), `domain/options_spec/ai.rs:76` (el default del spec, que es una cadena), `config.rs:59` y `application/crawl_options.rs:37` (los defaults de `Config` y `AiConfig`).
+
+El razonamiento de esta sección no cambia por eso, y es lo que la sostiene: lo que importa es que el default **no está calibrado** para ningún provider vivo, y eso sigue siendo cierto. Lo que cambia es dónde vive el número. La decisión original **no** se reescribe: el párrafo de arriba queda como el registro de lo que se escribió en su momento.
 
 **Corrección 2026-10-11 (#1975): el 0.75 de Tier 2 son dos números, no uno.** El texto anterior decía que "no es de similitud sino `ErrorHintConfig::semantic_threshold`" — incompleto. (1) `ErrorHintConfig::semantic_threshold = 0.75` (`extraction_quality.rs:29`, junto a `lexical_escalation_lower_bound: 0.70`) no gatea nada: su único consumidor es `semantic_drift_factor` (`structural_score.rs:56-64`), que lo usa como denominador de normalización `1 − (0.75 − t)/0.75` y devuelve 1.0 neutral cuando Tier 2 no corrió. (2) `AdaptiveSelectorOptions::semantic_threshold = 0.75` (`adaptive_engine/mod.rs:99`) sí es la puerta de similitud: decide Repaired/Degraded (`:532`) y se pasa como threshold del inspector (`webfang_cli/src/main.rs:588`), que además filtra por él. El "umbral 0.75 a recalibrar por modelo" del paso 3 refiere a (2); recalibrar (1) es desacoplar un denominador del hint — cambio distinto.
 
@@ -152,6 +158,8 @@ Si el borrado falla, el árbol ONNX se recupera desde `onnx-tree/pre-step5` — 
 - `crates/webfang_cli/src/main.rs:602` — precedencia `--ai-model` sobre env
 - Issues: #1915 (decisión), #1917 (primera revisión, cerrada por #1918), #1919 (re-scope)
 
+**Corrección 2026-10-21 (#2167, #2168): algunas referencias ya no resuelven.** Esta lista es el inventario de la evidencia sobre la que se decidió, y queda como estaba; lo que se corrige es su estado actual. Los punteros al crate `webfang_ai` (`semantic_cleaner_impl.rs`, `relevance_scorer.rs`, `Cargo.toml`) apuntan a un árbol que este ADR borró en el paso 6: ya no resuelven. Dos de las referencias vivas se movieron por los slices que cerraron este ADR —las líneas de `options_spec/ai.rs` y de `cli/llm_wire.rs`— y sus citas por línea quedaron desfasadas; las ubicaciones actuales de los sitios del 0.3 están en la corrección del §Umbral por defecto huérfano, y la semántica vigente de `--offline` está en el §Compatibilidad y en su corrección fechada (#2166).
+
 ## Addendum 2026-10-19 — cierre del paso 6
 
 ### Desenlace: 6a, borrado total
@@ -168,6 +176,10 @@ El flip anunciado ocurrió y no existe golden set. De las dos salidas que esta s
 - El riesgo —un endpoint remoto retiene distinto con el mismo número— queda declarado en la guía de migración, no sólo en este ADR.
 - **Salida con fecha:** al cortar **3.2.0**, el mismo release que retira los shims, el owner revisa la decisión. Si para entonces hay golden set, se recalibra; si no, renueva el aviso por otra ventana o firma el riesgo de mantener 0.3. Un solo punto de revisión para las dos ventanas abiertas, en vez de dos.
 
+**Corrección 2026-10-21 (#2167, #2168): el ancla 3.2.0 quedó inalcanzable y la revisión pasa a ser por condición.** `.github/support.json` declara 4.0 STABLE · 3.0 MAINTENANCE · 2.13 EOL, así que ninguna release futura puede cortar un 3.2.0: la fecha de revisión que se acaba de escribir no puede llegar, y con ella se cae la "salida con fecha" que esta sección exigía — el huérfano se volvería permanente por el mecanismo mismo que el ADR prohíbe.
+
+La decisión de fondo **no cambia**: sigue siendo **aviso permanente documentado**. El aviso por corrida y `threshold_used` en el summary se emiten, el valor sigue en 0.3, y su riesgo —un endpoint remoto retiene distinto con el mismo número— queda declarado en la guía de migración, no sólo en este ADR. Lo que se corrige es el **disparador** de la revisión: pasa a ser **por condición**, con la condición que el propio ADR ya fijaba —**cuando exista un golden set** para el provider remoto en uso, se recalibra el umbral; mientras no exista, el aviso permanente y el 0.3 firmado se mantienen—, y el owner puede re-abrirla antes si aparece un motivo. La decisión original **no** se reescribe: el párrafo de arriba queda como el registro de lo que se anunció en su momento, y esta corrección es la que empieza a decir la verdad.
+
 Sin esa revisión el huérfano se vuelve permanente, que es exactamente lo que este ADR prohíbe.
 
 ### Follow-up: la ventana de shims no cierra con este ADR
@@ -175,6 +187,12 @@ Sin esa revisión el huérfano se vuelve permanente, que es exactamente lo que e
 Este ADR cierra el **borrado**. Los shims (`--ai-model`, `--max-tokens`, `WEBFANG_MAX_TOKENS`, `AI_MODEL_ID` / `WEBFANG_AI_MODEL_ID`, `WEBFANG_AI_ENGINE`) siguen vivos y su retiro es un slice propio, con su marker de ruptura y su issue: **#2119** (2026-10-20).
 
 El ancla es **3.2.0**. La ventana del §Compatibilidad pedía "≥2 releases minor" desde el anuncio de v2.12.0: pasó 2.13.0 (minor) y 3.0.0 (major, el borrado). Contarlas como las dos releases de la ventana es la lectura que mantiene la promesa hecha al usuario sin estirarla a un tercer release.
+
+**Corrección 2026-10-21 (#2119, #2168): los shims se retiran y su ancla quedó inalcanzable.** El párrafo anterior dice que los shims "siguen vivos": su retiro es el slice **#2119** (`refactor(cli)!:`) — `--ai-model` y `--max-tokens` dejan de parsear (error estándar de clap, exit 64), sus envs se ignoran en silencio, y el aviso `onnx_deprecation` que los anunciaba se va con ellos. El ancla era **3.2.0** y **nunca llegó**: 4.0.0 se publicó antes de que ese minor existiera, de modo que la fecha de retiro era inalcanzable y la ventana se cierra **de forma anticipada**.
+
+Lo que se cumple es la promesa del §Compatibilidad, que era "≥2 releases minor" desde el anuncio de v2.12.0: pasaron 2.13.0 (minor) y 3.0.0 (major, el borrado). El cierre anticipado no rompe esa promesa — la cuenta de releases que la sostenía ya estaba cerrada, y lo que se adelanta es la fecha de un ancla que el proceso de releases nunca iba a alcanzar. Por eso el ancla no se re-ancla a otra fecha: una fecha futura repetiría el mismo fallo cuando esa release se adelante, y lo que hace falta es un disparador que no dependa del calendario de releases.
+
+La decisión original **no** se reescribe: el párrafo de arriba queda como el registro de lo que se anunció en su momento, y esta corrección es la que empieza a decir la verdad.
 
 ### Residuo del borrado (2026-10-20)
 
@@ -184,6 +202,8 @@ El paso 6 cerró cuando el motor dejó de existir, no cuando el árbol quedó pr
 - **#2105 (abierta)** — `LocalEmbeddingPort` y `Tier2EmbeddingPort::Local` no se construyen en producción.
 - **#2106 (abierta)** — `show` y `doctor` todavía imprimen `granite-97m`, un modelo local retirado.
 - **#2107 (abierta)** — comentarios que afirman que la feature Cargo `ai` existe.
+
+**Corrección 2026-10-21 (#2168): el estado de esa lista cambió.** #2105 y #2106 se cerraron (sus slices aterrizaron: `Tier2EmbeddingPort` colapsado a un newtype, y `show`/`doctor` reportando el provider de embeddings efectivamente resuelto). #2107 se dividió: la mitad de comentarios se corrigió en #2122, y la parte que retiraba el flag `--enable-ai` de los dos binarios MCP es el slice #2123. La lista de arriba queda como el registro del 2026-10-20, que es lo que era; esta corrección es la que la actualiza.
 
 Ninguna es criterio de aceptación de este ADR, y por eso no bloquean su cierre. Se registran acá para que "ADR-0004 cerrado" no se lea como "no queda rastro de ONNX en el árbol".
 

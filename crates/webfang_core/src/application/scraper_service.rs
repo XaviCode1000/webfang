@@ -1007,6 +1007,20 @@ mod tests {
     /// `outcome = "ok"` and the produced-document count. Before the outcome
     /// contract the span closed with a duration and a URL, and "did this page
     /// work" was only answerable from neighbouring events.
+    ///
+    /// Miri gate (#2187): a SUCCESSFUL scrape is the only arm of this module
+    /// that reaches `domain::html_cleaner::clean_html` → `lol_html::rewrite_str`,
+    /// whose drop glue ends in the `servo_arc` 0.4.3 `ArcUnion` drop — a Tree
+    /// Borrows violation (`fetch_sub` on a Frozen tag) that aborts the whole
+    /// Miri process, not one case. Same defect family as the already-gated
+    /// siblings: `application/extraction.rs` (via lol_html), `application/
+    /// spa_detection.rs` (via lol_html) and `application/crawler/discovery.rs`
+    /// (via lol_html). The error arm below returns before `clean_html` and
+    /// needs no gate.
+    #[cfg_attr(
+        miri,
+        ignore = "servo_arc Tree Borrows UB in lol_html::rewrite_str via clean_html (#2187)"
+    )]
     #[test]
     fn scrape_span_records_success_outcome_and_result_count() {
         // The page identity is a CHILD of this root, so the trace must match
