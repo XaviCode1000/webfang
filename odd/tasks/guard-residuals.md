@@ -161,3 +161,23 @@ L11 — Cuando el owner abra la PR de este lote (tarea T11 del plan padre), el c
 documentado como "no hacer nada" — el issue **no** se cierra entero. Rama:
 `fix/guard-residuals`, base `main`. Una etiqueta `type:*` (la del vocabulario del repo:
 `type:bug` para los tres guards) y cero atribución de IA.
+
+L12 — Revisión nativa (RDD, switch global **on**): el `assess` del candidato
+(`baseRef=main`, `committedOnly=true`) devolvió `risk=medium`, `nativeRisk=high` y
+`reviewDue=true` (razón `high_risk`), con las señales `process_boundary` y `shell_source`
+sobre `scripts/bump-support-patch.sh`. El `inspect` ofreció el START con lineage
+`review-ead5e692fc9ea607`; el START se creó con las lentes `review-risk` y
+`review-reliability` (tier `high`, correction_budget 153). El relay del reviewer corrió una
+vez y su artefacto fue **rechazado en admisión** por el provider: "reviewer artifact
+admission out_of_scope: reviewer inspection includes paths outside the frozen candidate"
+(`inspection_coverage`, `missing_and_foreign_inspection_paths`, 1 path faltante + 1 path
+ajeno), con el payload rechazado preservado en
+`.git/gentle-ai/rejected-results/review-ead5e692fc9ea607/`. El STATUS posterior sigue
+ofreciendo los mismos dos slots, pero el binding ya no es aceptado para otra corrida desde
+este host.
+
+Consecuencia honesta: **la revisión nativa de este candidato no se completó** — no hay
+veredicto del reviewer, y el lineage queda abierto para que el maintainer lo inspeccione
+(`gentle-ai review status --lineage=review-ead5e692fc9ea607`). Eso **no** degrada la
+verificación del lote: cada fix tiene su caso RED/GREEN y el guard real se corrió contra el
+árbol. La revisión nativa es una vista externa adicional, no un sustituto de la verificación.
