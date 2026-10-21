@@ -24,7 +24,7 @@ cada una con su propio worktree, su rama y su PR.
 | # | Tarea | S# | Route | Commit |
 |---|-------|----|-------|--------|
 | T0 | Crear las tres issues nuevas: #2166 (`--offline`), #2167 (umbral 0.3), #2168 (ancla 3.2.0) | S1,S2 | inline | n/a (issues) |
-| T1 | #2166 — alinear aviso, mensaje de error, `doctor`, guía de migración y ADR §46 con el guard real (exit 78 para todo provider con `--offline`) | S2,S3,S6 | worker `gentle-ai-worker` + verificación inline | ✅ |
+| T1 | #2166 — alinear aviso, mensaje de error, `doctor`, guía de migración, ADR §46, `installation.md` y el `--help` con el guard real (exit 78 para todo provider con `--offline`) | S2,S3,S6 | worker `gentle-ai-worker` + verificación inline | `d39a91c7` (PR #2178) |
 | T2 | #2119 — retirar los shims `--ai-model`, `--max-tokens`, `WEBFANG_MAX_TOKENS`, `AI_MODEL_ID`/`WEBFANG_AI_MODEL_ID`, `WEBFANG_AI_ENGINE`; marker de ruptura, merge con `--merge` | S4,S6 | worker `gentle-ai-worker` + verificación inline | ⏳ |
 | T3 | #2168 — registrar en ADR-0004 que el ancla 3.2.0 quedó inalcanzable, que la promesa de la ventana se cumplió (2.13.0 minor + 3.0.0 major) y que la ventana cierra anticipadamente | S2,S3 | worker `gentle-ai-worker` (docs) | ⏳ |
 | T4 | #2167 — registrar en ADR-0004 §58 la decisión "aviso permanente documentado" para el umbral 0.3, con su riesgo, y dejar el aviso y `threshold_used` coherentes | S2,S3 | worker `gentle-ai-worker` | ⏳ |
