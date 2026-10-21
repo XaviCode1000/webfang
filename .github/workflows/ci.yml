@@ -234,6 +234,16 @@ jobs:
       # `scripts/check_intra_crate_direction.sh` and ADR-0010 allowlist).
       - name: Intra-crate direction gate (strict)
         run: INTRA_CRATE_MODE=strict bash scripts/check_intra_crate_direction.sh
+      # The SEMANTICS of the gate above, executed. Before this step existed the
+      # gate's own behaviour was pinned by nothing in CI: the four fail-open
+      # defects of the gate (audit "scripts fail-open" 2026-10-18, B36-B39) were
+      # never caught by a CI run, because no CI step ever asserted what the
+      # gate decides — only that it ran. The harness drives the gate over its
+      # own fixtures and asserts the DECISIONS (site counts, the fail-closed
+      # rows, the lateral blind spot that is deliberately preserved). Offline,
+      # no repo state touched.
+      - name: Intra-crate direction gate semantics harness
+        run: bash scripts/test_intra_crate_direction.sh
       # Regression guard for stabilization-sitemap-regression, re-based by #1328:
       # the ignored-test budget is a frozen baseline (32 rows in
       # docs/test-inventory.md — 26 test attributes + 6 doc/comment mentions),
