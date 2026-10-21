@@ -645,6 +645,33 @@ pub(crate) fn read_jsonl_checksum_index(
     Ok(index)
 }
 
+/// Log a structured error that ALSO carries the [`std::io::ErrorKind`].
+///
+/// The shared [`log_scrape_error`](crate::infrastructure::observability::log_scrape_error)
+/// renders `error = %error`, and an `io::Error`'s `Display` prints only its
+/// message: the `ErrorKind` set on the value never reaches the event, so the
+/// operator sees the message and the stage but not the KIND of the damage.
+/// That helper's signature is frozen (other callers depend on it), so the
+/// extra field is added HERE, at the call site.
+///
+/// The field set is the shared helper's, plus `error_kind`.
+fn log_io_error_with_kind(
+    error: &std::io::Error,
+    url: &str,
+    stage: &str,
+    correlation_id: Option<&crate::domain::CorrelationId>,
+    context: &str,
+) {
+    tracing::error!(
+        error = %error,
+        error_kind = ?error.kind(),
+        url = %url,
+        stage = %stage,
+        trace_id = correlation_id.map(|c| c.trace_id().to_string()),
+        "{context}"
+    );
+}
+
 /// Rebuild the resume dedup index from an existing output file.
 ///
 /// The field name comes from the pinned [`CHECKSUM_FIELD`] constant (#1617,
@@ -663,7 +690,7 @@ fn build_content_hash_index(path: &std::path::Path) -> (HashSet<String>, JsonlIn
             // The index only PROVES a flush for the resume gate; an
             // unreadable file proves nothing, but it must not abort the
             // export either. Report it and continue with an empty index.
-            crate::infrastructure::observability::log_scrape_error(
+            log_io_error_with_kind(
                 &e,
                 &path.display().to_string(),
                 "jsonl_resume_index",
@@ -684,7 +711,7 @@ fn build_content_hash_index(path: &std::path::Path) -> (HashSet<String>, JsonlIn
                 index.report.skipped_non_utf8
             ),
         );
-        crate::infrastructure::observability::log_scrape_error(
+        log_io_error_with_kind(
             &error,
             &path.display().to_string(),
             "jsonl_resume_index",
@@ -1028,6 +1055,18 @@ fn plan_ai_chunks(
             outcomes.push(AiChunkOutcome::NotDriven);
             continue;
         }
+        // #1812: a chunk that did NOT validate never reaches the file, so it
+        // must not claim the dedup key either — a claimed key would mask a
+        // LATER valid chunk with the same identity, and the export would
+        // write nothing at all ("duplicate ... already exported this run"
+        // although nothing was exported). Validation therefore comes FIRST.
+        let validated = match chunk.clone().validate() {
+            Ok(validated) => validated,
+            Err(e) => {
+                outcomes.push(AiChunkOutcome::Invalid(e.to_string()));
+                continue;
+            },
+        };
         // #1215: the exporter is append-only, so a second identical chunk in
         // the same run must not write a duplicate record. The first
         // occurrence wins; the loser is a skip, not a failure.
@@ -1035,13 +1074,8 @@ fn plan_ai_chunks(
             outcomes.push(AiChunkOutcome::Duplicate);
             continue;
         }
-        match chunk.clone().validate() {
-            Ok(validated) => {
-                outcomes.push(AiChunkOutcome::Exported(content_hash.clone()));
-                validated_chunks.push(validated);
-            },
-            Err(e) => outcomes.push(AiChunkOutcome::Invalid(e.to_string())),
-        }
+        outcomes.push(AiChunkOutcome::Exported(content_hash.clone()));
+        validated_chunks.push(validated);
     }
     (outcomes, validated_chunks)
 }
@@ -2212,6 +2246,135 @@ mod tests {
             assert!(
                 record.last_error.is_some(),
                 "the failure must be recorded, not swallowed"
+            );
+        }
+
+        /// The label of a planned outcome, for assertion messages.
+        fn outcome_label(outcome: &AiChunkOutcome) -> &'static str {
+            match outcome {
+                AiChunkOutcome::NotDriven => "NotDriven",
+                AiChunkOutcome::Exported(_) => "Exported",
+                AiChunkOutcome::Duplicate => "Duplicate",
+                AiChunkOutcome::Invalid(_) => "Invalid",
+            }
+        }
+
+        /// #1812 correction: a chunk that did NOT validate must never claim
+        /// the `(url, content_hash)` dedup key.
+        ///
+        /// The plan used to claim the key BEFORE validating, so an invalid
+        /// chunk masked a LATER VALID chunk with the same identity: the
+        /// export wrote nothing at all and the log said "duplicate ...
+        /// already exported this run" although nothing was ever exported —
+        /// silent data loss through the public API.
+        #[test]
+        fn an_invalid_chunk_does_not_claim_the_dedup_key() {
+            let invalid = make_ai_chunk("https://ai-mask.test/a", "", "the shared body");
+            let valid = make_ai_chunk(
+                "https://ai-mask.test/a",
+                "The valid title",
+                "the shared body",
+            );
+            let chunks = vec![invalid, valid];
+            let decisions = vec![ItemDecision::DriveAndCommit, ItemDecision::DriveAndCommit];
+            // Same URL + same content hash ⇒ the same dedup identity.
+            let hashes = vec!["same-content-hash".to_string(); 2];
+
+            let (outcomes, validated) = plan_ai_chunks(&chunks, &decisions, &hashes);
+
+            assert_eq!(
+                outcome_label(&outcomes[0]),
+                "Invalid",
+                "the first chunk does not validate"
+            );
+            assert_eq!(
+                outcome_label(&outcomes[1]),
+                "Exported",
+                "the valid chunk must not be masked as a duplicate"
+            );
+            assert_eq!(validated.len(), 1, "exactly one chunk reaches the export");
+        }
+
+        /// The same regression through the PUBLIC API: the valid chunk IS
+        /// written (one line), and the invalid one left a recorded failure.
+        #[test]
+        fn an_invalid_chunk_does_not_mask_a_later_valid_chunk_in_the_export() {
+            let dir = TempDir::new().unwrap();
+            let store = RecordStore::new("ai-mask.test").with_state_dir(dir.path().to_path_buf());
+            let ctx_store = store.clone();
+            let ctx = ResumeContext::new(&ctx_store).with_resume(false);
+
+            // Same URL and same content ⇒ the same (url, content_hash). The
+            // FIRST chunk is invalid (empty title); the SECOND one is valid.
+            let chunks = [
+                make_ai_chunk(
+                    "https://ai-mask.test/a",
+                    "",
+                    "the shared body of both chunks",
+                ),
+                make_ai_chunk(
+                    "https://ai-mask.test/a",
+                    "The valid title",
+                    "the shared body of both chunks",
+                ),
+            ];
+
+            process_results_with_chunks(
+                &chunks,
+                dir.path().to_path_buf(),
+                ExportFormat::Jsonl,
+                "export",
+                Some(&ctx),
+            )
+            .unwrap();
+
+            let lines = jsonl_lines(dir.path(), "export");
+            assert_eq!(
+                lines.len(),
+                1,
+                "the valid chunk must be written: an invalid chunk may not mask it"
+            );
+            assert!(
+                lines[0].contains("The valid title"),
+                "the written line must be the VALID chunk: {lines:?}"
+            );
+
+            // The invalid chunk was recorded as a failed attempt (attempts
+            // 1) and the valid one committed the URL (attempts 2) — the
+            // failure is persisted, not swallowed.
+            let records = store.load().unwrap();
+            let record = &records["https://ai-mask.test/a"];
+            assert_eq!(
+                record.attempts, 2,
+                "the invalid chunk was recorded as a failure before the valid one committed"
+            );
+        }
+
+        /// PRESERVE (#1215): two IDENTICAL valid chunks in one run still
+        /// yield ONE line. The plan now validates BEFORE claiming the dedup
+        /// key (#1812), and that reorder must not weaken the dedup of the
+        /// chunks that DO reach the file.
+        #[test]
+        fn ai_identical_valid_chunks_are_still_deduped_within_the_run() {
+            let dir = TempDir::new().unwrap();
+            let chunks = [
+                make_ai_chunk("https://ai-dup.test/a", "A", "the same body"),
+                make_ai_chunk("https://ai-dup.test/a", "A", "the same body"),
+            ];
+
+            process_results_with_chunks(
+                &chunks,
+                dir.path().to_path_buf(),
+                ExportFormat::Jsonl,
+                "export",
+                None,
+            )
+            .unwrap();
+
+            assert_eq!(
+                jsonl_lines(dir.path(), "export").len(),
+                1,
+                "one (url, content_hash) pair must produce exactly one line"
             );
         }
 
