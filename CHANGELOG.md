@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.0] - 2026-10-21
+
+
+### ⚠️ Breaking Changes
+
+- Retira --enable-ai de los dos binarios MCP ([#2145](https://github.com/XaviCode1000/webfang/pull/2145))
+
+### 🏗️ Architecture Improvements
+
+- Colapsar Tier2EmbeddingPort a un newtype y borrar LocalEmbeddingPort ([#2154](https://github.com/XaviCode1000/webfang/pull/2154))
+
+### 🔧 Fixed
+
+- Show and doctor report the effective embeddings provider, not a retired local model ([#2161](https://github.com/XaviCode1000/webfang/pull/2161))
 ## [4.0.1] - 2026-10-20
 
 
