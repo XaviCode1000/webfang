@@ -80,9 +80,9 @@ una decisión del owner).
 |---|---|---|---|---|---|---|---|
 | **L0** | Cierres por evidencia + backlog sin dueño | #2105, #1996, #1423, #2224, #1826, #1936 + nuevas **#2233**, **#2234**, **#2235** | cerrar con evidencia; abrir lo que no tenía dueño | evidencia citada por issue | 0 código | inline | **HECHO** |
 | **L1** | SSRF: encapsulación IPv4 | #2231, #2232 | ISATAP y la forma IPv4-compatible revalidan la IPv4 embebida; Teredo primero; ISATAP **fuera** del set always-denied | `ssrf_a5_a6_family_test.rs` | +150/−51 | agente del owner | **OCUPADO** |
-| **L2** | Merge y limpieza post-merge | #1970, #1971, #1972 | `state`+`mergeStateStatus` en una llamada ⇒ "already merged" exit 0; `rm` standalone con path literal; el registro de misión se escribe en el worktree | `scripts/test_merge_when_green_merged_state.sh` | +180/−15 | worker | **EN CURSO** |
-| **L3** | **CI Health: el canal enmudecido** | #2233, #2234, #2162, #1936, #1980 | el clasificador matchea una línea de **FALLO**, no una mención; el test parsea hermético; el observer cierra por **subtítulo** de título | `scripts/test_ci_health_close.sh` (caso nuevo) | +40/−15 | worker | PENDIENTE |
-| **L4** | Guard residuals (post-#2068) | #2070 (ítems 1-3; el 4º = **no hacer nada**) | `10#` en el comparador semver; el filtro de comentarios en `harness_wired`; `parse_envrc_target_decl` en vez del `sed` rígido | `scripts/test_bump_support_patch.sh` (nuevo) + `scripts/tests/test_guard_coverage.sh` | +90/−6 | worker | PENDIENTE |
+| **L2** | Merge y limpieza post-merge | #1970, #1971, #1972 | `state`+`mergeStateStatus` en una llamada ⇒ "already merged" exit 0; `rm` standalone con path literal; el registro de misión se escribe en el worktree | `scripts/test_merge_when_green_merged_state.sh` | +180/−15 | worker | **HECHO** (`d16ffef2`, `67ff6128`, `66f23d63`) |
+| **L3** | **CI Health: el canal enmudecido** | #2233, #2234, #2162, #1936, #1980 | el clasificador matchea una línea de **FALLO**, no una mención; el test parsea hermético; el observer cierra por **subtítulo** de título | `scripts/test_ci_health_close.sh` (caso nuevo) | +40/−15 | worker | **EN CURSO** (L3a en `fix-ci-health-w03-classifier`; L3b = #2234, necesita cargo) |
+| **L4** | Guard residuals (post-#2068) | #2070 (ítems 1-3; el 4º = **no hacer nada**) | `10#` en el comparador semver; el filtro de comentarios en `harness_wired`; `parse_envrc_target_decl` en vez del `sed` rígido | `scripts/test_bump_support_patch.sh` (**ya existe**, 735 líneas) + `scripts/test_guard_coverage.sh` (**el que tiene `harness_wired`**; ojo: hay dos harnesses de guard coverage y CI corre los dos) + `scripts/check_target_isolation.sh` | +90/−6 | worker | PENDIENTE (peer de coordinación) |
 | **L5** | Atribución de commits | #1995 | allowlist = identidades **exactas** de los bots (borra el prefix match) | `scripts/test_no_ai_attribution.sh` (caso nuevo) | −2/+18 | inline | PENDIENTE |
 | **L6** | Señal de mutación | #1844 | una medición (`cargo mutants list`) → `N`; borrar la estimación | shard `k/N` dentro de 90 min | −8/+12 | inline | PENDIENTE |
 | **L7** | MCP: superficie verdadera | #1815, #1817, #1837, #2193 | `match_url_pattern` documenta lo que hace; `mcp = []` (la key **no** se borra); el conteo 36 en una sola fuente; `eq_ignore_ascii_case` en el path gate; la constante de shutdown `pub` | `path_gate.rs::components_start_with_never_accepts_a_case_variant_the_filesystem_keeps_distinct` | +18/−10 | worker | PENDIENTE |
@@ -104,6 +104,7 @@ una decisión del owner).
 | `scripts/merge-when-green.sh`, `scripts/test_*merge_when_green*` | L2 | L2 primero |
 | `scripts/test_ci_health_close.sh`, `.github/workflows/ci-health.yml` | L3 | L3 |
 | `scripts/check_no_ai_attribution.sh` + harness | L5, y L4 (si toca el filtro) | L4 → L5 |
+| `scripts/test_guard_coverage.sh`, `scripts/check_target_isolation.sh`, `scripts/bump-support-patch.sh` | L4 | L4 |
 | `scripts/quality-baselines.json` | L10, L12, y PR #2230 (abierto) | #2230 → L12 |
 | `crates/webfang_mcp/**` | L7, L8 | L7 → L8 |
 | `crates/webfang_core/src/domain/ssrf_guard.rs` | L1 | **L1 (agente del owner)** |
@@ -113,6 +114,11 @@ una decisión del owner).
 
 Regla: **dos writers vivos no pueden compartir un path**, aunque toquen regiones
 distintas del mismo archivo. Las entregas que tocan `ci.yml` se serializan.
+
+Regla de `ci.yml` (repo sin PRs apiladas): cada lote commitea **su** step en su branch, con
+el mismo estilo (nombre + comentario con el número de issue, el porqué y las 3 líneas
+"Offline: fake gh, no network, no cargo"); al abrir la PR, el step se re-aplica sobre el `main`
+nuevo (el conflicto es de un bloque de step, no de lógica).
 
 ---
 
@@ -177,9 +183,9 @@ Reglas derivadas para los lotes de este plan:
 
 ## Tasks
 
-- [ ] T1 · S1–S5 — cerrar L2: revisar, commitear los work-units en el worktree, reportar (sin PR).
-- [ ] T2 · S1–S5 — L3 (el canal enmudecido): clasificador por línea de FALLO + test hermético + cierre por subtítulo.
-- [ ] T3 · S1–S5 — L4 (residuales de guard): 3 one-liners con sus harnesses; el ítem 4 se documenta como "no hacer nada".
+- [x] T1 · S1–S5 — cerrar L2: revisado, commiteado en 3 work-units en `fix-merge-when-green-merged-state`, reportado (sin PR).
+- [ ] T2 · S1–S5 — L3 (el canal enmudecido): L3a (clasificador por línea de FALLO + cierre por subtítulo) en curso; L3b (test hermético) avisa antes de correr cargo.
+- [ ] T3 · S1–S5 — L4 (residuales de guard): 3 one-liners con sus harnesses; el ítem 4 se documenta como "no hacer nada" — peer de coordinación.
 - [ ] T4 · S1–S5 — L5 (atribución): allowlist exacta de bots, con el caso que rewrite.
 - [ ] T5 · S1–S5 — L6 (mutación): medir, fijar `N`, borrar la estimación.
 - [ ] T6 · S1–S5 — L7 (MCP): doc del matcher, `mcp = []`, conteo 36 en una fuente, path gate ASCII-narrow, constante de shutdown `pub`.
