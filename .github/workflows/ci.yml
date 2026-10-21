@@ -1196,7 +1196,7 @@ jobs:
   # ============================================================================
   gate:
     name: CI Gate
-    needs: [change-scope, toolchain, repo-guards, artifact-guards, fmt, clippy, code-quality, test-core, test-full, test-release-provenance, security, doc-quality]
+    needs: [change-scope, toolchain, repo-guards, artifact-guards, merge-metrics-guards, fmt, clippy, code-quality, test-core, test-full, test-release-provenance, security, doc-quality]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1210,7 +1210,8 @@ jobs:
           # Path-aware gate semantics: full scope requires every producer to
           # succeed; narrow scope (run_code_jobs=false) requires only the
           # always-applicable producers (change-scope, toolchain, repo-guards,
-          # artifact-guards, security, doc-quality) to succeed while the skipped
+          # artifact-guards, merge-metrics-guards, security, doc-quality) to
+          # succeed while the skipped
           # code producers
           # (fmt, clippy, code-quality, test-core, test-full,
           # test-release-provenance) must be `skipped` — skipped
@@ -1229,7 +1230,7 @@ jobs:
             fi
             echo "All required CI jobs succeeded (full scope)."
           else
-            for job in change-scope toolchain repo-guards artifact-guards security doc-quality; do
+            for job in change-scope toolchain repo-guards artifact-guards merge-metrics-guards security doc-quality; do
               r="$(echo "$RESULTS" | jq -r --arg j "$job" '.[$j].result')"
               if [ "$r" != "success" ]; then
                 echo "::error::Applicable producer '$job' did not succeed in narrow scope (result=$r)."

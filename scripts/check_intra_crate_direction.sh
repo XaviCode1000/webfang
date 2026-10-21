@@ -1,83 +1,81 @@
 #!/usr/bin/env bash
-# check_intra_crate_direction.sh — hardened for ADR-0010 + ADR-0010-A
+# check_intra_crate_direction.sh — CI gate for the intra-crate Clean Architecture
+# layering (issue #990, ADR-0010; issue #995, ADR-0010-A). See
+# docs/adr/0010-intra-crate-direction-allowlist.md and its addendum.
 #
-# CI gate for the intra-crate Clean Architecture layering (issue #990,
-# ADR-0010; issue #995, ADR-0010-A). See docs/adr/0010-intra-crate-direction-allowlist.md
-# and its addendum.
+# === Architecture: the POLICY lives here, the EXTRACTION lives in the tool ===
 #
-# === Scope ===
-# Two scan passes per file:
-#   1) `use` line scan — matches `use crate::<layer>::...;` and `pub use ...`
-#      lines.
-#   2) Inline qualified-path scan — matches `crate::<layer>::...` in any position
-#      of any non-comment line (function bodies, struct fields, trait bounds, etc.).
+# The gate does not scan source text any more. It consumes the AST extractor:
 #
-# === Record merge and dedupe (issue #1068, blocker B1) ===
-# The inline pass scans every non-comment line, so it also sees the `use` lines
-# that the `use` pass reports. Both passes therefore emit records into one merged
-# stream that is deduped on `(file, line, path)` BEFORE anything is counted or
-# reported. The number the gate prints is the number of distinct violation SITES,
-# not the number of regex hits. Before this fix every `use crate::infrastructure::X;`
-# was emitted once per pass and the reported count was inflated ~1.6x (84 rows for
-# 52 real sites).
+#   intra-crate-lint --root <dir>
+#     stdout: <relative-file>\t<line>\t<kind>\t<path>   kind ∈ {use, inline, choke}
+#     exit 0  = the whole tree was scanned
+#     exit 1  = usage error
+#     exit 2  = a file could not be read/parsed (every failure named on stderr)
 #
-# The dedupe key includes the matched PATH, not just `(file, line)`, because a
-# single `use` line carrying a brace group legitimately yields several distinct
-# sites on one line (see `Brace expansion` below).
+# The extractor REPORTS the sites; this script DECIDES what a violation is. The
+# layer set, the allowlist, the verdict criteria and the output format are
+# unchanged by the swap — only the way the sites are found changed.
 #
-# === Brace expansion (issue #1068, blocker B2) ===
-# `use crate::infrastructure::crawler::{A, B, C};` used to yield the single
-# truncated match `crate::infrastructure::crawler`, because the layer regex stops
-# at `{`. No per-symbol allowlist entry can ever match that bare form, which makes
-# "narrow the entry before deleting it" unimplementable. The extractor now expands
-# a brace group into one record per symbol (`crate::infrastructure::crawler::A`,
-# `…::B`, `…::C`). It handles nested groups (`a::{b::{c, d}, e}`), `self`, glob
-# items, ` as Rename` suffixes (the module path is what layering cares about, not
-# the local binding), whitespace after commas, and groups whose closing `}` lands
-# on a later line — multi-line `use` blocks are idiomatic `rustfmt` output in this
-# crate. Every symbol of a group is attributed to the line the `use` statement
-# starts on, which is the line a developer has to edit.
+# The previous line-oriented text scanner is DELETED (S6). A gate that degrades
+# to the weak scanner when the strong one is unavailable is the same fail-open
+# being closed, so there is NO fallback path here: if the extractor is missing,
+# unusable, or unable to parse a file, the gate fails CLOSED with the file
+# named. `scripts/test_intra_crate_direction.sh` pins that absence.
 #
-# === Comment filter (issue #995, ADR-0010-A) ===
-# Both passes route every line through the same awk state machine that:
-#   - tracks `/* ... */` block comments,
-#   - skips lines whose first non-whitespace token starts with `//`
-#     (covers `//`, `///`, `//!`),
-#   - extracts EVERY occurrence of the inline layer regex on the surviving
-#     code (one output record per match), and
-#   - preserves the original 1-indexed line number as `NR<TAB>MATCH`.
-# All matching happens inside this single awk pass — one process per file per
-# pass, not one per line (see ADR-0010-A: the per-line subshell variant was
-# measured at >30s across ~93k lines and is forbidden).
+# === What the swap closes (audit "scripts fail-open" 2026-10-18) ===
+#   B36  the test region is decided STRUCTURALLY on the cfg predicate, so a
+#        doc comment that mentions `#[cfg(test)]` blinds nothing, and the
+#        production code that FOLLOWS a test module is still scanned.
+#   B37  comments and string literals are not text: a `"/*"` literal cannot
+#        open a phantom block comment that hides the rest of the file.
+#   B38  every path form is reported: `use crate::infra::{A,B}`,
+#        `use crate::infra;`, `::*`, `as infra`, `crate::{infra::Foo}` and
+#        the spaces around `::`.
+#   B39  the port-choke rule is decided on the REFERENCES the extractor emits
+#        (any mention of the concrete `ValidatingResolver`, plus the raw
+#        client wiring), not on a literal real Rust never emits.
 #
-# It does NOT attempt to parse Rust string literals. A path inside a `"..."`
-# literal or after a backslash continuation cannot be disambiguated by awk.
-# Residual false positives are routed through the allowlist (which matches module
-# paths on `::` segment boundaries — see `Allowlist matching` below), not the
-# regex. The regex stays conservative; the allowlist absorbs noise.
-# See ADR-0010-A.
+# === Extractor binary resolution ===
+# In this order, first hit wins:
+#   1. $INTRA_CRATE_LINT_BIN
+#   2. <repo>/tools/intra-crate-lint/target/release/intra-crate-lint
+#   3. <repo>/tools/intra-crate-lint/target/debug/intra-crate-lint
+#   4. `intra-crate-lint` on PATH
+# (2) and (3) are resolved against the repository root — the script's own
+# directory — so the gate behaves the same from any working directory. An
+# explicit $INTRA_CRATE_LINT_BIN is used EXCLUSIVELY: when it is set and is
+# not an executable file the gate fails closed naming it, because a request
+# that cannot be honoured must not silently become a different binary. If no
+# candidate exists the gate fails closed naming the tool: there is no
+# fallback scanner to degrade into.
+#
+# === Layer model (unchanged) ===
+# `infrastructure → adapters → application → domain`, inward only. A SITE is
+# an outward reference (`target_rank < src_rank`) in a layer body. The TARGET
+# layer set is the one the previous path matcher recognised:
+# infrastructure, adapters, application. `domain` is the innermost layer and
+# can never be outward; `cli` is the composition edge (rank -1) and is never
+# named by `crate::` inside a library. Both stay out of the target set, so the
+# set of layers the gate judges does not change with the scanner.
 #
 # === cli composition edge (ADR-0012-B 3.H, #1097) ===
-# `cli/` is the outermost composition edge (rank -1, below `infrastructure`):
-# it owns construction of infrastructure concretes (`StateStore`,
-# `RecordStore`, fetchers) and injects them into `application` through domain
-# ports. Because the layering rule is `target_rank < src_rank` (outward
-# only), a `cli` source (rank -1) can never flag — every inner layer ranks
-# higher. This is deliberate: the gate pins `application`/`domain` purity
-# while leaving construction to the edge. Consumed by #1100 (the remaining
-# cli concrete namings drain through the same edge, no allowlist entry).
-#
-# Both passes share the same `#[cfg(test)]` / `mod tests` skip heuristic
-# (line is after the first occurrence in the file).
+# `cli/` is the outermost composition edge (rank -1): it owns construction of
+# infrastructure concretes (`StateStore`, `RecordStore`, fetchers) and injects
+# them into `application` through domain ports. Because the layering rule is
+# `target_rank < src_rank` (outward only), a `cli` source (rank -1) can never
+# flag — every inner layer ranks higher. This is deliberate: the gate pins
+# `application`/`domain` purity while leaving construction to the edge.
 #
 # === Allowlist matching (issue #1068, blocker B3) ===
-# A pattern absorbs a MODULE PATH only at `::` segment boundaries: the character
-# immediately before the occurrence must be `:` or the occurrence must start at
-# position 0, and the character immediately after it must be `:` or end-of-string.
-# Plain substring matching failed open: `infrastructure::crawler::resource_downloader`
-# also absorbed `crate::infrastructure::crawler::resource_downloader_v2::EvilThing`
-# and `…::resource_downloader_legacy::X`, and `infrastructure::export::state_store`
-# absorbed `crate::infrastructure::export::state_store_backup::X`.
+# A pattern absorbs a MODULE PATH only at `::` segment boundaries: the
+# character immediately before the occurrence must be `:` or the occurrence
+# must start at position 0, and the character immediately after it must be `:`
+# or end-of-string. Plain substring matching failed open:
+# `infrastructure::crawler::resource_downloader` also absorbed
+# `crate::infrastructure::crawler::resource_downloader_v2::EvilThing` and
+# `…::resource_downloader_legacy::X`. A per-FILE entry is an explicit,
+# reviewed exemption for the whole file, so it keeps substring matching.
 #
 # === Min-match rule (audit B44) ===
 # Every allowlist entry MUST absorb at least one site. An entry that absorbs
@@ -87,37 +85,26 @@
 # removal condition), so it FAILS in strict mode instead of riding silently
 # behind a `::warning::` nobody reads.
 #
-# === Inline site rule + greenness taxonomy (issue #1100, ADR-0010-B) ===
-# A SITE is every non-comment `crate::infrastructure|adapters|application::...`
-# occurrence in a layer body — `use` lines AND inline qualified paths in function
-# bodies, struct fields, trait bounds, etc. Both passes emit records into one
-# merged stream deduped on `(file, line, full-path)` BEFORE anything is counted
-# or reported, so the gate prints distinct sites, never regex hits.
-#
-# Greenness taxonomy (the not-accidental-greenness guarantee):
+# === Greenness taxonomy (issue #1100, ADR-0010-B) ===
 #   - PERMANENT, counted: a production site goes green ONLY via a named,
 #     ADR-reasoned allowlist entry (today exactly the 2 permanent ADR-0011
 #     entries: the `application/container.rs` DI root and the
-#     `infrastructure::observability` transversal). Each entry cites its removal
-#     condition by SYMBOL, never by line number.
-#   - DOCUMENTED EXCLUSIONS, never counted: test-only code (past the first
-#     `#[cfg(test)]` / `mod tests` marker), doc/block comments (dropped by the
-#     awk filter), lateral same-layer references (the rule fires outward only),
-#     and the `cli/` composition edge below (rank -1, consumed from #1097,
-#     re-decided nothing here). These stay green by documented rule and are
-#     pinned by scripts/test_intra_crate_direction.sh, never by allowlist entries.
-# A new inline path in production code that matches neither class fails closed
-# (`::error::`, exit 1 in strict mode) — that is the acceptance proof of #1100.
-#
-# === Post-#1099 note (config shim + alias machinery deleted) ===
-# The `crate::<PascalCase>` alias shim (`lib.rs` re-export of
-# `infrastructure::config`) and its `ALIAS_*` regex machinery are deleted; the
-# layer regex above is the single source of truth for path matching. The scan
-# stays at one awk process per file per pass (ADR-0010-A forbids the per-line
-# subshell variant). Rust string literals are still NOT parsed — a path inside
-# `"..."` is residual noise routed to the allowlist, never to regex carve-outs.
+#     `infrastructure::observability` transversal). Each entry cites its
+#     removal condition by SYMBOL, never by line number.
+#   - DOCUMENTED EXCLUSIONS, never counted: test-only code (a `#[cfg(test)]`
+#     region, decided structurally by the extractor), doc/block comments and
+#     string literals (not text at all), lateral same-layer references (the
+#     rule fires outward only), and the `cli/` composition edge. These stay
+#     green by documented rule and are pinned by
+#     scripts/test_intra_crate_direction.sh, never by allowlist entries.
+# A new outward path in production code that matches neither class fails
+# closed (`::error::`, exit 1 in strict mode) — that is the acceptance proof
+# of #1100.
 
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # INTRA_CRATE_ROOT / INTRA_CRATE_ALLOWLIST exist so scripts/test_intra_crate_direction.sh
 # can point the scanner at a throwaway fixture tree. Production CI relies on the
@@ -131,6 +118,11 @@ ALLOWLIST="${INTRA_CRATE_ALLOWLIST:-scripts/check_intra_crate_direction_allowlis
 ALLOWLIST_CAP=5
 ALLOWLIST_WARN_AT=3
 
+# A trailing separator would double up in every reported path.
+while [[ "$ROOT" != "/" && "$ROOT" == */ ]]; do
+  ROOT="${ROOT%/}"
+done
+
 declare -A LAYER_RANK=(
   [cli]=-1
   [infrastructure]=0
@@ -139,18 +131,14 @@ declare -A LAYER_RANK=(
   [domain]=3
 )
 
-# Layer regex for the qualified-path extractor (consumed by filter_and_match via
-# `awk -v`). Matches the FULL path `crate::<layer>::seg(::seg)*` in ANY position
-# of non-comment code, EVERY occurrence per line. Full-path capture is what makes
-# narrow allowlist entries (e.g. `infrastructure::http::waf_engine`) match the
-# recorded violation on segment boundaries instead of forcing a broad
-# `infrastructure::http` entry. Does NOT match `crate::domain::` (innermost, never
-# outward).
-INLINE_LAYER_REGEX='crate::(infrastructure|adapters|application)::[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*'
+# The layers a reference may point AT. Same set the previous path matcher
+# recognised: `domain` can never be outward, `cli` is never named by `crate::`
+# inside a library.
+TARGET_LAYERS=(infrastructure adapters application)
 
+# The layer a file belongs to, from its path relative to the scanned root.
 layer_of_file() {
-  local file="$1"
-  local rel="${file#"${ROOT}"/}"
+  local rel="$1"
   local dir
   dir=$(dirname "$rel")
   if [[ "$dir" == "." || -z "$dir" ]]; then
@@ -195,8 +183,8 @@ if [[ -f "$ALLOWLIST" ]]; then
       echo "::error::allowlist entry must contain ADR reason: $line (see ADR-0010)"
       exit 1
     fi
-    # Pattern is first whitespace-separated token before comment
-    pattern=$(echo "$trimmed" | awk '{print $1}')
+    # Pattern is the first whitespace-separated token of the entry.
+    pattern="${trimmed%%[[:space:]]*}"
     ALLOW_PATTERNS+=("$pattern")
     ALLOW_MATCHES[$((${#ALLOW_PATTERNS[@]} - 1))]=0
   done < "$ALLOWLIST"
@@ -207,6 +195,58 @@ if [[ -f "$ALLOWLIST" ]]; then
   if (( ${#ALLOW_PATTERNS[@]} >= ALLOWLIST_WARN_AT )); then
     echo "::warning::allowlist has ${#ALLOW_PATTERNS[@]} entries (warn threshold $ALLOWLIST_WARN_AT, hard cap $ALLOWLIST_CAP) — steady state is the 2 permanent ADR-0011 entries; prune before adding, and never re-add a broad module entry (narrow per-symbol entries fail closed, broad ones silently absorb)"
   fi
+fi
+
+# --- extractor resolution (no fallback: the gate fails closed) ---
+resolve_lint_bin() {
+  if [[ -n "${INTRA_CRATE_LINT_BIN:-}" ]]; then
+    if [[ -x "$INTRA_CRATE_LINT_BIN" ]]; then
+      printf '%s' "$INTRA_CRATE_LINT_BIN"
+      return 0
+    fi
+    echo "::error::INTRA_CRATE_LINT_BIN is set to '$INTRA_CRATE_LINT_BIN' but that path is not an executable file — the gate fails closed (there is no fallback scanner)" >&2
+    return 1
+  fi
+  local candidates=(
+    "$REPO_ROOT/tools/intra-crate-lint/target/release/intra-crate-lint"
+    "$REPO_ROOT/tools/intra-crate-lint/target/debug/intra-crate-lint"
+  )
+  local candidate
+  for candidate in "${candidates[@]}"; do
+    if [[ -x "$candidate" ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  candidate="$(command -v intra-crate-lint || true)"
+  if [[ -n "$candidate" && -x "$candidate" ]]; then
+    printf '%s' "$candidate"
+    return 0
+  fi
+  echo "::error::the intra-crate lint extractor was not found — the gate fails closed (there is no fallback scanner). Build it with: cargo build --manifest-path tools/intra-crate-lint/Cargo.toml --locked (when CARGO_TARGET_DIR is pinned to a shared target dir, build it with 'env -u CARGO_TARGET_DIR' so the binary lands in tools/intra-crate-lint/target, or point \$INTRA_CRATE_LINT_BIN at the binary). Searched: ${candidates[*]}, PATH: intra-crate-lint" >&2
+  return 1
+}
+
+if ! LINT_BIN="$(resolve_lint_bin)"; then
+  exit 1
+fi
+
+# --- run the extractor ---
+sites_tmp=$(mktemp)
+lint_err_tmp=$(mktemp)
+trap 'rm -f "$sites_tmp" "$lint_err_tmp"' EXIT
+
+lint_rc=0
+"$LINT_BIN" --root "$ROOT" >"$sites_tmp" 2>"$lint_err_tmp" || lint_rc=$?
+
+if [[ $lint_rc -ne 0 ]]; then
+  # A tool that cannot scan the whole tree cannot decide anything: fail closed
+  # and name every file the extractor could not read or parse.
+  echo "::error::the intra-crate lint extractor '$LINT_BIN' failed (exit $lint_rc) — the gate fails closed, no fallback scanner exists"
+  while IFS= read -r err_line; do
+    [[ -n "$err_line" ]] && echo "::error::$err_line"
+  done < "$lint_err_tmp"
+  exit 1
 fi
 
 # Segment-aware containment for MODULE PATHS (issue #1068, blocker B3).
@@ -287,219 +327,39 @@ is_allowlisted() {
   return $(( found == 0 ? 1 : 0 ))
 }
 
-# filter_and_match <use|inline> — the shared record extractor.
-#
-# Reads a single file from stdin and prints one `NR<TAB>MATCH` record per distinct
-# qualified-path SITE found in non-comment code. Both scan passes run this same
-# extractor so their records are directly comparable, which is what makes the
-# (file, line, path) dedupe possible:
-#   - `use`    → only `use`/`pub use` statements.
-#   - `inline` → every non-comment line, every occurrence (a superset that also
-#                covers the `use` lines; the dedupe collapses the overlap).
-# Each mode is ONE awk process per file, so the whole scan stays at O(1) processes
-# per file (ADR-0010-A forbids the per-line subshell variant).
-#
-# Block comments (`/* ... */`) are tracked; line comments (`//`, `///`, `//!`) drop
-# the whole line. Rust string literals are NOT parsed — residual false positives
-# are absorbed by the allowlist, not the regex (ADR-0010-A).
-#
-# Brace groups are EXPANDED (issue #1068, blocker B2): a match immediately followed
-# by `{` yields one record per symbol with the group prefix joined back on, so
-# `use crate::infrastructure::crawler::{A, B};` emits
-# `crate::infrastructure::crawler::A` and `…::B` instead of the single bare
-# `crate::infrastructure::crawler` that no narrow entry could ever match. Nested
-# groups, `self`, ` as Rename` suffixes, and groups whose closing `}` lands on a
-# later line are all handled.
-filter_and_match() {
-  local mode="$1"
-  awk -v re="$INLINE_LAYER_REGEX" -v mode="$mode" '
-    function trim(s) {
-      gsub(/^[[:space:]]+/, "", s)
-      gsub(/[[:space:]]+$/, "", s)
-      return s
-    }
-
-    # Index (1-based) of the `}` that closes the group whose BODY starts at position
-    # `from` of `s` (so `s[from-1]` is the `{` that opened it), or 0 when the group is
-    # not closed inside `s`. Callers must pass the first body character, not the brace.
-    function close_of(s, from,   i, d, ch) {
-      d = 1
-      for (i = from; i <= length(s); i++) {
-        ch = substr(s, i, 1)
-        if (ch == "{") d++
-        else if (ch == "}") { d--; if (d == 0) return i }
-      }
-      return 0
-    }
-
-    # Emit one record per symbol of a brace group. `body` is the text between the
-    # outer braces; `prefix` is the path the group was attached to.
-    function expand(prefix, body, lineno,   i, n, ch, d, cur, parts, np, k) {
-      n = length(body)
-      d = 0
-      cur = ""
-      np = 0
-      for (i = 1; i <= n; i++) {
-        ch = substr(body, i, 1)
-        if (ch == "{") { d++; cur = cur ch }
-        else if (ch == "}") { d--; cur = cur ch }
-        else if (ch == "," && d == 0) { parts[++np] = cur; cur = "" }
-        else cur = cur ch
-      }
-          if (trim(cur) != "") parts[++np] = cur
-          # An empty group carries no symbol to attribute the reference to; keep the
-          # violation visible as the bare prefix rather than dropping it silently.
-          if (np == 0) {
-            printf("%d\t%s\n", lineno, prefix)
-            return
-          }
-          for (k = 1; k <= np; k++) emit_item(prefix, parts[k], lineno)
-    }
-
-    function emit_item(prefix, item, lineno,   open, cl, head, nested) {
-      item = trim(item)
-      if (item == "") return
-      # ` as Alias` — the module path is what layering cares about, not the local
-      # binding name.
-      if (match(item, /[[:space:]]as[[:space:]]/)) item = trim(substr(item, 1, RSTART - 1))
-      # Nested group: `sub::{A, B}`.
-      open = index(item, "::{")
-      if (open > 0) {
-        head = trim(substr(item, 1, open - 1))
-        nested = substr(item, open + 3)
-        cl = close_of(nested, 1)
-        if (cl > 0) {
-          expand(prefix "::" head, substr(nested, 1, cl - 1), lineno)
-          return
-        }
-      }
-      # `self` and the `*` glob both denote the module itself, i.e. the prefix.
-      if (item == "self" || item == "*") { printf("%d\t%s\n", lineno, prefix); return }
-      # Anything that is not a plain path segment falls back to the bare prefix so
-      # a malformed line can never silently drop a violation.
-      if (item !~ /^[A-Za-z0-9_#]+(::[A-Za-z0-9_#]+)*$/) { printf("%d\t%s\n", lineno, prefix); return }
-      printf("%d\t%s\n", lineno, prefix "::" item)
-    }
-
-    BEGIN {
-      in_block = 0
-      pend_prefix = ""; pend_body = ""; pend_line = 0; pend_lines = 0
-    }
-    {
-      line = $0
-      out = ""
-      i = 1
-      n = length(line)
-      # Strip leading whitespace to detect `//`-style line comments
-      stripped = line
-      sub(/^[[:space:]]+/, "", stripped)
-      if (!in_block && substr(stripped, 1, 2) == "//") {
-        # entire line is a comment
-        next
-      }
-      # Walk the line, tracking block-comment state
-      while (i <= n) {
-        if (in_block) {
-          close_idx = index(substr(line, i), "*/")
-          if (close_idx == 0) {
-            # rest of line inside block comment
-            i = n + 1
-          } else {
-            i = i + close_idx + 1
-            in_block = 0
-          }
-        } else {
-          open_idx = index(substr(line, i), "/*")
-          if (open_idx == 0) {
-            # remainder of line is non-comment
-            out = out substr(line, i)
-            i = n + 1
-          } else {
-            # copy segment before /*, then enter block
-            out = out substr(line, i, open_idx - 1)
-            i = i + open_idx + 1
-            in_block = 1
-          }
-        }
-      }
-
-      # Inside a multi-line brace group: accumulate until the group closes. A `//`
-      # inside a `use` group is always a comment (a use path cannot contain a
-      # string literal), so it is safe to drop it here.
-      if (pend_prefix != "") {
-        pend_lines++
-        tmp = out
-        sub(/\/\/.*/, "", tmp)
-        pend_body = pend_body " " tmp
-        cl = close_of(pend_body, 1)
-        if (cl > 0) {
-          expand(pend_prefix, substr(pend_body, 1, cl - 1), pend_line)
-          pend_prefix = ""
-        } else if (pend_lines > 20 || index(pend_body, ";") > 0) {
-          # Malformed or over-long group: fall back to the bare prefix.
-          printf("%d\t%s\n", pend_line, pend_prefix)
-          pend_prefix = ""
-        }
-        next
-      }
-
-      is_use = (line ~ /^[[:space:]]*(pub[[:space:]]+)?use[[:space:]]+crate::[A-Za-z_]+(::|;|[{])/)
-      if (mode == "use" && !is_use) next
-
-      # Emit EVERY regex match on the surviving code (not just the first).
-      # A trailing `// comment` on a code line is not stripped: an idiomatic
-      # `crate::layer::...` path cannot legally live inside a comment, so any hit
-      # there is a residual false positive absorbed by the allowlist.
-      # `text` holds the un-scanned remainder of the code segments; each iteration
-      # advances past the last match (RSTART/RLENGTH from the match() above are
-      # still valid for the substr calls that follow).
-      text = out
-      while (match(text, re)) {
-        m = substr(text, RSTART, RLENGTH)
-        after = substr(text, RSTART + RLENGTH)
-            # The layer regex cannot consume the `::` before a brace group (`{` is not a
-            # valid segment start), so a group always reads `::{` in `after`: the body
-            # starts at index 4. Testing index 1 here made the whole branch dead code
-            # and restored the truncation the expansion exists to remove.
-            if (substr(after, 1, 2) == "::" && substr(after, 3, 1) == "{") {
-              cl = close_of(after, 4)
-              if (cl > 0) {
-                expand(m, substr(after, 4, cl - 4), NR)
-                text = substr(after, cl + 1)
-                continue
-              }
-              # Group opens here but closes on a later line.
-              pend_prefix = m
-              pend_line = NR
-              pend_body = substr(after, 4)
-              pend_lines = 0
-              text = ""
-              break
-            }
-        printf("%d\t%s\n", NR, m)
-        text = substr(text, RSTART + RLENGTH)
-      }
-    }
-    END {
-      # Unterminated group at EOF: keep the violation visible as the bare prefix.
-      if (pend_prefix != "") printf("%d\t%s\n", pend_line, pend_prefix)
-    }
-  '
-}
-
-# Classify the target layer of a normalized path record. Records from both passes
-# are now plain `crate::<seg>::<seg>…` paths, so one classifier serves both.
-# Returns the layer (infrastructure|adapters|application|domain) or empty when no
-# known layer can be extracted.
+# Classify the target layer of a reported path. The path is `crate::<seg>::…`
+# or the bare module form `crate::<seg>` (the module itself, which the
+# previous matcher could not see at all — B38).
 classify_target() {
   local match="$1"
-  if [[ "$match" =~ ^crate::([a-z_]+):: ]]; then
+  if [[ "$match" =~ ^crate::([a-z_]+)(::|$) ]]; then
     printf '%s' "${BASH_REMATCH[1]}"
     return 0
   fi
 }
 
-# Process a single normalized path record and update the violation/allowlist
+# Whether a target layer is one the gate judges.
+is_target_layer() {
+  local layer="$1"
+  local candidate
+  for candidate in "${TARGET_LAYERS[@]}"; do
+    if [[ "$candidate" == "$layer" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+violations=0
+allowlisted_count=0
+
+# Dedupe set for (file, line, path) — issue #1068, blocker B1. The `use` sites
+# and the inline sites overlap (a `use` statement also carries a qualified
+# path), so without this the reported number is hits rather than distinct
+# violation sites.
+declare -A SEEN_SITE=()
+
+# Process a single reported path record and update the violation/allowlist
 # counters. Emits the diagnostic if applicable.
 # Args: file lineno match kind src_layer
 #   kind is "use" or "inline" (used for the diagnostic only).
@@ -513,15 +373,15 @@ process_match() {
   local target_layer
   target_layer=$(classify_target "$match")
   [[ -z "$target_layer" ]] && return 0
-  [[ -z "${LAYER_RANK[$target_layer]+x}" ]] && return 0
+  is_target_layer "$target_layer" || return 0
 
   local src_rank="${LAYER_RANK[$src_layer]}"
   local target_rank="${LAYER_RANK[$target_layer]}"
 
   # The rule is `target_rank < src_rank`: OUTWARD only. A lateral reference
   # (target_rank == src_rank, e.g. infrastructure -> infrastructure) is
-  # intentionally NOT flagged. That is the known blind spot behind #1060/#1061 and
-  # is out of scope for this gate; scripts/test_intra_crate_direction.sh pins it so it
+  # intentionally NOT flagged. That is the known blind spot behind #1060/#1061
+  # and is out of scope for this gate; scripts/test_intra_crate_direction.sh pins it so it
   # is never "fixed" by accident.
   if (( target_rank < src_rank )); then
     if is_allowlisted "$file" "$match" "$target_layer"; then
@@ -537,49 +397,24 @@ process_match() {
   fi
 }
 
-violations=0
-allowlisted_count=0
-
-# Dedupe set for (file, line, match) — issue #1068, blocker B1. The two scan
-# passes overlap on every `use` line, so without this the reported number is regex
-# hits rather than distinct violation sites.
-declare -A SEEN_SITE=()
-
-# Scratch file for each pass' records — created ONCE, outside the per-file loop,
-# and removed by a single EXIT trap (a trap inside the loop is fragile: any
-# unhandled error between the trap and the rm leaks the temp file).
-inline_tmp=$(mktemp)
-trap 'rm -f "$inline_tmp"' EXIT
-
-# Run one scan pass over a file and feed its records into the merged stream.
-# Applies the #[cfg(test)] / `mod tests` skip heuristic and the (file, line,
-# match) dedupe BEFORE any counting happens.
-# Args: file src_layer kind mode   (kind == mode today; kept separate so the
-#   diagnostic label can diverge from the extractor mode without touching calls)
+# Run one pass over the reported records of a given kind.
+# The `use` pass runs first, so a site reached by both keeps the more
+# informative `use` label — the same order the previous two-pass scanner used.
+# Args: kind
 run_pass() {
-  local file="$1"
-  local src_layer="$2"
-  local kind="$3"
-  local mode="$4"
-  local lineno match key start
+  local kind="$1"
+  local rel lineno rec_kind match file src_layer key
 
-  filter_and_match "$mode" < "$file" > "$inline_tmp"
+  while IFS=$'\t' read -r rel lineno rec_kind match; do
+    [[ -z "$rel" || -z "$lineno" || -z "$match" ]] && continue
+    [[ "$rec_kind" == "$kind" ]] || continue
 
-  while IFS=$'\t' read -r lineno match; do
-    [[ -z "$lineno" || -z "$match" ]] && continue
-
-    # Skip test-only paths: line is after the first #[cfg(test)]/mod tests
-    if (( lineno > first_test_line )); then
-      continue
-    fi
-    # Also skip if the line is directly under a #[cfg(test)] attribute (previous 3 lines)
-    start=$(( lineno > 3 ? lineno - 3 : 1))
-    if sed -n "${start},$((lineno-1))p" "$file" 2>/dev/null | grep -q -E '#\[cfg\(test\)\]'; then
+    file="$ROOT/$rel"
+    if ! src_layer=$(layer_of_file "$rel"); then
       continue
     fi
 
-    # Merge point: the same site reached by both passes is counted once. The `use`
-    # pass runs first, so a shared site keeps the more informative `use` label.
+    # Merge point: the same site reached by both passes is counted once.
     key="$file:$lineno:$match"
     if [[ -n "${SEEN_SITE[$key]+set}" ]]; then
       continue
@@ -587,31 +422,11 @@ run_pass() {
     SEEN_SITE["$key"]=1
 
     process_match "$file" "$lineno" "$match" "$kind" "$src_layer"
-  done < "$inline_tmp"
+  done < "$sites_tmp"
 }
 
-while read -r file; do
-  if ! src_layer=$(layer_of_file "$file"); then
-    continue
-  fi
-
-  # Find line numbers of #[cfg(test)] and mod tests for skip heuristic
-  # If file has a #[cfg(test)] block, all uses after its first occurrence are test-only.
-  first_test_line=$(grep -n -E '#\[cfg\(test\)\]|mod tests' "$file" 2>/dev/null | head -n1 | cut -d: -f1 || true)
-  if [[ -z "$first_test_line" ]]; then
-    first_test_line=999999
-  fi
-
-  # --- Pass 1: `use` line scan (runs first so a shared site is reported as a
-  #     `use` violation rather than an inline one). ---
-  run_pass "$file" "$src_layer" "use" "use"
-
-  # --- Pass 2: inline qualified-path scan. Catches qualified paths in function
-  #     bodies, struct fields and trait bounds, which pass 1 cannot see. Records
-  #     that overlap pass 1 are collapsed by SEEN_SITE. ---
-  run_pass "$file" "$src_layer" "inline" "inline"
-
-done < <(find "$ROOT" -name "*.rs" -type f)
+run_pass "use"
+run_pass "inline"
 
 # === Port-adoption choke point (issue #1061) ===
 # Layer direction is necessary but not sufficient: a port owns an invariant and
@@ -625,34 +440,38 @@ done < <(find "$ROOT" -name "*.rs" -type f)
 # direction while bypassing the port. This pass fails closed on any raw
 # client-wiring primitive outside the two guard modules: a new surface must call
 # `ssrf_guard()` / `secure_client()` instead of wiring its own resolver or
-# redirect policy. Same test-code skip heuristic as the direction passes (past
-# the first `#[cfg(test)]` / `mod tests` marker) plus a `//`-comment skip;
-# string literals are NOT parsed, same residual-noise policy as the layer regex.
+# redirect policy.
+#
+# The constructs are the ones the extractor reports: the raw client wiring
+# methods and any mention of the concrete `ValidatingResolver` — decided on the
+# REFERENCE, not on the text of a line (B39). A mention inside a test region is
+# not a construct at all: the extractor does not report it.
 CHOKE_OWNERS=("domain/ssrf_guard.rs" "infrastructure/ssrf.rs")
-while read -r file; do
+declare -A SEEN_CHOKE=()
+while IFS=$'\t' read -r rel lineno rec_kind match; do
+  [[ -z "$rel" || -z "$lineno" ]] && continue
+  [[ "$rec_kind" == "choke" ]] || continue
+
+  file="$ROOT/$rel"
   is_owner=0
   for owner in "${CHOKE_OWNERS[@]}"; do
     [[ "$file" == *"$owner" ]] && is_owner=1
   done
   (( is_owner )) && continue
-  first_test_line=$(grep -n -E '#\[cfg\(test\)\]|mod tests' "$file" 2>/dev/null | head -n1 | cut -d: -f1 || true)
-  [[ -z "$first_test_line" ]] && first_test_line=999999
-  lineno=0
-  while IFS= read -r line; do
-    lineno=$((lineno + 1))
-    (( lineno > first_test_line )) && break
-    stripped="${line#"${line%%[![:space:]]*}"}"
-    [[ "$stripped" == //* ]] && continue
-    if [[ "$line" =~ \.dns_resolver\(|ValidatingResolver::\.new\(|\.redirect\( ]]; then
-      violations=$((violations + 1))
-      if [[ "$MODE" == "strict" ]]; then
-        echo "::error::$file:$lineno: raw HTTP client wiring outside the SsrfGuard choke point (port-adoption violation, #1061) — call ssrf_guard()/secure_client() instead"
-      else
-        echo "::warning::$file:$lineno: raw HTTP client wiring outside the SsrfGuard choke point (port-adoption violation, #1061)"
-      fi
-    fi
-  done < "$file"
-done < <(find "$ROOT" -name "*.rs" -type f)
+
+  # One violation per offending line, whatever the number of constructs on it.
+  if [[ -n "${SEEN_CHOKE[$file:$lineno]+set}" ]]; then
+    continue
+  fi
+  SEEN_CHOKE["$file:$lineno"]=1
+
+  violations=$((violations + 1))
+  if [[ "$MODE" == "strict" ]]; then
+    echo "::error::$file:$lineno: raw HTTP client wiring outside the SsrfGuard choke point (port-adoption violation, #1061) — call ssrf_guard()/secure_client() instead"
+  else
+    echo "::warning::$file:$lineno: raw HTTP client wiring outside the SsrfGuard choke point (port-adoption violation, #1061)"
+  fi
+done < "$sites_tmp"
 
 if [[ -f "$ALLOWLIST" ]]; then
   echo "allowlisted $allowlisted_count (max $ALLOWLIST_CAP, file: $ALLOWLIST, entries: ${#ALLOW_PATTERNS[@]})"
