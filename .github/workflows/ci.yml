@@ -645,6 +645,15 @@ jobs:
       # Deferred entries live in scripts/guard_coverage_baseline.txt and the
       # list may only shrink: an entry that stops reproducing fails this step
       # and asks to be removed.
+      # Semantic harnesses for two policy guards. `check-topology.sh` decides
+      # the branch topology of every PR (an enforcing required check), and
+      # `check_intra_crate_direction.sh` decides the intra-crate layering:
+      # both had branches that a test never exercised, which is the shape the
+      # guard-coverage meta-guard below audits.
+      - name: Branch topology semantics harness
+        run: bash scripts/test_topology.sh
+      - name: Intra-crate allowlist semantics harness
+        run: bash scripts/test_intra_crate_allowlist.sh
       - name: Guard coverage meta-guard
         run: bash scripts/test_guard_coverage.sh
       # Negation harness for the meta-guard above. Eight cases over throwaway

@@ -79,6 +79,14 @@
 # and `…::resource_downloader_legacy::X`, and `infrastructure::export::state_store`
 # absorbed `crate::infrastructure::export::state_store_backup::X`.
 #
+# === Min-match rule (audit B44) ===
+# Every allowlist entry MUST absorb at least one site. An entry that absorbs
+# ZERO sites is STALE: it exempts nothing and only hides that the code it was
+# written for has moved or is gone. The allowlist is a budget, not a wish
+# list — a stale entry is a removal request (the whole point of citing a
+# removal condition), so it FAILS in strict mode instead of riding silently
+# behind a `::warning::` nobody reads.
+#
 # === Inline site rule + greenness taxonomy (issue #1100, ADR-0010-B) ===
 # A SITE is every non-comment `crate::infrastructure|adapters|application::...`
 # occurrence in a layer body — `use` lines AND inline qualified paths in function
@@ -172,6 +180,10 @@ fi
 
 # --- allowlist handling ---
 declare -a ALLOW_PATTERNS=()
+# Per-entry count of absorbed sites (audit B44). An entry that absorbs ZERO
+# sites is STALE: it exempts nothing and is a removal request, not a
+# permanent exemption. The counter is what makes that observable.
+declare -A ALLOW_MATCHES=()
 if [[ -f "$ALLOWLIST" ]]; then
   while IFS= read -r line || [[ -n "$line" ]]; do
     # Trim
@@ -186,6 +198,7 @@ if [[ -f "$ALLOWLIST" ]]; then
     # Pattern is first whitespace-separated token before comment
     pattern=$(echo "$trimmed" | awk '{print $1}')
     ALLOW_PATTERNS+=("$pattern")
+    ALLOW_MATCHES[$((${#ALLOW_PATTERNS[@]} - 1))]=0
   done < "$ALLOWLIST"
   if (( ${#ALLOW_PATTERNS[@]} > ALLOWLIST_CAP )); then
     echo "::error::allowlist $ALLOWLIST has ${#ALLOW_PATTERNS[@]} entries, max is $ALLOWLIST_CAP (ADR-0012-B terminal cap — only the two permanent ADR-0011 entries are expected. A new entry needs a removal condition cited by SYMBOL, never by line number, per #1032.)"
@@ -247,22 +260,31 @@ is_allowlisted() {
   local match="$2"
   local target="$3"
   local pat
-  for pat in "${ALLOW_PATTERNS[@]}"; do
+  local i
+  local found=0
+  for i in "${!ALLOW_PATTERNS[@]}"; do
+    pat="${ALLOW_PATTERNS[$i]}"
     # FILE PATHS are not module paths: a per-file entry is an explicit, reviewed
     # exemption for the whole file (`application/container.rs` in ADR-0010 §2), so
     # substring matching is kept here ON PURPOSE. Segment anchoring applies to
     # module paths only, where `foo` and `foo_v2` are genuinely different modules.
     if [[ "$file" == *"$pat"* ]]; then
-      return 0
+      ALLOW_MATCHES[$i]=$(( ${ALLOW_MATCHES[$i]:-0} + 1 ))
+      found=1
+      continue
     fi
     if path_segment_contains "$match" "$pat"; then
-      return 0
+      ALLOW_MATCHES[$i]=$(( ${ALLOW_MATCHES[$i]:-0} + 1 ))
+      found=1
+      continue
     fi
     if path_segment_contains "$target" "$pat"; then
-      return 0
+      ALLOW_MATCHES[$i]=$(( ${ALLOW_MATCHES[$i]:-0} + 1 ))
+      found=1
+      continue
     fi
   done
-  return 1
+  return $(( found == 0 ? 1 : 0 ))
 }
 
 # filter_and_match <use|inline> — the shared record extractor.
@@ -636,12 +658,37 @@ if [[ -f "$ALLOWLIST" ]]; then
   echo "allowlisted $allowlisted_count (max $ALLOWLIST_CAP, file: $ALLOWLIST, entries: ${#ALLOW_PATTERNS[@]})"
 fi
 
+# === Stale allowlist entries (audit B44) ===
+# An entry that absorbed ZERO sites is STALE: it exempts nothing, it only
+# hides the fact that the code it was written for has moved or is gone. The
+# allowlist is a budget, not a wish list: a stale entry is a removal request
+# (the whole point of citing a removal condition), so it FAILS in strict mode
+# instead of riding silently behind a `::warning::` that nobody reads.
+STALE_ENTRIES=0
+if [[ -f "$ALLOWLIST" ]]; then
+  for i in "${!ALLOW_PATTERNS[@]}"; do
+    if [[ "${ALLOW_MATCHES[$i]:-0}" -eq 0 ]]; then
+      STALE_ENTRIES=$((STALE_ENTRIES + 1))
+      if [[ "$MODE" == "strict" ]]; then
+        echo "::error::allowlist entry absorbed 0 sites (stale entry — a removal request, not a permanent exemption): ${ALLOW_PATTERNS[$i]} (file: $ALLOWLIST)"
+      else
+        echo "::warning::allowlist entry absorbed 0 sites (stale entry): ${ALLOW_PATTERNS[$i]} (file: $ALLOWLIST)"
+      fi
+    fi
+  done
+fi
+
 if [[ "$MODE" == "strict" ]]; then
-  if [[ $violations -eq 0 ]]; then
+  if [[ $violations -eq 0 && $STALE_ENTRIES -eq 0 ]]; then
     echo "OK: intra-crate Clean Architecture layering is inward-only (ADR-0010, strict mode)"
     exit 0
   fi
-  echo "::error::found $violations intra-crate direction violation(s) (ADR-0010, strict mode)"
+  if [[ $violations -ne 0 ]]; then
+    echo "::error::found $violations intra-crate direction violation(s) (ADR-0010, strict mode)"
+  fi
+  if [[ $STALE_ENTRIES -ne 0 ]]; then
+    echo "::error::found $STALE_ENTRIES stale allowlist entry(ies) (ADR-0010, strict mode — every entry must absorb at least one site)"
+  fi
   exit 1
 else
   echo "OK (warn): $violations intra-crate direction violation(s) reported (ADR-0010, warn mode — flip INTRA_CRATE_MODE=strict after the follow-up slice lands)"
