@@ -1214,9 +1214,9 @@ domain/site/crawler_config.rs	12	use	crate::domain::ValidUrl
 domain/site/crawler_config.rs	65	inline	crate::error::Result
 domain/site/crawler_config.rs	70	inline	crate::ScraperError::invalid_url
 domain/ssrf_guard.rs	62	use	crate::domain::network_policy::NetworkPolicy
-domain/ssrf_guard.rs	717	choke	redirect
-domain/ssrf_guard.rs	765	choke	redirect
-domain/ssrf_guard.rs	798	choke	redirect
+domain/ssrf_guard.rs	739	choke	redirect
+domain/ssrf_guard.rs	787	choke	redirect
+domain/ssrf_guard.rs	820	choke	redirect
 domain/text_chunker.rs	11	use	crate::error::SemanticError
 domain/url_validation.rs	3	use	crate::error::ScraperError
 domain/url_validation.rs	4	use	crate::Result
