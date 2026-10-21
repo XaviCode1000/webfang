@@ -1231,13 +1231,22 @@ fn check_obscura_binary(binary: &str, path_value: &str) -> Result<(), CliExit> {
     }
 }
 
-/// Minimum Obscura version for the Layer 2 dump-format contract (#793):
-/// `obscura fetch --dump html` was verified in 0.2.0; an older binary may
-/// change dump semantics and silently feed the wrong content shape to Layer 2.
-const MINIMUM_OBSCURA_VERSION: (u64, u64, u64) = (0, 2, 0);
+/// Minimum Obscura version for the Layer 2 contract (#793, #1710).
+///
+/// Two floors, one constant. The dump-format contract: `obscura fetch --dump
+/// html` was verified in 0.2.0 and did not change through 0.2.3, so an older
+/// binary may change dump semantics and silently feed the wrong content shape
+/// to Layer 2. And the upstream security fixes a scraper that fetches
+/// adversarial URLs cannot sit below: 0.2.2 closed SSRF gaps (IPv6 embedded /
+/// 6to4 / NAT64, CGNAT, IANA ranges) and 0.2.3 hardened cookies (host-only,
+/// public-suffix, SameSite), stripped credentials from cross-origin redirects
+/// and updated rustls (RUSTSEC-2026-0285).
+///
+/// The floor is 0.2.5, the current stable upstream release.
+const MINIMUM_OBSCURA_VERSION: (u64, u64, u64) = (0, 2, 5);
 
 /// User-facing spelling of [`MINIMUM_OBSCURA_VERSION`] for Spanish errors.
-const MINIMUM_OBSCURA_VERSION_STR: &str = "0.2.0";
+const MINIMUM_OBSCURA_VERSION_STR: &str = "0.2.5";
 
 /// Verdict of the Obscura version assessment (#793).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1961,12 +1970,13 @@ mod tests {
         assert_eq!(parse_obscura_version("obscura 0.2"), None);
     }
 
-    /// `assess_obscura_version` classifies against the 0.2.0 minimum — the
-    /// exact boundary, above it, below it, and the missing case.
+    /// `assess_obscura_version` classifies against the 0.2.5 minimum (#1710) —
+    /// the exact boundary, above it, below it, and the missing case.
     #[test]
     fn assess_obscura_version_classifies_meets_too_old_unknown() {
+        // The floor itself is the boundary: 0.2.5 meets it.
         assert_eq!(
-            assess_obscura_version(Some((0, 2, 0))),
+            assess_obscura_version(Some((0, 2, 5))),
             VersionVerdict::Meets
         );
         assert_eq!(
@@ -1976,6 +1986,17 @@ mod tests {
         assert_eq!(
             assess_obscura_version(Some((1, 0, 0))),
             VersionVerdict::Meets
+        );
+        // One patch below the floor is too old.
+        assert_eq!(
+            assess_obscura_version(Some((0, 2, 4))),
+            VersionVerdict::TooOld
+        );
+        // 0.2.0 met the old floor; since #1710 it is below it, because the
+        // upstream security fixes it lacks are the reason the floor moved.
+        assert_eq!(
+            assess_obscura_version(Some((0, 2, 0))),
+            VersionVerdict::TooOld
         );
         assert_eq!(
             assess_obscura_version(Some((0, 1, 9))),
@@ -2001,13 +2022,13 @@ mod tests {
         bin_path
     }
 
-    /// Hybrid + obscura 0.2.0: the version contract is met, preflight passes.
+    /// Hybrid + obscura 0.2.5: the version contract is met, preflight passes.
     #[cfg_attr(miri, ignore)] // Command::spawn unsupported by Miri (#775)
     #[cfg(unix)]
     #[test]
-    fn hybrid_version_020_passes() {
+    fn hybrid_version_025_passes() {
         let tmp = tempfile::TempDir::new().expect("tempdir");
-        let bin_path = write_obscura_with_version(tmp.path(), "0.2.0");
+        let bin_path = write_obscura_with_version(tmp.path(), "0.2.5");
 
         let mut opts = CrawlOptions::default();
         opts.network.js_strategy = JsStrategy::Hybrid;
@@ -2015,7 +2036,7 @@ mod tests {
         assert!(
             check_js_dependencies_with(&["definitely-not-installed-9x4k"], false, "", &opts)
                 .is_ok(),
-            "obscura 0.2.0 must satisfy the version contract"
+            "obscura 0.2.5 must satisfy the version contract"
         );
     }
 
@@ -2032,7 +2053,7 @@ mod tests {
         opts.network.js_strategy = JsStrategy::Hybrid;
         opts.network.obscura_binary = bin_path.to_string_lossy().into_owned();
         let err = check_js_dependencies_with(&["definitely-not-installed-9x4k"], false, "", &opts)
-            .expect_err("obscura below 0.2.0 must fail hybrid preflight");
+            .expect_err("obscura below 0.2.5 must fail hybrid preflight");
         match err {
             CliExit::ConfigError(msg) => {
                 assert!(
