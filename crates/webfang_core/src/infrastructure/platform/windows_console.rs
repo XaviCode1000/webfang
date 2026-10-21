@@ -133,25 +133,65 @@ async fn console_event_source() -> &'static str {
     std::future::pending::<&'static str>().await
 }
 
+/// A termination source: it resolves with the NAME of the event it observed,
+/// or with `None` when its registration was rejected.
+type SourceWait = std::pin::Pin<Box<dyn std::future::Future<Output = Option<&'static str>> + Send>>;
+
+/// Resolve with the NAME of the first source that delivers one.
+///
+/// A source that degrades to `None` — its registration was rejected — is
+/// dropped, and the remaining ones keep waiting: a broken Ctrl+C must not
+/// hide the console source, which is the one that matters on Windows
+/// (#1836). `None` comes back only when EVERY source degraded, so the caller
+/// falls back to its own explicit-cancel path (#509).
+///
+/// Flat `select_all` ladder — no nested `select!` arms, so this stays under
+/// the #516 complexity ratchet while handling every subset of sources. The
+/// list is never empty when `select_all` is called: a source that delivers
+/// a name returns at once, and a source that degrades leaves the list one
+/// entry shorter — the empty list IS the "every source degraded" case the
+/// guard above returns on.
+async fn first_named_source(mut waits: Vec<SourceWait>) -> Option<&'static str> {
+    use tracing::warn;
+
+    loop {
+        if waits.is_empty() {
+            // Every source degraded to `None`: there is nothing left to wait on.
+            return None;
+        }
+        let (name, _index, remaining) = futures::future::select_all(waits).await;
+        waits = remaining;
+        if let Some(name) = name {
+            return Some(name);
+        }
+        // A degraded source is dropped and the remaining ones keep waiting.
+        warn!(
+            remaining_sources = waits.len(),
+            "termination source degraded to no event — dropped, the remaining sources keep waiting"
+        );
+    }
+}
+
 /// Resolve with the NAME of the first process-level termination event, or
 /// `None` when no source could be registered.
 ///
 /// This is the composition every shutdown site wants: Ctrl+C — which is all
 /// a Unix process has, and on Windows the only thing `tokio::signal::ctrl_c()`
 /// ever delivers — raced against the console-event source `tokio` cannot
-/// see. `None` means "Ctrl+C registration was rejected", and the caller
-/// falls back to its own explicit-cancel path (#509).
+/// see. `None` means "no source could be registered", and the caller falls
+/// back to its own explicit-cancel path (#509). On Windows a degraded Ctrl+C
+/// is NOT such a case: the console source keeps waiting, because it is the
+/// only source that can deliver the events `ctrl_c()` never sees (#1836).
 pub async fn first_termination_event() -> Option<&'static str> {
     first_termination_source().await
 }
 
 #[cfg(windows)]
 async fn first_termination_source() -> Option<&'static str> {
-    use std::future::Future;
-    use std::pin::Pin;
-
-    type Wait = Pin<Box<dyn Future<Output = Option<&'static str>> + Send>>;
-    let mut waits: Vec<Wait> = vec![
+    // The console source is the one that matters on Windows: it is the only
+    // source that can deliver the events `ctrl_c()` never sees, so a broken
+    // Ctrl+C must not hide it (see `first_named_source`).
+    first_named_source(vec![
         Box::pin(async {
             tokio::signal::ctrl_c()
                 .await
@@ -159,29 +199,21 @@ async fn first_termination_source() -> Option<&'static str> {
                 .map(|()| CTRL_C_EVENT_NAME)
         }),
         Box::pin(async { Some(console_event_source().await) }),
-    ];
-    // Flat `select_all` ladder — no nested `select!` arms, so this stays under
-    // the #516 complexity ratchet while handling every subset of sources.
-    // A source that degrades to `None` is dropped and the remaining ones keep
-    // waiting: a broken Ctrl+C must not hide the console source, which is the
-    // one that matters on Windows.
-    loop {
-        let (name, _index, remaining) = futures::future::select_all(waits).await;
-        waits = remaining;
-        if name.is_some() || waits.is_empty() {
-            return name;
-        }
-    }
+    ])
+    .await
 }
 
 /// Off Windows this is exactly the historical behaviour: tokio's Ctrl+C,
 /// named. The console source is compiled out entirely.
 #[cfg(not(windows))]
 async fn first_termination_source() -> Option<&'static str> {
-    tokio::signal::ctrl_c()
-        .await
-        .ok()
-        .map(|()| CTRL_C_EVENT_NAME)
+    first_named_source(vec![Box::pin(async {
+        tokio::signal::ctrl_c()
+            .await
+            .ok()
+            .map(|()| CTRL_C_EVENT_NAME)
+    })])
+    .await
 }
 
 /// Switch the console code page to UTF-8 (XP-K-03).
@@ -397,5 +429,59 @@ mod tests {
         // Must be safe to call from a test: no-op, no panic, no side effect a
         // later test could observe.
         init_console_output_encoding();
+    }
+
+    /// A termination source that resolves with the NAME of the event it
+    /// observed.
+    fn delivering_source(name: &'static str) -> SourceWait {
+        Box::pin(async move { Some(name) })
+    }
+
+    /// A termination source that degrades the way a rejected Ctrl+C
+    /// registration does: it resolves with no event name at all.
+    fn degraded_source() -> SourceWait {
+        Box::pin(async { None::<&'static str> })
+    }
+
+    /// The invariant the Windows composition depends on (#1836): a source
+    /// that degrades to no event is dropped, and the source that still
+    /// delivers one is not hidden by it. A broken Ctrl+C must not hide the
+    /// console source, which is the one that matters on Windows.
+    #[tokio::test]
+    async fn a_degraded_source_does_not_hide_a_source_that_delivers() {
+        let observed = first_named_source(vec![
+            degraded_source(),
+            delivering_source("CTRL_CLOSE_EVENT"),
+        ])
+        .await;
+        assert_eq!(observed, Some("CTRL_CLOSE_EVENT"));
+    }
+
+    /// The same invariant in the shape Windows actually runs: a degraded
+    /// Ctrl+C plus a console source with no event yet. The composition must
+    /// keep waiting for the console source, so it never resolves.
+    #[tokio::test]
+    async fn a_degraded_source_keeps_waiting_for_a_source_that_never_delivers() {
+        let observed = tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            first_named_source(vec![
+                degraded_source(),
+                Box::pin(std::future::pending::<Option<&'static str>>()),
+            ]),
+        )
+        .await;
+        assert!(
+            observed.is_err(),
+            "a broken Ctrl+C must not hide the console source: the composition must keep waiting"
+        );
+    }
+
+    /// Every source degraded: there is nothing left to wait on, so the
+    /// caller gets no event and falls back to its own explicit-cancel path
+    /// (#509).
+    #[tokio::test]
+    async fn every_degraded_source_yields_no_event() {
+        let observed = first_named_source(vec![degraded_source(), degraded_source()]).await;
+        assert_eq!(observed, None);
     }
 }
