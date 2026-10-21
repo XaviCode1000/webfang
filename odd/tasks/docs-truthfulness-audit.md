@@ -817,6 +817,34 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
   guard que falta (mover el doc al libro con los fences marcados, o un `check_*` de
   drift doc↔código cableado en CI) se trackea aparte.
 
+**L23 (2026-10-20, cierre del residual estructural — el guard que faltaba):** el ítem 6 de
+`## Next steps` queda **cerrado**. `docs/architecture/ai-providers-design.md` ya no está
+fuera de todo gate: el guard de drift doc↔código es `scripts/check_ai_providers_doc.sh`, con
+7 checks fail-closed (manifiesto, cita, conjunto de miembros de enum/struct, containment
+del fence, claims negativos, cobertura de citas y referencias `§`), y el manifiesto de 44
+entradas vive **embebido en el doc** (`<!-- claims:begin -->` … `<!-- claims:end -->`), con
+el mismo patrón que el gate de pines: el documento es la fuente de verdad de sus propias
+afirmaciones y un check fail-closed las verifica contra el código real.
+
+La regla que cierra la puerta es la **cobertura**: toda cita `archivo:línea` de la prosa
+tiene que estar registrada en el manifiesto. Sin ella, se podría agregar una afirmación
+normativa nueva sin registrar ningún chequeo — que es exactamente la forma que dejó
+vivir la firma que no compilaba.
+
+Cableado en el job `repo-guards` (fase **required**, marcador `# guard-required`, declarado
+exactamente una vez) y espejado bloqueante en las tres lanes del fast gate local. El
+harness (`scripts/test_ai_providers_doc.sh`, 49 casos) tiene un caso por check, y el
+meta-guard del repo (`scripts/test_guard_coverage.sh`) comprueba la no-vacuidad: sustituye
+el guard por `exit 0` y exige que el harness se ponga rojo.
+
+**Evidencia**: `test_ai_providers_doc.sh` → 49 ok, 0 fail · `check_ai_providers_doc.sh` →
+exit 0 (30 claim, 8 shape, 5 impl, 1 absent; 47 citas cubiertas; 29 § resueltas) ·
+`test_guard_coverage.sh` → `OK: 18 wired guard(s) covered (mutation: on)` ·
+`ci_fast_gate.sh` → GREEN · revisión nativa: la lente de riesgo completó con **0
+bloqueantes** y sus tres hallazgos (confinamiento de rutas, clave de caché no inyectiva,
+contrato de `--advisory`) quedaron corregidos con su caso de harness. Issue #2136, PR
+#2146.
+
 ## Next steps
 
 1. Advisories de la review de #2026 sobre el cableado (R3-1, R3-2, R3-3, R4-1, R4-2): sin
@@ -839,10 +867,18 @@ se escapan con `\[` o backticks. El conteo es correcto; la descripción original
 4. ~~T8 residual (issue #2020)~~ — cerrado (L18, rama `chore/external-link-harness`).
 5. Follow-ups de la review de #2049 sobre el harness (A1/R1-001, R1-002/R3-1, R3-2): tratados en
    L19, issue #2050, rama `fix/external-link-harness-findings`.
-6. **Guard ausente para los docs normativos fuera del libro** (abierto el 2026-10-20,
-   ver L22): `docs/architecture/ai-providers-design.md` —y cualquier otro doc normativo
-   bajo `docs/` que no esté enlazado desde `docs/src/SUMMARY.md`— no lo ve ningún gate
-   de mdBook. Las tres opciones (mover el doc al libro con los fences marcados como
-   `ignore`/`text`, un `scripts/check_*` de drift doc↔código, o enlazarlo desde
-   `SUMMARY.md` como capítulo) son decisiones del owner: tocan `.github/` o la
-   estructura del libro. **No cerrado por este slice.**
+6. ~~**Guard ausente para los docs normativos fuera del libro**~~ — **cerrado** (L23,
+   issue #2136, PR #2146): `docs/architecture/ai-providers-design.md` ya no está fuera de
+   todo gate. La opción elegida fue la segunda de las tres (un `scripts/check_*` de
+   drift doc↔código cableado en CI), con el mismo patrón que el gate de pines de
+   versión: el manifiesto de afirmaciones vive **embebido en el doc** y un check
+   fail-closed lo verifica contra el código real. La regla que cierra la puerta es la
+   **cobertura**: toda cita `archivo:línea` de la prosa tiene que estar registrada en el
+   manifiesto — una afirmación normativa nueva sin claim verificable es drift. El guard
+   quedó en fase **required** (marcador `# guard-required`) tras cumplirse el criterio que
+   la issue fijaba —el harness prueba el fallo cerrado de cada check— y el espejo local
+   del fast gate bloquea igual, porque un guard que bloquea en CI y no localmente miente.
+   **Lo que sigue abierto no es el guard sino la feature diferida**: #2018
+   (`TenantAiContext`, 0 ocurrencias en código) está declarado ausente en el manifiesto
+   (`absent | * | - | TenantAiContext`), así que el día que alguien lo implemente, el
+   guard obliga a actualizar el doc en el mismo PR.
