@@ -470,8 +470,8 @@ fn slice5a_cli_only_groups_cover_their_specs() {
 
     // AI gating (ADR-0004, slice C): NO entry in the AI group is feature-gated.
     //
-    // It used to be a pair: everything except `max_chars` and the `max_tokens`
-    // shim carried `feature_gate: Some("ai")`. That is gone, and the ungated
+    // It used to be a pair: everything except the chunk-size guard carried
+    // `feature_gate: Some("ai")`. That is gone, and the ungated
     // set is now asserted to be the WHOLE group — asserted BY NAME against the
     // group itself, not by count, so re-gating one entry fails HERE with that
     // entry named rather than surfacing later as a flag that vanished from one

@@ -51,7 +51,6 @@ pub struct ExportConfig<'a> {
     pub(crate) ai_threshold: f32,
     pub(crate) ai_max_chars: usize,
     pub(crate) ai_offline: bool,
-    pub(crate) ai_model: String,
 }
 
 /// Run the export flow: AI-cleaned or standard export.
@@ -474,7 +473,6 @@ mod standard_export_dispatch {
             ai_threshold: 0.5,
             ai_max_chars: 512,
             ai_offline: false,
-            ai_model: String::new(),
         }
     }
 
