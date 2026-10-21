@@ -176,12 +176,31 @@ EOF
 apply_ruleset() {
   local ruleset_json
   local existing_id=""
+  local probe_rc=0
 
   # First check if it exists and get its ID.
-  if ruleset_json="$(get_our_ruleset 2>/dev/null)"; then
-    existing_id="$(jq_json '.id // empty' "$ruleset_json")"
-    [[ -n "$existing_id" ]] || existing_id=""
-  fi
+  #
+  # The three outcomes must stay distinct (B49): 0 = found, 1 = genuinely
+  # absent (so creating is correct), 2 = the API could not be read. Collapsing
+  # 1 and 2 — which is what `if ruleset_json="$(get_our_ruleset)"; then` does —
+  # turns a 500 into "absent" and POSTs a DUPLICATE ruleset under the same
+  # name. A read failure is not an answer, so it aborts instead.
+  ruleset_json="$(get_our_ruleset)" || probe_rc=$?
+  case "$probe_rc" in
+    0)
+      existing_id="$(jq_json '.id // empty' "$ruleset_json")"
+      [[ -n "$existing_id" ]] || existing_id=""
+      ;;
+    1)
+      # Genuinely absent: creating the ruleset is the right move.
+      existing_id=""
+      ;;
+    *)
+      echo "::error::could not read the existing ruleset (API failure, rc=${probe_rc})." >&2
+      echo "::error::refusing to create a duplicate ruleset: 'absent' and 'cannot tell' are different answers." >&2
+      return 2
+      ;;
+  esac
 
   # Ruleset payload — LIVE-verified shape (see header): fully-qualified include
   # pattern, update parameters carry the required boolean, deletion has no
