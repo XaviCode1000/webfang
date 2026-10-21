@@ -52,13 +52,16 @@ disagree about what that means:
 | Site | Before #1835 | After #1835 |
 | :--- | :--- | :--- |
 | `Engine::spawn_signal_handler` (`application/crawler/engine.rs`) | warned, then set the shutdown flag AND fired the cancellation token | warns; the run keeps going |
-| CLI shutdown guard (`cli/shutdown.rs`) | warned, then the wait ended and the guard fired its token | warns; the run keeps going |
+| CLI shutdown guard (`cli/shutdown.rs`) | **on Windows**: warned, then the wait ended and the guard fired its token. On Unix the wait only ends on a real signal, so a per-signal registration rejection never reached the guard | warns; the run keeps going |
 
 **One fact the issue recorded was wrong, and it changed the shape of the fix.**
-#1835 described the CLI guard as "does not cancel". It did cancel: the wait
-returning resolved the `select!` arm, which the guard read as "a termination
-event happened" and fired the token. So the disagreement was not "one stops,
-one keeps going" — it was "both stop, while both promised the opposite". The
+#1835 described the CLI guard as "does not cancel". On **Windows** it did
+cancel: the wait returning resolved the `select!` arm, which the guard read as
+"a termination event happened" and fired the token. On Unix the premise held —
+the Unix wait degrades per signal and only ends on a real signal, so a
+rejected registration never reached the guard at all. So on Windows the
+disagreement was not "one stops, one keeps going" — it was "both stop, while
+both promised the opposite". The
 choice is therefore not "who was right" but "what is right", and the answer is
 the one the CLI guard's own doc comment, the MCP server's message and this
 ADR's *Degradation, never panic* bullet already state: a rejected registration
