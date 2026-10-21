@@ -74,7 +74,11 @@ case "$CMD" in
       echo "error: 'trace' requires a <trace_id> argument" >&2
       exit 1
     fi
-    jq -c "select(.trace_id == \"$TRACE\")" "$FILE"
+    # The trace id travels to jq as DATA, never as program text (audit B28):
+    # interpolated into the filter, a quote broke the program and a crafted
+    # value rewrote the filter itself, so "trace" answered with events that
+    # belong to another run. --arg binds it as a value.
+    jq -c --arg t "$TRACE" 'select(.trace_id == $t)' "$FILE"
     ;;
   waf)
     jq -c 'select((.fields.message? // "") | test("WAF|Banned domain"; "i"))' "$FILE"

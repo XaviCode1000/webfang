@@ -194,6 +194,28 @@ for package in fuzz_lock.get("package", []):
 lines = []
 append = lines.append
 
+# Column widths of the third-party table. The licence column is a MINIMUM
+# width, not a truncation: the licence expression is the legally operative
+# statement of the bundle and it must match the SBOM (webfang.spdx.json) byte
+# for byte (audit B26).
+NAME_WIDTH = 38
+VERSION_WIDTH = 20
+LICENSE_WIDTH = 34
+
+
+def cell(value, width):
+    """Shorten a cell VISIBLY.
+
+    A silently shortened value is a misstatement: a consumer cannot tell a
+    truncated label from the real one, and the audit found "MIT OR Apache-2.0
+    WITH LLVM-exception" printed as "MIT OR Apache-2.0 WITH LLVM-except" —
+    a licence that no longer says what it says. A shortened cell therefore
+    ends with an ellipsis, which announces the truncation out loud.
+    """
+    if len(value) > width:
+        return value[: width - 1] + "…"
+    return value
+
 append(RULE)
 append("WebFang — Third-Party Notices")
 append(RULE)
@@ -248,8 +270,30 @@ append(RULE)
 append("")
 append("{} distinct name/version pairs.".format(len(inventory)))
 append("")
+append(THIN)
 append(
-    "{:<38} {:<20} {:<34} {}".format("CRATE", "VERSION", "LICENSE", "REPOSITORY")
+    "The crate name and the version are width-limited: a shortened cell ends"
+)
+append(
+    "with '…', which announces the truncation. The licence expression is NEVER"
+)
+append(
+    "shortened — it is the legally operative statement of this bundle and it"
+)
+append(
+    "matches the SBOM (webfang.spdx.json) expression for expression."
+)
+append(THIN)
+append(
+    "{:<{name_width}} {:<{version_width}} {:<{license_width}} {}".format(
+        "CRATE",
+        "VERSION",
+        "LICENSE",
+        "REPOSITORY",
+        name_width=NAME_WIDTH,
+        version_width=VERSION_WIDTH,
+        license_width=LICENSE_WIDTH,
+    )
 )
 append(THIN)
 
@@ -261,8 +305,14 @@ for name, ver in sorted(inventory):
         missing_license += 1
     repository = entry["repository"] or "(not declared upstream)"
     append(
-        "{:<38} {:<20} {:<34} {}".format(
-            name[:38], ver[:20], license_value[:34], repository
+        "{:<{name_width}} {:<{version_width}} {:<{license_width}} {}".format(
+            cell(name, NAME_WIDTH),
+            cell(ver, VERSION_WIDTH),
+            license_value,
+            repository,
+            name_width=NAME_WIDTH,
+            version_width=VERSION_WIDTH,
+            license_width=LICENSE_WIDTH,
         ).rstrip()
     )
 

@@ -48,6 +48,17 @@
 # structure. See scripts/check_archive_reproducibility.sh for the same boundary
 # stated from the assertion side.
 #
+# ATOMIC PUBLICATION
+# ==================
+# The archive is written to a staging file in the target's own directory and
+# moved into place with `os.replace()` — an atomic rename inside one
+# filesystem. A run killed mid-write therefore leaves NO partial at the target
+# path: the staging file is removed and the target keeps whatever it held
+# before. The writer used to write the archive IN PLACE, so a killed run left
+# a truncated ZIP that looked like an artifact, and the "target already
+# exists" refusal then demanded a manual deletion before the retry could run
+# at all (audit B31).
+#
 # USAGE
 #   bash scripts/make-deterministic-zip.sh <output.zip> <file> [file ...]
 #
@@ -104,19 +115,29 @@ for f in "$@"; do
 done
 
 if [[ -e "$OUT" ]]; then
-    # A stale target that survived a failed previous step would otherwise be
-    # published as if it were this run's archive.
-    echo "::error::'$OUT' ya existe: este script no sobrescribe un artefacto de una ejecución anterior (bórralo si el reintento es intencionado)."
-    exit 1
+    # A stale target is NOT refused: the writer below stages the archive in a
+    # temporary file and moves it into place with an atomic rename, so a
+    # target at OUT is always a COMPLETE archive — this writer can no longer
+    # leave a partial one. The old refusal only manufactured the trap the
+    # audit names (B31): a partial left behind by a killed run had to be
+    # deleted BY HAND before the retry could run at all, and the deterministic
+    # writer reproduces the same bytes for the same inputs anyway.
+    echo "nota: '$OUT' ya existe; esta ejecución lo sustituye de forma atómica." >&2
 fi
 
 # The whole writer. Quoted heredoc: no shell expansion, so the Python is exactly
 # the text below and never sees a repository-controlled value interpolated into
 # source. Paths arrive as argv, not as text.
+#
+# The archive is written to a STAGING file in the same directory as the
+# target and moved into place with os.replace() — an atomic rename inside one
+# filesystem. A run killed mid-write therefore leaves no partial at OUT: the
+# staging file is removed and OUT keeps whatever it held before (audit B31).
 python3 - "$OUT" "$SOURCE_DATE_EPOCH" "$@" <<'PY'
 import os
 import stat
 import sys
+import tempfile
 import time
 import zipfile
 
@@ -152,29 +173,50 @@ date_time = (
 # the archive and the extracted binary is executable under WSL / Git-Bash.
 external_attr = (stat.S_IFREG | 0o755) << 16
 
-with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-    for path in sorted(sources):
-        name = os.path.basename(path)
-        with open(path, "rb") as handle:
-            payload = handle.read()
-        info = zipfile.ZipInfo(name, date_time=date_time)
-        info.compress_type = zipfile.ZIP_DEFLATED
-        # 3 = Unix. zipfile derives this from os.name, which would make the same
-        # commit produce a different archive on a Windows and a Linux runner.
-        info.create_system = 3
-        # 2.0 = deflate, no ZIP64 / no data-descriptor machinery. Derived
-        # explicitly so the "version needed to extract" field cannot drift with
-        # the input size.
-        info.create_version = 20
-        info.extract_version = 20
-        info.external_attr = external_attr
-        info.internal_attr = 0
-        # Bit 3 (streaming data descriptor) and bit 11 (UTF-8 name) are both
-        # cleared: the first records a data offset that depends on the writer's
-        # buffering, the second changes the local-header bytes.
-        info.flag_bits = 0
-        archive.writestr(info, payload)
-        sys.stderr.write("zip entry: {} ({} bytes)\n".format(name, len(payload)))
+# The staging file lives in the target's own directory: os.replace() is only
+# atomic within one filesystem, and a staging file on another device would turn
+# the publish step back into a copy. It is hidden (leading dot) so a glob like
+# "webfang-*.zip" cannot pick it up as a release artifact.
+out_dir = os.path.dirname(os.path.abspath(out))
+handle_fd, staged = tempfile.mkstemp(prefix=".webfang-zip-staging-", suffix=".tmp", dir=out_dir)
+os.close(handle_fd)
+
+try:
+    with zipfile.ZipFile(staged, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+        for path in sorted(sources):
+            name = os.path.basename(path)
+            with open(path, "rb") as handle:
+                payload = handle.read()
+            info = zipfile.ZipInfo(name, date_time=date_time)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            # 3 = Unix. zipfile derives this from os.name, which would make the same
+            # commit produce a different archive on a Windows and a Linux runner.
+            info.create_system = 3
+            # 2.0 = deflate, no ZIP64 / no data-descriptor machinery. Derived
+            # explicitly so the "version needed to extract" field cannot drift with
+            # the input size.
+            info.create_version = 20
+            info.extract_version = 20
+            info.external_attr = external_attr
+            info.internal_attr = 0
+            # Bit 3 (streaming data descriptor) and bit 11 (UTF-8 name) are both
+            # cleared: the first records a data offset that depends on the writer's
+            # buffering, the second changes the local-header bytes.
+            info.flag_bits = 0
+            archive.writestr(info, payload)
+            sys.stderr.write("zip entry: {} ({} bytes)\n".format(name, len(payload)))
+
+    # The archive is complete: publish it with an atomic rename. os.replace()
+    # is atomic within a filesystem, and the staging file lives in the target's
+    # own directory, so this is a rename and never a copy.
+    os.chmod(staged, 0o644)
+    os.replace(staged, out)
+except BaseException:
+    # A killed or failed run leaves NO partial behind: the staging file goes
+    # away and the target keeps whatever it held before.
+    if os.path.exists(staged):
+        os.unlink(staged)
+    raise
 PY
 
 if [[ ! -s "$OUT" ]]; then

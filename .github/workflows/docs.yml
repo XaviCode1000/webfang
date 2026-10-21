@@ -190,13 +190,30 @@ jobs:
       # The HTML pandoc pipeline (pandoc/sed/awk + noise gate) was removed:
       # the rustdoc JSON backend output carries no HTML-layout noise — the
       # `<span>`/`<div>` fragments that remain are legitimate doctest content.
-      # BUILD_DATE is injected only in CI (local runs omit Generated lines).
+      # The build date is a property of the COMMIT, not of the machine that
+      # renders it. This step used to inject a wall clock
+      # BUILD_DATE="$(date -u ...)", which was embedded in every generated
+      # file: two runs of the same commit produced two different artifacts, so
+      # the reproducibility claim could not be made (audit B30).
+      # SOURCE_DATE_EPOCH is the reproducible-build contract this repo already
+      # uses for the release archives and the SBOM (see release.yml, step
+      # "Derive SOURCE_DATE_EPOCH"); the LLM producer derives its date from it
+      # and ignores BUILD_DATE. The derivation is fail-closed: an epoch that is
+      # not an integer timestamp stops the job instead of silently dating the
+      # artifact with a clock again.
       # The heavy generation (rustdoc-markdown over each crate) happens only
       # here, exactly as the old inline step did.
       - name: Build LLM markdown artifact (llms.txt directory)
         run: |
           set -euo pipefail
-          BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)" scripts/build-llm-artifact.sh
+          SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)"
+          if ! [[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]]; then
+            echo "::error::no se pudo derivar SOURCE_DATE_EPOCH del commit '$GITHUB_SHA'" >&2
+            exit 1
+          fi
+          export SOURCE_DATE_EPOCH
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
+          scripts/build-llm-artifact.sh
 
       # --- Native GitHub Pages deployment (2025+ "deploy from a workflow") ---
       # configure-pages@v5 enables/gathers the Pages site; upload-pages-artifact

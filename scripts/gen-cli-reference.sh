@@ -71,10 +71,20 @@ fi
 
 # 4. Rebuild the block between markers:
 #    head (through the BEGIN marker line) + new block + tail (END marker onward).
-TMP="$(mktemp)"
-trap 'rm -f "$TMP"' EXIT
+#
+#    The staged chapter is written in the CHAPTER'S OWN directory. `mktemp` in
+#    $TMPDIR followed by `mv` is a cross-filesystem move (rename → EXDEV →
+#    copy + unlink), NOT an atomic swap, so a failure in the middle of the
+#    move left the tracked chapter truncated (audit B27). Staging next to the
+#    target makes the final move a rename(2) inside one filesystem: the
+#    chapter is replaced atomically or not at all.
+STAGE="$(mktemp "${CHAPTER}.stage.XXXXXX")"
+trap 'rm -f "$STAGE"' EXIT
+# mktemp creates the file 0600; the chapter is a tracked source file and keeps
+# its readable mode.
+chmod 644 "$STAGE"
 
-sed -n "1,/$BEGIN_MARKER/p" "$CHAPTER" > "$TMP"
+sed -n "1,/$BEGIN_MARKER/p" "$CHAPTER" > "$STAGE"
 {
   printf '````text\n'
   printf '$ webfang --help\n'
@@ -87,17 +97,18 @@ sed -n "1,/$BEGIN_MARKER/p" "$CHAPTER" > "$TMP"
   printf '\n'
   printf '%s\n' "$HELP_COMPLETIONS"
   printf '````\n'
-} >> "$TMP"
-sed -n "/$END_MARKER/,\$p" "$CHAPTER" >> "$TMP"
+} >> "$STAGE"
+sed -n "/$END_MARKER/,\$p" "$CHAPTER" >> "$STAGE"
 
 if [ "$mode" = "check" ]; then
-  if ! diff -u "$CHAPTER" "$TMP"; then
+  if ! diff -u "$CHAPTER" "$STAGE"; then
     echo "error: $CHAPTER is stale — run scripts/gen-cli-reference.sh" >&2
     exit 1
   fi
   echo "ok: $CHAPTER matches the binary help"
 else
-  mv "$TMP" "$CHAPTER"
+  # Same directory ⇒ rename(2) ⇒ the swap is atomic.
+  mv "$STAGE" "$CHAPTER"
   trap - EXIT
   echo "ok: regenerated the generated block in $CHAPTER"
 fi
