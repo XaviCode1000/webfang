@@ -5,11 +5,12 @@
 //! [`crate::domain::ssrf_guard::is_forbidden_ip_with_policy`]; the client
 //! threading into the embedding provider path is slice 2 of B2.
 //!
-//! FIN-017: the never-allowable ranges (link-local, unspecified, multicast,
-//! broadcast, reserved, Teredo and the NAT64/6to4 translation prefixes) are
-//! rejected at config load AND re-checked at dial time — an allowlist entry
-//! can never reach them, so a naive allowlist cannot open `169.254.169.254`.
-//! Loopback stays exclusively under the B1 `allow_loopback` flag (#1462).
+//! FIN-017: the never-allowable ranges (link-local, the 0.0.0.0/8
+//! "this network on this host" family, multicast, broadcast, reserved,
+//! Teredo and the NAT64/6to4 translation prefixes) are rejected at config
+//! load AND re-checked at dial time — an allowlist entry can never reach
+//! them, so a naive allowlist cannot open `169.254.169.254`. Loopback stays
+//! exclusively under the B1 `allow_loopback` flag (#1462).
 //!
 //! `allow_hosts` is parsed, validated and matched here. Its enforcement lives
 //! in exactly one place — [`crate::infrastructure::ssrf`]'s
@@ -25,12 +26,23 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 /// can never blanket-permit a whole translation range (the embedded IPv4
 /// must be allowlisted individually instead).
 ///
+/// The entries record the RANGE THAT IS ACTUALLY DENIED at dial time, not
+/// the shape of the address that first revealed the gap: the IPv4 entry is
+/// the whole "this network on this host" family 0.0.0.0/8 (#1965, A5), and
+/// the NAT64 entry is the whole prefix space 64:ff9b::/32 — the canonical
+/// Well-Known Prefix included, since a Network-Specific Prefix cannot be
+/// decoded and fails closed (#1965, A6).
+///
 /// `pub(crate)` so the dial layer can read the very same table instead of
 /// keeping a second copy of it: `ssrf_guard`'s always-denied set is the
 /// runtime half of this invariant, and the test that ties the two together
 /// lives there (#1965, A4).
 pub(crate) const NEVER_ALLOWABLE: &[(IpAddr, u8, &str)] = &[
-    (IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), 32, "unspecified"),
+    (
+        IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+        8,
+        "this-network (routes to the local host)",
+    ),
     (
         IpAddr::V4(Ipv4Addr::new(169, 254, 0, 0)),
         16,
@@ -61,7 +73,7 @@ pub(crate) const NEVER_ALLOWABLE: &[(IpAddr, u8, &str)] = &[
     ),
     (
         IpAddr::V6(Ipv6Addr::new(0x0064, 0xff9b, 0, 0, 0, 0, 0, 0)),
-        96,
+        32,
         "NAT64 translation prefix",
     ),
     (
@@ -493,6 +505,35 @@ mod tests {
         ))
         .expect_err("blanket translation prefix must be rejected");
         assert!(err.to_string().contains("NAT64"), "got: {err}");
+    }
+
+    /// A6 (#1965): a NAT64 Network-Specific Prefix is never allowlistable
+    /// either — the whole prefix space 64:ff9b::/32 is refused at dial time,
+    /// because the embedded IPv4 cannot be located (RFC 6052 §2.2).
+    #[test]
+    fn allowlist_nat64_network_specific_prefix_is_rejected() {
+        let err = serde_json::from_str::<NetworkPolicy>(&policy_json(
+            "allowlist",
+            "[\"64:ff9b:1::/64\"]",
+            "[]",
+        ))
+        .expect_err("a NAT64 Network-Specific Prefix must never be allowlistable");
+        assert!(err.to_string().contains("NAT64"), "got: {err}");
+    }
+
+    /// A5 (#1965): the "this network on this host" family 0.0.0.0/8 is never
+    /// allowlistable — Linux routes the whole family to the local host. An
+    /// entry that only touches the family OUTSIDE 0.0.0.0 itself must be
+    /// rejected too: the registry records the family that is actually denied.
+    #[test]
+    fn allowlist_this_network_family_is_rejected() {
+        let err = serde_json::from_str::<NetworkPolicy>(&policy_json(
+            "allowlist",
+            "[\"0.1.0.0/16\"]",
+            "[]",
+        ))
+        .expect_err("the 0.0.0.0/8 family must never be allowlistable");
+        assert!(err.to_string().contains("this-network"), "got: {err}");
     }
 
     #[test]
