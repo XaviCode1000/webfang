@@ -20,6 +20,14 @@ set -euo pipefail
 #
 # Fixtures live in a mktemp tree and are reached through INTRA_CRATE_ROOT /
 # INTRA_CRATE_ALLOWLIST, so this harness never reads or writes the repository.
+#
+# NEGATION: the gate's own semantics must be pinned HERE, not by allowlist
+# entries. Before this harness ran in CI, the four fail-open defects of the
+# gate (audit "scripts fail-open" 2026-10-18, B36-B39: a doc comment that
+# mentions `#[cfg(test)]` truncating the scan, a string literal containing
+# `/*` blinding the rest of the file, five invisible `use` path forms, and a
+# choke-point pattern that real Rust never emits) survived for months
+# because nothing in CI executed these cases.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GATE="$SCRIPT_DIR/check_intra_crate_direction.sh"

@@ -97,7 +97,7 @@
 #     awk filter), lateral same-layer references (the rule fires outward only),
 #     and the `cli/` composition edge below (rank -1, consumed from #1097,
 #     re-decided nothing here). These stay green by documented rule and are
-#     pinned by scripts/test_intra_crate_gate.sh, never by allowlist entries.
+#     pinned by scripts/test_intra_crate_direction.sh, never by allowlist entries.
 # A new inline path in production code that matches neither class fails closed
 # (`::error::`, exit 1 in strict mode) — that is the acceptance proof of #1100.
 #
@@ -111,7 +111,7 @@
 
 set -euo pipefail
 
-# INTRA_CRATE_ROOT / INTRA_CRATE_ALLOWLIST exist so scripts/test_intra_crate_gate.sh
+# INTRA_CRATE_ROOT / INTRA_CRATE_ALLOWLIST exist so scripts/test_intra_crate_direction.sh
 # can point the scanner at a throwaway fixture tree. Production CI relies on the
 # defaults and never sets them.
 ROOT="${INTRA_CRATE_ROOT:-crates/webfang_core/src}"
@@ -499,7 +499,7 @@ process_match() {
   # The rule is `target_rank < src_rank`: OUTWARD only. A lateral reference
   # (target_rank == src_rank, e.g. infrastructure -> infrastructure) is
   # intentionally NOT flagged. That is the known blind spot behind #1060/#1061 and
-  # is out of scope for this gate; scripts/test_intra_crate_gate.sh pins it so it
+  # is out of scope for this gate; scripts/test_intra_crate_direction.sh pins it so it
   # is never "fixed" by accident.
   if (( target_rank < src_rank )); then
     if is_allowlisted "$file" "$match" "$target_layer"; then
