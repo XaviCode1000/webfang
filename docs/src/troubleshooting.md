@@ -206,7 +206,9 @@ If you see `WAF challenge detected` errors:
 
 - The site is presenting a CAPTCHA / challenge page. WebFang bans the domain
   for the rest of the crawl to avoid hammering it.
-- Try a different TLS fingerprint profile (`--tls-emulation`) or JS rendering.
+- Try a different TLS fingerprint profile (`--tls-emulation`): a WAF
+  challenge short-circuits the fetch at the layer that saw it, so WebFang
+  never re-renders the page with JavaScript to get past it.
 - Slow down (`--delay`, lower concurrency) to avoid rate-limit triggers.
 
 ---
