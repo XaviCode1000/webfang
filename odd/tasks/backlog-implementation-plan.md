@@ -1,0 +1,233 @@
+# Plan de implementación del backlog abierto — 12 clusters, 16 lotes
+
+Objetivo: vaciar el backlog por **clase raíz**, no issue por issue. Cada lote es UN fix
+por raíz, con su test nombrado, y se entrega commiteado en su worktree. Las PRs se abren
+después, cuando el owner lo ordene.
+Base: `main`. Regla de oro: **un lote a la vez, un worktree por lote, un solo escritor
+por path**. Este documento es la especificación que leen los workers.
+
+Estado al abrir este plan: 40 issues abiertas → 12 clusters → 16 lotes. K1 (SSRF) está
+**ocupado** por el agente del owner y este plan no lo toca.
+
+---
+
+## Specs
+
+**S1.** El owner deja la decisión al agente y exige que la decisión sea la adecuada, no la
+fácil:
+
+> te dejo la responsabilidad de decision a ti como experto, y si tienes que investigar en
+> internet para buscar la mejor opcion o mejor alternativa tienes mi permiso total.
+
+> pero tus decisiones nunca debe ser la mas facil, debe ser la mas adecuada a nuestro
+> producto.
+
+**S2.** No se abren PRs: el trabajo se conserva commiteado en el worktree.
+
+> no abras pr's conserva el trabajo en worktree comiteado. ya mas tarde abrimos las pr's.
+
+**S3.** El plan es un documento ODD para ir implementando todo.
+
+> y crea on plan odd para ir implementando todo
+
+**S4.** K1 tiene dueño y no se toca desde acá.
+
+> ya tengo un agente trabajando en lote k1 en
+> /home/xavi/Projects/Rust/webfang-worktrees/fix-ssrf-this-network-justification
+
+**S5.** El método (del skill `systemic-issue-triage`, vigente en este repo): clasificar por
+clase raíz antes de tocar código; N issues que comparten raíz = **un** fix; cerrar contra
+**tests nombrados**, nunca contra promesas; el fix de una falla que se reporta como
+"dead end" es **una salida ejecutable**, no un guard; y el test de diseño antes de cada
+arreglo: si el fix agrega un estado, un verbo, un flag o una representación paralela de la
+verdad, hay que **borrar o relajar** algo en su lugar.
+
+---
+
+## Reglas de ejecución (no negociables)
+
+1. **Un lote a la vez.** Un worktree por lote: `~/Projects/Rust/webfang-worktrees/<branch
+   con / → ->`, nunca dentro del repo. `.envrc` de 5 líneas escrito desde el nombre del
+   árbol; `codegraph init` + `codedb "$PWD" reindex` **antes** de delegar (sin los dos
+   índices el worker está ciego).
+2. **Un solo escritor por path.** Si dos lotes tocan el mismo archivo, se serializan. La
+   tabla de colisiones de más abajo es la que decide el orden.
+3. **Nunca dos builds simultáneas** en esta máquina: el OOM de BoringSSL ya tumbó el
+   escritorio dos veces. `$(rustup which cargo)` (nunca `command -v cargo`, que devuelve el
+   shim de mbx), `CARGO_BUILD_JOBS=1`, `systemd-run --user --scope -p MemoryMax=2G`.
+4. **Harness de negación**: todo fix de comportamiento necesita un harness que se vea
+   **RED contra el código pre-fix** y GREEN después. Un caso que no puede distinguir un
+   script roto de uno arreglado no es evidencia. Y el RED tiene que ser **preciso**: rojo
+   por la razón del defecto, no por un stub que no entiende el pedido.
+5. **Commits de work-unit** (~400 líneas autorales por commit), con tests y docs al lado
+   del comportamiento. Un commit cuyo `Risk` nombre un ítem de riesgo alto va solo.
+6. **`status:approved` nunca auto-aplicada** (es del maintainer). Un `type:*` sí, si el
+   form de issue/PR lo declara.
+7. **Sin PR hasta que el owner lo pida.** Se deja el worktree commiteado y se reporta.
+8. **El merge es del owner.** El agente entrega la rama commiteada.
+9. **Nada de `git stash`, `git checkout`, `git switch`, `git worktree --force`.**
+10. **Idioma**: los artefactos técnicos en inglés; `odd/tasks/**` en español (convención
+    del repo); los mensajes de error al usuario final en español.
+
+---
+
+## Lotes
+
+Estado: `HECHO` · `EN CURSO` · `OCUPADO` (dueño externo) · `PENDIENTE` · `BLOQUEADO` (falta
+una decisión del owner).
+
+| Lote | Cluster | Issues | Fix por raíz (una línea) | Test nombrado | Δ | Ruta | Estado |
+|---|---|---|---|---|---|---|---|
+| **L0** | Cierres por evidencia + backlog sin dueño | #2105, #1996, #1423, #2224, #1826, #1936 + nuevas **#2233**, **#2234**, **#2235** | cerrar con evidencia; abrir lo que no tenía dueño | evidencia citada por issue | 0 código | inline | **HECHO** |
+| **L1** | SSRF: encapsulación IPv4 | #2231, #2232 | ISATAP y la forma IPv4-compatible revalidan la IPv4 embebida; Teredo primero; ISATAP **fuera** del set always-denied | `ssrf_a5_a6_family_test.rs` | +150/−51 | agente del owner | **OCUPADO** |
+| **L2** | Merge y limpieza post-merge | #1970, #1971, #1972 | `state`+`mergeStateStatus` en una llamada ⇒ "already merged" exit 0; `rm` standalone con path literal; el registro de misión se escribe en el worktree | `scripts/test_merge_when_green_merged_state.sh` | +180/−15 | worker | **EN CURSO** |
+| **L3** | **CI Health: el canal enmudecido** | #2233, #2234, #2162, #1936, #1980 | el clasificador matchea una línea de **FALLO**, no una mención; el test parsea hermético; el observer cierra por **subtítulo** de título | `scripts/test_ci_health_close.sh` (caso nuevo) | +40/−15 | worker | PENDIENTE |
+| **L4** | Guard residuals (post-#2068) | #2070 (ítems 1-3; el 4º = **no hacer nada**) | `10#` en el comparador semver; el filtro de comentarios en `harness_wired`; `parse_envrc_target_decl` en vez del `sed` rígido | `scripts/test_bump_support_patch.sh` (nuevo) + `scripts/tests/test_guard_coverage.sh` | +90/−6 | worker | PENDIENTE |
+| **L5** | Atribución de commits | #1995 | allowlist = identidades **exactas** de los bots (borra el prefix match) | `scripts/test_no_ai_attribution.sh` (caso nuevo) | −2/+18 | inline | PENDIENTE |
+| **L6** | Señal de mutación | #1844 | una medición (`cargo mutants list`) → `N`; borrar la estimación | shard `k/N` dentro de 90 min | −8/+12 | inline | PENDIENTE |
+| **L7** | MCP: superficie verdadera | #1815, #1817, #1837, #2193 | `match_url_pattern` documenta lo que hace; `mcp = []` (la key **no** se borra); el conteo 36 en una sola fuente; `eq_ignore_ascii_case` en el path gate; la constante de shutdown `pub` | `path_gate.rs::components_start_with_never_accepts_a_case_variant_the_filesystem_keeps_distinct` | +18/−10 | worker | PENDIENTE |
+| **L8** | Falsos verdes de test | #2066, #1852, #1828, #1833, #1834, #1816 | detectar el descarte de SIGKILL (`getpid()==1`) y morir diagnosticamente; `default = ["mcp"]` + guard de target con 0 tests; `PRAGMA integrity_check` en vez de un punto de arming nuevo; el test de Windows **in-module** | `crash_matrix_test.rs::crash_point_never_hangs_when_sigkill_is_discarded` | +25/+150 | worker | **BLOQUEADO** (#1852 = feature flags) |
+| **L9** | Grafo de build | #1799, #1797, #1796 | borrar `sys-info` (KiB en Linux, **bytes** en macOS) y `once_cell`; dropear `version_string()` (0 call sites) y no escribir `build.rs`; el benchmark declara su propia feature `chromium` | `autotuning.rs::ram_budget_from_bytes_converts_to_kib` | −20/+40 | worker | **BLOQUEADO** (deps/features) |
+| **L10** | Crates sin mantenimiento | #1984, #2031 | borrar `serde_yaml` (sólo serializa en prod) y salir de `keyring` 3 preservando el **mismo store** (linux-keyutils); las 3 supresiones zbus expiran 2027-01-17 | `scripts/test_advisory_policy.sh` (caso nuevo) | −30/+45 | worker | **BLOQUEADO** (deps) |
+| **L11** | obscura | #1710 | el veredicto `Unknown` **nombra el mínimo esperado**; el hit-rate se deriva de los logs por capa; sin modo estricto, sin contadores | `preflight.rs::unknown_verdict_names_the_expected_minimum` | +6/−1 | inline | PENDIENTE |
+| **L12** | Duplicación | #1757 | helpers de arrange compartidos; bajar el baseline por el delta **medido** (9272) | `scripts/check_duplication.sh` | −60/+12 | inline | PENDIENTE (tras #2230) |
+| **L13** | Entrega macOS | #1821 | job `workflow_dispatch` **no bloqueante** de firma+notarización; el `xattr` se queda hasta que exista artefacto notarizado | `scripts/tests/test_release_macos_notarization.sh` | +40 | inline | **BLOQUEADO** (label + secreto) |
+| **L14** | Docs y runbooks | #1609, #2061, #1826 | cerrar #1609 con veredicto por fila y abrir ≤2 slices vivas; **rechazar** el auto-PR de rotación (el gate `published` ya corre dentro de `Validate PR metadata`); el WAL/SQLite no tiene runbook en ningún lado | `state_store.rs::test_load_or_default_*` | +55/−40 | inline | PENDIENTE |
+| **L15** | Lane de UB | #2235 | el UB de `scraper_service.rs` con gate **por test**; cada `--skip` con motivo escrito; la lane deja resultado, no aborta el proceso | job `Miri (core)` en verde en una corrida schedule | +20/−10 | worker | PENDIENTE |
+
+---
+
+## Mapa de colisiones (dos lotes que tocan el mismo path se serializan)
+
+| Path | Lotes que lo tocan | Orden |
+|---|---|---|
+| `scripts/merge-when-green.sh`, `scripts/test_*merge_when_green*` | L2 | L2 primero |
+| `scripts/test_ci_health_close.sh`, `.github/workflows/ci-health.yml` | L3 | L3 |
+| `scripts/check_no_ai_attribution.sh` + harness | L5, y L4 (si toca el filtro) | L4 → L5 |
+| `scripts/quality-baselines.json` | L10, L12, y PR #2230 (abierto) | #2230 → L12 |
+| `crates/webfang_mcp/**` | L7, L8 | L7 → L8 |
+| `crates/webfang_core/src/domain/ssrf_guard.rs` | L1 | **L1 (agente del owner)** |
+| `Cargo.toml` (workspace + crates) | L9, L10 | L9 → L10 |
+| `docs/adr/0004-onnx-local-removal.md` | nadie (L0 lo decidió: no se toca) | — |
+| `.github/workflows/ci.yml` | L2 (step del harness), L3, L4, L13 | serializar: cada uno con su step como anchor |
+
+Regla: **dos writers vivos no pueden compartir un path**, aunque toquen regiones
+distintas del mismo archivo. Las entregas que tocan `ci.yml` se serializan.
+
+---
+
+## Estrategia de entrega (por qué los lotes se Deliver en slices)
+
+Este repo **no tiene PRs apiladas**: `scripts/check-topology.sh` sólo admite head→base de
+su tabla, y ningún head de feature puede apuntar a otra rama de trabajo. La vía que
+funciona es **entrega secuencial**: slice 1 como PR normal sobre `main` → merge → slice 2
+desde el `main` nuevo → PR normal → repetir. Nunca se retargetea un PR abierto.
+
+Reglas derivadas para los lotes de este plan:
+
+- Un lote que pase de ~400 líneas autorales se parte en slices por **comportamiento**, no
+  por cantidad: el slice 1 lleva el código + sus tests, el slice 2 lleva los docs/trackers
+  cuando el cambio es de otra clase (`type:docs`).
+- Cada PR lleva **una** etiqueta `type:*` (la del vocabulario del repo: `type:bug`,
+  `type:feature`, `type:refactor`, `type:docs`, `type:chore`, `type:testing`,
+  `type:breaking-change`), la issue enlazada con `Closes #N` y **cero atribución de IA**
+  (el guard `scripts/check_no_ai_attribution.sh` corre en cada commit y en el push).
+- `main` se mueve cada ~15 min por otras sesiones y la protección tiene `strict: true`: una
+  rama que quedó atrás hay que actualizarla antes del merge, y eso dispara un ciclo de CI
+  completo. Se avisa antes de encadenar varios.
+- El merge es del owner. El agente entrega la rama commiteada y el PR listo.
+
+## Decisiones tomadas por el agente (con su fundamento)
+
+| # | Decisión | Por qué |
+|---|---|---|
+| D1 | El fix de #1970 lee `state` y `mergeStateStatus` en **una sola llamada**, sin fallback | Un segundo lector de un hecho es la forma que el lote viene a cerrar, y el fallback además **apagaba en silencio** la detección del defecto. `gh` sirve ambos campos desde la misma versión de API que ya introduce `mergeStateStatus` |
+| D2 | El harness nuevo **no depende de GNU `timeout`** | Un macOS no lo tiene; un harness que corre en una sola plataforma es un harness que medio equipo nunca corre |
+| D3 | El RED tiene que ser **preciso** (rc=124, el síntoma real) | Un stub que sólo entiende la forma post-fix hace que el script pre-fix muera en la primera lectura: rojo por la razón equivocada |
+| D4 | "Un solo lector" queda **asertado** desde el log de lecturas | Una propiedad no asertada es una propiedad que se pierde en el próximo refactor |
+| D5 | El ADR 0004 **no se toca** | Su lista de residuo es un registro histórico congelado y la corrección que la actualiza ya está escrita; editarla sería falsificar el registro |
+| D6 | La key `mcp` de `webfang_cli` se vuelve `mcp = []`, **no se borra** | Es load-bearing: `release.yml`, `docs.yml`, `check_compatibility.sh`, `gen-cli-reference.sh`, third-party notices |
+| D7 | #1837 → `eq_ignore_ascii_case` (ASCII-narrow) | El par que sobre-acepta es `ß`/`ẞ` (Unicode los pliega, NTFS y APFS los distinguen); ASCII-narrow es estrictamente más estricto que ambos filesystems ⇒ falla cerrado. Se documenta la limitación (un root macOS con nombre no-ASCII queda rechazado) |
+| D8 | #1852 → `default = ["mcp"]` **+** `default-features = false` en `webfang_test_utils` | Sólo con la primera línea el fix es invisible: la unificación de features por la dev-dependency vuelve a re-encender los defaults de `webfang_core` |
+| D9 | #1799 → borrar `sys-info` y usar `sysinfo` con conversión **explícita** bytes→KiB | `sys-info` 0.9 devuelve KiB en Linux y **bytes** en macOS: hoy el budget de RAM ya se sobreestima en macOS |
+| D10 | #2031 → `keyring-core` + `linux-keyutils-keyring-store` (el **mismo** store) | `keyring` 4 con Secret Service movería las credenciales del usuario: las entradas existentes quedan infindables y `no_implicit_fallback_from_keyring_to_env` forbids la salida automática ⇒ un bloqueo nuevo sin salida. Además zbus 6 exige rustc 1.89 y el workspace es 1.88 |
+| D11 | #1844 → **medir** una vez, no inventar un flag de shards | El baseline que hay es una estimación que ya no se sostiene; un flag nuevo sería estado nuevo |
+| D12 | #1984 → borrar `serde_yaml`, **no** "purgar ignores muertos" | `cargo audit` lee el lock y **sí** detecta `paste 1.0.15`: purgar ese ignore deixa el Security Audit en rojo. Y el trío zbus no se toca antes de #2031 |
+| D13 | #2070 ítem 4 = **no hacer nada** | La ventana de publicación pendiente es angosta (un parche, mismo minor, sin tag), numérica y se auto-cura con el tag. Un expiry agrega estado y una falla nueva por un riesgo que hoy no existe |
+| D14 | #1821 → job **no bloqueante** y `xattr` intacto | Un paso de firma que falla cuando falta el secreto bloquearía cada release (bloqueo nuevo sin salida), y borrar el `xattr` antes de que exista artefacto notarizado convierte la única salida en un callejón |
+| D15 | #2061 → **rechazar** el bot de issues/PR | El scope `published` ya corre dentro del `Validate PR metadata` (fail-closed); un bot nuevo es un escritor nuevo con su propia máquina de estados |
+| D16 | #1828 → la fila WAL-kill se **rechaza**; `PRAGMA integrity_check` sobre las filas existentes | La fila WAL exigiría un punto de arming **nuevo** en producción para servir a un test: un verbo nuevo en el contrato del crash-harness |
+| D17 | #1826 y #1710 se **comentan, no se cierran** | Un hilo con dos modos de falla: cerrar deja strandado al que espera la otra mitad |
+
+---
+
+## Decisiones que quedan con el owner (bloquean lotes)
+
+| # | Decisión | Bloquea |
+|---|---|---|
+| O1 | `#1852`: cambiar feature flags (`default`) y una arista de dev-dependency | L8 |
+| O2 | `#1796/#1797/#1799/#2031/#1984`: tocar o remover deps y features | L9, L10 |
+| O3 | `#1821`: `status:approved` + credenciales de Apple | L13 |
+| O4 | `#1833`: su propuesta revierte una decisión registrada (la lane CI es el único compilador de Windows) | L8 |
+| O5 | `#1710`: la decisión stealth/standard es documentación (`docs/` está fuera de alcance por defecto) | L11 |
+| O6 | `#1797`: dropear `version_string()` (0 call sites) y **no** escribir `build.rs` | L9 |
+| O7 | Orden de apertura de las PRs y de los merges (3 PRs abiertas + 1 release esperando; `main` se mueve cada ~15 min con `strict: true`) | todas |
+
+---
+
+## Tasks
+
+- [ ] T1 · S1–S5 — cerrar L2: revisar, commitear los work-units en el worktree, reportar (sin PR).
+- [ ] T2 · S1–S5 — L3 (el canal enmudecido): clasificador por línea de FALLO + test hermético + cierre por subtítulo.
+- [ ] T3 · S1–S5 — L4 (residuales de guard): 3 one-liners con sus harnesses; el ítem 4 se documenta como "no hacer nada".
+- [ ] T4 · S1–S5 — L5 (atribución): allowlist exacta de bots, con el caso que rewrite.
+- [ ] T5 · S1–S5 — L6 (mutación): medir, fijar `N`, borrar la estimación.
+- [ ] T6 · S1–S5 — L7 (MCP): doc del matcher, `mcp = []`, conteo 36 en una fuente, path gate ASCII-narrow, constante de shutdown `pub`.
+- [ ] T7 · S1–S5 — L8 (test infra) cuando O1 y O4 estén resueltas.
+- [ ] T8 · S1–S5 — L9/L10 (grafo de build y crates) cuando O2 y O6 estén resueltas.
+- [ ] T9 · S1–S5 — L11, L12, L14 (mensaje de obscura, duplicación, docs/runbooks).
+- [ ] T10 · S1–S5 — L15 (lane de UB) y L13 (macOS) cuando O3 esté resuelta.
+- [ ] T11 · S1–S5 — cuando el owner lo ordene: abrir las PRs lote por lote, con su issue enlazada y su `type:*` único.
+
+---
+
+## Log
+
+L1 — Petición original (verbatim):
+
+> tengo muchas y  varias issues abiertas y necesito un plan para ir implementando utliza la
+> skill adecuada para triage de issues
+
+L2 — Corrección sobre el estado del sistema (verbatim):
+
+> debes tener en cuenta que nuesto sistema ha cambiado sobre todo en lo relacionado con
+> modelos de *AI LOCAL* Y LAS ISSUES pueden decir cosas o indormacion antigua o falsa,
+
+> utiliza siempre tu y ordenar a  todos los workers las potentes tools *codedb* y *codegraph*
+> en lugar de las otras tools
+
+L3 — Reparto de lotes (verbatim):
+
+> ya tengo un agente trabajando en lote k1 en
+> /home/xavi/Projects/Rust/webfang-worktrees/fix-ssrf-this-network-justification
+
+L4 — Delegación de la decisión y formato de entrega (verbatim):
+
+> te dejo la responsabilidad de decision a ti como experto, y si tienes que investigar en
+> internet para buscar la mejor opcion o mejor alternativa tienes mi permiso total.
+
+> pero tus decisiones nunca debe ser la mas facil, debe ser la mas adecuada a nuestro
+> producto.
+
+> no abras pr's conserva el trabajo en worktree comiteado. ya mas tarde abrimos las pr's.
+
+> y crea on plan odd para ir implementando todo
+
+L5 — Evidencia del triage (5 workers read-only con CodeDB 0.2.5849 + CodeGraph sobre
+`main@3a785d8e`, 40 issues): las 3 premises falsas confirmadas (#2105, #1996, #1423 ya
+resueltos), los mecanismos falsos desmontados (#1815 ítems 1 y 3, #1833 insatisfacible,
+#1826 ítems 1-2 moot), las precedencias de error fijadas (#1821, #1837, #2066, #1970,
+#1984) y 3 issues nuevas por lo que no tenía dueño (#2233, #2234, #2235).
+
+L6 — Regla de trabajo para los lotes que siguen: el harness es la prueba, el RED tiene que
+ser preciso, y ninguna decisión se toma por comodidad.
