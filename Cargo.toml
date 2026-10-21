@@ -7,7 +7,7 @@ members = [
     "crates/webfang_test_utils",
     "crates/webfang_benchmark",
 ]
-exclude = ["fuzz"]
+exclude = ["fuzz", "tools/intra-crate-lint"]
 
 [workspace.package]
 version = "4.0.1"
