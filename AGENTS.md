@@ -1428,10 +1428,16 @@ needs auto-merge (e.g. transferring the repo to an organization with rulesets), 
 
 | Head prefix | Allowed base |
 | :--- | :--- |
-| `hotfix/*` | `support/*` |
-| `fix/*` | `main`, `release/*` |
+| `hotfix/*` | `support/X.Y` (numeric X.Y) |
+| `fix/*` | `main`, `release/X.Y` (numeric X.Y) |
 | `feat/*` `refactor/*` `perf/*` `docs/*` `test/*` `chore/*` `style/*` `build/*` `ci/*` `revert/*` | `main` only |
-| `release/*` `support/*` `release-plz-*` `dependabot/*` `renovate/*` | exempt (own flow) |
+| `release/X.Y` `support/X.Y` `release-plz-*` `dependabot/*` `renovate/*` | exempt (own flow) |
+
+The line names are versioned on purpose: `support/*` used to be a glob that
+crossed `/`, so `support/garbage` and `support/foo/bar` were accepted (and
+exempted) while the error text promised `support/X.Y`. A malformed line name
+is a typo that would create an unmanaged branch, and a hotfix must point at
+a real line. `scripts/check-topology.sh` now requires the numeric form.
 
 There is therefore **no head prefix whose base may be another working branch**. Both
 strategies the `chained-pr` skill offers are structurally impossible here:
