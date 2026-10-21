@@ -181,3 +181,18 @@ veredicto del reviewer, y el lineage queda abierto para que el maintainer lo ins
 (`gentle-ai review status --lineage=review-ead5e692fc9ea607`). Eso **no** degrada la
 verificación del lote: cada fix tiene su caso RED/GREEN y el guard real se corrió contra el
 árbol. La revisión nativa es una vista externa adicional, no un sustituto de la verificación.
+
+L13 — Regla de escritura acordada con el owner del plan (el otro agente): el plan y su
+espejo (`odd/tasks/backlog-implementation-plan.md` y
+`odd/backlog-implementation-plan/tasks.md`) viven **sólo** en el branch del Lote 2, y el
+espejo lo escribe **sólo** el owner del plan, con el sha de cada lote que aterrice. Este
+lote **no** edita `odd/backlog-implementation-plan/**`: deja su propio doc de lote
+(`odd/tasks/guard-residuals.md` + `odd/guard-residuals/tasks.md`) en su branch, que no es
+duplicar el plan. Un solo escritor por path, en la práctica: el owner del plan no toca los
+scripts de este lote, y este lote no toca el ledger.
+
+L14 — Los dos `test_guard_coverage.sh` (corrección del owner del plan al plan): el fix de
+`harness_wired` va en `scripts/test_guard_coverage.sh` — el **único** que define esa función
+— y el caso de negación en `scripts/tests/test_guard_coverage.sh`, el harness de semántica
+del meta-guard, que es el archivo que nombra el criterio de aceptación del issue. Los dos
+están cableados en `ci.yml`; este lote no necesita ningún step nuevo.
