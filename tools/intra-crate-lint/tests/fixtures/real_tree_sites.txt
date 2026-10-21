@@ -653,7 +653,7 @@ application/scraper_service.rs	663	inline	crate::application::spa_detection::val
 application/scraper_service.rs	673	inline	crate::application::resolve_title
 application/scraper_service.rs	731	inline	crate::domain::ports::AssetDownloaderPort
 application/scraper_service.rs	770	inline	crate::domain::ports::AssetDownloaderPort
-application/scraper_service.rs	795	inline	crate::domain::ports::AssetDownloaderPort
+application/scraper_service.rs	803	inline	crate::domain::ports::AssetDownloaderPort
 application/spa_detection.rs	106	use	crate::domain::html_cleaner::clean_html
 application/spa_detection.rs	107	use	crate::domain::scraper_port::fallback
 application/spa_detection.rs	107	use	crate::domain::scraper_port::readability
