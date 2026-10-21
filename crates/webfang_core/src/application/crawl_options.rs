@@ -17,10 +17,9 @@ use crate::domain::JsStrategy;
 // Top-level options
 // ============================================================================
 
-/// AI semantic-cleaning configuration, grouped from the four AI CLI flags.
+/// AI semantic-cleaning configuration, grouped from the AI CLI flags.
 ///
-/// Source is CLI ONLY this phase (`preflight.rs`/TUI untouched). `model` is
-/// plumbed through even though `ExportConfig` does not yet consume it.
+/// Source is CLI ONLY this phase (`preflight.rs`/TUI untouched).
 #[derive(Debug, Clone, PartialEq)]
 pub struct AiConfig {
     /// Relevance threshold for AI semantic filtering (0.0-1.0).
@@ -28,20 +27,8 @@ pub struct AiConfig {
     /// Maximum characters per chunk for AI processing (the chunk-rejection
     /// guard, not a context-window setting).
     pub max_chars: usize,
-    /// `Some(tokens)` when `max_chars` was derived from the still-accepted
-    /// deprecated `--max-tokens` (converted with
-    /// [`DEFAULT_CHARS_PER_TOKEN`](crate::domain::options_spec::ai::DEFAULT_CHARS_PER_TOKEN));
-    /// `None` when `--max-chars` was used, or when the default applied.
-    ///
-    /// Pure provenance. It exists so the binary can emit the ONE deprecation
-    /// warning after the tracing subscriber exists — argument resolution runs
-    /// before `init_logging_dual`, where a `warn!` would be dropped (#796) —
-    /// without re-parsing anything.
-    pub deprecated_max_tokens: Option<usize>,
     /// Run AI model in offline mode.
     pub offline: bool,
-    /// AI model identifier (empty = default).
-    pub model: String,
 }
 
 impl Default for AiConfig {
@@ -49,9 +36,7 @@ impl Default for AiConfig {
         Self {
             threshold: 0.3,
             max_chars: crate::domain::options_spec::ai::DEFAULT_MAX_CHARS,
-            deprecated_max_tokens: None,
             offline: false,
-            model: String::new(),
         }
     }
 }
@@ -583,9 +568,7 @@ mod tests {
         let config = AiConfig::default();
         assert_eq!(config.threshold, 0.3);
         assert_eq!(config.max_chars, 98_304);
-        assert!(config.deprecated_max_tokens.is_none());
         assert!(!config.offline);
-        assert_eq!(config.model, "");
     }
 
     #[test]
@@ -593,14 +576,11 @@ mod tests {
         let config = AiConfig {
             threshold: 0.7,
             max_chars: 2048,
-            deprecated_max_tokens: None,
             offline: true,
-            model: "granite-311m".to_string(),
         };
         assert_eq!(config.threshold, 0.7);
         assert_eq!(config.max_chars, 2048);
         assert!(config.offline);
-        assert_eq!(config.model, "granite-311m");
     }
 
     #[test]
@@ -610,7 +590,6 @@ mod tests {
         assert_eq!(ai.threshold, 0.3);
         assert_eq!(ai.max_chars, 98_304);
         assert!(!ai.offline);
-        assert_eq!(ai.model, "");
     }
 
     #[test]
@@ -618,9 +597,7 @@ mod tests {
         let config = AiConfig {
             threshold: 0.5,
             max_chars: 1024,
-            deprecated_max_tokens: None,
             offline: true,
-            model: "test".to_string(),
         };
         let cloned = config.clone();
         assert_eq!(config, cloned);
