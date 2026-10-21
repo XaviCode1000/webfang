@@ -231,13 +231,11 @@ Las capacidades no necesitan un método propio: se leen de `ProviderConfig.capab
 
 Esto permite que un caller resuelva un provider por slot (capabilidad) sin pasar por un handle genérico. Los consumidores reales del registry son la resolución de la config de embeddings (`crates/webfang_core/src/cli/llm_wire.rs:97` y `:103`) y el diagnóstico de `webfang doctor` (`crates/webfang_core/src/cli/commands/doctor.rs:59` y `:70`). `VaultSearchService` **no** es uno de ellos: recibe su `Arc<dyn EmbeddingPort>` por inyección al construirse (`crates/webfang_core/src/application/vault_search.rs:66`) y nunca consulta el registry — citarlo como consumidor del registry sería falso.
 
-### 6. `TenantAiContext` — contexto multi-tenant
+### 6. `TenantAiContext` — contexto multi-tenant (contrato retirado)
 
-> **No implementado.** `TenantAiContext` **no existe en el código**: cero ocurrencias en `crates/`, y no hay ningún tipo ni método con ese nombre que revisar. El contrato de abajo sigue vigente por decisión explícita del owner y está trackeado en la issue **#2018**. No hay struct, ni trait, ni `resolve_for_tenant(tenant_id, provider_id)` que citar.
+> **Retirado.** `TenantAiContext` **nunca se construyó**: cero ocurrencias en `crates/`. El contrato se retira como superficie de API prometida —decisión del owner registrada en la issue **#2018**—: la intención de diseño (un contexto por tenant que resuelva el provider ya elegido por slot) queda guardada ahí y se reabre cuando exista un segundo tenant real, no como tipo prometido en este documento.
 
-El contrato que este diseño propone, y que #2018 tendrá que implementar cuando exista un segundo tenant real, es: un contexto por tenant que envuelve un `ProviderRegistry` y mapea `(tenant_id, provider_id)` al puerto ya resuelto.
-
-**Nota sobre escalabilidad de `wreq::Client`:** el diseño actual de `OpenAiLlmClient` crea su propio `wreq::Client` internamente. Para compartir un pool entre múltiples tenants con el mismo `base_url`, se usa `with_http(http, base_url, api_key)` con un `wreq::Client` construido por `build_default_http_client()`. Esto permite que el registry comparta clientes entre providers del mismo tipo sin requerir cambios en la firma de `new`.
+La nota de escalabilidad de `wreq::Client` que acompañaba a este contrato vive en la sección «Sobre `wreq::Client` compartido» de las Notas de arquitectura.
 
 ### 7. `DetectedStore` — setup helper, no runtime resolver
 
@@ -304,25 +302,19 @@ Las decisiones de producto del wizard, fijadas en revisión antes de escribirlo:
 3. **`build_default_http_client()`** extraída y reutilizable.
 4. **`OpenAiLlmClient::with_http(http, base_url, api_key)`** — aditivo, `new()` intacto.
 5. **`ProvidersConfig`** parsing + `ProviderRegistry` con resolución por ID y por capability.
-6. **`TenantAiContext`** como struct vacío con interfaz pública futura (sin lógica de tenant aún). — **No implementado**, ver §6 e issue #2018.
 
 ### Phase 1: Proveedor OpenAI-compatible concreto
 
-7. **`OpenAiCompatibleProvider`** — struct que implementa `LlmPort` (y potencialmente `EmbeddingPort` futuro) usando `OpenAiLlmClient` internamente:
+6. **`OpenAiCompatibleProvider`** — struct que implementa `LlmPort` (y potencialmente `EmbeddingPort` futuro) usando `OpenAiLlmClient` internamente:
    - Construye el client con `with_http(build_default_http_client()?, base_url, api_key_resolved)`.
    - `api_key_resolved` viene de `AuthSource::resolve()` configurado en `ProviderConfig`.
-8. **Fixtures de contrato** (`tests/fixtures/{openai,openrouter,freellm,groq}.json`) contra el parser de responses del provider.
+7. **Fixtures de contrato** (`tests/fixtures/{openai,openrouter,freellm,groq}.json`) contra el parser de responses del provider.
 
 ### Phase 2: Integración con container
 
-9.  **`Container::with_providers_config(config: ProvidersConfig)`** — inyecta el registry.
-10. **`Container::resolve_provider(provider_id)`** — resolución por ID para callers existentes.
-11. Tests de integración: container + registry + provider concreto.
-
-### Phase 3: Soporte multi-tenant (deferred)
-
-12. **`TenantAiContext::resolve_for_tenant(tenant_id, provider_id)`** — implementado cuando haya un segundo tenant real. **No implementado**, ver §6 e issue #2018.
-13. Tests de multi-tenant integrados.
+8.  **`Container::with_providers_config(config: ProvidersConfig)`** — inyecta el registry.
+9. **`Container::resolve_provider(provider_id)`** — resolución por ID para callers existentes.
+10. Tests de integración: container + registry + provider concreto.
 
 ---
 
@@ -387,8 +379,7 @@ Estado real de cada punto del diseño, verificado contra el árbol.
 6. [x] **`OpenAiCompatibleProvider`** — `crates/webfang_core/src/infrastructure/llm/provider.rs:113`.
 7. [x] **Integración con container** — el wiring real está en `crates/webfang_core/src/cli/llm_wire.rs:45` (`build_llm_provider`) y `:130` (`build_embedding_provider`), no en `container.rs`.
 8. [x] **Tests de integración** — `crates/webfang_core/tests/auth_source_none_test.rs` (`:33`, `:452`).
-9. [ ] **`TenantAiContext`** — **no implementado**, ver §6 e issue **#2018**.
-10. [ ] **Fixtures de contrato** (`crates/webfang_core/tests/fixtures/{openai,openrouter,freellm,groq}.json`) — se mantienen por decisión del owner: la cobertura cross-proveedor sigue siendo necesaria.
+9. [ ] **Fixtures de contrato** (`crates/webfang_core/tests/fixtures/{openai,openrouter,freellm,groq}.json`) — se mantienen por decisión del owner: la cobertura cross-proveedor sigue siendo necesaria.
 
 ---
 

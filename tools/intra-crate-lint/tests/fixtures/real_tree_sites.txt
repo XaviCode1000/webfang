@@ -653,7 +653,7 @@ application/scraper_service.rs	663	inline	crate::application::spa_detection::val
 application/scraper_service.rs	673	inline	crate::application::resolve_title
 application/scraper_service.rs	731	inline	crate::domain::ports::AssetDownloaderPort
 application/scraper_service.rs	770	inline	crate::domain::ports::AssetDownloaderPort
-application/scraper_service.rs	795	inline	crate::domain::ports::AssetDownloaderPort
+application/scraper_service.rs	803	inline	crate::domain::ports::AssetDownloaderPort
 application/spa_detection.rs	106	use	crate::domain::html_cleaner::clean_html
 application/spa_detection.rs	107	use	crate::domain::scraper_port::fallback
 application/spa_detection.rs	107	use	crate::domain::scraper_port::readability
@@ -1214,9 +1214,9 @@ domain/site/crawler_config.rs	12	use	crate::domain::ValidUrl
 domain/site/crawler_config.rs	65	inline	crate::error::Result
 domain/site/crawler_config.rs	70	inline	crate::ScraperError::invalid_url
 domain/ssrf_guard.rs	62	use	crate::domain::network_policy::NetworkPolicy
-domain/ssrf_guard.rs	739	choke	redirect
-domain/ssrf_guard.rs	787	choke	redirect
-domain/ssrf_guard.rs	820	choke	redirect
+domain/ssrf_guard.rs	826	choke	redirect
+domain/ssrf_guard.rs	874	choke	redirect
+domain/ssrf_guard.rs	907	choke	redirect
 domain/text_chunker.rs	11	use	crate::error::SemanticError
 domain/url_validation.rs	3	use	crate::error::ScraperError
 domain/url_validation.rs	4	use	crate::Result
