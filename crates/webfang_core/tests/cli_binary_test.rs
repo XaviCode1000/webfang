@@ -190,8 +190,14 @@ fn test_issue_1933_show_about_does_not_claim_the_run_uses_the_profile() {
          (Tramo D is not wired), got:\n{stdout}"
     );
     assert!(
-        stdout.contains("configured profile and budget"),
-        "show's help must describe the CONFIGURED budget, got:\n{stdout}"
+        stdout.contains("effective embeddings provider"),
+        "show's help must name the identity the run really uses — the \
+         resolved embeddings provider (issue #2106), got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("historical model-profile metadata"),
+        "show's help must label the profile numbers as history — no run \
+         consumes them (issue #2106), got:\n{stdout}"
     );
 }
 
@@ -261,11 +267,12 @@ fn issue_2099_config_with_the_removed_local_onnx_kind_is_rejected() {
 // text is what the operator actually reads.
 // ============================================================================
 
-/// Default profile (no `--embedding-provider`): the output names the repo
-/// default, carries `repo-verified` provenance plus the repo citation, and
-/// shows the native dim and the profile context.
+/// No provider configured: the run identity is EMPTY (never a shipped model
+/// profile), and the repo-verified profiles survive only as labelled
+/// historical metadata — with their repo citation, the native dim and the
+/// profile context (issue #2106).
 #[test]
-fn show_default_profile_renders_repo_verified_provenance_and_citation() {
+fn show_default_render_names_the_repo_verified_profiles_as_history() {
     let (_dir, config) = seeded_config("");
 
     let output = run_with_config(&["show"], &config);
@@ -273,11 +280,15 @@ fn show_default_profile_renders_repo_verified_provenance_and_citation() {
 
     assert!(
         output.status.success(),
-        "show must exit 0 for the default profile, got:\n{stdout}"
+        "show must exit 0 with no provider configured, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("provenance: repo-verified"),
-        "the default profile is repo-verified, got:\n{stdout}"
+        stdout.contains("sin provider de embeddings configurado"),
+        "the run identity must be the EMPTY provider slot, got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("perfil: granite-97m (repo-verified)"),
+        "the historical profile must carry its repo-verified provenance, got:\n{stdout}"
     );
     assert!(
         stdout.contains("citation: docs/adr/0004-onnx-local-removal.md"),
@@ -292,8 +303,8 @@ fn show_default_profile_renders_repo_verified_provenance_and_citation() {
         "the profile context must be shown, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("se muestra el default del repo: granite-97m"),
-        "the output must say the repo default is being shown, got:\n{stdout}"
+        stdout.contains("Ninguna corrida los consume"),
+        "the profile numbers must be labelled as history no run consumes, got:\n{stdout}"
     );
 }
 
@@ -312,7 +323,7 @@ fn show_operator_override_renders_override_provenance_value_and_warning() {
         "show must exit 0 with an operator override, got:\n{stdout}"
     );
     assert!(
-        stdout.contains("provenance: operator-override"),
+        stdout.contains("perfil: granite-97m (operator-override)"),
         "an overridden profile is operator-override, got:\n{stdout}"
     );
     assert!(
@@ -412,10 +423,14 @@ fn show_output_discloses_the_tramo_d_boundary() {
     );
 }
 
-/// An unknown profile id is a configuration error that NAMES the id, in
-/// Spanish — never a silent fallback to the default profile.
+/// An unknown PROVIDER id is a configuration error that NAMES the id, in
+/// Spanish — never a silent fallback to the config-order default.
+///
+/// `--embedding-provider` names a provider in both subcommands (issue
+/// #2106): the error talks about the embedding capability, never about a
+/// model profile.
 #[test]
-fn show_unknown_profile_is_a_spanish_error_naming_the_id() {
+fn show_unknown_provider_id_is_a_spanish_error_naming_the_id() {
     let (_dir, config) = seeded_config("");
 
     let output = run_with_config(&["--embedding-provider", "no-such-model", "show"], &config);
@@ -424,15 +439,20 @@ fn show_unknown_profile_is_a_spanish_error_naming_the_id() {
     assert_eq!(
         output.status.code(),
         Some(78),
-        "an unknown profile is a configuration error (exit 78), got:\n{stdout}\n{stderr}"
+        "an unknown provider id is a configuration error (exit 78), got:\n{stdout}\n{stderr}"
     );
     assert!(
         stderr.contains("no-such-model"),
-        "the error must name the unknown profile id, got:\n{stderr}"
+        "the error must name the unknown provider id, got:\n{stderr}"
     );
     assert!(
-        stderr.contains("perfil de modelo"),
-        "the error must name the profile concept in Spanish, got:\n{stderr}"
+        stderr.contains("embedding"),
+        "the error must name the embedding capability, got:\n{stderr}"
+    );
+    assert!(
+        !stderr.contains("perfil de modelo"),
+        "the error must not talk about a model profile — the id names a \
+         provider, got:\n{stderr}"
     );
 }
 
