@@ -90,7 +90,7 @@ una decisión del owner).
 | **L9** | Grafo de build | #1799, #1797, #1796 | borrar `sys-info` (devuelve **KiB en todas las plataformas**: la premisa de la issue era falsa) y `once_cell`; dropear `version_string()` (0 call sites) y no escribir `build.rs`; el benchmark declara su propia feature `chromium` | `autotuning.rs::ram_budget_from_bytes_converts_to_kib` | −20/+40 | worker | **HECHO** (peer; Risk item 5 ⇒ commit propio): spec `eb40ecbb` (padre) + `b62a4ac2` (guard del grafo de build), `845bfb08` (el grafo deja de llevar lo que no se usa, `#1799`/`#1797`/`#1796`), `6b109426` (baseline de crates duplicados regenerada), `713502cd` (evidencia); tip `713502cd` en `fix/build-graph-deps`. D9 corregida: `sys-info` devuelve KiB en todas las plataformas ||
 | **L10** | Crates sin mantenimiento | #1984, #2031 | borrar `serde_yaml` (sólo serializa en prod) y salir de `keyring` 3 preservando el **mismo store** (linux-keyutils); las 3 supresiones zbus expiran 2027-01-17 | `scripts/test_advisory_policy.sh` (caso nuevo) | −30/+45 | worker | **HECHO** (peer; Risk item 5 ⇒ commit propio): spec `2f51441a` (padre) + `e02d1829` (ningún ignore de `deny.toml` puede quedar muerto, `#1984`), `905183ac` (evidencia de S1); tip `6b4bd8ed` (8 commits) en `fix/unmaintained-crates` ||
 | **L11** | obscura | #1710 | el veredicto `Unknown` **nombra el mínimo esperado**; el hit-rate se deriva de los logs por capa; sin modo estricto, sin contadores | `preflight.rs::unknown_verdict_names_the_expected_minimum` | +6/−1 | inline | **HECHO** (peer): `0e52f031` spec, `6b82e087` (el veredicto `Unknown` nombra el mínimo esperado, `#1710`), `0747fea3` (cierre con los shas); tip `0747fea3` en `fix-obscura-unknown-verdict` ||
-| **L12** | Duplicación | #1757 | helpers de arrange compartidos; bajar el baseline por el delta **medido** (9272) | `scripts/check_duplication.sh` | −60/+12 | inline | **DESBLOQUEADO 2026-10-22** (la PR `#2230` mergeó): spec ODD en escritura por un worker; la implementación la lleva el peer |
+| **L12** | Duplicación | #1757 (**parte**, no la cierra) | helpers de arrange compartidos; **bajar el ratchet al valor medido del candidato** (el baseline commiteado 9272 está rancio) | `scripts/check_duplication.sh` | −60/+12 | inline | **DESBLOQUEADO 2026-10-22** (la PR `#2230` mergeó): spec ODD en escritura por un worker; la implementación la lleva el peer |
 | **L13** | Entrega macOS | #1821 | — | — | 0 | inline | **DESCARTADO 2026-10-22** (O3): el owner decide *"la issue 1821 la dejamos, no la tocamos"*. El lote sale del plan; la issue queda abierta y sin tocar |
 | **L14** | Docs y runbooks | #1609, #2061, #1826 | cerrar #1609 con veredicto por fila y abrir ≤2 slices vivas; **rechazar** el auto-PR de rotación (el gate `published` ya corre dentro de `Validate PR metadata`); el WAL/SQLite no tiene runbook en ningún lado | `state_store.rs::test_load_or_default_*` | +55/−40 | inline | **DIVIDIDA**: el veredicto por fila de #1609 lo cierro yo (worker read-only + comentario en la issue); la implementación (runbook WAL/SQLite, nota de #1710, slices) es **DEL PEER** y está HECHA: `f79e42ba` spec, `08d46907` docs, `0616c3bf` registro, `da990e2d` carry-over del wiki, `a902229f` evidencia; tip `cc380657` (5 commits) en `fix/docs-runbooks-wal` (~650 líneas en 3 commits, cada uno bajo el corte de ~400, **sin PR y sin publicar nada en GitHub**, sin tocar `ci.yml` ⇒ no colisiona con la re-aplicación de los steps). **Veredicto posteado** (25 filas: 12 resueltas, 7 moot, 5 vivas, 1 no accionable) y las 5 vivas abiertas como **#2241** (doc de disclosure: DF-D1+DF-D4+DF-D6), **#2242** (la degradación de config es invisible: FR-10) y **#2243** (podar el seam muerto: M1/G1), las tres con `status:approved` del owner. #1609 **queda abierta** como umbrella; sus PRs la cierran con `Closes part of #1609` ||
 | **L15** | Lane de UB | #2235 | el UB de `scraper_service.rs` con gate **por test**; cada `--skip` con motivo escrito; la lane deja resultado, no aborta el proceso | job `Miri (core)` en verde en una corrida schedule | +20/−10 | worker | **HECHO** (peer): `6065049e` (la lane de UB deja de saltarse árboles de test, `#2235`), `cf4403fa` (guard de las invariantes de la lane), `f0e39852` (harness que prueba que el guard puede fallar), `4a9cb8c0` (registro del cierre con su evidencia); tip `4a9cb8c0` en `fix-miri-ub-lane`. O8 resuelta 2026-10-22 ||
@@ -110,7 +110,7 @@ una decisión del owner).
 | `crates/webfang_core/src/domain/ssrf_guard.rs` | L1 | **L1 (agente del owner)** |
 | `Cargo.toml` (workspace + crates) | L9, L10 | L9 → L10 |
 | `docs/adr/0004-onnx-local-removal.md` | nadie (L0 lo decidió: no se toca) | — |
-| `.github/workflows/ci.yml` | L2 (step del harness), L3, L4, L13 | serializar: cada uno con su step como anchor |
+| `.github/workflows/ci.yml` | L2 (step del harness), L3, L4, L13, **L12** (medido: su spec mete un harness nuevo en el job `repo-guards`) | serializar: cada uno con su step como anchor |
 
 Regla: **dos writers vivos no pueden compartir un path**, aunque toquen regiones
 distintas del mismo archivo. Las entregas que tocan `ci.yml` se serializan.
@@ -399,6 +399,7 @@ L2 (s1 → s2 → s3) → L3a → L3b → L4 → L5 → L6 → L7 → L8 → L11
 | `fix/false-green-tests` (L8) | **sí** | — |
 | `fix/miri-ub-lane` (L15) | **sí** | — |
 | `fix/build-graph-deps` (L9) | **sí** | — |
+| L12 (duplicación, rama propia) | **sí** (harness nuevo en `repo-guards`) | — |
 | `fix/mcp-surface-truth` (L7) | no (hoy) | — |
 | `chore/mutation-shard-measurement` (L6) | no | `mutants.yml` |
 | `fix/ci-health-w03-classifier` (L3a) | no | `ci-health.yml` |
@@ -827,3 +828,53 @@ keys: default y la lista explícita de `--all-features`, que además cambia con 
 
 **Estado de L10**: tip `6b4bd8ed` (la rama avanzó con el commit del Log que registra la medición del
 merge).
+
+### 2026-10-22 · L12: la spec está escrita (worker `mvj2yyuf-e-bowq`) y el ratchet de duplicación está rancio
+
+La spec de L12 (`odd/tasks/duplication-arrange-helpers.md`, 578 líneas + su espejo) está commiteada en
+esta rama. Lo que encontró, contra el árbol y no contra el texto de la issue:
+
+**1. El ratchet está rancio, y eso es el fix de verdad.** El baseline commiteado
+(`scripts/quality-baselines.json` → `duplicated_lines_rust`) es **9272**; la medición del árbol da
+**menos**. Y el número **depende del árbol**, que es lo que invalida cualquier cifra recordada:
+
+| Árbol | Duplicated lines | Clones | Ficheros rust |
+|---|---|---|---|
+| `b1673234` (el commit que fijó el baseline) | 9272 | 864 | 495 |
+| `3a785d8e` (la base de esta rama) | **8889** | 828 | 476 |
+| `89ff9d46` (`main` hoy) | 9009 | 839 | 479 |
+
+⇒ El gate hoy pasa con **383 líneas de margen** sobre esta rama (o 263 sobre `main`): la
+duplicación bajó desde que se fijó el número y **nadie bajó el ratchet**. Mi medición
+(`bash scripts/check_duplication.sh` en esta rama) confirma: `Duplicated lines (rust): 8889
+(baseline: 9272) ⇒ OK`.
+
+**El número que se escribe es el del CANDIDATO, medido con el comando del gate** — nunca uno
+recordado ni uno calculado a mano (precedente #1892: la estimación aritmética se equivocó en 29
+líneas al deslocar las fronteras de los clones). Por eso la spec **no fija el delta** y **no
+escribe la estimación** "176 + 817": fija el **criterio** (el valor commiteado debe ser **igual**
+a la medición del candidato; el delta, **estrictamente positivo**; la nota con los tres números) y
+**sólo baja** (una subida exige decisión del maintainer).
+
+**2. El guard es *fail-open* por vacuidad: pasa sin medir nada.** Medido por el worker con un stub
+de `jscpd` en el `PATH` (repo intacto): un informe **sin** `statistics.formats.rust` ⇒ el guard
+imprime `Duplicated lines (rust): 0` ⇒ **verde**; un corpus con **cero** ficheros rust ⇒ `0` ⇒
+**verde**. El "test nombrado" del lote era, hasta ahora, **un faro sin prueba**. El RED de S4 es
+exactamente ese: el guard **reemplazado por `exit 0`** tiene que dar **rojo**, y el meta-guard
+acepta **verde con el guard intacto**.
+
+**3. El harness nuevo tiene que ser HERMÉTICO** (stub de `jscpd`), porque el job `repo-guards` de CI
+**no tiene el detector real**: un harness que lo exigiera dejaría el job rojo. Consecuencia
+declarada: ese harness prueba la **decisión** del guard, no la fidelidad del detector real.
+
+**4. L12 NO cierra `#1757`** ⇒ la PR del lote será **`Closes part of #1757`**. Su AC 1 (self-clones
+de producción en `jsonl_exporter.rs` y `checkpoint.rs`) es un alcance distinto del de la fila L12
+("helpers de arrange compartidos"), y su AC 2 ("por debajo de 7602") es **incomparable**: 7602
+pertenece a la escala del detector anterior (el 2026-10-06, #1867, recalibró 7683 → 13310 al
+cambiar de detector). El veredicto por fila de `#1757` queda en el Log de la spec.
+
+**5. Corrección de las premisas de la issue** (medidas, no_OPINADAS): los self-clones de producción
+son **118** líneas (96 en `jsonl_exporter.rs` + 22 en `checkpoint.rs`), no ~136; el supuesto
+"batch_flow/discovery_phase ~40" **no se confirma** (batch_flow 0, discovery_phase 6); y el "el resto
+es boilerplate de tests" es **a medias**: el **43 %** de las 9009 líneas duplicadas (**3864**) está
+**en ficheros de test** — es la masa mayor, y ahí ya hay campaña.
