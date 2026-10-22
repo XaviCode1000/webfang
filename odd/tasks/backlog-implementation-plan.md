@@ -452,3 +452,36 @@ raíz** ya abiertas y aprobadas con `#1609` como umbrella. Lo que se posteó fue
 puntero al veredicto, las 3 issues, los 2 hallazgos nuevos (la fila de "Build Features" y la tabla
 de sub-issues desactualizada: `#1647` y `#1622` ya están cerradas) y la decisión de **no cerrar**
 `#1609` hasta que aterrice la última de las tres.
+
+### 2026-10-22 · Verificación del punto delicado de L8 (el peer lo señaló) y candidatos de L10
+
+**L8 — el punto que el peer marcó como delicado ESTÁ resuelto** (verificado en
+`crates/webfang_core/src/cli/crash_points.rs`):
+
+- Las dos ramas —el `SIGKILL` **descartado** (el proceso es el init de su namespace de PID:
+  `getpid() == 1`) y el `kill` **rehusado**— pasan por el **mismo** camino de muerte:
+  `die_diagnostically(reason)` → `tracing::error!` + `std::process::abort()`. El propio código lo
+  dice: *"The ONE diagnostic death path of the crash-injection harness … Both branches — the
+  refused `kill` and the discarded one — go through it, so a single test covers both. A path that
+  only one branch used would leave the other one uncovered, which is how the discarded case
+  stayed invisible until #2066."* ⇒ un solo test cubre las dos, como pedía el spec.
+- El test nombrado `crash_matrix_test.rs::crash_point_never_hangs_when_sigkill_is_discarded`
+  ejerce el caso **real**: lanza el hijo con `unshare --user --map-root-user --fork`, así que el
+  `getpid()` del hijo es 1 dentro del namespace ⇒ no es un mock del init, es el init.
+
+**L10 — los candidatos, y el solapamiento con L9 (respondido)**: los candidatos de L10 son
+**`serde_yaml`** (el crate sin mantener que queda sólo en el frontmatter) y **`keyring` 3 con su
+`zbus` 4** (las 3 entradas de `deny.toml` de #2030), más el ignore muerto de `RUSTSEC-2024-0436`.
+**Ninguno** de ellos es `built`, `git2`, `libgit2-sys`, `sys-info`, `once_cell` ni `chromiumoxide`:
+esos son hallazgos de **L9** y no de L10 ⇒ **no hay solapamiento**. Y L10 trabaja sobre el
+**main actual** (`3a785d8e`), no sobre la rama de L9: su rama ya está basada en main ⇒ la
+condición que el peer puso se cumple sola.
+
+**Corrección de shas**: L14 tiene **5** commits, no 3 — `f79e42ba` spec · `08d46907` docs ·
+`0616c3bf` registro · `da990e2d` carry-over del wiki · `a902229f` evidencia (tip `a902229f`).
+
+**El lado issues ya está publicado**: los 4 borradores de `odd/docs-runbooks-wal/issue-drafts.md`
+salieron como comentarios verificados (`#2061` 6332290927 · `#1826` 6332291286 · `#1710` 6332291573 ·
+`#1609` 6332291798), con la ruta de `elastic_ingestion.rs` corregida y el borrador de `#1609`
+sustituido por un addendum (no se posteó tal cual: contradecía el veredicto ya publicado y
+cerraba el umbrella antes de tiempo).
