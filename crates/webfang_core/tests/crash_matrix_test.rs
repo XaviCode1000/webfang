@@ -210,18 +210,19 @@ async fn crash_row(point: &str) {
 // ---------------------------------------------------------------------------
 // Matrix rows — one per pinned crash point.
 //
-// `during_cancel_drain` has NO row, and that is a fact about the code, not
-// an omission of this file: the point is armed in production
+// `during_cancel_drain` has NO row YET, and that is a fact about the code,
+// not an omission of this file: the point is armed in production
 // (`application/export_factory.rs`, the `Cancelled` branch of the drain
-// loop), but that branch is UNREACHABLE — the export session only observes
+// loop), but that branch does not run yet — the export session only observes
 // a cancellation token when `ResumeContext::observing_cancel` is called, and
 // in production nobody calls it (only the tests of `export_factory` do). So
 // the session's `cancelled()` is always false, the drain branch never runs,
 // and there is nothing for a row to trigger. The wiring that would make it
 // reachable is a production change (the CLI's export flow has to hand its
-// cancellation token to the `ResumeContext`), and it is NOT this file's
-// business. Until then, advertising a row here would be a row that cannot
-// pass — a false green of the exact kind this suite exists to prevent.
+// cancellation token to the `ResumeContext`), now APPROVED (#2244, decision
+// A), and it is NOT this file's business. Its row lands with that change:
+// advertising a row here before then would be a row that cannot pass yet —
+// a false green of the exact kind this suite exists to prevent.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]

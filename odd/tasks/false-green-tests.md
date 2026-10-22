@@ -228,6 +228,12 @@ las once filas, no nueve.
 **Prueba nombrada:** `crates/webfang_core/tests/crash_matrix_test.rs::crash_during_cancel_drain_recovers_with_zero_loss`
 (el archivo no usa prefijo `test_`; es su convención local y la que usa el plan para la fila de S1).
 
+**Nota de la decisión A de #2244 (2026-10-22, owner: `status:approved`):** el
+cableado que hace alcanzable el punto esta aprobado, asi que la fila de
+`during_cancel_drain` deja de ser imposible y pasa a ser **aun no escrita**: se
+agrega con el slice del token de cancelacion, no antes. La desviacion de T6
+sigue vigente hasta ese aterrizaje; lo que cambia es el rotulo.
+
 ### S5 · #1828 — la fila WAL-kill se rechaza; el `PRAGMA integrity_check` entra donde los datos ya están
 
 Criterio, verbatim:
@@ -764,14 +770,15 @@ comportamiento observable de un camino de muerte y su test necesita el
 namespace de PID para discriminar.
 
 L17 — **T6 se cierra con una DESVIACION, y la desviacion es el hallazgo.** La
-spec pedia una fila para `during_cancel_drain`. La fila NO SE PUEDE ESCRIBIR:
-la rama que la alcanzaria es **inalcanzable en produccion**. La sesion de
+spec pedia una fila para `during_cancel_drain`. La fila NO SE PUEDE ESCRIBIR
+AUN: la rama que la alcanzaria **aun no llega en produccion**. La sesion de
 export solo observa un token de cancelacion cuando se llama
 `ResumeContext::observing_cancel`, y el UNICO llamador en todo el crate esta
 en el modulo de tests de `export_factory` (lineas 1409 y 1472): en produccion
 el `cancelled()` de la sesion siempre es false, la rama `Cancelled` del drain
-nunca corre, y el punto `DURING_CANCEL_DRAIN` esta ARMADO pero no puede
-dispararse. Medido, no supuesto: el hijo del crash matrix con el token ya
+nunca corre, y el punto `DURING_CANCEL_DRAIN` esta ARMADO pero AUN NO LLEGA
+(el cableado que lo hace alcanzable esta APROBADO en #2244, decision A, y
+aterriza despues). Medido, no supuesto: el hijo del crash matrix con el token ya
 cancelado sale con codigo 0 sin llegar al drain, y el log del crawl muestra
 "2 total, 2 succeeded" — la cancelacion llego, el drain no lo vio.
 
@@ -783,7 +790,8 @@ mismo, y el doc de la constante deja de decir "Reserve for PR5b". Anunciar una
 fila que no puede pasar seria un verde falso de la misma clase que esta suite
 existe para impedir. Lo que FALTA —el cableado que haria el punto alcanzable
 (que el flujo de export de la CLI entregue su token al `ResumeContext`)— es un
-cambio de PRODUCCION y ademas cambia el comportamiento del export ante
+cambio de PRODUCCION, ya APROBADO por el owner (#2244, decision A), y ademas
+cambia el comportamiento del export ante
 cancelacion (hoy el export sigue hasta el final, que es justo lo que E8
 "drain-before-final-persist" queria evitar). Se le paso al owner del plan
 para que lo decida; no se hizo unilateralmente.
@@ -859,3 +867,23 @@ congelado tiene que decir QUE la verifica ('lane de Windows') y no insinuar
 un gate: las dos filas del catalogo que nombraban 'the parent' ahora nombran
 la lane. El promote a required queda como follow-up aparte, como ya
 anticipa la lane.
+
+L18 — **Decision A de #2244, aprobada por el owner** (2026-10-22,
+`status:approved`, comentario 6333165316; registrada en el plan, commit
+69546042). Verbatim: "Implementar la decision A de `#2244` en el flujo de
+exportacion, sin esperar aprobaciones adicionales." Y: "el export entrega su
+token de cancelacion" ⇒ la rama `Cancelled` del drain detiene un export
+cancelado sin persistir estado parcial; antes Ctrl-C no detenia el export.
+
+Consecuencia para esta spec: la fila de `during_cancel_drain` **no se escribe
+aun**, y el punto cambia de rotulo. Dejaba de ser "armado-pero-inalcanzable"
+(una fila imposible) y pasa a ser "armado y **aun no llega**" (una fila que
+aterriza con el cableado). La correccion se aplico al doc-comment de la
+constante (`crates/webfang_core/src/cli/crash_points.rs`), a la tabla de
+`docs/persistence-resume.md` y a esta spec; el registro historico de L17 se
+conserva con la correccion de rotulo, sin reescribirlo.
+
+Orden de aterrizaje: la fila se escribe con el slice del token de
+cancelacion, que va **despues** del merge de #2230 (ambas tocan el flujo de
+exportacion). El wiring de produccion de `during_cancel_drain` no se toca
+hasta que el owner lo decida.

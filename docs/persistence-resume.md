@@ -167,12 +167,15 @@ wall-clock race), giving true crash semantics: no Drop impls, no cleanup.
 There is an **eleventh armed point with no matrix row**: `during_cancel_drain`
 (the cancel-drain window, before the final persist). The point is armed in
 production (`application/export_factory.rs`), but the branch that would reach
-it is **unreachable**: the export session only observes a cancellation token
+it **does not run yet**: the export session only observes a cancellation token
 when `ResumeContext::observing_cancel` is called, and in production nobody
 calls it (only the tests of `export_factory` do) — so the session's
-`cancelled()` is always false and the drain branch never runs. Until that
-wiring exists (a production change, in the CLI's export flow), advertising
-a matrix row for it would be a row that cannot pass.
+`cancelled()` is always false and the drain branch never runs.
+
+That wiring is **approved** (#2244, decision A: the CLI's export flow delivers
+its cancellation token to the `ResumeContext`), so the point is not
+impossible — it has simply **not been reached yet**. Its matrix row lands with
+that change: advertising it before then would be a row that cannot pass yet.
 
 The matrix lives in `crates/webfang_core/tests/crash_matrix_test.rs`: each
 row kills a real CLI child at the pinned point, reruns with `--resume`, and

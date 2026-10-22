@@ -33,6 +33,11 @@ Cierra #2066, #1852, #1828, #1834, #1816. **No** cierra #1833 (espera O4, decisi
   PR5b" + `docs/persistence-resume.md`: la tabla de la matriz lista las once filas (las diez
   actuales + `during_cancel_drain`, incluyendo `mid_extraction` y `post_extraction_pre_pipeline`,
   que hoy no lista).
+  NOTA (decision A de #2244, owner, 2026-10-22): la fila de `during_cancel_drain`
+  NO se escribe aun. El cableado que la hace alcanzable esta APROBADO, asi que el
+  punto deja de ser imposible y pasa a ser "aun no llega": la fila aterriza con el
+  slice del token de cancelacion, despues del merge de #2230. T6 se cierra con
+  esta desviacion y el rotulo corregido (doc del lote, Log L17/L18).
 - [ ] T7 · S5 — `crates/webfang_core/tests/sqlite_integration.rs`:
   `test_sqlite_rows_pass_integrity_check_after_reopen` (escribir filas → reabrir el pool →
   `PRAGMA integrity_check` ⇒ `ok` → las filas sobreviven). La fila WAL-kill **no** se agrega: exige

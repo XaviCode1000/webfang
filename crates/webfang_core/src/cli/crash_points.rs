@@ -46,11 +46,13 @@ pub const MID_STATE_FILE_WRITE: &str = "mid_state_file_write";
 /// During cancellation drain before final persist.
 ///
 /// #1828: the point is ARMED in production, but the branch that reaches it
-/// is UNREACHABLE — the export session only observes a cancellation token
+/// does not run YET — the export session only observes a cancellation token
 /// when `ResumeContext::observing_cancel` is called, and in production
-/// nobody calls it. So there is no crash-matrix row for it: a row that
-/// cannot pass is the false green this harness exists to prevent. The
-/// wiring that would make it live belongs to the CLI's export flow.
+/// nobody calls it. That wiring is APPROVED (#2244, decision A: the CLI's
+/// export flow delivers its cancellation token to the `ResumeContext`), so
+/// this point has NOT YET REACHED rather than being impossible, and its
+/// crash-matrix row lands with that change: a row that cannot pass yet is
+/// the false green this harness exists to prevent.
 pub const DURING_CANCEL_DRAIN: &str = "during_cancel_drain";
 
 static ARMED: OnceLock<Option<(String, u32)>> = OnceLock::new();
