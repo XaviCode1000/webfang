@@ -503,3 +503,30 @@ Una nota de honestidad sobre la corrida: el primer intento de correr ese
 snapshot fallo con "no test target named `obsidian_byline_artifact_test.rs`"
 — un error de MI comando (pase el nombre con la extension), no un fallo del
 codigo. El target se llama `obsidian_byline_artifact_test`.
+
+L14 — **T3 y T2, y el orden real es el inverso al de la spec.** La spec lista
+primero purgar el ignore `RUSTSEC-2024-0449` y despues regenerar
+`fuzz/Cargo.lock`. Al reves: ese ignore es de `unsafe-libyaml`, y mientras el
+lock del fuzz siga llevando ese crate el ignore sigue **VIVO** — no hay nada
+que purgar, y el guard lo seguiria contando como justificado. Purgarlo
+primero habria sido un no-op silencioso, y no solo invisible para el guard:
+tambien invisible para quien lo ejecutara, porque el conteo de "ignores
+justificados" no baja hasta que el lock cambia. El ignore solo muere cuando
+el lock del fuzz entra `unsafe-libyaml-norway`, que es OTRO crate y no lo
+cubre. Asi que el orden que funciona es T3 (el lock) y despues T2 (el
+ignore), y el criterio de exito es el conteo: de 14 ignores justificados a
+13, con el guard real en verde.
+
+La leccion que queda: un guard que verifica "este ignore esta vivo" no
+alcanza para validar el PROCESO. Si el orden esta mal, el guard da verde
+igual, porque en cada paso intermedio el estado es internamente
+consistente. Lo que delata el error es el conteo que se mueve solo cuando
+se lo fuerza.
+
+El lock del fuzz se regenero entero, y el diff es grande (1500 lineas)
+porque ese lock estaba stale de antes: no es que la resolucion minima haya
+traido todo, es que el lock arrastraba un estado viejo que ya no
+correspondia. Verificado en el lock del fuzz: `unsafe-libyaml` 0,
+`unsafe-libyaml-norway` 1, `serde_yaml` 0, `serde_norway` 1. El guard real
+(offline, con el DB de advisories ya en cache) da exit 0 con 13 ignores
+justificados, y el harness sigue 13/13.
