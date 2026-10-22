@@ -56,7 +56,7 @@ jobs:
             --no-progress
             --exclude "http://localhost"
             --exclude "http://127.0.0.1"
-            --exclude "https://github.com/XaviCode1000/webfang"
+            --exclude "https://github.com/XaviCodeDev1000/webfang"
             "README.md"
             "CHANGELOG.md"
             "docs/src/**/*.md"

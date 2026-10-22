@@ -1,7 +1,7 @@
 # 1. Download
 VERSION=v2.12.0
-curl -fLO "https://github.com/XaviCode1000/webfang/releases/download/${VERSION}/webfang-aarch64-apple-darwin.tar.gz"
-curl -fLO "https://github.com/XaviCode1000/webfang/releases/download/${VERSION}/SHA256SUMS.txt"
+curl -fLO "https://github.com/XaviCodeDev1000/webfang/releases/download/${VERSION}/webfang-aarch64-apple-darwin.tar.gz"
+curl -fLO "https://github.com/XaviCodeDev1000/webfang/releases/download/${VERSION}/SHA256SUMS.txt"
 
 # 2. Verify BEFORE extracting (no sha256sum on stock macOS)
 shasum -a 256 webfang-aarch64-apple-darwin.tar.gz

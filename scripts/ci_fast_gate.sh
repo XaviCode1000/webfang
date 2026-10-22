@@ -887,6 +887,11 @@ lane_fmt_and_guards() {
   # Release provenance L1 acceptance matrix (hermetic mktemp fixtures, no network).
   run_guard "release provenance L1 acceptance matrix" scripts/test_release_provenance.sh \
     bash scripts/test_release_provenance.sh
+  # Release-owner migration (#2281): stale-owner guard + historical tag policy.
+  run_guard "release owner regression guard" scripts/test_release_owner.sh \
+    bash scripts/test_release_owner.sh
+  run_guard "release signature identity semantics" scripts/test_verify_release_signatures.sh \
+    bash scripts/test_verify_release_signatures.sh
   # Degraded lint + audit guards (changed-scope / cached-only, never download).
   run_pinned_lint_changed_scope
   run_zizmor_cached_only

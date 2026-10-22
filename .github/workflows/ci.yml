@@ -363,6 +363,15 @@ jobs:
       # publish TOCTOU, and ruleset — with fail-closed on every drift/mismatch.
       - name: Release provenance L1 acceptance matrix
         run: bash scripts/test_release_provenance.sh
+      # Release-owner migration (#2281): current-facing release automation must
+      # target XaviCodeDev1000/webfang; the old owner survives only in the frozen
+      # historical tag allowlist, CHANGELOG.md and historical notes.
+      - name: Release owner regression guard
+        run: bash scripts/test_release_owner.sh
+      # Signature identity semantics: strict current identity by default,
+      # explicit --tag for frozen pre-migration tags, new tags rejected.
+      - name: Release signature identity semantics
+        run: bash scripts/test_verify_release_signatures.sh
       # Semantics harness for the CI Health close path (slice4-branch-guard):
       # proves on a fake gh that the shared close_mine closes exactly the
       # labeled tracking issues, skips unlabeled lookalikes visibly, treats an

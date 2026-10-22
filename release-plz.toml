@@ -60,7 +60,7 @@ changelog_update = false
 # No registry publishing anywhere.
 publish = false
 semver_check = false
-repo_url = "https://github.com/XaviCode1000/webfang"
+repo_url = "https://github.com/XaviCodeDev1000/webfang"
 
 # Internal-only crates: never processed by release-plz.
 [[package]]
