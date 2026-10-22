@@ -115,11 +115,11 @@ Acceptance:
 
 | ID | Spec | Route | Status | Evidence |
 |---|---|---|---|---|
-| T1 | S1 | inline | in_progress | edits done; targeted tests green; full gate green (PASS=49 FAIL=0 SKIP=2); commit `7d2113bb`; PR #2287 open |
-| T2 | S2 | inline | pending | blocked by T1 merge (sequential delivery) |
-| T3 | S3 | inline | pending | blocked by T1 merge; coordinate S6 |
-| T4 | S4 | inline | pending | blocked by T1 merge; queue settings live |
-| T5 | S5 | inline | pending | blocked by #2251 and T1 merge |
+| T1 | S1 | inline | completed | commit `7d2113bb`; full gate green (PASS=49 FAIL=0 SKIP=2); PR #2287 merged as `fceb8dd8fd82c626213def445553a63fc3c56324` |
+| T2 | S2 | inline | in_progress | `scripts/ci_plan.sh`, `scripts/ci_crossplatform_scope.sh`, `scripts/test_ci_plan.sh`; 45 assertions green; wiring in `ci.yml`/`ci_fast_gate.sh`; fast gate GREEN (PASS=16 FAIL=0 SKIP=10) |
+| T3 | S3 | inline | pending | blocked by T2 merge (sequential delivery); coordinate S6 |
+| T4 | S4 | inline | pending | blocked by T2 merge; queue settings live |
+| T5 | S5 | inline | pending | blocked by #2251 and T2 merge |
 | T6 | S6 | inline | pending | blocked by T3 |
 
 ## Log
@@ -134,3 +134,4 @@ Acceptance:
 - L8 (2026-10-22): re-ran the full gate with `CARGO_BUILD_JOBS=2` and `NEXTEST_TEST_THREADS=2`; result **GREEN** (PASS=49, FAIL=0, SKIP=2). No commit or push yet.
 - L9 (2026-10-22): work unit committed as `7d2113bb62c15e04069e9eabded045c28c525b11` (`fix(infra): migrate release automation to the current owner (#2281)`). This entry is the doc-only follow-up; no push yet.
 - L10 (2026-10-22): pushed `chore/ci-redesign`; opened PR #2287 (`https://github.com/XaviCodeDev1000/webfang/pull/2287`). PR is `MERGEABLE`, base `main`, no labels yet while auto-label runs. CI is pending; no merge.
+- L11 (2026-10-22): PR #2287 merged through the queue as `fceb8dd8fd82c626213def445553a63fc3c56324`; main fast-forwarded, local branch/worktree/target removed. Started #2282 in `/home/xavi/Projects/Rust/webfang-worktrees/chore-ci-merge-group-planner` (`chore/ci-merge-group-planner`, seed `v1-5256d5a74e9f8731`). Added `scripts/ci_plan.sh` (event SHA resolution, full-scope fail-closed, `required_producers`), `scripts/ci_crossplatform_scope.sh` (filename + bounded `git grep` cfg/target scan), and `scripts/test_ci_plan.sh` (45 hermetic assertions: PR/merge_group/push/schedule/dispatch/unknown, zero/missing SHAs, classifier failure, Cargo/build.rs/.cargo/toolchain paths, all cfg markers). Wired `needs_crossplatform` into `test-crossplatform`, kept it advisory/nightly, and added the harness to repo-guards + `ci_fast_gate.sh`. actionlint, shellcheck and `cargo fmt --check` clean; fast gate GREEN (PASS=16 FAIL=0 SKIP=10, CI-only lane).
