@@ -666,6 +666,12 @@ jobs:
       # Offline: no cargo, no network, no repo state touched.
       - name: Advisory policy semantics harness
         run: bash scripts/test_advisory_policy.sh
+      # Semantics harness of scripts/check_no_dead_ignores.sh (wired by
+      # indirection from the advisory-policy gate): a dead ignore fails,
+      # a live one passes, an unparsable audit report is never an empty
+      # match set. Hermetic: a stub of `cargo audit`, no network.
+      - name: Dead-ignores guard semantics harness
+        run: bash scripts/test_no_dead_ignores.sh
       # Four harnesses that shipped with NO CI entry point: the assertions
       # existed, no job ran them, and the fix they cover was revertible in
       # silence — the #1707 shape. They are cheap (a few seconds each, pure
