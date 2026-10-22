@@ -282,6 +282,20 @@ jobs:
       # file+test-name survive line drift. Runs the guard against fixtures only.
       - name: Ignored-test guard semantics harness
         run: bash scripts/test_ignored_guard.sh
+      # Semantics harness for the Miri UB lane contract (#2235): the lane
+      # must REPORT, not abort the process — a lane that aborts leaves no
+      # result to act on, which is the dead end this issue closes. The
+      # harness pins the four invariants that keep it a detector: no
+      # unjustified `--skip` in a Miri job (the skip-net of #1423 deleted a
+      # whole test tree per entry and hid the UB inside it), a written
+      # reason on every Miri gate (a gate nobody can evaluate is not a
+      # gate), the `application::` filter still inside the `Miri (core)`
+      # group, and a per-test gate on every test that drives the scrape use
+      # case (the servo_arc/lol_html UB of `application/scraper_service.rs`).
+      # Offline, pure text over the checked-out tree plus mktemp fixtures:
+      # no cargo, no Miri, no build.
+      - name: Miri lane invariants semantics harness
+        run: bash scripts/test_miri_lane_invariants.sh
       # Semantics harness for the AI-attribution trailer check wired into
       # pr-validation.yml. Proves on fixtures that the release-plz co-author
       # PASSES (a blanket ban would break the release flow), that the Claude
