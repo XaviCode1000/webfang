@@ -395,7 +395,7 @@ mod spec_parity_tests {
     use super::*;
     use crate::cli::args::test_support::{
         arg_by_id, assert_defaults, assert_help, assert_long_short_alias_env_heading,
-        assert_structural, assert_surface_covered, collect_args, parse_args, parse_args_hermetic,
+        assert_structural, assert_surface_covered, collect_args, parse_args_hermetic,
     };
     use crate::domain::options_spec as spec;
     use clap::Args as _;
@@ -455,7 +455,7 @@ mod spec_parity_tests {
     #[test]
     fn the_retired_shims_are_not_flags_anymore() {
         for flag in ["--max-tokens", "--ai-model"] {
-            let err = parse_args(&[flag, "1"])
+            let err = parse_args_hermetic(&[flag, "1"])
                 .err()
                 .unwrap_or_else(|| panic!("`{flag}` must not parse"));
             assert!(
@@ -485,7 +485,7 @@ mod spec_parity_tests {
         }
         // Absent means "nobody used it", which is what keeps the retired
         // shims silent for every run that never touched them.
-        let parsed = parse_args(&[]).expect("bare invocation must parse");
+        let parsed = parse_args_hermetic(&[]).expect("bare invocation must parse");
         assert!(
             !parsed.ai.max_chars_explicit,
             "no flag means --max-chars was not chosen, only defaulted"
@@ -551,16 +551,16 @@ mod spec_parity_tests {
         //   `'{s}' no es un número válido`                  on parse failure
         //   `'{s}' está fuera de rango (rango válido: 0.0 a 1.0)` on range
         // Both messages must round-trip through the spec-built command.
-        let err = parse_args(&["--threshold", "abc"]).expect_err("non-numeric rejected");
+        let err = parse_args_hermetic(&["--threshold", "abc"]).expect_err("non-numeric rejected");
         assert!(err.contains("'abc' no es un número válido"), "got: {err}");
 
-        let err = parse_args(&["--threshold", "1.5"]).expect_err("above range rejected");
+        let err = parse_args_hermetic(&["--threshold", "1.5"]).expect_err("above range rejected");
         assert!(
             err.contains("'1.5' está fuera de rango (rango válido: 0.0 a 1.0)"),
             "got: {err}"
         );
 
-        let err = parse_args(&["--threshold", "-0.1"]).expect_err("below range rejected");
+        let err = parse_args_hermetic(&["--threshold", "-0.1"]).expect_err("below range rejected");
         assert!(
             err.contains("'-0.1' está fuera de rango (rango válido: 0.0 a 1.0)"),
             "got: {err}"
