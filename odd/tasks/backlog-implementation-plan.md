@@ -656,3 +656,33 @@ espera de O4).
 decidida desde `0509e2b8`: la clave de la credencial no cambia) y L13 **no** espera O3 (el owner lo
 descartó: *"la issue 1821 la dejamos, no la tocamos"*). Lo único pendiente de L10 es la
 implementación; lo único pendiente de L13 es nada.
+
+### 2026-10-22 · L10 avanzado (peer): el swap de serde_yaml landed, el lock regenerado y D20 ya aplicado al spec
+
+**L10** (peer), 7 commits sobre mi spec `2f51441a`, tip `71a2d02e`, árbol limpio, **sobre `main`**
+(el rebase sobre L9 está *medido* con `merge-tree`, no ejecutado ⇒ L10 no depende de L9):
+
+`e02d1829` (el guard de ignores muertos) · `905183ac` (la evidencia de S1) · `865652db` (el swap
+`serde_yaml` → `serde_norway` + el borrado de la variante `ScraperError::Yaml`, marcado **BREAKING
+CHANGE**) · `1040d312` (el lock del fuzz regenerado + el ignore de `unsafe-libyaml` purgado) ·
+`0e750fab` (el rebase sobre L9 medido con `merge-tree`) · `71a2d02e` (**D20 aplicado al spec**).
+
+**Una premisa mía que era falsa, corregida por el peer**: mi spec decía que la fork de YAML
+elegida (`serde_norway`) no tenía release desde 2024-12. **Es falso**: `serde_norway` 0.9.42
+existe y entra **por registro** (no por ref de git), con `unsafe-libyaml-norway ^0.2.13` (la fork
+mantenida del C). El riesgo asumido en la spec (item 1) queda sin objeto: el riesgo real era otro
+—que la salida del frontmatter no fuese byte-idéntica—, y la evidencia dice que **sí lo es**: el
+snapshot `obsidian_byline_artifact_test__empty_byline_fragment_repaired_in_excerpt` queda
+byte-idéntico, que es el criterio de aceptación del lote, y los 16 tests de `frontmatter.rs` pasan
+(incluidos los dos pines de PI-7). El lock ya no tiene `serde_yaml` (0 ocurrencias).
+
+**El bloqueo de L10 que quedaba (la clave de la credencial) ya no existe**: D20 está en el spec
+(`71a2d02e`) ⇒ el criterio es *la clave de una entrada `(service, user)` debe ser **byte-idéntica**
+a la de hoy, `keyring-rs:{user}@{service}`*; si el store puede producirla con su configuración
+pública, se configura así; si no, la lectura consulta primero la clave legacy. Cero migración,
+cero credenciales huérfanas, cero estado nuevo. Test: `the_credential_key_is_byte_identical_to_the_legacy_key`.
+
+**Consecuencia para las seeds** (medida): L10 cambia `Cargo.toml` **y** el lock ⇒ la key de la seed
+publicada sobre el `main` actual **no** la consume L10 (ni L9). Las dos seeds que cubren la fase de
+apertura de PRs son las del lock de `main`; cuando L9 y L10 mergeen, hay que **volver a publicar**
+las dos sobre el lock nuevo.
