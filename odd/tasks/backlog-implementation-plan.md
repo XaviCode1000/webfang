@@ -86,13 +86,13 @@ una decisión del owner).
 | **L5** | Atribución de commits | #1995 | allowlist = identidades **exactas** de los bots (borra el prefix match) | `scripts/test_no_ai_attribution.sh` (caso nuevo) | −2/+18 | inline | **HECHO** (`0f004bf4` doc + `4a17cb66` código en `fix-ai-attribution-exact`; identidades medidas sobre la historia de main: `release-plz-tu-repo[bot]` ×20, `github-actions[bot]` ×8) ||
 | **L6** | Señal de mutación | #1844 | una medición (`cargo mutants list`) → `N`; borrar la estimación | shard `k/N` dentro de 90 min | −8/+12 | inline | **HECHO** (`01767192` doc + `26792e6b` código en `chore-mutation-shard-measurement`): 1477 mutantes medidos (0,71 s, sin compilar) ⇒ 23,1 por shard en 64 ⇒ matriz rebalanceada a **96 shards** ||
 | **L7** | MCP: superficie verdadera | #1815, #1817, #1837, #2193 | `match_url_pattern` documenta lo que hace; `mcp = []` (la key **no** se borra); el conteo 36 en una sola fuente; `eq_ignore_ascii_case` en el path gate; la constante de shutdown `pub` | `path_gate.rs::components_start_with_never_accepts_a_case_variant_the_filesystem_keeps_distinct` | +18/−10 | worker | **HECHO** (peer): `dccd06da` spec, `c40fac93` (`#1815`, `#1817`), `80be9903` (`#2193`), `315441ab` evidencia; tip `315441ab` en `fix-mcp-surface-truth`. No necesita build de ONNX: `webfang_core` **no tiene** feature `ai` (`[features]`: `default = []`, `loom-model`, `persistence`, `console`, `dev-tracing`, `adaptive-selectors`, `mcp`) y `crates/webfang_ai` no existe (ADR-0004 paso 6) ⇒ `--all-features` no enciende ONNX ||
-| **L8** | Falsos verdes de test | #2066, #1852, #1828, #1833, #1834, #1816 | detectar el descarte de SIGKILL (`getpid()==1`) y morir diagnosticamente; `default = ["mcp"]` + guard de target con 0 tests; `PRAGMA integrity_check` en vez de un punto de arming nuevo; el test de Windows **in-module** | `crash_matrix_test.rs::crash_point_never_hangs_when_sigkill_is_discarded` | +25/+150 | worker | **HECHO** (peer): spec `da23c097` (padre) + `8ae91119` (matriz de crash y runbook, `#1828`), `4221bb4f` (cierre de consola REAL de Windows, `#1834`), `934e7f18` (pacing 429 observable, `#1816`), `1702d1ec` (comentario de seguridad que exige clippy en el `getpid` nuevo), `fd9596a5` (T6 cerrado con desviación), `24a819c2` (verificación final); tip `24a819c2` en `fix-false-green-tests`. O1 resuelta; O4 ya decidido (D19) ||
+| **L8** | Falsos verdes de test | #2066, #1852, #1828, #1833, #1834, #1816 | detectar el descarte de SIGKILL (`getpid()==1`) y morir diagnosticamente; `default = ["mcp"]` + guard de target con 0 tests; `PRAGMA integrity_check` en vez de un punto de arming nuevo; el test de Windows **in-module** | `crash_matrix_test.rs::crash_point_never_hangs_when_sigkill_is_discarded` | +25/+150 | worker | **HECHO** (peer): spec `da23c097` (padre) + `8ae91119` (matriz de crash y runbook, `#1828`), `4221bb4f` (cierre de consola REAL de Windows, `#1834`), `934e7f18` (pacing 429 observable, `#1816`), `1702d1ec` (comentario de seguridad que exige clippy en el `getpid` nuevo), `fd9596a5` (T6 cerrado con desviación), `24a819c2` (verificación final); tip `99833e11` (15 commits) en `fix-false-green-tests`. O1 resuelta; O4 ya decidido (D19) ||
 | **L9** | Grafo de build | #1799, #1797, #1796 | borrar `sys-info` (devuelve **KiB en todas las plataformas**: la premisa de la issue era falsa) y `once_cell`; dropear `version_string()` (0 call sites) y no escribir `build.rs`; el benchmark declara su propia feature `chromium` | `autotuning.rs::ram_budget_from_bytes_converts_to_kib` | −20/+40 | worker | **HECHO** (peer; Risk item 5 ⇒ commit propio): spec `eb40ecbb` (padre) + `b62a4ac2` (guard del grafo de build), `845bfb08` (el grafo deja de llevar lo que no se usa, `#1799`/`#1797`/`#1796`), `6b109426` (baseline de crates duplicados regenerada), `713502cd` (evidencia); tip `713502cd` en `fix/build-graph-deps`. D9 corregida: `sys-info` devuelve KiB en todas las plataformas ||
-| **L10** | Crates sin mantenimiento | #1984, #2031 | borrar `serde_yaml` (sólo serializa en prod) y salir de `keyring` 3 preservando el **mismo store** (linux-keyutils); las 3 supresiones zbus expiran 2027-01-17 | `scripts/test_advisory_policy.sh` (caso nuevo) | −30/+45 | worker | **HECHO** (peer; Risk item 5 ⇒ commit propio): spec `2f51441a` (padre) + `e02d1829` (ningún ignore de `deny.toml` puede quedar muerto, `#1984`), `905183ac` (evidencia de S1); tip `905183ac` en `fix/unmaintained-crates` ||
+| **L10** | Crates sin mantenimiento | #1984, #2031 | borrar `serde_yaml` (sólo serializa en prod) y salir de `keyring` 3 preservando el **mismo store** (linux-keyutils); las 3 supresiones zbus expiran 2027-01-17 | `scripts/test_advisory_policy.sh` (caso nuevo) | −30/+45 | worker | **HECHO** (peer; Risk item 5 ⇒ commit propio): spec `2f51441a` (padre) + `e02d1829` (ningún ignore de `deny.toml` puede quedar muerto, `#1984`), `905183ac` (evidencia de S1); tip `71a2d02e` (7 commits) en `fix/unmaintained-crates` ||
 | **L11** | obscura | #1710 | el veredicto `Unknown` **nombra el mínimo esperado**; el hit-rate se deriva de los logs por capa; sin modo estricto, sin contadores | `preflight.rs::unknown_verdict_names_the_expected_minimum` | +6/−1 | inline | **HECHO** (peer): `0e52f031` spec, `6b82e087` (el veredicto `Unknown` nombra el mínimo esperado, `#1710`), `0747fea3` (cierre con los shas); tip `0747fea3` en `fix-obscura-unknown-verdict` ||
 | **L12** | Duplicación | #1757 | helpers de arrange compartidos; bajar el baseline por el delta **medido** (9272) | `scripts/check_duplication.sh` | −60/+12 | inline | **DESBLOQUEADO 2026-10-22** (la PR `#2230` mergeó): spec ODD en escritura por un worker; la implementación la lleva el peer |
 | **L13** | Entrega macOS | #1821 | — | — | 0 | inline | **DESCARTADO 2026-10-22** (O3): el owner decide *"la issue 1821 la dejamos, no la tocamos"*. El lote sale del plan; la issue queda abierta y sin tocar |
-| **L14** | Docs y runbooks | #1609, #2061, #1826 | cerrar #1609 con veredicto por fila y abrir ≤2 slices vivas; **rechazar** el auto-PR de rotación (el gate `published` ya corre dentro de `Validate PR metadata`); el WAL/SQLite no tiene runbook en ningún lado | `state_store.rs::test_load_or_default_*` | +55/−40 | inline | **DIVIDIDA**: el veredicto por fila de #1609 lo cierro yo (worker read-only + comentario en la issue); la implementación (runbook WAL/SQLite, nota de #1710, slices) es **DEL PEER** y está HECHA: `f79e42ba` spec, `08d46907` docs, `0616c3bf` registro, `da990e2d` carry-over del wiki, `a902229f` evidencia; tip `a902229f` en `fix/docs-runbooks-wal` (~650 líneas en 3 commits, cada uno bajo el corte de ~400, **sin PR y sin publicar nada en GitHub**, sin tocar `ci.yml` ⇒ no colisiona con la re-aplicación de los steps). **Veredicto posteado** (25 filas: 12 resueltas, 7 moot, 5 vivas, 1 no accionable) y las 5 vivas abiertas como **#2241** (doc de disclosure: DF-D1+DF-D4+DF-D6), **#2242** (la degradación de config es invisible: FR-10) y **#2243** (podar el seam muerto: M1/G1), las tres con `status:approved` del owner. #1609 **queda abierta** como umbrella; sus PRs la cierran con `Closes part of #1609` ||
+| **L14** | Docs y runbooks | #1609, #2061, #1826 | cerrar #1609 con veredicto por fila y abrir ≤2 slices vivas; **rechazar** el auto-PR de rotación (el gate `published` ya corre dentro de `Validate PR metadata`); el WAL/SQLite no tiene runbook en ningún lado | `state_store.rs::test_load_or_default_*` | +55/−40 | inline | **DIVIDIDA**: el veredicto por fila de #1609 lo cierro yo (worker read-only + comentario en la issue); la implementación (runbook WAL/SQLite, nota de #1710, slices) es **DEL PEER** y está HECHA: `f79e42ba` spec, `08d46907` docs, `0616c3bf` registro, `da990e2d` carry-over del wiki, `a902229f` evidencia; tip `cc380657` (5 commits) en `fix/docs-runbooks-wal` (~650 líneas en 3 commits, cada uno bajo el corte de ~400, **sin PR y sin publicar nada en GitHub**, sin tocar `ci.yml` ⇒ no colisiona con la re-aplicación de los steps). **Veredicto posteado** (25 filas: 12 resueltas, 7 moot, 5 vivas, 1 no accionable) y las 5 vivas abiertas como **#2241** (doc de disclosure: DF-D1+DF-D4+DF-D6), **#2242** (la degradación de config es invisible: FR-10) y **#2243** (podar el seam muerto: M1/G1), las tres con `status:approved` del owner. #1609 **queda abierta** como umbrella; sus PRs la cierran con `Closes part of #1609` ||
 | **L15** | Lane de UB | #2235 | el UB de `scraper_service.rs` con gate **por test**; cada `--skip` con motivo escrito; la lane deja resultado, no aborta el proceso | job `Miri (core)` en verde en una corrida schedule | +20/−10 | worker | **HECHO** (peer): `6065049e` (la lane de UB deja de saltarse árboles de test, `#2235`), `cf4403fa` (guard de las invariantes de la lane), `f0e39852` (harness que prueba que el guard puede fallar), `4a9cb8c0` (registro del cierre con su evidencia); tip `4a9cb8c0` en `fix-miri-ub-lane`. O8 resuelta 2026-10-22 ||
 
 ---
@@ -417,7 +417,7 @@ RED. Ejemplo del de L9: `once_cell` ausente de los manifiestos pero **presente**
 ### 2026-10-22 · L14 cerrado (peer) y el lado issues publicado (padre)
 
 **L14 HECHO** (peer): `f79e42ba` spec · `08d46907` docs · `0616c3bf` registro · `da990e2d`
-carry-over del wiki · `a902229f` evidencia; tip `a902229f`, ~650 líneas en 3 commits, sin PR y
+carry-over del wiki · `0616c3bf` evidencia · `cc380657` la fila de `default` de la tabla Build Features; tip `cc380657`, 5 commits, sin PR y
 sin publicar nada en GitHub. El runbook nuevo (`docs/src/state-recovery-runbook.md` + entrada en
 `SUMMARY.md`) sigue el principio pedido: **cada afirmación cita el test que la pinea, y lo que
 ningún test cubre queda MARCADO como no cubierto** (`created_at` NULL, el VACUUM posterior al
@@ -478,7 +478,7 @@ esos son hallazgos de **L9** y no de L10 ⇒ **no hay solapamiento**. Y L10 trab
 condición que el peer puso se cumple sola.
 
 **Corrección de shas**: L14 tiene **5** commits, no 3 — `f79e42ba` spec · `08d46907` docs ·
-`0616c3bf` registro · `da990e2d` carry-over del wiki · `a902229f` evidencia (tip `a902229f`).
+`0616c3bf` registro/evidencia · `da990e2d` carry-over del wiki · `cc380657` la fila de `default` de la tabla Build Features (tip `cc380657`, 5 commits).
 
 **El lado issues ya está publicado**: los 4 borradores de `odd/docs-runbooks-wal/issue-drafts.md`
 salieron como comentarios verificados (`#2061` 6332290927 · `#1826` 6332291286 · `#1710` 6332291573 ·
@@ -627,7 +627,7 @@ guard `scripts/check_empty_test_targets.sh` + su harness + el step en `repo-guar
 `126c421f` (T10: el pacing del 429 observable + la barrera del flush), `80ae3571` (el
 `default-features` que no surtía efecto), `8ae91119` (T6: la tabla de la matriz y el runbook),
 `4221bb4f` (T7/T9), `fd9596a5` (T6 con desviación), `934e7f18` (el pacing era inestable), `1702d1ec`
-(el comentario de seguridad que exige clippy), `24a819c2` (evidencia y cierre).
+(el comentario de seguridad que exige clippy), `24a819c2` (evidencia y cierre), `99833e11` (la fila del inventario nombra la lane de Windows y no insinúa un gate). Tip `99833e11`, 15 commits.
 
 **Dos defectos de la misma clase que el lote audita, aparecidos en el propio lote**:
 el `default-features = false` de `webfang_test_utils` **no surtía efecto** (cargo avisa que se ignora
@@ -782,3 +782,26 @@ exactamente lo que la key ata (`cargo_lock` + `workspace_contract`), y no un fal
 anotado que **`webfang_benchmark` todavía no declara features** (L9 le añade `chromium`) ⇒ la lista
 explícita equivalente a `--all-features` **también** cambia con L9 ⇒ otra razón para publicar las
 seeds después de que L9 y L10 entren en `main` (en dos keys: default y la lista explícita).
+
+### 2026-10-22 · Tips de rama corregidos contra el árbol (los tres del peer, medidos)
+
+El peer mandó tres tips "medidos ahora"; **dos iban atras** y el tercero acertó, y además señaló un
+número **mío** que estaba mal. La verdad es el árbol (`git log main..HEAD` en cada worktree):
+
+| Rama | Tip real | Commits | Lo que decía el peer |
+|---|---|---|---|
+| `fix-false-green-tests` (L8) | **`99833e11`** | 15 | `24a819c2` (14) — le falta el commit `99833e11` (*"la fila del inventario nombra la lane de Windows, y no insinúa un gate"*) |
+| `fix-unmaintained-crates` (L10) | **`71a2d02e`** | 7 | `1040d312` (5) — le faltan `0e750fab` (el rebase sobre L9 medido) y `71a2d02e` (D20 en el spec) |
+| `fix/docs-runbooks-wal` (L14) | **`cc380657`** | 5 | `cc380657` (5) ✓ |
+
+Y el peer **tenía razón en un punto mío**: el `a902229f` que yo tenía anotado como la evidencia de
+L14 **no es un commit de esa rama** (la evidencia es `0616c3bf`; `a902229f` venía de una lista suya
+anterior que nunca existió en el árbol) ⇒ corregido en el plan y en el espejo.
+
+**Sobre D20 (la clave de la credencial)**: el requisito está **en el spec de L10**, escrito por el
+propio peer en `71a2d02e` (la tabla de plataformas, el criterio de aceptación y la corrección de la
+premisa del modificador `description`), y en el Log del spec como **L16**. No hay ninguna definición
+pendiente: el criterio es *la clave de una entrada `(service, user)` debe ser **byte-idéntica** a
+`keyring-rs:{user}@{service}`*; los dos mecanismos admitidos (configurar el store, o lectura
+legacy-first) quedan a elección de quien implementa, y el test nombrado es
+`the_credential_key_is_byte_identical_to_the_legacy_key`.

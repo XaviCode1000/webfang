@@ -27,15 +27,15 @@ que hizo el triage) cuando cada lote aterriza, con el sha de su branch. Ningún 
 - [x] **L5** · S1–S5 — atribución de commits (#1995) — `0f004bf4` doc + `4a17cb66` código en `fix-ai-attribution-exact` (tip `0f004bf4`).
 - [x] **L6** · S1–S5 — señal de mutación (#1844) — `01767192` doc + `26792e6b` código en `chore-mutation-shard-measurement` (tip `01767192`): 1477 mutantes medidos ⇒ 96 shards.
 - [x] **L7** · S1–S5 — MCP: superficie verdadera (#1815, #1817, #1837, #2193) — peer: `dccd06da`, `c40fac93`, `80be9903`, `315441ab` (tip `315441ab`).
-- [x] **L8** · S1–S5 — falsos verdes de test (#2066, #1852, #1828, #1833, #1834, #1816) — spec `da23c097` (padre) + implementación del peer (tip `24a819c2`).
+- [x] **L8** · S1–S5 — falsos verdes de test (#2066, #1852, #1828, #1833, #1834, #1816) — spec `da23c097` (padre) + implementación del peer (tip `99833e11`, 15 commits).
 - [x] **L9** · S1–S5 — grafo de build (#1799, #1797, #1796) — spec `eb40ecbb` (padre) + implementación del peer (tip `713502cd`). D9 corregida: `sys-info` devuelve KiB en todas las plataformas.
-- [x] **L10** · S1–S5 — crates sin mantenimiento (#1984, #2031) — spec `2f51441a` (padre) + implementación del peer (tip `905183ac`).
+- [x] **L10** · S1–S5 — crates sin mantenimiento (#1984, #2031) — spec `2f51441a` (padre) + implementación del peer (tip `71a2d02e`, 7 commits).
 - [x] **L11** · S1–S5 — obscura: el veredicto `Unknown` nombra el mínimo (#1710) — peer: `0e52f031`, `6b82e087`, `0747fea3` (tip `0747fea3`).
 - [ ] **L12** · S1–S5 — duplicación: helpers de arrange + baseline medido (#1757) — espera **#2230** (sigue abierta).
 - [ ] **L13** · S1–S5 — entrega macOS (#1821) — **DESCARTADO 2026-10-22** (O3): *"la issue 1821 la dejamos, no la tocamos"*. Sale del plan; la issue queda abierta y sin tocar.
 - [ ] **L14** · S1–S5 — docs y runbooks.
   - **Mi parte HECHA**: veredicto por fila de #1609 posteado (25 filas: 12 resueltas, 7 moot, 5 vivas, 1 no accionable) + **#2241** (doc de disclosure), **#2242** (degradación de config invisible), **#2243** (podar el seam muerto) abiertas y aprobadas. #1609 queda como umbrella. Comentarios del lado issues posteados: #2061, #1826, #1710 y el addendum de #1609.
-  - **Del peer HECHO**: `f79e42ba`, `08d46907`, `0616c3bf`, `da990e2d`, `a902229f` (tip `a902229f`): runbook WAL/SQLite, nota de #1710, carry-over del wiki, evidencia. Sin PR ni publicación en GitHub; no toca `ci.yml`.
+  - **Del peer HECHO**: `f79e42ba`, `08d46907`, `0616c3bf`, `da990e2d`, `cc380657` (tip `cc380657`, 5 commits): runbook WAL/SQLite, nota de #1710, carry-over del wiki, evidencia. Sin PR ni publicación en GitHub; no toca `ci.yml`.
 - [x] **L15** · S1–S5 — lane de UB: gate por test + skip-net justificado (#2235) — peer: `6065049e`, `cf4403fa`, `f0e39852`, `4a9cb8c0` (tip `4a9cb8c0`). Miri ya instalado (O8 resuelta).
 - [ ] **L16** · S1–S5 — cuando el owner lo ordene: abrir las PRs lote por lote (issue enlazada, un `type:*`, sin atribución de IA) y dejar el merge en sus manos. **Orden fijado 2026-10-22**: `L2 → L3a → L3b → L4/L5/L6 → L8/L9/L10`.
 
