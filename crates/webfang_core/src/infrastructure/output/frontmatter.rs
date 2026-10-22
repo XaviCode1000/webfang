@@ -111,7 +111,7 @@ pub fn generate_with_metadata(
         status: rich_meta.as_ref().map(|m| m.status.clone()),
     };
 
-    serde_yaml::to_string(&fm).unwrap_or_else(|_| String::new())
+    serde_norway::to_string(&fm).unwrap_or_else(|_| String::new())
 }
 
 #[cfg(test)]
@@ -251,7 +251,7 @@ mod tests {
     }
 
     /// End-to-end: generate() emits the repaired excerpt in the YAML.
-    /// serde_yaml switches to double quotes when the string carries smart
+    /// serde_norway switches to double quotes when the string carries smart
     /// quotes, so assert on the completed fragment itself.
     #[test]
     fn test_generate_repairs_byline_fragment_in_excerpt() {
@@ -276,14 +276,14 @@ mod tests {
     // ====================================================================
     // PI-7 (#1601) — YAML scalar-injection pins for caller-supplied
     // title/author. `generate_with_metadata` delegates scalar emission to
-    // serde_yaml; these tests pin the CONTRACT a hostile scalar must obey
+    // serde_norway; these tests pin the CONTRACT a hostile scalar must obey
     // regardless of the writer implementation: it stays one scalar, never
     // grows a new key, never opens/closes a document block.
     // ====================================================================
 
     /// Parse the generated frontmatter back and return its `title` scalar.
     fn title_of(fm: &str) -> String {
-        serde_yaml::from_str::<serde_yaml::Value>(fm)
+        serde_norway::from_str::<serde_norway::Value>(fm)
             .expect("generated frontmatter must parse as YAML")
             .get("title")
             .and_then(|v| v.as_str())
@@ -293,7 +293,7 @@ mod tests {
 
     /// A newline in the title must NOT split into a second YAML key — the
     /// classic frontmatter injection (`title: Line1\ninjected: true`).
-    /// serde_yaml emits a literal block scalar (`|-`) whose indented lines
+    /// serde_norway emits a literal block scalar (`|-`) whose indented lines
     /// are PART of the value, so the pin is parse-based: after parsing, no
     /// top-level `injected_key` may exist and the title must round-trip.
     #[test]
@@ -306,7 +306,7 @@ mod tests {
             None,
             &[],
         );
-        let parsed = serde_yaml::from_str::<serde_yaml::Value>(&fm)
+        let parsed = serde_norway::from_str::<serde_norway::Value>(&fm)
             .expect("generated frontmatter must parse as YAML");
         assert!(
             parsed.get("injected_key").is_none(),
@@ -400,7 +400,7 @@ mod tests {
             None,
             &[],
         );
-        let parsed = serde_yaml::from_str::<serde_yaml::Value>(&fm)
+        let parsed = serde_norway::from_str::<serde_norway::Value>(&fm)
             .expect("generated frontmatter must parse as YAML");
         assert!(
             parsed.get("role").is_none(),

@@ -75,7 +75,7 @@ uuid = { version = "1", features = ["v4", "v7", "serde"] }
 # HTML to Markdown
 html-to-markdown-rs = ">=2.3, <2.21"
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
-serde_yaml = "0.9"
+serde_norway = "0.9"
 chrono = { version = "0.4", features = ["serde"] }
 
 # XML

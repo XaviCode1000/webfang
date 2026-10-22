@@ -467,3 +467,39 @@ usa esa misma forma real. La distincion que queda escrita: un doble con
 forma SUPPUESTA prueba la logica del check; solo la corrida real prueba la
 suposicion. El guard real, con la forma real, da exit 0: 14 ignores
 justificados, ninguno muerto (el de paste, purgado en L11, ya no esta).
+
+L13 — **S2 (T1): el frontmatter del repo ya no depende de `serde_yaml`.** El
+cambio: `serde_yaml` sale del `[workspace.dependencies]` y de
+`crates/webfang_core/Cargo.toml`; entra `serde_norway` 0.9.42. La API es la
+misma (`to_string`, `from_str`, `Value`), asi que los seis sitios de
+`frontmatter.rs` cambian de namespace y nada mas — y los comentarios que
+nombraban el crate viejo pasan a nombrar la fork.
+
+**Correccion de premise, y es del riesgo asumido de la spec**: la nota
+decía que la fork "no tiene release desde 2024-12". No es asi: existe
+0.9.42, con su `unsafe-libyaml-norway ^0.2.13`. La consecuencia es
+importante para la CI: entra por REGISTRO, no por ref de git ⇒ el lock lo
+fija por crates.io y la CI no necesita acceso a ningun repositorio externo
+para resolverlo. (La premise habria metido una dependencia de git en un
+proyecto cuya CI corre con `--locked`.)
+
+De paso se borra `ScraperError::Yaml` y su brazo en `ErrorClass`, con
+marcador `BREAKING CHANGE:` — es un enum publico y borrar una variante es
+un cambio de contrato. El variante estaba MUERTO: nadie lo construia, porque
+el unico emisor (`generate_with_metadata`) traga el error con
+`unwrap_or_else(|_| String::new())`. Borrarlo no cambia ninguna
+comportamiento observable; cambia la superficie.
+
+**Verificacion**: el lock ya no tiene `serde_yaml` (0 ocurrencias) y trae
+la fork y su dependencia C; los 16 tests de `frontmatter.rs` pasan,
+incluidos los dos pines de PI-7 (`test_generate_normalizes_excerpt_whitespace`
+y `test_title_with_newline_cannot_inject_yaml_keys`); y el snapshot
+`obsidian_byline_artifact_test__empty_byline_fragment_repaired_in_excerpt`
+queda **sin cambios** — la salida es byte-identica, que es el criterio de
+aceptacion de la spec (si no lo fuera, el lote no acepta el cambio de
+salida y vuelve a la decision del emitter).
+
+Una nota de honestidad sobre la corrida: el primer intento de correr ese
+snapshot fallo con "no test target named `obsidian_byline_artifact_test.rs`"
+— un error de MI comando (pase el nombre con la extension), no un fallo del
+codigo. El target se llama `obsidian_byline_artifact_test`.
