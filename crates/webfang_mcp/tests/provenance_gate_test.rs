@@ -19,6 +19,8 @@
 
 use std::path::{Path, PathBuf};
 
+use webfang_mcp::mcp_server::MCP_TOOL_COUNT;
+
 const HANDLERS_DIR: &str = "src/mcp_server/handlers";
 
 fn manifest_dir() -> PathBuf {
@@ -111,8 +113,9 @@ fn every_tool_description_carries_the_injection_notice() {
         }
     }
     assert!(
-        total >= 36,
-        "the 36-tool inventory shrank: found {total} registrations"
+        total >= MCP_TOOL_COUNT,
+        "the tool inventory shrank: found {total} registrations, expected at \
+         least {MCP_TOOL_COUNT}"
     );
     assert_eq!(
         marked, total,

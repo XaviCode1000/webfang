@@ -32,12 +32,13 @@
 //! LOCATION by the shared panic hook, and leave the session usable. Its trigger
 //! is the env-gated `test_panic_probe` tool, spawned only for that one test —
 //! every other spawn here runs with the switch off, which is what keeps the
-//! registry-size assertion at 36 honest.
+//! registry-size assertion honest.
 
 use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStderr, ChildStdout};
+use webfang_mcp::mcp_server::MCP_TOOL_COUNT;
 
 /// Per-read timeout: generous enough for cold starts + BoringSSL init.
 const READ_TIMEOUT: Duration = Duration::from_secs(15);
@@ -240,10 +241,15 @@ async fn stdio_initialize_is_answered_without_model_resolution() {
     );
 }
 
-/// `tools/list` reports the full 36-tool registry, including
-/// `extract_domain` and `get_accessibility_snapshot` (#788).
+/// `tools/list` reports the full tool registry, including `extract_domain`
+/// and `get_accessibility_snapshot` (#788).
+///
+/// The size is the EXACT pinned count, read from the one place that owns it
+/// ([`MCP_TOOL_COUNT`]) — a figure written twice is a figure that drifts
+/// (#1817). The name of this test used to say "35" while the assertion said
+/// 36; the name now says what the assertion says.
 #[tokio::test]
-async fn stdio_tools_list_reports_the_35_tool_registry() {
+async fn stdio_tools_list_reports_the_pinned_tool_registry() {
     let mut child = spawn_stdio_server();
     let mut stdin = child.stdin.take().expect("piped stdin");
     let mut reader = BufReader::new(child.stdout.take().expect("piped stdout"));
@@ -257,7 +263,11 @@ async fn stdio_tools_list_reports_the_35_tool_registry() {
     let tools = response["result"]["tools"]
         .as_array()
         .expect("tools/list result must carry a tools array");
-    assert_eq!(tools.len(), 36, "the registry exposes all 36 tools");
+    assert_eq!(
+        tools.len(),
+        MCP_TOOL_COUNT,
+        "the registry exposes exactly {MCP_TOOL_COUNT} tools"
+    );
     assert!(
         tools.iter().any(|t| t["name"] == "extract_domain"),
         "the tool registry must include extract_domain"

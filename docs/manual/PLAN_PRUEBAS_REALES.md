@@ -158,7 +158,7 @@ source of truth for which site tests what.
 
 **Bug classes:** silent image download failures, path-join panics, excerpt duplication (#695), vault heuristics false positives.
 
-### Phase 6 — MCP server (HTTP + stdio, 35 tools)
+### Phase 6 — MCP server (HTTP + stdio, 36 tools)
 
 > Server: `./target/debug/mcp_server_http` (port 8080 default). Probe via `curl -X POST http://127.0.0.1:8080/mcp` JSON-RPC or an MCP client (OpenCode). The 8 handler categories: **scraping** (scrape_url, scrape_with_options, scrape_batch, crawl_site, crawl_with_sitemap, discover_urls, discover_sitemap, detect_spa), **content** (clean_html, convert_html_to_markdown, convert_wiki_links, extract_links, generate_frontmatter, generate_rich_metadata, highlight_code_blocks), **export** (export_file, export_jsonl, export_vector), **url_utils**, **security** (SSRF filter), **obsidian** (vault detect + search), **assets** (download_assets), **ai** (semantic_cleaner, search_obsidian).
 
@@ -167,7 +167,7 @@ source of truth for which site tests what.
 | 6.1 | Boot loopback, no token | starts, warns "development mode" |
 | 6.2 | External bind without token | `--bind 0.0.0.0:8080` → refused to start (REQ-06 fail-fast) |
 | 6.3 | External bind with token | starts; requests without `Authorization: Bearer` → 401 |
-| 6.4 | tools/list | exactly 35 tools, all categories present |
+| 6.4 | tools/list | exactly 36 tools, all categories present |
 | 6.5 | scrape_url happy | `scrape_url https://quotes.toscrape.com` → real content back |
 | 6.6 | scrape_url SSRF | loopback/private/169.254.169.254 targets → rejected (isError or invalid params) |
 | 6.7 | scrape_batch multi-domain | batch example.com + books.toscrape.com → metrics attributed per real domain (regression #696) |

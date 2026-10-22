@@ -1067,6 +1067,7 @@ mod tests {
     use super::panic_containment::{JSONRPC_INTERNAL_ERROR, PANIC_HTTP_ERROR};
     use super::*;
     use crate::mcp_server::render_panic_payload;
+    use crate::mcp_server::MCP_TOOL_COUNT;
     use webfang_core::config::Config;
     use webfang_core::di::{Container, ContainerExt};
 
@@ -1145,9 +1146,13 @@ mod tests {
     async fn test_handler_builds_with_all_tools() {
         let handler = test_handler().await;
         let tools = handler.tool_router.list_all();
-        assert!(
-            tools.len() >= 35,
-            "Expected at least 35 tools, got {}",
+        // The EXACT count, not a floor (#1817): "at least 35" let the registry
+        // drift in either direction without failing, and the figure is read
+        // from the one place that owns it.
+        assert_eq!(
+            tools.len(),
+            MCP_TOOL_COUNT,
+            "the server must advertise exactly {MCP_TOOL_COUNT} tools, got {}",
             tools.len()
         );
 
