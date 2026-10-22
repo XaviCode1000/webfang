@@ -604,6 +604,17 @@ jobs:
       # network, no cargo, mktemp fixtures only.
       - name: Breaking-marker guard semantics harness
         run: bash scripts/test_merge_when_green_breaking.sh
+      # Merged-state semantics harness (#1970). `merge-when-green.sh` read only
+      # `mergeStateStatus`, and GitHub answers UNKNOWN for a CLOSED PR forever
+      # (the mergeability of a closed PR is never computed): the script used to
+      # burn its 90s UNKNOWN window and then FAIL on a PR whose merge had
+      # already happened. It now reads `state` in the same call and exits 0
+      # with "already merged". This harness pins that, plus the verdicts that
+      # must stay untouched (UNKNOWN keeps retrying, CLEAN/UNSTABLE still
+      # merge, BEHIND/BLOCKED still exit 3). Offline: fake `gh`, no network,
+      # no cargo, mktemp fixtures only.
+      - name: Merged-state semantics harness
+        run: bash scripts/test_merge_when_green_merged_state.sh
       # Regression guard for #836: block-scalar nesting bugs in workflow YAML
       # (steps swallowed into a `run: |` block) stay valid YAML and only fail
       # at runtime post-merge (#833→#835). actionlint + shellcheck catch them
