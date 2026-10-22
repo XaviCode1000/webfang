@@ -30,6 +30,7 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
+use webfang_core::application::crawler::engine::TERMINATION_REGISTRATION_REJECTED;
 use webfang_core::infrastructure::platform::first_termination_event;
 
 use super::auth::{validate_auth, AuthState};
@@ -1052,9 +1053,12 @@ async fn shutdown_signal(token: CancellationToken) {
             token.cancel();
         },
         None => {
-            tracing::warn!(
-                "interrupt handler unavailable — server will keep running and rely on an explicit cancel()"
-            );
+            // #2193: the SAME shared warning the crawl engine and the CLI
+            // shutdown guard emit for a rejected registration. The MCP server
+            // is the THIRD shutdown authority, and the rejection is one fact
+            // with one wording — three texts for one event is how a reader
+            // loses track of what the process just said.
+            tracing::warn!(authority = "mcp", "{}", TERMINATION_REGISTRATION_REJECTED);
             // Without a working Ctrl+C handler, wait on the token directly so the
             // server can still be torn down via an explicit cancel().
             token.cancelled().await;
