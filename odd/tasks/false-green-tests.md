@@ -762,3 +762,46 @@ en 6 commits (spec del peer · T3+T4 · T5 · T1+T2 · T7 · T10). El work-unit
 de T1+T2 (el fix del cuelgue y su test) va solo, porque el fix cambia el
 comportamiento observable de un camino de muerte y su test necesita el
 namespace de PID para discriminar.
+
+L17 — **T6 se cierra con una DESVIACION, y la desviacion es el hallazgo.** La
+spec pedia una fila para `during_cancel_drain`. La fila NO SE PUEDE ESCRIBIR:
+la rama que la alcanzaria es **inalcanzable en produccion**. La sesion de
+export solo observa un token de cancelacion cuando se llama
+`ResumeContext::observing_cancel`, y el UNICO llamador en todo el crate esta
+en el modulo de tests de `export_factory` (lineas 1409 y 1472): en produccion
+el `cancelled()` de la sesion siempre es false, la rama `Cancelled` del drain
+nunca corre, y el punto `DURING_CANCEL_DRAIN` esta ARMADO pero no puede
+dispararse. Medido, no supuesto: el hijo del crash matrix con el token ya
+cancelado sale con codigo 0 sin llegar al drain, y el log del crawl muestra
+"2 total, 2 succeeded" — la cancelacion llego, el drain no lo vio.
+
+Lo que se hizo en su lugar: la tabla de `docs/persistence-resume.md` lista
+ahora las DIEZ filas que existen (antes enumeraba nueve: ocho con fila y una
+sin, y le faltaban dos que si la tienen), el punto sin fila queda nombrado CON
+SU RAZON, el comentario de la suite que lo reservaba para "PR5b" dice lo
+mismo, y el doc de la constante deja de decir "Reserve for PR5b". Anunciar una
+fila que no puede pasar seria un verde falso de la misma clase que esta suite
+existe para impedir. Lo que FALTA —el cableado que haria el punto alcanzable
+(que el flujo de export de la CLI entregue su token al `ResumeContext`)— es un
+cambio de PRODUCCION y ademas cambia el comportamiento del export ante
+cancelacion (hoy el export sigue hasta el final, que es justo lo que E8
+"drain-before-final-persist" queria evitar). Se le paso al owner del plan
+para que lo decida; no se hizo unilateralmente.
+
+L18 — **T9 (el evento real de consola de Windows) queda escrito, con su nivel
+de verificacion declarado.** El test instala el handler de PRODUCCION, pide a
+Windows un `CTRL_CLOSE_EVENT` real y afirma que la fuente de terminacion lo
+recibe; el handler devuelve "consumido", asi que el OS no termina el proceso
+de test. Va `#[ignore]`d porque necesita una consola REAL, y la lane de
+Windows lo ejecuta EXPLICITAMENTE (un step con `--run-ignored
+ignored-only`): ahi existe una consola, y si el proceso del runner no la
+tuviera el test fallaria —un hecho de la plataforma, reportado como tal, no
+un skip silencioso. Lo que NO se verifica localmente: el binario para Windows
+no compila en esta maquina (el target necesita el toolchain MSVC de C++). Lo
+que SI se verifico, contra las fuentes: la firma real de
+`GenerateConsoleCtrlEvent` ((u32, u32) -> BOOL en windows-sys 0.60), la
+feature `Win32_System_Console` habilitada en el manifiesto, y tokio con
+`features = ["full"]` (el `timeout` del await). El catalogo congelado de
+`#[ignore]` sube de 12 a 14 (el atributo nuevo y la mencion del doc comment)
+y el guard de inventario queda en verde: 14 menciones (9 atributos + 5
+doc/comment) en 6 grupos.
