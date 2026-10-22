@@ -302,7 +302,7 @@ fn sanitize_env(mut cmd: Command) -> Command {
 /// Created eagerly so no code path observes a missing parent. The `Command`
 /// cannot own the directory's lifetime, so it is intentionally left for the
 /// OS temp cleanup to reclaim.
-fn hermetic_cache_dir() -> std::path::PathBuf {
+pub(crate) fn hermetic_cache_dir() -> std::path::PathBuf {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!("webfang-test-cache-{}-{n}", std::process::id()));
@@ -328,7 +328,7 @@ fn hermetic_cache_dir() -> std::path::PathBuf {
 /// every test; that is why the file is empty rather than representative.
 /// `strip_poisoned_env` removes the developer's own `WEBFANG_CONFIG` on the
 /// way in, so nothing from outside the process can land here either.
-fn hermetic_empty_config_file() -> std::path::PathBuf {
+pub(crate) fn hermetic_empty_config_file() -> std::path::PathBuf {
     static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!(

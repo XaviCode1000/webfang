@@ -261,3 +261,137 @@ async fn crash_tmp_written_pre_rename_discards_tmp_and_recovers() {
 async fn crash_mid_state_file_write_truncated_tmp_is_gced() {
     crash_row(MID_STATE_FILE_WRITE).await;
 }
+
+// ---------------------------------------------------------------------------
+// #2066 — a DISCARDED SIGKILL must not hang the child.
+//
+// The kernel DISCARDS a `SIGKILL` sent from inside its own PID namespace to
+// that namespace's init (the PID-1 special case): `kill()` returns 0 and the
+// signal NEVER arrives. The pre-fix `kill_self` sent the signal and then
+// waited for it (`loop { libc::pause() }`), so the process hung forever and
+// the crash-matrix lane burned nextest's slow-timeout instead of failing with
+// a diagnostic that says what happened.
+//
+// The reproduction is the environment itself: the child is launched as the
+// init of a PID namespace, which is the only way to get `getpid() == 1`
+// without being the real init of the machine.
+//
+// The three assertions are the ones the issue asks for: the child does NOT
+// hang (it finishes inside the window), it does NOT exit successfully, and
+// its stderr carries the diagnostic.
+// ---------------------------------------------------------------------------
+
+/// The window the child has to finish in. It is generous (the child does no
+/// real work) and it is FINITE on purpose: a test that waits forever for a
+/// process that must not hang is the same hang, one layer up.
+#[cfg(target_os = "linux")]
+const DISCARDED_SIGKILL_WINDOW: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn crash_point_never_hangs_when_sigkill_is_discarded() {
+    use std::io::Read;
+    use std::process::{Command, Stdio};
+
+    let t = BehavioralTest::new().await;
+    let sitemap_url = mount_crash_fixture(&t).await;
+    let state_dir = TempDir::new().expect("state tempdir");
+
+    // The matrix command, launched as the init of a NEW PID namespace:
+    // `unshare` propagates the child's exit status, and the child's
+    // `getpid()` is 1 inside that namespace.
+    let mut cmd = Command::new("unshare");
+    cmd.arg("--user")
+        .arg("--map-root-user")
+        .arg("--fork")
+        .arg("--pid")
+        .arg("--")
+        .arg(common::cli_harness::webfang_path())
+        .arg("--resume")
+        .arg("--state-dir")
+        .arg(state_dir.path())
+        .arg("--url")
+        .arg(t.server.uri())
+        .arg("--use-sitemap")
+        .arg("--sitemap-url")
+        .arg(&sitemap_url)
+        .arg("--quiet")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // The same hermetic treatment every other spawned binary gets, in the
+    // same ORDER: first the poisoned env vars are stripped (every
+    // WEBFANG_* and AI_MODEL_ID, so a CI bug-discovery workflow cannot
+    // decide what this child does), and only THEN this test's own variables
+    // are set — the crash point among them, which a strip done afterwards
+    // would remove.
+    for (key, _) in std::env::vars() {
+        if key.starts_with("WEBFANG_") || key == "AI_MODEL_ID" {
+            cmd.env_remove(&key);
+        }
+    }
+    // The SSRF entry guard is disarmed: the fixture binds 127.0.0.1, a
+    // forbidden literal for the production path. The cache and the config
+    // belong to the test, not to the operator's machine. Without this the
+    // child dies of a config or SSRF error and never reaches the crash
+    // point — the test would then prove nothing.
+    cmd.env(
+        webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+        "1",
+    );
+    cmd.env("XDG_CACHE_HOME", common::cli_harness::hermetic_cache_dir());
+    cmd.env(
+        "WEBFANG_CONFIG",
+        common::cli_harness::hermetic_empty_config_file(),
+    );
+    cmd.env(webfang_core::cli::crash_points::ENV_VAR, PRE_FIRST_PERSIST);
+
+    let mut child = cmd.spawn().expect("spawn the crash child");
+
+    // Bounded wait: the child must END inside the window. A child that is
+    // still running when the window closes is the defect itself, so the
+    // failure says exactly that (and not "the test timed out").
+    let deadline = std::time::Instant::now() + DISCARDED_SIGKILL_WINDOW;
+    let status = loop {
+        match child.try_wait().expect("poll the crash child") {
+            Some(status) => break status,
+            None => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!(
+                        "the crash child did not finish within {}s: the SIGKILL was \
+                         discarded and the child hung instead of dying (issue #2066)",
+                        DISCARDED_SIGKILL_WINDOW.as_secs()
+                    );
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            },
+        }
+    };
+
+    let mut stderr = String::new();
+    if let Some(mut pipe) = child.stderr.take() {
+        let _ = pipe.read_to_string(&mut stderr);
+    }
+
+    // The namespace could not be created at all: that is an ENVIRONMENT
+    // failure, and it must not read as a pass. The remediation is named so
+    // the reader knows what to fix.
+    assert!(
+        !stderr.contains("unshare failed"),
+        "the PID namespace could not be created, so the discarded-SIGKILL path was never \
+         exercised; enable unprivileged user namespaces (e.g. `sysctl -w \
+         kernel.unprivileged_userns_clone=1`) or run this test as root. unshare said: \
+         {stderr}"
+    );
+
+    assert!(
+        !status.success(),
+        "the crash child must NOT exit successfully when the SIGKILL is discarded; \
+         status {status:?}; stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("SIGKILL was discarded"),
+        "the child must die with a diagnostic that NAMES the discard; stderr: {stderr}"
+    );
+}
