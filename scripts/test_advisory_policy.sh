@@ -51,14 +51,20 @@ fake_cargo() { # name exit-code body
 run_guard() { # path-prefix [args...]
   local prefix="$1"
   shift
-  ( cd "$ROOT" && PATH="$prefix:$PATH" bash "$GUARD" "$@" ) >"$SCRATCH/out" 2>&1
+  # The dead-ignore check needs a REAL audit report; the fake `cargo` of the
+  # other cases does not produce one, so those cases skip it explicitly (the
+  # same pattern as --skip-duplicates). The cases that DO exercise it call
+  # the guard directly.
+  ( cd "$ROOT" && PATH="$prefix:$PATH" bash "$GUARD" --skip-dead-ignores "$@" ) >"$SCRATCH/out" 2>&1
 }
 
 # run_guard_policy <deny.toml> <path-prefix> — the guard in CHECK mode against
 # a fixture deny.toml (the real file is never touched: the guard reads the
 # path ADVISORY_POLICY_DENY_TOML points at).
-run_guard_policy() { # <deny.toml> <path-prefix>
-  ( cd "$ROOT" && PATH="$2:$PATH" ADVISORY_POLICY_DENY_TOML="$1" bash "$GUARD" ) >"$SCRATCH/out" 2>&1
+run_guard_policy() { # <deny.toml> <path-prefix> [args...]
+  local deny="$1" prefix="$2"
+  shift 2
+  ( cd "$ROOT" && PATH="$prefix:$PATH" ADVISORY_POLICY_DENY_TOML="$deny" bash "$GUARD" --skip-dead-ignores "$@" ) >"$SCRATCH/out" 2>&1
 }
 
 # print_ignores <deny.toml> — the ids the guard derives from the fixture. The
@@ -253,7 +259,34 @@ else
   fi
 fi
 
-echo ""
+echo ""# --- #1984: an ignore that matches NOTHING is DEAD --------------------------
+# The audit reports the advisories it finds; the fake reports a DIFFERENT
+# one, so the declared ignore matches no crate in either lockfile. A dead
+# ignore silences nothing today and would silence the finding the day its
+# crate came back — so the guard must FAIL, naming it.
+AUDIT_JSON_MATCHED='{"warnings":{"found":true,"count":1,"list":[{"advisory":{"id":"RUSTSEC-2024-0436"}}]},"vulnerabilities":{"found":false,"count":0,"list":[]}}'
+AUDIT_JSON_OTHER='{"warnings":{"found":true,"count":1,"list":[{"advisory":{"id":"RUSTSEC-2099-0001"}}]},"vulnerabilities":{"found":false,"count":0,"list":[]}}'
+write_policy "$SCRATCH/dead.toml" "[advisories]" '{ id = "RUSTSEC-2024-0436", reason = "fixture: an advisory that matches no crate in the graph" }'
+
+prefix="$(fake_cargo alive 0 "$AUDIT_JSON_MATCHED")"
+if ( cd "$ROOT" && PATH="$prefix:$PATH" ADVISORY_POLICY_DENY_TOML="$SCRATCH/dead.toml" bash "$GUARD" --skip-duplicates ) >"$SCRATCH/out" 2>&1; then
+  pass "an ignore that DOES match a crate passes the guard (#1984)"
+else
+  fail "an ignore that matches a crate must pass the guard (#1984): $(cat "$SCRATCH/out")"
+fi
+
+prefix="$(fake_cargo dead 0 "$AUDIT_JSON_OTHER")"
+if ( cd "$ROOT" && PATH="$prefix:$PATH" ADVISORY_POLICY_DENY_TOML="$SCRATCH/dead.toml" bash "$GUARD" --skip-duplicates ) >"$SCRATCH/out" 2>&1; then
+  fail "an ignore that matches NO crate must fail the guard (#1984)"
+else
+  if grep -qi 'muerto' "$SCRATCH/out"; then
+    pass "an ignore that matches no crate fails the guard, naming it (#1984)"
+  else
+    fail "the guard must fail naming the dead ignore: $(cat "$SCRATCH/out")"
+  fi
+fi
+
+
 if [ "$FAIL" -gt 0 ]; then
   echo "FAIL: $FAIL case(s) failed, $PASS passed"
   exit 1
