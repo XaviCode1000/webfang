@@ -1068,3 +1068,43 @@ $BIN --root crates/webfang_core/src > tools/intra-crate-lint/tests/fixtures/real
 
 ⇒ **es un segundo recurso serializado**, junto a `ci.yml`: en el orden de merge hay que refrescarlo
 en cada PR que toque el core.
+
+### 2026-10-22 · #2252 y #2258 arreglados: las tres causas raíz, cada una con su SHA
+
+**#2258 (L10) — DOS causas, dos commits:**
+
+1. `ba6bb9c8`: el **golden set** del lint intra-crate (38 sitios desplazados por los 6 archivos de
+   `core/src` del swap de keyring).
+2. `de0e160b`: la segunda violación, `no-harness: check_no_dead_ignores.sh is wired but has no
+   scripts/test_*.sh` — el guard queda cableado **por indirección** (lo invoca
+   `check_advisory_policy.sh:671`) y el meta-guard sigue ese nivel ⇒ necesita su harness. Fix por la
+   vía declarada: **`scripts/test_no_dead_ignores.sh`** (marcador `# NEGATION:` real — el ignore vivo
+   **no rescata** al muerto; ROJO con el guard sustituido por `exit 0`) **cableado** con un step nuevo
+   en `Repo guards` ("Dead-ignores guard semantics harness"), hermético con stub de `cargo audit`.
+   Verificado: 8 ok/0 fail; con el guard mutado rc=1; meta-guard `OK: 19 wired guard(s) covered
+   (mutation: on)`; shellcheck sin hallazgos.
+
+⇒ **Consecuencia para el mapa de conflictos: `#2258` ahora también toca `ci.yml`** ⇒ el grupo pasa a
+ser #2246, #2252, #2260, #2255, #2256 **y #2258**.
+
+**#2252 (L8) — TRES causas, tres commits del worker (`659fbd0c..113a4398`):**
+
+1. `6cbcef84` — la raíz del **ENOENT**: el glob `--test '*'` hace que cargo **nombre** cada target, y
+   `adaptive_selector_integration` exige la feature `adaptive-selectors` ⇒ **error duro 101 antes de
+   arrancar** ⇒ nextest no escribe resultados. Fix: las lanes seleccionan por KIND (`--tests`). RED
+   reproducido local con exit real.
+2. `c0cf9d17` — los tres marcadores `# NEGATION:` del harness de empty-test-targets (la única
+   violación del meta-guard; **no había** entrada de baseline: nada que shiftear).
+3. `113a4398` — el crash point del SIGKILL descartado **salta con motivo escrito**: sonda el entorno
+   primero; si el namespace no existe (el runner de GitHub no concede user namespaces: `write failed
+   /proc/self/uid_map`), SKIP con remediation; si existe, las **tres aserciones siguen vivas**.
+   `docs/persistence-resume.md` nombra quién verifica esa fila y las otras 26 filas siguen en la
+   lane ordinaria.
+
+**La epidemia se cerró con la lección del peer**: lo que yo medía era el **worktree** (con el
+borrador del worker ya dentro) y el CI medía el **blob del SHA** (`659fbd0c`, sin marcadores).
+La prueba no discutible es `git show <sha>:<path>` — nunca el fichero del worktree.
+
+**El flake** `js_strategy_test::non2xx_browser_page_is_honest_error_exit_69` queda **fuera**: es
+preexistente y ajeno al diff (el cambio del harness compartido es `fn` → `pub(crate) fn`).
+Defecto separado si el owner lo quiere, con su issue propia.
