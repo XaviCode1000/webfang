@@ -1440,3 +1440,28 @@ CI sobre el resultado mergeado y mergea sin re-corridas manuales.
 
 **Regla práctica para `#2268`**: está al día (`46d10cbe`) pero su verde **expira con el próximo
 merge ajeno a main** ⇒ mergearla **en el turno en que esté verde y al día**, no al final de la cola.
+
+### 2026-10-22 · Corrección del peer (deliberado) + defecto de tooling medido en `merge-when-green.sh`
+
+**Corrección**: el orquestador NO hace update-branch — `scripts/merge-when-green.sh` **no lo hace,
+a propósito** (leído en el blob de `main`): verifica `mergeStateStatus` CLEAN/UNSTABLE; si la PR
+está `BEHIND` el script hace **nada** y sale `exit 3` con el mensaje `"PR is BEHIND. Rebase onto
+main and re-push, then re-run this script."`. Con `strict=true` y `enforce_admins=true` no hay
+bypass ⇒ el paso de "poner la rama al día" es **MANUAL y previo** al script.
+
+**Defecto serio del mensaje de error**: manda a "Rebase onto main and re-push". Con la historia YA
+pusheada, rebasear es reescribirla ⇒ exige force-push ⇒ **hard-deny en este repo sin camino de
+aprobación**. El maintainer que sigue el mensaje termina en un muro que el propio tooling le puso.
+**La acción correcta** es **MERGEAR `origin/main` en la rama** (`git merge origin/main` / botón
+update-branch), nunca rebase sobre commits publicados. Importa ya: ~15 PRs quedarán `BEHIND` a
+medida que se mergeen ⇒ el camino de error más transitado de la cola es exactamente el que da la
+instrucción equivocada (no es hipotético: cualquier merge que no sea el primero lo dispara).
+
+**Decisión del peer (explícita): no lo marca AHORA.** Arreglarlo = issue + approve + PR-more (una
+decimosexta PR para un cambio de mensajes/doc). Queda como **candidato del lote siguiente**, junto
+con el comando de regeneración de la fixture — mismo patrón: artefacto o camino de error sin
+documentar bien, que empuja a hacer lo incorrecto a mano. Si el owner lo quiere ahora, el peer lo
+toma (dos líneas de mensaje + pocas de doc).
+
+**Regla operativa en la cola (vigente ya)**: manual-before-script = merge de `origin/main` en la
+rama con la PR; jamás `rebase` sobre historia pusheada (hard-deny).
