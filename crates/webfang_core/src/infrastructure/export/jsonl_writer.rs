@@ -636,4 +636,51 @@ mod tests {
             "second close never hangs and never panics"
         );
     }
+
+    /// #1816 — an append emitted DURING an in-flight `flush()` is durable
+    /// after the NEXT flush.
+    ///
+    /// The writer is ONE thread with a channel: `append` and `flush` are
+    /// messages on that channel, so the barrier of a `flush()` covers what was
+    /// enqueued BEFORE it. An append emitted while a flush is in flight lands
+    /// BEHIND that barrier — and the guarantee that matters is that NOTHING is
+    /// lost: after the next flush, the appended record is on disk.
+    ///
+    /// The acceptance criterion as written ("asserts durability on return")
+    /// would demand a contract the design does not have: an append does not
+    /// wait for an in-flight flush. This test writes the contract that DOES
+    /// exist, and its ASSERTION is deterministic whatever the interleaving
+    /// (the channel is FIFO, so nothing is lost).
+    #[tokio::test]
+    async fn append_during_an_in_flight_flush_is_durable_after_the_next_flush() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("barrier.jsonl");
+        let (session, _index) = JsonlSession::open(&path).expect("open");
+
+        session
+            .append(&terminated(&valid_line(1)))
+            .await
+            .expect("append first");
+        session.flush().await.expect("flush first");
+
+        // The flush goes in flight on its own task; the append is emitted
+        // while it may still be running.
+        let session_for_flush = session.clone();
+        let in_flight = tokio::spawn(async move { session_for_flush.flush().await });
+        session
+            .append(&terminated(&valid_line(2)))
+            .await
+            .expect("append during the in-flight flush");
+        in_flight.await.expect("flush task").expect("flush second");
+
+        // The next flush is the barrier that makes the record durable.
+        session.flush().await.expect("flush third");
+        session.close().await.expect("close");
+
+        let content = fs::read_to_string(&path).expect("read");
+        assert!(
+            content.contains("\"n\":2"),
+            "the append emitted while the flush was in flight must not be lost; content: {content}"
+        );
+    }
 }
