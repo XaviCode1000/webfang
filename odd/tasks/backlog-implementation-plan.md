@@ -510,3 +510,43 @@ colgado en segundo plano.
 (la fase T4/T5 del spec: purgar los ignores RUSTSEC-2026-0183/0184 sólo **después** de que
 `git2` salga de los DOS lock, y regenerar `fuzz/Cargo.lock` después de purgar) ⇒ el orden que
 exige el spec se está respetando.
+
+### 2026-10-22 · D20: el cambio de clave del almacén de credenciales (decisión del agente, no del owner)
+
+**Lo que preguntó el peer** (L10): el store nuevo cambia la clave de la credencial
+(`keyring-rs:{user}@{service}` → `keyring:{service}@{account}`), o sea que las credenciales **ya
+guardadas** quedan infindables en Linux (en macOS y Windows la clave es idéntica por
+construcción: `service`/`account` y `target_name = {account}.{service}`). ¿Migración o decisión del
+owner?
+
+**Decisión (D20): NO es una migración y NO es una decisión del owner.** El requisito de producto
+es inequívoco —*un refactor de dependencias de seguridad no puede dejar huérfanas las
+credenciales del usuario*— así que lo decide el agente, y el mecanismo lo elige el worker.
+
+**Evidencia verificada**:
+
+- Hoy, `keyring` 3.6.3 construye la clave de keyutils en `src/keyutils.rs`
+  (`new_with_target(target, service, user)`): sin target explícito,
+  `format!("keyring-rs:{user}@{service}")` ⇒ **prefijo `keyring-rs:`, orden user@service**.
+- El store nuevo (`linux-keyutils-keyring-store`) expone su construcción como **configuración
+  pública**: `Store { id: String, delimiters: [String; 3], service_no_divider: bool }`, y su
+  default es *"prefix `keyring:`, divider '@', no suffix"* ⇒ el prefijo **y** el orden cambian
+  (documentado en la doc de `Store::new`).
+- La API nueva **no tiene** un modificador `description` que fije la clave: la clave es la
+  construcción del store. ⇒ **La premisa de mi propia spec de L10 ("hay que pasar el modificador
+  `description`") era falsa** y se corrige.
+
+**Criterio de aceptación (uno solo, y verificable)**:
+
+> La clave de una entrada `(service, user)` en el almacén **debe ser byte-idéntica** a la de hoy:
+> `keyring-rs:{user}@{service}`. Si el store puede producirla con su configuración, se configura
+> así (sin migración, sin estado nuevo, sin lectura doble). Si no puede, el camino de lectura
+> consulta **primero la clave legacy** y la credencial guardada sigue encontrándose.
+
+En los dos casos: **cero migración, cero credenciales huérfanas, cero estado nuevo**. Un test
+nombrado lo pinea (el que falla con el store por defecto y pasa con la configuración correcta):
+`the_credential_key_is_byte_identical_to_the_legacy_key`.
+
+**Por qué no "migrar"**: una migración escribe una credencial nueva y borra la vieja: es estado
+nuevo, deja restos si falla a mitad, y no arregla a quien ya tenía la credencial guardada con la
+clave vieja si el borrado falla. La clave que no cambia no tiene ninguno de esos problemas.
