@@ -23,20 +23,20 @@ que hizo el triage) cuando cada lote aterriza, con el sha de su branch. Ningún 
 - [x] **L3** · S1–S5 — el canal del CI Health enmudecido (#2233, #2234, #2162, #1936, #1980).
   - **L3a HECHO**: `1b49ef71` + `eaa172d7` en `fix-ci-health-w03-classifier` (harness 104/0, RED 99/5, semántica de la búsqueda contra la API real; harness partido 468+474; #2162 y #1980 cerrados). **Review nativo APROBADO** (`review-7279a44bd00f4c9f`, 3 hallazgos no bloqueantes).
   - **L3b HECHO**: `b08323cd` en `fix-2234-hermetic-args` — `parse_args` borrado, un solo entry point hermético, test `the_test_parse_surface_ignores_the_ambient_environment`; 2963 tests verdes **con** el env venenoso de la lane + control negativo.
-- [x] **L4** · S1–S5 — residuales de guard (#2070: ítems 1-3; el 4º, no hacer nada) — `b2cf0a94`, `1111cd9d`, `cd333e76` en `fix-guard-residuals` (peer; tip `be6eb2e4`).
-- [x] **L5** · S1–S5 — atribución de commits (#1995) — `4a17cb66` en `fix-ai-attribution-exact` (peer; tip `0f004bf4`).
-- [x] **L6** · S1–S5 — señal de mutación (#1844) — `26792e6b` en `chore-mutation-shard-measurement` (peer; tip `01767192`): 1477 mutantes medidos ⇒ 96 shards.
-- [ ] **L7** · S1–S5 — MCP: superficie verdadera (#1815, #1817, #1837, #2193) — peer. No necesita build de ONNX: `webfang_core` no tiene feature `ai`.
-- [ ] **L8** · S1–S5 — falsos verdes de test (#2066, #1852, #1828, #1833, #1834, #1816) — **spec commiteada** (`da23c097` en `fix-false-green-tests`); implementación del peer.
-- [ ] **L9** · S1–S5 — grafo de build (#1799, #1797, #1796) — **spec commiteada** (`eb40ecbb` en `fix-build-graph-deps`); implementación del peer. D9 corregida: `sys-info` devuelve KiB en todas las plataformas.
-- [ ] **L10** · S1–S5 — crates sin mantenimiento (#1984, #2031) — **spec commiteada** (`2f51441a` en `fix-unmaintained-crates`); implementación del peer.
-- [ ] **L11** · S1–S5 — obscura: el veredicto `Unknown` nombra el mínimo (#1710) — peer, `fix-obscura-unknown-verdict`.
+- [x] **L4** · S1–S5 — residuales de guard (#2070: ítems 1-3; el 4º, no hacer nada) — 7 commits en `fix-guard-residuals` (peer; tip `5f19fbb5`). **Review nativo ABIERTO** (`review-ead5e692fc9ea607` + `review-74427c00c7b8343a`): el ack se rechaza por coacción del host aunque el binding sea byte-idéntico al canónico. No bloquea la entrega.
+- [x] **L5** · S1–S5 — atribución de commits (#1995) — `0f004bf4` doc + `4a17cb66` código en `fix-ai-attribution-exact` (tip `0f004bf4`).
+- [x] **L6** · S1–S5 — señal de mutación (#1844) — `01767192` doc + `26792e6b` código en `chore-mutation-shard-measurement` (tip `01767192`): 1477 mutantes medidos ⇒ 96 shards.
+- [x] **L7** · S1–S5 — MCP: superficie verdadera (#1815, #1817, #1837, #2193) — peer: `dccd06da`, `c40fac93`, `80be9903`, `315441ab` (tip `315441ab`).
+- [x] **L8** · S1–S5 — falsos verdes de test (#2066, #1852, #1828, #1833, #1834, #1816) — spec `da23c097` (padre) + implementación del peer (tip `24a819c2`).
+- [x] **L9** · S1–S5 — grafo de build (#1799, #1797, #1796) — spec `eb40ecbb` (padre) + implementación del peer (tip `713502cd`). D9 corregida: `sys-info` devuelve KiB en todas las plataformas.
+- [x] **L10** · S1–S5 — crates sin mantenimiento (#1984, #2031) — spec `2f51441a` (padre) + implementación del peer (tip `905183ac`).
+- [x] **L11** · S1–S5 — obscura: el veredicto `Unknown` nombra el mínimo (#1710) — peer: `0e52f031`, `6b82e087`, `0747fea3` (tip `0747fea3`).
 - [ ] **L12** · S1–S5 — duplicación: helpers de arrange + baseline medido (#1757) — espera **#2230** (sigue abierta).
 - [ ] **L13** · S1–S5 — entrega macOS (#1821) — **DESCARTADO 2026-10-22** (O3): *"la issue 1821 la dejamos, no la tocamos"*. Sale del plan; la issue queda abierta y sin tocar.
 - [ ] **L14** · S1–S5 — docs y runbooks.
   - **Mi parte HECHA**: veredicto por fila de #1609 posteado (25 filas: 12 resueltas, 7 moot, 5 vivas, 1 no accionable) + **#2241** (doc de disclosure), **#2242** (degradación de config invisible), **#2243** (podar el seam muerto) abiertas. #1609 queda como umbrella.
-  - **Del peer**: runbook WAL/SQLite (#1826), nota de #1710, implementación de #2241/#2242/#2243.
-- [ ] **L15** · S1–S5 — lane de UB: gate por test + skip-net justificado (#2235) — peer; Miri ya instalado (O8 resuelta).
+  - **Del peer HECHO**: `f79e42ba`, `08d46907`, `0616c3bf`, `da990e2d` (tip `da990e2d`): runbook WAL/SQLite, nota de #1710, carry-over del wiki.
+- [x] **L15** · S1–S5 — lane de UB: gate por test + skip-net justificado (#2235) — peer: `6065049e`, `cf4403fa`, `f0e39852`, `4a9cb8c0` (tip `4a9cb8c0`). Miri ya instalado (O8 resuelta).
 - [ ] **L16** · S1–S5 — cuando el owner lo ordene: abrir las PRs lote por lote (issue enlazada, un `type:*`, sin atribución de IA) y dejar el merge en sus manos. **Orden fijado 2026-10-22**: `L2 → L3a → L3b → L4/L5/L6 → L8/L9/L10`.
 
 ## Decisiones del owner (2026-10-22, segunda tanda)
@@ -46,3 +46,4 @@ que hizo el triage) cuando cada lote aterriza, con el sha de su branch. Ningún 
 | ADR-0013 (`#2243`) | **addendum fechado** en el propio ADR; el registro histórico no se reescribe |
 | O7 (orden de PRs) | `L2 → L3a → L3b → L4/L5/L6 → L8/L9/L10`, cada slice desde el `main` nuevo |
 | O3 (`#1821`, L13) | **descartado**: la issue se deja sin tocar; el lote sale del plan |
+| PRs abiertas (2026-10-22) | 2: `#2240` (release v5.0.1, CLEAN) y `#2230` (exporter, BLOCKED) |
