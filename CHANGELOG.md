@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [5.0.1] - 2026-10-22
+
+
+### 🔧 Fixed
+
+- La familia 0.0.0.0/8 y los prefijos NAT64 no canonicos quedan denegados ([#1965](https://github.com/XaviCode1000/webfang/pull/1965)) ([#2226](https://github.com/XaviCode1000/webfang/pull/2226))
+- ISATAP y la forma IPv4-compatible alinean las tres rutas del guard ([#2236](https://github.com/XaviCode1000/webfang/pull/2236))
+- Un JSONL no-UTF8 degrada y saltea en vez de abortar el export ([#1812](https://github.com/XaviCode1000/webfang/pull/1812)) ([#2230](https://github.com/XaviCode1000/webfang/pull/2230))
 ## [5.0.0] - 2026-10-21
 
 
