@@ -836,3 +836,26 @@ L20 — **Cierre del lote**: L8 queda cerrado con 13 commits. Los criterios que
 NO se cierran aqui: T8 y T11 son del lado issues (del owner del plan), y
 T6 se cierra con la desviacion de L17. El issue #1852 no se cierra con este
 lote: la parte que le toca al otro agente (el lado issues) sigue abierta.
+
+L21 — **La fila del catalogo nombra QUIEN verifica, y no insinua un gate.** El
+peer cerrio el punto de T9 con una medicion que ya esta en `ci.yml`: la lane
+`test-crossplatform` corre en `[windows-latest, macos-latest]` y ejecuta
+`cargo build -p webfang_cli --bin webfang` mas `cargo nextest run --lib` y
+`cargo nextest run --test '*'` ⇒ un test IN-MODULE (windows_console.rs) SI
+corre en la lane de Windows, y el runner trae cmake y NASM preinstalados
+(lo dice el propio comentario de la lane).
+
+Y por que NO hago un check cruzado local: `cargo check --target
+x86_64-pc-windows-msvc` en un host Linux compila BoringSSL desde C++ y
+necesita el toolchain MSVC, que aqui no existe ⇒ el check local falla en el
+build script, y **un check local que falla no es evidencia**. Es el mismo
+principio que rechazo el scratch-crate: la lane real de Windows es la unica
+que compila Windows.
+
+El matiz que importa para la evidencia: esa lane hoy es **advisory** —no
+esta en el `needs` del gate, y su propio comentario dice que los primeros
+runs se esperan fallando en Windows—. Por eso la fila del catalogo
+congelado tiene que decir QUE la verifica ('lane de Windows') y no insinuar
+un gate: las dos filas del catalogo que nombraban 'the parent' ahora nombran
+la lane. El promote a required queda como follow-up aparte, como ya
+anticipa la lane.

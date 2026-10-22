@@ -35,7 +35,7 @@ the "real DNS / real HTTP" class.
 | Network | 3 | `requires network` / DNS / client | #542 | Keep ignored; wiremock alternative in behavioral |
 | Tracing | 1 | `tracing global subscriber` | #501 | Keep ignored; subscriber race |
 | Reproduction | 2 | race window too narrow to force from a fixture; kept-RED TDD evidence | #1230, #1429 | Keep ignored; the deterministic pins are the seam test / GREEN bound pin |
-| Platform | 1 | `needs a real Windows console` | #1834 | Keep ignored; the parent runs it with `--run-ignored ignored-only` on the Windows runner |
+| Platform | 1 | `needs a real Windows console` | #1834 | Keep ignored; the Windows lane runs it with `--run-ignored ignored-only` |
 | Comments/docs | 5 | doc comment mentions `#[ignore]` | #386 | Not tests — counted as their own checked category |
 
 Total: 2+3+1+2+5+1 = **14**. (Post-ADR-0004-paso-6 budget, re-baselined twice: by unit A3 the
@@ -94,7 +94,7 @@ for doc/comment mentions (compared per file by count). `Line` is not recorded on
 | 9 | Comments/docs | `crates/webfang_mcp/tests/mcp_behavioral_test.rs` | `doc` | `/// (A second test asserted the same thing under the name `mcp_ai_tools_registered_with_ai_off`; it was `#[ignore]`d behind a "requires cached ONNX model" reason it never needed. One test, one assertion.)` | #386 | docs only |
 | 10 | Comments/docs | `crates/webfang_core/tests/behavioral/cli/error_path_test.rs` | `doc` | `/// No `#[ignore]`: the gate fires before any cleaner could be built.` | #386 | docs only |
 | 11 | Comments/docs | `crates/webfang_core/tests/behavioral/cli/error_path_test.rs` | `doc` | `/// No `#[ignore]`: the gate fires before any cleaner could be built.` | #386 | docs only |
-| 13 | Platform | `crates/webfang_core/src/infrastructure/platform/windows_console.rs` | `a_real_console_close_event_reaches_the_termination_source` | `needs a real Windows console: the parent runs it with --run-ignored ignored-only` | #1834 | Keep ignored; the Windows lane runs it explicitly (a console control event is delivered to the processes attached to a console) |
+| 13 | Platform | `crates/webfang_core/src/infrastructure/platform/windows_console.rs` | `a_real_console_close_event_reaches_the_termination_source` | `needs a real Windows console: the Windows lane runs it with --run-ignored ignored-only` | #1834 | Keep ignored; the Windows lane runs it explicitly (a console control event is delivered to the processes attached to a console) |
 | 14 | Comments/docs | `crates/webfang_core/src/infrastructure/platform/windows_console.rs` | `doc` | `/// (it is `#[ignore]`d: the parent` | #386 | docs only |
 | 12 | Comments/docs | `crates/webfang_core/tests/behavioral/cli/waf_gauntlet_test.rs` | `doc` | `/// ... the historical wiremock-FIFO flakiness that motivated `#[ignore]` no longer applies.` | #386 | docs only |
 
