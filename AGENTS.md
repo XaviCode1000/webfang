@@ -355,6 +355,10 @@ is shared; working tree, index and HEAD are isolated.
 - **The CWD is the absolute boundary.** Never reach paths outside your worktree through
   `../<other-worktree>/`.
 - **One worktree per session.** Never switch branches mid-task: create another worktree.
+- **The mission record travels with the branch.** `odd/tasks/<feature>.md` is created and
+  edited INSIDE the mission worktree, never in the main checkout: written in the main
+  checkout it stays orphaned in `main` (untracked) and the finished work never reaches the
+  tree (#1972).
 - **`.git/worktrees/` is Git's internal state.** Never edit it by hand: use
   `git worktree add` / `remove` / `prune` / `repair`.
 - **Forbidden commands:**
@@ -475,6 +479,10 @@ From the **main** repo:
    extra candidates: agents name their targets freely and git never sees those names.
    Re-check with a **moving window** (file count sampled twice 60 s apart with delta 0, plus
    zero live `cargo`/`rustc`/`cargo-nextest`: `pgrep -x`, one name per call).
+   The removal is a **standalone** command, with the literal absolute path
+   (`/home/xavi/.cache/cargo-target/<name>`), never with `$HOME`/`~` and never chained: `rm -rf ~`
+   is hard-deny and blocks the whole chain. That is why steps 3-5 (git) run FIRST and complete;
+   the `rm` goes after, on its own line.
 7. **Verify the handoff** — `git worktree list` and `git branch -vv` with no leftovers **of the
    mission you merged**, and `git status --short` empty. Other worktrees and branches belong to
    other missions: their presence is neither a failed handoff nor your business.
