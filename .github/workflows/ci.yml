@@ -959,6 +959,7 @@ jobs:
     needs: [toolchain, change-scope]
     if: ${{ needs.change-scope.outputs.run_code_jobs == 'true' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 12
     permissions:
       contents: read
     steps:
@@ -994,6 +995,7 @@ jobs:
     needs: [change-scope]
     if: ${{ needs.change-scope.outputs.run_code_jobs == 'true' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -1062,7 +1064,7 @@ jobs:
     needs: [change-scope]
     if: ${{ needs.change-scope.outputs.run_code_jobs == 'true' && needs.change-scope.outputs.needs_crossplatform == 'true' }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 45
     permissions:
       contents: read
     strategy:
@@ -1127,8 +1129,9 @@ jobs:
   # ============================================================================
   tokio-console-smoke:
     name: Tokio console smoke (unstable cfg)
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     env:
       RUSTFLAGS: --cfg tokio_unstable
     permissions:
@@ -1207,6 +1210,7 @@ jobs:
   doc-quality:
     name: Documentation quality
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
     steps:
@@ -1394,7 +1398,7 @@ jobs:
     name: Feature matrix
     needs: [clippy]
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -1440,6 +1444,7 @@ jobs:
     needs: [test-full, change-scope]
     if: ${{ needs.test-full.result == 'success' && needs.change-scope.outputs.run_code_jobs == 'true' && needs.change-scope.outputs.needs_mcp == 'true' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -1765,7 +1770,7 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 30
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     needs: [test-full]
     env:
