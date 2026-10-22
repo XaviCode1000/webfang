@@ -971,3 +971,48 @@ rama propia; **el tracker** se abre **al final**, como PR de docs, con su issue 
 L15 y L9 ⇒ ese orden relativo es el que gana; el segundo que llega re-aplica su step sobre el
 `main` nuevo (el conflicto aparece al mergear, no al abrir) ⇒ conflicto mecánico, con anclas
 distintas, resuelto en el momento del merge.
+
+### 2026-10-22 · Tres PRs abiertas (el owner: "ok abrimos las pr's") y un hallazgo transversal
+
+| PR | Slice | Rama | Título | Label | Cierra |
+|---|---|---|---|---|---|
+| **#2246** | L2a | `fix/merge-when-green-merged-state-code` | `fix(ci): merge-when-green detecta la PR ya mergeada y la limpieza post-merge no queda encadenada` | `type:bug` | #1970, #1971, #1972 |
+| **#2247** | L3b | `fix/2234-hermetic-args` | `fix(cli): el parseo de los tests es hermético por construcción` | `type:bug` | #2234 |
+| **#2248** | L3a | `fix/ci-health-w03-classifier` | `fix(ci): el observer del CI Health clasifica por línea de fallo y cierra por subtítulo` | `type:bug` | #2233 + `Closes part of #1936` |
+
+Las tres con `Validate PR metadata` **verde** y **un solo `type:*`** (lo pone `scripts/auto_label_type.sh`
+desde el prefijo del título; no se agrega un segundo). Cero atribución de IA (verificado sobre los
+commits pusheados).
+
+**El hallazgo transversal que broke una de las tres**: el job `Repo guards` corre
+`cargo test --manifest-path tools/intra-crate-lint/Cargo.toml --locked`, y ese test compara la
+extracción del extractor sobre `crates/webfang_core/src` contra el golden set
+`tools/intra-crate-lint/tests/fixtures/real_tree_sites.txt`, que es un **snapshot con números de
+línea del árbol real**. El propio doc del test lo dice: *"the set is refreshed in the same commit
+that changes the tree"*.
+
+⇒ **Toda PR que toque `crates/webfang_core/src` tiene que refrescar ese fixture** o el job
+`Repo guards` falla con exit 101. Medido, no supuesto: `main@89ff9d46` tiene `Repo guards` **verde**
+y el fallo aparece **sólo** en la rama que cambia el core. Afecta a L3b (ya lo arreglo) y a L7, L8,
+L11, L12 y L15.
+
+El comando (la CLI del tool imprime los sites con el mismo formato que el test):
+
+```bash
+cargo run --quiet --locked --manifest-path tools/intra-crate-lint/Cargo.toml -- \
+  --root crates/webfang_core/src > tools/intra-crate-lint/tests/fixtures/real_tree_sites.txt
+```
+
+**El procedimiento de apertura, medido en estas tres:**
+
+- **Merge de `main` en la rama, no rebase**: el repo no admite reescribir historia y, con squash, el
+  commit de merge no llega a `main`; además **conserva los SHAs** que el libro mayor y el peer tienen
+  anotados. En las tres ramas la fusión fue limpia (`main` tocado `AGENTS.md` en `be9f00c7` y el
+  hunk de L2a cayó en otra sección ⇒ conviven).
+- **L2 se parte**: la rama del plan arrastra 42 commits (el tracker) mezclados con 2 commits de
+  código ⇒ `L2a` lleva el código desde una rama propia; **el tracker** se abre al final, como PR de
+  docs, con su issue propia (nadie lo pidió en el PR del script ⇒ es ruido para el revisor).
+- **GraphQL es intermitente**: `gh pr create` para L3a murió con `dial tcp ... i/o timeout` ⇒ creada
+  por REST (`gh api -X POST repos/.../pulls`). Y `gh api -f body=@archivo` **no** lee el archivo
+  (envía la cadena literal `@/tmp/...`): tiene que ser `-F` ⇒ el body de #2248 salió con la cadena
+  literal y se corrigió con un PATCH.
