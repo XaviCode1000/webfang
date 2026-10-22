@@ -415,6 +415,13 @@ jobs:
       # mktemp git trees; no cargo, no network.
       - name: CI plan semantics harness
         run: bash scripts/test_ci_plan.sh
+      # Structural CI Gate harness (#2286): gate.needs must equal
+      # {change-scope} ∪ required_producers as emitted by scripts/ci_plan.sh,
+      # every non-advisory job must be gated or allowlisted, no gate producer
+      # may carry continue-on-error, and the gate verify step must consume the
+      # same partition. Text-parse harness, no cargo, <1s.
+      - name: CI gate structure harness
+        run: bash scripts/test_ci_gate_structure.sh
       # Semantics harness for the fast gate's lane decision (A1, A2, B45).
       # The gate decides HOW MUCH to verify, and three of the fixes that make
       # that decision fail-closed shipped with no test at all: the path
@@ -1804,3 +1811,55 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
           fail_ci_if_error: false
+
+  # ============================================================================
+  # FLAKE DETECTION (nightly, retries 0, REPORT-ONLY) — #2286
+  #
+  # PR and push lanes run nextest with --retries 2: a flaky test passes on
+  # TRY 2 and the lane stays green, so the flake is invisible exactly where it
+  # matters. This nightly lane runs the SAME suite (test-full's shape: all
+  # features) with ZERO retries, so every genuine flake reds a job.
+  #
+  # Report-only: job-level `continue-on-error` keeps the workflow green (the
+  # ci-health observer only tracks gate-bearing conclusions) while the red job
+  # stays visible in the run UI. Promotion of a fix is per-issue.
+  #
+  # Known flakes QUARANTINED here (excluded with nextest -E until fixed):
+  #   * non2xx_browser_page_is_honest_error_exit_69 — Chromium E2E, cold-start
+  #     timeout (TRY 1 FAIL 18.1s -> TRY 2 PASS 2.8s, #2264). The assertion
+  #     itself is correct; the browser budget is the defect. PR lanes keep
+  #     running it under --retries 2.
+  # Flipping the PR lanes to --retries 0 happens only after this lane has
+  # been clean for a sustained period (#2286, deliberate follow-up).
+  # ============================================================================
+  flake-detection:
+    name: Flake detection (retries 0, nightly)
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    continue-on-error: true # report-only: red job, green workflow (#2286)
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
+        with:
+          save-if: false # nightly-only, always cold; never evicts the PR/main cache pool
+      - uses: taiki-e/install-action@e88e69ecdb9658bd172693dcdc2c84e7f0ab6a11
+        with:
+          tool: nextest@0.9.114
+      - name: Full suite with zero retries (known flakes excluded)
+        run: |
+          cargo nextest run --all-features --retries 0 \
+            -E 'not test(non2xx_browser_page_is_honest_error_exit_69)'
+      - name: Report flake-lane result
+        if: always()
+        run: |
+          if [ "${{ job.status }}" != "success" ]; then
+            echo "::warning::flake-detection red: at least one test failed with --retries 0. Investigate before flipping PR lanes to retries 0 (#2286)."
+          else
+            echo "flake-detection green: no flake observed in this nightly run."
+          fi
