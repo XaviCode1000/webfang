@@ -94,6 +94,7 @@ for doc/comment mentions (compared per file by count). `Line` is not recorded on
 | 10 | Comments/docs | `crates/webfang_core/tests/behavioral/cli/error_path_test.rs` | `doc` | `/// No `#[ignore]`: the gate fires before any cleaner could be built.` | #386 | docs only |
 | 11 | Comments/docs | `crates/webfang_core/tests/behavioral/cli/error_path_test.rs` | `doc` | `/// No `#[ignore]`: the gate fires before any cleaner could be built.` | #386 | docs only |
 | 12 | Comments/docs | `crates/webfang_core/tests/behavioral/cli/waf_gauntlet_test.rs` | `doc` | `/// ... the historical wiremock-FIFO flakiness that motivated `#[ignore]` no longer applies.` | #386 | docs only |
+| 13 | Reproduction | `crates/webfang_core/src/infrastructure/export/tail_window.rs` | `tail_read_memory_probe` | measures the RSS band of the tail recovery: it re-runs the test binary as a child process over a 69 MB export fixture, so it is slow and needs a real filesystem | #2237 | Keep ignored; run by hand for the memory-band evidence |
 
 > **Guard contract (since #1328, 2026-09-12):** `check_ignored_guard.sh` compares this catalog to
 > the live scan per category — group counts, the file+test-name pair set, and per-file doc/comment
