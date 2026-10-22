@@ -5,6 +5,14 @@
 #                   Mutates ONLY the lines changed in the PR diff (--in-diff),
 #                   so cost is proportional to the change. cargo-mutants exits
 #                   2 when a mutant survives -> PR is blocked.
+#                   The diff's mutants are PARTITIONED across 64 shards
+#                   (--shard k/64, --no-shuffle), like the weekly baseline:
+#                   every mutant needs a full recompile of webfang_core, so a
+#                   big diff in one job is hours and the gate could never
+#                   deliver a verdict (the job hit its 90 min timeout and the
+#                   PR stayed blocked). The required context name stays
+#                   "cargo-mutants (PR diff)": the aggregating job carries it
+#                   and always reports, even when no shard ran.
   #   - mutants-weekly: weekly baseline over the full hot-path scope, split into
   #                   64 deterministic shards (--shard k/64, --no-shuffle). The
   #                   shards partition the ~600 hot-path mutants (~9-10 per shard,
@@ -61,13 +69,23 @@ jobs:
   # PR GATE — mutates only the diff. Any surviving mutant fails the job.
   # Runs on pull_request AND merge_group: the required check must be reported
   # on the merge group too, or the queue blocks. Never on schedule (no base_ref).
+  #
+  # The diff's mutants are PARTITIONED across 64 shards — the same partition
+  # the weekly baseline uses below. Every mutant needs a full recompile of
+  # webfang_core, so a big diff (the export slice touched ~2k lines) produces
+  # hundreds of mutants: in a single job that is hours, far past the 90 min
+  # timeout, so the gate could NEVER deliver a verdict (the job was cancelled
+  # and the PR stayed blocked). Sharded, each shard owns a slice of the
+  # diff's mutants and the gate finishes in minutes.
   # ---------------------------------------------------------------------------
-  mutants-pr:
+  mutants-pr-prepare:
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
-    name: "cargo-mutants (PR diff)"
+    name: "cargo-mutants (PR diff) prepare"
     runs-on: ubuntu-latest
-    timeout-minutes: 90
-    # NO continue-on-error: a surviving mutant (exit 2) blocks the PR.
+    timeout-minutes: 15
+    outputs:
+      changed: ${{ steps.hotpath.outputs.changed }}
+      shards: ${{ steps.matrix.outputs.shards }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
@@ -117,44 +135,119 @@ jobs:
             echo "changed=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Skip mutation testing (no hot-path changes)
-        if: steps.hotpath.outputs.changed == 'false'
-        run: echo "PR does not touch gated hot paths; reporting SUCCESS."
+      # An EMPTY shard list means "no gated hot path in this diff": the
+      # matrix expands to nothing, so no runner is spent on a PR that has
+      # nothing to mutate.
+      - name: Build the shard list
+        id: matrix
+        run: |
+          if [ "${{ steps.hotpath.outputs.changed }}" = "true" ]; then
+            echo "shards=[$(seq -s, 1 64)]" >> "$GITHUB_OUTPUT"
+          else
+            echo "shards=[]" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The diff travels to the shards as an artifact: 64 full-history
+      # checkouts would be wasteful, and the shards only need the diff.
+      - name: Upload the diff
+        uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
+        with:
+          name: mutants-pr-diff
+          path: git.diff
+
+  mutants-pr-shards:
+    needs: mutants-pr-prepare
+    if: needs.mutants-pr-prepare.outputs.changed == 'true'
+    name: "cargo-mutants (PR diff shard ${{ matrix.shard }}/64)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: ${{ fromJSON(needs.mutants-pr-prepare.outputs.shards) }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+
+      - name: Download the PR diff
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          name: mutants-pr-diff
 
       - name: Install stable toolchain
-        if: steps.hotpath.outputs.changed == 'true'
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
 
       - name: Install cmake
-        if: steps.hotpath.outputs.changed == 'true'
         run: sudo apt-get install -y cmake
 
       - name: Install cargo-mutants
-        if: steps.hotpath.outputs.changed == 'true'
         uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73
         with:
           tool: cargo-mutants@27.1.0
 
-      - name: Cache Rust artifacts
-        if: steps.hotpath.outputs.changed == 'true'
-        uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
-
-      - name: Run mutation testing (PR diff)
-        if: steps.hotpath.outputs.changed == 'true'
+      # NO rust-cache here (cf. the weekly shards' note): 64 shards writing
+      # multi-GB cache entries would evict the CI/PR caches.
+      - name: Run mutation testing (shard)
+        # A surviving mutant (exit 2) must not abort the shard: the report
+        # job below aggregates every shard's outcome. --no-shuffle keeps the
+        # k/64 partition deterministic (no overlap, no gaps).
+        continue-on-error: true
         run: |
           cargo mutants -p webfang_core \
             --in-diff git.diff \
+            --no-shuffle \
+            --shard ${{ matrix.shard }}/64 \
             --baseline=skip \
-            --timeout=120 \
+            --timeout=300 \
             --in-place \
             2>&1 | tee mutants-output.txt
 
       - name: Upload results
-        if: always() && steps.hotpath.outputs.changed == 'true'
+        if: always()
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
         with:
-          name: mutants-pr
+          name: mutants-pr-${{ matrix.shard }}
           path: mutants-output.txt
+
+  # The REQUIRED context. Its name is the check the branch protection
+  # demands, so it must ALWAYS be reported — a required context that never
+  # appears blocks the PR forever (the #1011 failure mode). `if: always()`
+  # keeps it reporting even when the shards are skipped (no hot path).
+  mutants-pr:
+    name: "cargo-mutants (PR diff)"
+    needs: [mutants-pr-prepare, mutants-pr-shards]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Download the shard results
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0
+        with:
+          pattern: mutants-pr-[0-9]*
+          merge-multiple: true
+          path: mutants-results/
+
+      - name: Summarize survivors
+        run: |
+          TOTAL=0
+          for f in mutants-results/*; do
+            [ -f "$f" ] || continue
+            COUNT=$(grep -c "MISSED" "$f" || true)
+            TOTAL=$((TOTAL + COUNT))
+            [ "$COUNT" -gt 0 ] && echo "Survivors in $(basename "$f"): $COUNT"
+          done
+          echo "**Total surviving mutants in the PR diff: $TOTAL**" >> "$GITHUB_STEP_SUMMARY"
+          if [ "$TOTAL" -gt 0 ]; then
+            echo "::error::$TOTAL surviving mutants in the PR diff — the diff is under-tested"
+            exit 1
+          fi
+          if [ "${{ needs.mutants-pr-shards.result }}" != "success" ] \
+             && [ "${{ needs.mutants-pr-shards.result }}" != "skipped" ]; then
+            echo "::error::a mutation-testing shard failed: ${{ needs.mutants-pr-shards.result }}"
+            exit 1
+          fi
+          echo "PR diff: no surviving mutants."
 
   # ---------------------------------------------------------------------------
   # WEEKLY BASELINE — full hot-path scope as 64 deterministic shards.
