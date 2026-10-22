@@ -729,6 +729,19 @@ jobs:
         run: bash scripts/test_dead_tests.sh
       - name: Archive reproducibility semantics harness
         run: bash scripts/test_archive_reproducibility.sh
+      # Semantics harness for the duplication ratchet (issue #1757, #516).
+      # The guard decides the ratchet, and until this harness nothing in CI
+      # asserted what it decides: it translated "I did not measure" into "0
+      # duplicated lines" — a report without the rust section, a corpus with
+      # zero Rust files and a non-integer count all produced a GREEN gate over
+      # an unmeasured tree. The harness drives the REAL guard over canned
+      # detector reports and asserts the DECISIONS, with a positive control per
+      # negative case. HERMETIC: the jscpd binary is STUBBED on PATH, so this
+      # job does not need the detector (it is installed in the `code-quality`
+      # job, which still runs the real ratchet against the real crates/) —
+      # this step runs no cargo and no network.
+      - name: Duplication ratchet semantics harness
+        run: bash scripts/test_duplication.sh
       - name: Guard coverage meta-guard
         run: bash scripts/test_guard_coverage.sh
       # Negation harness for the meta-guard above. Eight cases over throwaway
