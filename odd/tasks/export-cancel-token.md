@@ -76,7 +76,7 @@ S5. El texto que hoy dice que la rama es inalcanzable se corrige en los
       "alcanzable": `cli/crash_points.rs` y el comentario de la suite de crash
       (HECHO 2); la fila de `docs/persistence-resume.md` ya era verdadera;
       `odd/tasks/false-green-tests.md` **no existe en este árbol** (reportado).
-- [ ] T6 · S1–S5 — verificación: los tests afectados verdes; `cargo check`;
+- [x] T6 · S1–S5 — verificación: los tests afectados verdes; `cargo check`;
       `cargo clippy --all-targets --all-features -- -D warnings`; `cargo fmt
       --all -- --check`; `env "RUSTDOCFLAGS=-D warnings" cargo doc --workspace
       --all-features --no-deps`; y la suite de la matriz de crash completa
@@ -226,3 +226,10 @@ ya en `276d0b05`, con #2246 y #2248 dentro). Traído con `merge` (nunca rebase:
 supuesta: el golden set regenerado sobre la base vieja SIGUE coincidiendo con
 el árbol mergeado (`the_real_tree_parses_without_errors_and_matches_the_golden_set`
 ok, exit 0), porque las dos PRs mergeadas tocan scripts y no `crates/webfang_core/src`.
+
+L17 — T6 cerrado con exit codes reales sobre el ÁRBOL MERGEADO (no sobre la
+base vieja): `CHECK_EXIT=0`, `CLIPPY_EXIT=0`, `FMT_EXIT=0`, `DOC_EXIT=0`.
+Tests: `signal_lifecycle` 5/5 y `crash_matrix_test` 27/27 (los dos con exit
+real 0, sumarios capturados antes de cualquier pipe, porque un pipe a `tail`
+enmascara el fallo). `check_ignored_guard.sh`: exit 0, 12 menciones en 5
+grupos. Golden set: ok contra el árbol mergeado.
