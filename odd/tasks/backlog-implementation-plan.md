@@ -1215,3 +1215,39 @@ cancelados** (`conclusion=cancelled`), no rojos. Re-los relancé:
 - `#2258`: run `39787038515`.
 
 Si los dos re-run salen verdes, el orquestador puede tomar la verificación de los merges.
+
+### 2026-10-22 · CORRECCIÓN del peer: mis dos afirmaciones anteriores medidas estaban invertidas
+
+El peer midió contra `ls-remote` y el árbol lo corrigió (regla del blob del SHA vs worktree):
+
+1. **`origin/main` = `276d0b05` y YA contiene `4a17cb66`** (`#2250` entró hace rato, no recién).
+   Lo que estaba atrás es el **main LOCAL del checkout** (`c6af63be`, 11 commits). El merge-base
+   local-с-remotos = `c6af63be` ⇒ las ramas `#2252`/`#2258` se re-basearon contra el main viejo.
+2. **El golden set sigue válido — pero por la razón correcta**: `git diff
+   c6af63be..origin/main -- crates/webfang_core/src` sale **vacío** (los 11 commits del delta son
+   `#2248` ci-health, `#2246` merge-when-green, merges y docs). La fixture depende de ese árbol,
+   así que no hay refresh que hacer.
+
+**El riesgo real que dejó asentado el peer** (él lo pagó en `#2259`): cualquier `assess` con
+**base explícita dos-dot** (`--base-ref main`) sobre una rama con atraso mide REVERTir los 11
+commits (su assess midió 9 ficheros / 957 líneas **incluido el borrado de
+`scripts/check_no_ai_attribution.sh`**, fichero que esa PR nunca tocó) ⇒ slices inflados y cortes
+que no existen. **Regla: antes de assess/start, `git merge-base --is-ancestor origin/main HEAD`;
+si falla, traer main primero (con merge, nunca rebase si la historia ya está pusheada)**.
+
+**Y el conflicto de siempre sigue intacto**: `#2252`/`#2258` tocan las dos `.github/workflows/
+ci.yml` ⇒ el choque aparece al MERGEAR la segunda, no al rebasear. Orden `L2 → L8 → L12 → L15`.
+
+**Aplicado ahora** (merge con `origin/main`, nunca rebase, push normal):
+- `fix/false-green-tests` → `fdc05ee7` (contiene `origin/main` y el update-branch del
+  orquestador `768c67d5`).
+- `fix/unmaintained-crates` → `79f45e0b` (idem, sobre `8664ae67`).
+- El `main` del checkout local sincronizado a `276d0b05` (ff-only).
+- El diff dos-dot de ambas PRs pasó a **sólo los ficheros propios** (18/19 ficheros, sin borrar
+  nada ajeno): esa es la medida buena para el assess del orquestador.
+
+Un incidente menor: los worktrees de `#2252`/`#2258` traían restos sin commitear de lotes ya
+mergeados (`ai-attribution-exact`, `ci-health`): reverts selectivos con `checkout --` (no `git
+clean`, que es hard-deny) y los untracked ajenos desplazados con **registro** a
+`/tmp/untracked-residues-20261022-165636` (no destructivo). Los CI re-run sobre los heads viejos
+quedan invalidados; las cabeceras nuevas disparan CI propio.
