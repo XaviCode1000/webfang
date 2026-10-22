@@ -293,7 +293,7 @@ mod tests {
     // cannot execute — gate them there. The semaphore/cancellation tests use
     // the explicit-budget seam (`with_max_instances`) and DO run under Miri.
     #[test]
-    #[cfg_attr(miri, ignore)]
+    #[cfg_attr(miri, ignore = "sysinfo sysconf (RAM probe) unsupported by Miri")]
     fn test_governor_creation() {
         let gov = ResourceGovernor::new();
         // On any real machine we should have at least 1 permit
@@ -301,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
+    #[cfg_attr(miri, ignore = "sysinfo sysconf (RAM probe) unsupported by Miri")]
     fn test_check_resources_returns_ok() {
         let gov = ResourceGovernor::new();
         // On CI or dev machines RAM usage is typically well below 80%
@@ -310,14 +310,14 @@ mod tests {
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
+    #[cfg_attr(miri, ignore = "sysinfo sysconf (RAM probe) unsupported by Miri")]
     fn test_total_ram_nonzero() {
         let bytes = ResourceGovernor::total_ram_bytes();
         assert!(bytes > 0, "total RAM should be > 0 on any running system");
     }
 
     #[test]
-    #[cfg_attr(miri, ignore)]
+    #[cfg_attr(miri, ignore = "sysinfo sysconf (RAM probe) unsupported by Miri")]
     fn test_usage_percent_range() {
         let pct = ResourceGovernor::ram_usage_percent();
         assert!(pct <= 100);

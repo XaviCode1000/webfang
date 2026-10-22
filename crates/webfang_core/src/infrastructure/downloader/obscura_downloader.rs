@@ -191,6 +191,11 @@ impl Downloader for ObscuraDownloader {
     }
 }
 
+/// #2235: the `--skip obscura_downloader` of the Miri lane is GONE — a
+/// submodule skip deleted this whole test tree from the lane and hid the UB
+/// living inside it. The tests that spawn the `obscura` binary carry their
+/// OWN gate (Command::spawn is unsupported by Miri); the pure ones (the
+/// constructor and the binary-path contract) run under Miri.
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -227,7 +232,10 @@ mod tests {
 
     /// #787: a configured missing binary surfaces as a spawn failure, never
     /// as a fallback to whatever `obscura` happens to be on PATH.
-    #[cfg_attr(miri, ignore)] // Command::spawn → posix_spawnattr_init unsupported by Miri (#775)
+    #[cfg_attr(
+        miri,
+        ignore = "Command::spawn → posix_spawnattr_init unsupported by Miri (#775)"
+    )]
     #[tokio::test]
     async fn test_obscura_missing_binary_fails_fetch() {
         let dl = ObscuraDownloader::new(5, "/definitely/not/here/obscura");
@@ -249,7 +257,10 @@ mod tests {
 
     /// #787: a bare-name binary that is not on PATH also fails at spawn —
     /// no binary resolution happens beyond what the OS provides.
-    #[cfg_attr(miri, ignore)] // Command::spawn → posix_spawnattr_init unsupported by Miri (#775)
+    #[cfg_attr(
+        miri,
+        ignore = "Command::spawn → posix_spawnattr_init unsupported by Miri (#775)"
+    )]
     #[tokio::test]
     async fn test_obscura_bare_name_missing_from_path_fails_fetch() {
         let dl = ObscuraDownloader::new(5, "definitely-not-a-binary-7f3k");
@@ -283,7 +294,7 @@ mod tests {
     /// + `output()` path orphaned the child). The fake binary records its
     /// pid and sleeps far past the timeout; after the fetch reports
     /// `Timeout`, the process must be gone (kill_on_drop).
-    #[cfg_attr(miri, ignore)] // Command::spawn unsupported by Miri (#775)
+    #[cfg_attr(miri, ignore = "Command::spawn unsupported by Miri (#775)")]
     #[cfg(unix)]
     #[tokio::test]
     async fn timed_out_fetch_kills_the_obscura_child() {
@@ -360,7 +371,7 @@ mod tests {
     /// #793 (REQ-OBS-01): Layer 2 must ask obscura for `--dump html` —
     /// never markdown — and the HTML printed on stdout lands verbatim in
     /// `FetchedPage.html`.
-    #[cfg_attr(miri, ignore)] // Command::spawn unsupported by Miri (#775)
+    #[cfg_attr(miri, ignore = "Command::spawn unsupported by Miri (#775)")]
     #[cfg(unix)]
     #[tokio::test]
     async fn fake_binary_dump_html_args_and_page() {
@@ -397,7 +408,7 @@ mod tests {
     /// #793 (REQ-OBS-01 S1.3 / REQ-OBS-03): the returned page is self-
     /// describing — a `text/html` content-type marker in the otherwise-empty
     /// header map, and no session cookies.
-    #[cfg_attr(miri, ignore)] // Command::spawn unsupported by Miri (#775)
+    #[cfg_attr(miri, ignore = "Command::spawn unsupported by Miri (#775)")]
     #[cfg(unix)]
     #[tokio::test]
     async fn fake_binary_page_headers_mark_html_and_stateless() {
@@ -422,7 +433,7 @@ mod tests {
     /// #793 (REQ-OBS-01 S1.2): the HTML returned by Layer 2 must survive the
     /// real downstream extraction path — CSS selector matching AND
     /// Readability — the exact consumers that broke on markdown output.
-    #[cfg_attr(miri, ignore)] // Command::spawn unsupported by Miri (#775)
+    #[cfg_attr(miri, ignore = "Command::spawn unsupported by Miri (#775)")]
     #[cfg(unix)]
     #[tokio::test]
     async fn fake_binary_html_survives_extraction_path() {

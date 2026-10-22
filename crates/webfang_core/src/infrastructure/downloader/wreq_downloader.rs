@@ -890,11 +890,16 @@ mod test_support {
     }
 }
 
+/// #2235: the per-submodule `--skip wreq_downloader` of the Miri lane is
+/// GONE — a submodule skip deleted this whole test tree from the lane and
+/// hid the UB living inside it. What the skip protected is now a PER-TEST
+/// gate: every test that builds a `wreq::Client` carries the btls-sys FFI
+/// reason, and the pure ones (the `Set-Cookie` parser) run under Miri.
 #[cfg(test)]
-#[cfg(not(miri))] // wreq uses btls-sys FFI (unsupported by Miri)
 mod tests {
     use super::*;
 
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[test]
     fn test_wreq_downloader_creation() {
         let downloader = super::test_support::test_downloader_with_profile(Profile::Chrome145);
@@ -902,6 +907,7 @@ mod tests {
         assert_eq!(downloader.memory_cost(), WREQ_MEMORY_COST);
     }
 
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[test]
     fn test_wreq_downloader_honors_tls_profile() {
         // The constructor must accept every catalog profile and build a client
@@ -913,6 +919,7 @@ mod tests {
         }
     }
 
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[test]
     fn test_wreq_downloader_from_client() {
         let client = Client::builder()
@@ -928,6 +935,7 @@ mod tests {
     /// `localhost` resolves to loopback through getaddrinfo with no network
     /// dependency, so the connect attempt must be rejected by the validating
     /// resolver — not by the (absent) listener on port 9.
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn downloader_client_enforces_ssrf_guard_from_the_port() {
         // Env hermeticity (#926): the escape hatch is captured at client-build
@@ -998,6 +1006,7 @@ mod tests {
         assert!(parse_set_cookie("", &url).is_none());
     }
 
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn test_fetch_uses_mock_server() {
         let expected_body = "<html><body><h1>mock</h1></body></html>";
@@ -1005,13 +1014,17 @@ mod tests {
     }
 }
 
+/// #2235: the `--skip wreq_downloader` of the Miri lane is GONE, so this
+/// module compiles under Miri again. Every test here drives a real
+/// `wreq::Client` (btls-sys FFI), so each one carries its own gate with
+/// that reason.
 #[cfg(test)]
-#[cfg(not(miri))]
 mod wiremock_tests {
     use super::*;
     use wiremock::matchers::{header, method, path};
     use wiremock::{Match, Mock, MockServer, ResponseTemplate};
 
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn test_fetch_200_returns_body() {
         let expected_body = "<html><body>Hello World</body></html>";
@@ -1019,6 +1032,7 @@ mod wiremock_tests {
         assert_eq!(page.html, expected_body);
     }
 
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn test_fetch_404_returns_error() {
         let mock_server = MockServer::start().await;
@@ -1040,6 +1054,7 @@ mod wiremock_tests {
         ));
     }
 
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn test_fetch_extracts_cookies() {
         let mock_server = MockServer::start().await;
@@ -1070,6 +1085,7 @@ mod wiremock_tests {
         assert!(cookie.http_only);
     }
 
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn test_fetch_returns_final_url() {
         // The SSRF redirect guard (#703) stops redirects targeting a literal
@@ -1107,6 +1123,7 @@ mod wiremock_tests {
     /// forbidden IP must be stopped even when the entry URL itself passed
     /// validation. The redirect response surfaces as a terminal HTTP error and
     /// the target is never requested (`expect(0)` proves wiremock saw no hit).
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn test_redirect_to_forbidden_literal_ip_is_stopped() {
         // Defensive under shared-process harnesses: the escape hatch must be
@@ -1154,6 +1171,7 @@ mod wiremock_tests {
     /// yet the server receives exactly the pinned value. The mock only
     /// matches `QA-Bot/9.9` — if the profile UA leaked onto the wire the
     /// request would 404 and the fetch would fail.
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn pinned_user_agent_beats_emulation_profile_on_the_wire() {
         const PINNED_UA: &str = "QA-Bot/9.9";
@@ -1200,6 +1218,7 @@ mod wiremock_tests {
     /// Wire-level proof that an operator custom header (`--header`, #890)
     /// reaches the outgoing scrape request even though the Chrome145
     /// emulation profile does not send it by default.
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn custom_header_reaches_the_wire() {
         let mock_server = MockServer::start().await;
@@ -1242,6 +1261,7 @@ mod wiremock_tests {
     /// --accept-language`, #890) replaces the emulation-profile default on
     /// the wire instead of being silently dropped (#890 reproduction showed
     /// `es-AR` arriving as the profile's `en-US,en;q=0.9`).
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn accept_language_replaces_profile_default_on_the_wire() {
         const LANG: &str = "es-AR,es;q=0.9";
@@ -1285,6 +1305,11 @@ mod wiremock_tests {
     /// fail LOUDLY at client build time with a typed internal error naming the
     /// offending header — never a silent drop (the same silent-drop class #890
     /// exists to eliminate).
+    ///
+    /// Miri: NO gate, on purpose. The validation happens BEFORE the client is
+    /// built (`WreqDownloader::new` returns on the invalid header), so this
+    /// test never reaches the btls-sys FFI and runs under Miri — proof that
+    /// the operator input is rejected without opening a TLS backend.
     #[tokio::test]
     async fn invalid_custom_header_name_fails_loudly_at_build() {
         let error = WreqDownloader::new(
@@ -1312,6 +1337,10 @@ mod wiremock_tests {
 
     /// Malformed operator input (#890, review M1): an invalid header VALUE and
     /// an invalid Accept-Language must both fail loudly at client build time.
+    ///
+    /// Miri: NO gate, on purpose — same reason as the sibling above: both
+    /// values are rejected before the client is built, so the btls-sys FFI is
+    /// never reached and the test runs under Miri.
     #[tokio::test]
     async fn invalid_header_value_and_language_fail_loudly_at_build() {
         let value_error = WreqDownloader::new(
@@ -1357,6 +1386,7 @@ mod wiremock_tests {
 
     /// Wire-level proof that a pre-seeded cookie jar (`--cookie`, #890) is
     /// carried by Static/Hybrid-L1 wreq requests from the very first fetch.
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn seeded_cookie_jar_carries_operator_cookies_on_the_wire() {
         let mock_server = MockServer::start().await;
@@ -1418,6 +1448,7 @@ mod wiremock_tests {
     /// Issue #503 policy: a pinned UA disables the 403 pool-agent rotation.
     /// The first 403 surfaces as a terminal error (no retry under a rotated
     /// identity), and the next fetch still carries the pinned UA.
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn pinned_user_agent_disables_403_rotation() {
         const PINNED_UA: &str = "QA-Bot/9.9";
@@ -1484,6 +1515,7 @@ mod wiremock_tests {
     /// 5xx must trigger the unified retry loop (1 initial + 3 retries), and
     /// exhaustion must report the LAST observed status — not a hardcoded 429
     /// (#649 Bugs 2 & 5). One server exercises both: first reply 429, then 500.
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn test_unified_retry_fires_and_reports_last_status() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1523,6 +1555,7 @@ mod wiremock_tests {
 
     /// Unpinned baseline: the pre-#503 rotation behavior is preserved —
     /// a 403 triggers one retry with the pool agent and succeeds.
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn unpinned_user_agent_rotates_pool_agent_on_403() {
         let mock_server = MockServer::start().await;
@@ -1565,6 +1598,7 @@ mod wiremock_tests {
     /// The rotated retry consumes the attempt: it falls through to the
     /// terminal handling instead of `continue`-ing back to the loop top
     /// (which fired a third, default-UA request against the WAF).
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn always_403_costs_exactly_two_requests_and_reports_403() {
         use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1634,6 +1668,7 @@ mod wiremock_tests {
     /// once, `.up_to_n_times(1)`), subsequent /slow hits respond
     /// instantly. Asserts exactly 2 outbound requests and a successful
     /// page — the timeout retry fired and its result was used.
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn timeout_is_retried_and_recovery_is_served() {
         let server = wiremock::MockServer::start().await;
@@ -1691,6 +1726,7 @@ mod wiremock_tests {
 
     /// F-09: a builder-class error (unsupported scheme) must NOT be
     /// retried — single attempt, immediate permanent error.
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn unsupported_scheme_is_not_retried() {
         let dl = WreqDownloader::new(
@@ -1750,6 +1786,7 @@ mod wiremock_tests {
     /// 100 KiB — must abort at the configured DECOMPRESSED cap with
     /// `BodyTooLarge`, and because that error classifies PermanentFatal it
     /// must surface after exactly ONE outbound request (no retry).
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn gzip_bomb_is_rejected_at_the_decompressed_cap() {
         let server = MockServer::start().await;
@@ -1808,6 +1845,7 @@ mod wiremock_tests {
     /// F-12 (positive): a gzipped body UNDER the cap is served in full
     /// after transparent decompression — the cap counts decompressed bytes
     /// and leaves the happy path untouched.
+    #[cfg_attr(miri, ignore = "btls-sys FFI (wreq Client) not supported by Miri")]
     #[tokio::test]
     async fn gzipped_body_under_the_cap_is_served_decompressed() {
         let server = MockServer::start().await;
