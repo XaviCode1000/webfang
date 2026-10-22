@@ -6,6 +6,8 @@
 #   scripts/merge-when-green.sh <PR-NUMBER> --dry-run
 #   scripts/merge-when-green.sh <PR-NUMBER> --merge     # merge commit (batch PRs)
 #   scripts/merge-when-green.sh <PR-NUMBER> --squash    # explicit default
+#   scripts/merge-when-green.sh <PR-NUMBER> --queue     # enqueue via the merge queue
+#   scripts/merge-when-green.sh <PR-NUMBER> --queue --queue-timeout=7200
 #   scripts/merge-when-green.sh <PR-NUMBER> --timeout=1800   # large PRs w/ slow jobs (#1206)
 #   MERGE_WHEN_GREEN_TIMEOUT=1800 scripts/merge-when-green.sh <PR-NUMBER>  # same via env
 #
@@ -45,6 +47,10 @@
 #      post-merge runbook (see 'Post-merge runbook' below). A remote-cleanup
 #      failure never changes the exit code; it is reported on stdout as
 #      `cleanup: failed branch=<name> reason=<reason>` (#1072).
+#      With --queue, `gh pr merge` ENQUEUES the PR instead (no strategy flag:
+#      the queue owns the merge method), waits for the queue to merge it, and
+#      only then runs the same remote cleanup. BEHIND is not fatal in queue
+#      mode: the queue builds the entry against the current base.
 #
 # Exit codes:
 #   0  PR merged, OR the PR was already merged (nothing to do — step 0). A
@@ -55,7 +61,8 @@
 #      instead (#1072).
 #   1  Invalid arguments (including --squash together with --merge) or missing gh.
 #   2  Required check FAILED, was CANCELLED, or SKIPPED.
-#   3  All checks green but merge state is not mergeable (e.g. BEHIND — rebase first).
+#   3  All checks green but merge state is not mergeable (e.g. BEHIND outside
+#      queue mode; in --queue mode the queue handles BEHIND).
 #   4  gh command failure (network, auth, etc.) or a required context that never
 #      reported before the deadline.
 #   5  Refused: this PR declares a breaking change and the chosen strategy would
@@ -140,15 +147,25 @@ timeout_given=0
 # be rejected instead of silently letting the last one win.
 merge_strategy="squash"
 strategy_explicit=""
+# --queue: enqueue through GitHub's merge queue instead of merging directly.
+# The queue owns the merge method (read from its configuration) and the
+# base-relative build, so BEHIND is not fatal and no strategy flag is passed.
+queue_mode=0
+queue_timeout_secs=""
+queue_timeout_given=0
 
 usage() {
   cat <<'EOF'
-Usage: scripts/merge-when-green.sh <PR-NUMBER> [--dry-run] [--squash | --merge] [--timeout=<sec>]
+Usage: scripts/merge-when-green.sh <PR-NUMBER> [--dry-run] [--queue] [--squash | --merge] [--timeout=<sec>] [--queue-timeout=<sec>]
 
-Waits for all required CI checks on the PR to pass, then merges.
+Waits for all required CI checks on the PR to pass, then merges (or enqueues).
 
 Flags:
-  --dry-run   Poll and report status, but do not merge.
+  --dry-run   Poll and report status, but do not merge or enqueue.
+  --queue     Enqueue through the repository's merge queue instead of merging
+              directly. The queue owns the merge method and the base-relative
+              build, so BEHIND is not fatal and no --squash/--merge is passed.
+              Requires a merge queue configured on the PR's base branch.
   --squash    Squash-merge into one commit. This is the default.
   --merge     Merge commit instead of squash. Use for batch PRs, where squashing
               N independent fixes would destroy per-fix revert granularity.
@@ -161,21 +178,29 @@ Flags:
               '--timeout 300' or '--timeout=300'. Overrides the
               MERGE_WHEN_GREEN_TIMEOUT env var. Useful for large PRs with
               slow jobs (e.g. cargo-mutants) that need more than 10 min (#1206).
+  --queue-timeout=<sec>  How long to wait for the merge queue to merge the PR
+              (default 7200). Requires --queue.
   -h, --help  Show this help.
 
 Environment:
   MERGE_WHEN_GREEN_TIMEOUT  Same as --timeout but with lower precedence:
               flag wins over env, env wins over the 600s default.
+  MERGE_WHEN_GREEN_QUEUE_TIMEOUT  Same as --queue-timeout but with lower
+              precedence: flag wins over env, env wins over the 7200s default.
 
 Exit codes:
   0  Merged, or the PR was already merged (nothing to do). A --dry-run that
      reports green exits 0 too.
-  1  Bad args (including --squash together with --merge).
-  2  A required check failed/cancelled.
-  3  Checks green but PR is BEHIND or BLOCKED — rebase first.
-  4  gh network/auth failure.
-  5  Refused before merging: the PR declares a breaking change and --squash
-     would destroy the marker. Nothing was merged. Re-run with --merge.
+  1  Bad args (including --squash together with --merge, or a queue strategy
+     that conflicts with the repository's queue configuration).
+  2  A required check failed/cancelled, or the queue ejected the PR without
+     merging (a merge-group check failed).
+  3  Checks green but PR is BEHIND or BLOCKED — rebase first (outside --queue;
+     the queue handles BEHIND). A PR closed without merging also exits 3.
+  4  gh network/auth failure, or the queue did not merge within the timeout.
+  5  Refused before merging: the PR declares a breaking change and the chosen
+     strategy would destroy the marker. Nothing was merged. Outside --queue,
+     re-run with --merge.
 
 Result marker:
   After an actual merge (not --dry-run) the script prints this machine line last:
@@ -192,6 +217,27 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
     --dry-run) dry_run=1; shift ;;
+    --queue) queue_mode=1; shift ;;
+    --queue-timeout=*)
+      queue_timeout_secs="${1#--queue-timeout=}"
+      queue_timeout_given=1
+      if [[ -z "$queue_timeout_secs" ]]; then
+        echo "error: --queue-timeout requires a value in seconds" >&2
+        usage >&2
+        exit 1
+      fi
+      shift
+      ;;
+    --queue-timeout)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --queue-timeout requires a value in seconds" >&2
+        usage >&2
+        exit 1
+      fi
+      queue_timeout_secs="$2"
+      queue_timeout_given=1
+      shift 2
+      ;;
     --timeout=*)
       timeout_secs="${1#--timeout=}"
       timeout_given=1
@@ -238,6 +284,12 @@ done
 
 if [[ -z "$pr_number" ]]; then
   echo "error: PR number is required" >&2
+  usage >&2
+  exit 1
+fi
+
+if [[ $queue_timeout_given -eq 1 && $queue_mode -eq 0 ]]; then
+  echo "error: --queue-timeout requires --queue" >&2
   usage >&2
   exit 1
 fi
@@ -308,6 +360,60 @@ if read_pr_merge_state && [[ "$pr_state" == "MERGED" ]]; then
   exit_already_merged
 fi
 
+# --- 0b. Queue mode: read the queue's merge method ---------------------------
+# The queue owns the merge method. Reading it (instead of trusting a flag)
+# makes the breaking-marker guard below apply the right rule: a SQUASH queue
+# drops a title-only '!'; a MERGE/REBASE queue drops the PR title too (its
+# merge commit subject is not the PR title). The script's flags cannot
+# override the queue.
+if [[ $queue_mode -eq 1 ]]; then
+  repo_full="$(gh repo view --json nameWithOwner --jq '.nameWithOwner')" \
+    || { echo "error: could not read the repository name." >&2; exit 4; }
+  repo="${repo_full}"
+  repo_owner="${repo_full%%/*}"
+  repo_name="${repo_full#*/}"
+  base_branch="$(gh pr view "$pr_number" --json baseRefName --jq '.baseRefName')" \
+    || { echo "error: could not read the PR base branch." >&2; exit 4; }
+  # shellcheck disable=SC2016  # $owner/$repo/$branch are GraphQL variables
+  queue_query='query($owner:String!,$repo:String!,$branch:String!){repository(owner:$owner,name:$repo){mergeQueue(branch:$branch){configuration{mergeMethod}}}}'
+  if ! queue_method="$(gh api graphql \
+    -f query="$queue_query" \
+    -F owner="$repo_owner" -F repo="$repo_name" -F branch="$base_branch" \
+    --jq '.data.repository.mergeQueue.configuration.mergeMethod // empty' 2>/dev/null)"; then
+    echo "error: could not read the merge queue configuration for '${base_branch}' (gh/API failure)." >&2
+    exit 4
+  fi
+  if [[ -z "$queue_method" ]]; then
+    echo "error: --queue was passed but '${base_branch}' has no merge queue configured." >&2
+    exit 1
+  fi
+  case "$queue_method" in
+    SQUASH) queue_strategy="squash" ;;
+    MERGE|REBASE) queue_strategy="merge" ;;
+    *)
+      echo "error: unsupported merge queue method '${queue_method}'." >&2
+      exit 1
+      ;;
+  esac
+  if [[ -n "$strategy_explicit" && "$strategy_explicit" != "$queue_strategy" ]]; then
+    echo "error: --queue uses the repository's merge method (${queue_method}); do not pass --${strategy_explicit}." >&2
+    exit 1
+  fi
+  merge_strategy="$queue_strategy"
+
+  queue_timeout_effective=7200
+  if [[ -n "${MERGE_WHEN_GREEN_QUEUE_TIMEOUT:-}" ]]; then
+    queue_timeout_effective="${MERGE_WHEN_GREEN_QUEUE_TIMEOUT}"
+  fi
+  if [[ -n "$queue_timeout_secs" || $queue_timeout_given -eq 1 ]]; then
+    queue_timeout_effective="$queue_timeout_secs"
+  fi
+  if ! [[ "$queue_timeout_effective" =~ ^[0-9]+$ ]] || [[ "$queue_timeout_effective" -le 0 ]]; then
+    echo "error: queue timeout must be a positive integer number of seconds (got '${queue_timeout_effective}')" >&2
+    exit 1
+  fi
+fi
+
 # --- 1. Breaking-marker guard (before the wait, not after) -------------------
 # The marker has to SURVIVE the merge, and squash is the strategy that kills it:
 #   - `gh pr merge --squash` rebuilds the subject from the PR TITLE and drops the
@@ -360,7 +466,11 @@ breaking_commits="$(printf '%s' "$pr_meta" | jq -r '
 if [[ "$merge_strategy" == "squash" ]]; then
   if [[ $title_declares_breaking -eq 1 || -n "$breaking_commits" ]]; then
     {
-      echo "error: this PR declares a BREAKING change and --squash would destroy the marker."
+      if [[ $queue_mode -eq 1 ]]; then
+        echo "error: this PR declares a BREAKING change and the merge queue for '${base_branch}' uses SQUASH, which would destroy the marker."
+      else
+        echo "error: this PR declares a BREAKING change and --squash would destroy the marker."
+      fi
       echo "       Nothing was merged."
       if [[ $title_declares_breaking -eq 1 ]]; then
         echo "       PR title: ${pr_title}"
@@ -375,8 +485,13 @@ if [[ "$merge_strategy" == "squash" ]]; then
       echo "       inside the squashed body. Measured on #2072 and #2078: the major shipped as"
       echo "       a patch and nobody saw it until the tag was public."
       echo
-      echo "       Re-run with a merge commit, which preserves the branch commits:"
-      echo "         scripts/merge-when-green.sh ${pr_number} --merge"
+      if [[ $queue_mode -eq 1 ]]; then
+        echo "       The queue's merge method is fixed for every entry. Either change it to MERGE"
+        echo "       (repository merge queue settings) or land this break outside the queue."
+      else
+        echo "       Re-run with a merge commit, which preserves the branch commits:"
+        echo "         scripts/merge-when-green.sh ${pr_number} --merge"
+      fi
     } >&2
     exit 5
   fi
@@ -413,13 +528,14 @@ fi
 # every one of them has REPORTED with a terminal bucket.
 echo "==> Waiting for required checks on PR #${pr_number}..."
 
-repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
+repo="${repo:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"
+protection_branch="${base_branch:-main}"
 
 # Newer protection configs use checks[].context; older ones use contexts[].
-required="$(gh api "repos/${repo}/branches/main/protection" \
+required="$(gh api "repos/${repo}/branches/${protection_branch}/protection" \
   --jq '.required_status_checks.checks[]?.context // empty' 2>/dev/null || true)"
 if [[ -z "$required" ]]; then
-  required="$(gh api "repos/${repo}/branches/main/protection" \
+  required="$(gh api "repos/${repo}/branches/${protection_branch}/protection" \
     --jq '.required_status_checks.contexts[]? // empty' 2>/dev/null || true)"
 fi
 
@@ -554,8 +670,12 @@ case "$state" in
   CLEAN|UNSTABLE)
     : ;;  # good — UNSTABLE with required green is mergeable (skipped jobs, #823)
   BEHIND)
-    echo "error: PR is BEHIND. Rebase onto main and re-push, then re-run this script." >&2
-    exit 3
+    if [[ $queue_mode -eq 1 ]]; then
+      echo "    PR is BEHIND; the merge queue will build it against ${base_branch}."
+    else
+      echo "error: PR is BEHIND. Rebase onto main and re-push, then re-run this script." >&2
+      exit 3
+    fi
     ;;
   BLOCKED|CONFLICT|DIRTY|HAS_HOOKS)
     echo "error: mergeStateStatus is ${state} (not CLEAN). Resolve and re-run." >&2
@@ -581,8 +701,13 @@ if [[ -n "$head_branch" && "$head_owner" == "$base_owner" ]]; then
 fi
 
 if [[ $dry_run -eq 1 ]]; then
-  echo "==> [DRY RUN] strategy: ${merge_strategy}"
-  echo "==> [DRY RUN] would run: gh pr merge ${pr_number} --${merge_strategy}"
+  if [[ $queue_mode -eq 1 ]]; then
+    echo "==> [DRY RUN] queue method: ${queue_method}"
+    echo "==> [DRY RUN] would run: gh pr merge ${pr_number}   # enqueue"
+  else
+    echo "==> [DRY RUN] strategy: ${merge_strategy}"
+    echo "==> [DRY RUN] would run: gh pr merge ${pr_number} --${merge_strategy}"
+  fi
   if [[ $delete_remote -eq 1 ]]; then
     echo "==> [DRY RUN] would delete remote branch: ${head_branch}"
   fi
@@ -590,14 +715,84 @@ if [[ $dry_run -eq 1 ]]; then
   exit 0
 fi
 
-echo "==> Merging PR #${pr_number} (${merge_strategy})..."
-rc=0
-gh pr merge "$pr_number" "--${merge_strategy}" || rc=$?
-if [[ $rc -ne 0 ]]; then
-  echo "error: gh pr merge failed (rc=${rc})" >&2
-  exit 4
+if [[ $queue_mode -eq 1 ]]; then
+  echo "==> Enqueuing PR #${pr_number} (queue method: ${queue_method})..."
+  rc=0
+  # No strategy flag: on a queue-enabled branch GitHub enqueues the PR when
+  # its required checks are green (the queue owns the strategy). If a check
+  # is still pending, gh enables auto-merge and the queue picks it up later.
+  gh pr merge "$pr_number" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    echo "error: gh pr merge (enqueue) failed (rc=${rc})" >&2
+    exit 4
+  fi
+  echo "    enqueued."
+
+  echo "==> Waiting for the merge queue (timeout: ${queue_timeout_effective}s)..."
+  queue_deadline=$((SECONDS + queue_timeout_effective))
+  seen_in_queue=0
+  left_queue=0
+  last_entry=""
+  # shellcheck disable=SC2016  # $owner/$repo/$number are GraphQL variables
+  queue_status_query='query($owner:String!,$repo:String!,$number:Int!){repository(owner:$owner,name:$repo){pullRequest(number:$number){state isInMergeQueue mergeQueueEntry{state}}}}'
+  while :; do
+    if ! queue_json="$(gh api graphql \
+      -f query="$queue_status_query" \
+      -F owner="$repo_owner" -F repo="$repo_name" -F number="$pr_number" 2>/dev/null)"; then
+      echo "error: could not read the merge queue state for PR #${pr_number}." >&2
+      exit 4
+    fi
+    q_state="$(printf '%s' "$queue_json" | jq -r '.data.repository.pullRequest.state // ""')"
+    q_in="$(printf '%s' "$queue_json" | jq -r '.data.repository.pullRequest.isInMergeQueue // false')"
+    q_entry="$(printf '%s' "$queue_json" | jq -r '.data.repository.pullRequest.mergeQueueEntry.state // ""')"
+
+    if [[ "$q_state" == "MERGED" ]]; then
+      echo "    merged by the queue."
+      break
+    fi
+    if [[ "$q_state" == "CLOSED" ]]; then
+      echo "error: PR #${pr_number} was closed without merging." >&2
+      exit 3
+    fi
+    if [[ "$q_entry" == "UNMERGEABLE" ]]; then
+      echo "error: the queue entry for PR #${pr_number} is UNMERGEABLE." >&2
+      exit 3
+    fi
+    if [[ "$q_in" == "true" ]]; then
+      seen_in_queue=1
+      left_queue=0
+      if [[ "$q_entry" != "$last_entry" ]]; then
+        echo "    queue entry: ${q_entry:-queued}"
+        last_entry="$q_entry"
+      fi
+    elif [[ $seen_in_queue -eq 1 ]]; then
+      # The queue removes an entry both on merge and on ejection. The state
+      # above already ruled out MERGED; give it one more poll to settle before
+      # declaring an ejection (a merge can flip the state a moment later).
+      left_queue=$((left_queue + 1))
+      if [[ $left_queue -ge 2 ]]; then
+        echo "error: PR #${pr_number} left the merge queue without merging (likely a failed merge-group check)." >&2
+        echo "       Inspect: gh pr checks ${pr_number}" >&2
+        exit 2
+      fi
+    fi
+
+    if [[ $SECONDS -ge $queue_deadline ]]; then
+      echo "error: timed out after ${queue_timeout_effective}s waiting for the merge queue." >&2
+      exit 4
+    fi
+    sleep 15
+  done
+else
+  echo "==> Merging PR #${pr_number} (${merge_strategy})..."
+  rc=0
+  gh pr merge "$pr_number" "--${merge_strategy}" || rc=$?
+  if [[ $rc -ne 0 ]]; then
+    echo "error: gh pr merge failed (rc=${rc})" >&2
+    exit 4
+  fi
+  echo "    merged."
 fi
-echo "    merged."
 
 # Classify the remote head branch outcome for the RESULT marker: deleted
 # (we deleted it), absent (already gone before/after the delete attempt, or
