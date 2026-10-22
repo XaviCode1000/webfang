@@ -30,9 +30,9 @@
 //! ```
 
 use aho_corasick::AhoCorasick;
-use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::sync::LazyLock;
 
 // ============================================================================
 // Canonical WAF VOs (#1039) — the single VO family lives in `domain::waf`.
@@ -453,11 +453,11 @@ const MAX_EVIDENCE_PER_BODY: usize = 64;
 /// Aho-Corasick automaton for O(N) multi-pattern body matching.
 ///
 /// Compiled once from [`WAF_BODY_SIGNATURES`] on first access (thread-safe via
-/// `Lazy`). Signatures are compile-time constants and validated in tests — but a
+/// `LazyLock`). Signatures are compile-time constants and validated in tests — but a
 /// misconfigured signature would silently panic on first use. We therefore
 /// make the builder fallible and surface clear diagnostics if it ever happens.
 // LCOV_EXCL_START defensive: waf-automaton-build — signature patterns are compile-time constants verified in tests
-static WAF_AC: Lazy<AhoCorasick> = Lazy::new(|| {
+static WAF_AC: LazyLock<AhoCorasick> = LazyLock::new(|| {
     AhoCorasick::new(WAF_BODY_SIGNATURES.iter().map(|(sig, _, _, _)| sig)).unwrap_or_else(|err| {
         panic!(
             "WAF body signature automaton build failed — verify the {} compile-time \
@@ -501,7 +501,7 @@ impl WafInspector {
     /// `"wgConfirmEdit...":"hcaptcha"` in a MediaWiki config dump) is recorded
     /// as evidence but never escalates a dense legitimate page into a block.
     ///
-    /// Thread-safe: the AC automaton is immutable once compiled via `Lazy`.
+    /// Thread-safe: the AC automaton is immutable once compiled via `LazyLock`.
     #[must_use]
     pub fn inspect(body: &str, ctx: &InspectionContext) -> WafVerdict {
         // REQ-WAF-02 step 1: explicit bypass → clean verdict.

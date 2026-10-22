@@ -24,7 +24,7 @@
 
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
-    Arc,
+    Arc, OnceLock,
 };
 use std::time::{Duration, Instant};
 
@@ -60,7 +60,7 @@ async fn console_smoke_delta_stays_under_ceiling_and_returns_to_baseline() {
     let crawl_ceiling = model.crawl().get();
     let threshold = threshold_max_tasks();
     // Outlives the default stats-path so the directory exists at write time.
-    let stats_dir = once_cell::sync::OnceCell::new();
+    let stats_dir = OnceLock::new();
 
     // Sampler: alive-tasks high-water mark, every 100 ms.
     let peak = Arc::new(AtomicUsize::new(0));

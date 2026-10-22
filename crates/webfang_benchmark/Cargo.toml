@@ -5,8 +5,19 @@ edition.workspace = true
 publish = false
 license.workspace = true
 
+[features]
+# The browser tier is OPT-IN (issue #1796). This feature FORWARDS to
+# `webfang_core/chromium`; it never activates the browser by itself. The
+# benchmark used to ask its `webfang_core` dependency for
+# `features = ["chromium"]`, which put `chromiumoxide` into the DEFAULT graph
+# of the whole workspace — every build of the product carried the browser
+# stack. With the feature declared here, the default workspace graph is
+# browser-free and the browser tier is still reachable on demand:
+#   cargo nextest run -p webfang_benchmark --features chromium
+chromium = ["webfang_core/chromium"]
+
 [dependencies]
-webfang_core = { path = "../webfang_core", features = ["chromium"] }
+webfang_core = { path = "../webfang_core" }
 wiremock = { workspace = true } # corpus server; same version as core dev-deps
 tempfile = { workspace = true }
 serde = { workspace = true }
