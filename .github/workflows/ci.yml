@@ -1059,6 +1059,20 @@ jobs:
         run: cargo nextest run --lib --retries 2
       - name: Integration tests
         run: cargo nextest run --test '*' --retries 2
+      # #1834: the Windows console-control path was only ever COMPILED by this
+      # lane, never EXERCISED — nobody drove a real CTRL_CLOSE_EVENT through
+      # the handler, so the whole console path was unproven on the platform
+      # where it matters. This step runs the ignored test that does exactly
+      # that, HERE, on the Windows runner, where a console exists.
+      #
+      # If the runner's process had NO console, the event could not be
+      # delivered and the test would fail: that is a platform fact and it is
+      # reported as such, not swallowed into a silent skip. The test is
+      # `#[ignore]`d in the ordinary suite precisely so that it runs ONLY
+      # where a console can exist.
+      - name: Windows console close event (a real CTRL_CLOSE_EVENT)
+        if: matrix.os == 'windows-latest'
+        run: cargo nextest run --lib --run-ignored ignored-only -E 'test(=a_real_console_close_event_reaches_the_termination_source)'
 
   # ============================================================================
   # TEST RELEASE PROVENANCE (L1) — Behavioral acceptance matrix for

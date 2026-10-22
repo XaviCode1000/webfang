@@ -1,7 +1,7 @@
 # Test Inventory — `#[ignore]` Catalog (Gate 0)
 
-**Source of truth:** `rg -n "#\[ignore" crates/ --glob '!target'` — **12 rows** (8 test attributes + 4 doc/comment mentions).
-Generated: `2026-08-21`, updated `2026-09-07`, re-baselined `2026-09-12` (#1328: composition corrected from the stale 27+5 claim to the on-disk 26+6; rows re-keyed from drifting `file:line` to stable `file` + test name). Catalogued #1368 measurement rows `2026-09-13` (#1384 decision: retain + catalogue — the corpus lives outside the repo, so the ignore is legitimate). Catalogued the #1561 timing benchmark `2026-10-03` (quarantined, assertion kept verbatim; needs an idle box with ≥8 cores). Catalogued the #1576 two-spec 97m budgets `2026-10-04` (the new `pool:4` sibling). Linked to `COMPATIBILITY-MATRIX.md`.
+**Source of truth:** `rg -n "#\[ignore" crates/ --glob '!target'` — **14 rows** (9 test attributes + 5 doc/comment mentions).
+Generated: `2026-08-21`, updated `2026-09-07`, re-baselined `2026-09-12` (#1328: composition corrected from the stale 27+5 claim to the on-disk 26+6; rows re-keyed from drifting `file:line` to stable `file` + test name). Catalogued #1368 measurement rows `2026-09-13` (#1384 decision: retain + catalogue — the corpus lives outside the repo, so the ignore is legitimate). Catalogued the #1561 timing benchmark `2026-10-03` (quarantined, assertion kept verbatim; needs an idle box with ≥8 cores). Catalogued the #1576 two-spec 97m budgets `2026-10-04` (the new `pool:4` sibling). Catalogued the #1834 Windows console close event `2026-10-22` (a real console control event needs a real console: the Windows lane runs it explicitly, and the row is a Platform group because it is not a race and not a network). Linked to `COMPATIBILITY-MATRIX.md`.
 
 **ADR-0004 paso 6 (`2026-10-19`):** the 14 rows under `crates/webfang_ai/**` (9 attributes + 6 doc mentions)
 were removed together with the crate — the crate's test targets no longer exist, so the live scan they
@@ -35,9 +35,10 @@ the "real DNS / real HTTP" class.
 | Network | 3 | `requires network` / DNS / client | #542 | Keep ignored; wiremock alternative in behavioral |
 | Tracing | 1 | `tracing global subscriber` | #501 | Keep ignored; subscriber race |
 | Reproduction | 2 | race window too narrow to force from a fixture; kept-RED TDD evidence | #1230, #1429 | Keep ignored; the deterministic pins are the seam test / GREEN bound pin |
-| Comments/docs | 4 | doc comment mentions `#[ignore]` | #386 | Not tests — counted as their own checked category |
+| Platform | 1 | `needs a real Windows console` | #1834 | Keep ignored; the parent runs it with `--run-ignored ignored-only` on the Windows runner |
+| Comments/docs | 5 | doc comment mentions `#[ignore]` | #386 | Not tests — counted as their own checked category |
 
-Total: 2+3+1+2+4 = **12**. (Post-ADR-0004-paso-6 budget, re-baselined twice: by unit A3 the
+Total: 2+3+1+2+5+1 = **14**. (Post-ADR-0004-paso-6 budget, re-baselined twice: by unit A3 the
 Quantification and Timing benchmark groups went with the deleted crate — #1368 and #1561's measured
 rows lived in `crates/webfang_ai/**` — and the surviving core/mcp ONNX surface was re-counted with
 the deleted `ai_integration_test.rs` and the un-ignored MCP AI tests removed from it; by unit A4 the
@@ -74,7 +75,7 @@ discoverable from the same document as its `#[ignore]` budget.
 Adding or removing any of them does NOT change this file's counts — the `#[ignore]` budget and this
 table are independent by design, and `scripts/check_ignored_guard.sh` enforces only the former.
 
-## Full catalog (12 rows)
+## Full catalog (14 rows)
 
 Rows are keyed by **file + identifier**, never by line number — inserting code above an ignored
 test must not invalidate its row. `Identifier` is the test function name for attributes and `doc`
@@ -93,6 +94,8 @@ for doc/comment mentions (compared per file by count). `Line` is not recorded on
 | 9 | Comments/docs | `crates/webfang_mcp/tests/mcp_behavioral_test.rs` | `doc` | `/// (A second test asserted the same thing under the name `mcp_ai_tools_registered_with_ai_off`; it was `#[ignore]`d behind a "requires cached ONNX model" reason it never needed. One test, one assertion.)` | #386 | docs only |
 | 10 | Comments/docs | `crates/webfang_core/tests/behavioral/cli/error_path_test.rs` | `doc` | `/// No `#[ignore]`: the gate fires before any cleaner could be built.` | #386 | docs only |
 | 11 | Comments/docs | `crates/webfang_core/tests/behavioral/cli/error_path_test.rs` | `doc` | `/// No `#[ignore]`: the gate fires before any cleaner could be built.` | #386 | docs only |
+| 13 | Platform | `crates/webfang_core/src/infrastructure/platform/windows_console.rs` | `a_real_console_close_event_reaches_the_termination_source` | `needs a real Windows console: the parent runs it with --run-ignored ignored-only` | #1834 | Keep ignored; the Windows lane runs it explicitly (a console control event is delivered to the processes attached to a console) |
+| 14 | Comments/docs | `crates/webfang_core/src/infrastructure/platform/windows_console.rs` | `doc` | `/// (it is `#[ignore]`d: the parent` | #386 | docs only |
 | 12 | Comments/docs | `crates/webfang_core/tests/behavioral/cli/waf_gauntlet_test.rs` | `doc` | `/// ... the historical wiremock-FIFO flakiness that motivated `#[ignore]` no longer applies.` | #386 | docs only |
 
 > **Guard contract (since #1328, 2026-09-12):** `check_ignored_guard.sh` compares this catalog to
