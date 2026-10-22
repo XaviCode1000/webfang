@@ -325,7 +325,7 @@ build feature.
 
 | Feature | Activates | In the release binary? |
 |---------|-----------|--------|
-| `default` (`images` + `documents`) | Image and document extraction | ✅ Yes |
+| `default` (an **empty set** since #1813 T4) | Nothing — the old `images` + `documents` markers were emptied because they selected no capability | ✅ Yes, but it enables nothing |
 | `mcp` | The `webfang_mcp` crate's MCP server | ⚠️ The CLI's `mcp` feature gates no shipped code — the crate itself is not in the release. See [MCP Server](#-mcp-server) |
 | `persistence` | SQLite checkpoint store | ❌ No — `--features persistence` from source |
 | `chromium` | Headless Chrome for `--js-strategy full` (rejected at preflight without it) | ❌ No — `--features chromium` from source |

@@ -185,3 +185,19 @@ en los lotes anteriores), re-aplicado sobre el `main` nuevo. Si el owner prefier
 abrir la PR, el corte natural es (1) spec + evidencia (`docs(odd)`) y (2) runbook + nota +
 correcciones (`docs`). El orden de los PRs lo fija el owner (O7) y este lote **no** toca
 `ci.yml`, así que no colisiona con la re-aplicación de los steps de L9/L7/L15.
+
+L12 — **La fila de `default` en la tabla "Build Features" del README seguia
+mintiendo.** Decia "`default` (`images` + `documents`) | Image and document
+extraction | Yes", pero desde #1813 T4 `default` es un **set vacio
+explicito** en los dos manifiestos: los marcadores `images` y `documents`
+quedaron vacios porque no seleccionaban ninguna capacidad (su unico efecto
+observable era una tabla de MIME divergente). Verificado contra el arbol, no
+contra el informe: `[features]` en `crates/webfang_core/Cargo.toml` y en
+`crates/webfang_cli/Cargo.toml` abren con el comentario de #1813 T4 y
+declaran el set vacio. La fila ahora dice que `default` esta presente en el
+binario de release pero **no habilita nada** — que es la distincion que el
+README tenia invertida: no es que las imagenes y los documentos vinieran de
+serie, es que hoy no viene nada extra.
+
+Este era el hallazgo que el lado issues detecto al revisar el borrador del
+veredicto de #1609, y lo cierro aqui porque el README ya es de este lote.
