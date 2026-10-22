@@ -156,12 +156,23 @@ wall-clock race), giving true crash semantics: no Drop impls, no cleanup.
 | 1 | `pre_first_persist` | discovery done, nothing saved |
 | 2 | `mid_fetch` | response received, unprocessed |
 | 3 | `post_fetch_pre_extract` | fetched+cleaned, extraction pending |
-| 4 | `mid_jsonl_line` | half a line flushed (torn tail) |
-| 5 | `post_flush_pre_commit` | flush ack received, EXPORTED not saved |
-| 6 | `while_holding_lock` | killed inside store save txn |
-| 7 | `tmp_written_pre_rename` | tmp complete, rename pending |
-| 8 | `mid_state_file_write` | tmp PARTIAL (truncated artifact) |
-| 9 | `during_cancel_drain` | cancelled mid-drain, pre-final-persist |
+| 4 | `mid_extraction` | HTML cleaned + selector applied, content build pending |
+| 5 | `post_extraction_pre_pipeline` | content built, nothing persisted yet |
+| 6 | `mid_jsonl_line` | half a line flushed (torn tail) |
+| 7 | `post_flush_pre_commit` | flush ack received, EXPORTED not saved |
+| 8 | `while_holding_lock` | killed inside store save txn |
+| 9 | `tmp_written_pre_rename` | tmp complete, rename pending |
+| 10 | `mid_state_file_write` | tmp PARTIAL (truncated artifact) |
+
+There is an **eleventh armed point with no matrix row**: `during_cancel_drain`
+(the cancel-drain window, before the final persist). The point is armed in
+production (`application/export_factory.rs`), but the branch that would reach
+it is **unreachable**: the export session only observes a cancellation token
+when `ResumeContext::observing_cancel` is called, and in production nobody
+calls it (only the tests of `export_factory` do) — so the session's
+`cancelled()` is always false and the drain branch never runs. Until that
+wiring exists (a production change, in the CLI's export flow), advertising
+a matrix row for it would be a row that cannot pass.
 
 The matrix lives in `crates/webfang_core/tests/crash_matrix_test.rs`: each
 row kills a real CLI child at the pinned point, reruns with `--resume`, and

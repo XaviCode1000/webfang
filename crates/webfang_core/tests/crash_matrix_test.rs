@@ -28,9 +28,9 @@ use wiremock::matchers::{method, path};
 use wiremock::{Mock, ResponseTemplate};
 
 use webfang_core::cli::crash_points::{
-    MID_EXTRACTION, MID_FETCH, MID_JSONL_LINE, MID_STATE_FILE_WRITE, POST_EXTRACTION_PRE_PIPELINE,
-    POST_FETCH_PRE_EXTRACT, POST_FLUSH_PRE_COMMIT, PRE_FIRST_PERSIST, TMP_WRITTEN_PRE_RENAME,
-    WHILE_HOLDING_LOCK,
+    DURING_CANCEL_DRAIN, MID_EXTRACTION, MID_FETCH, MID_JSONL_LINE, MID_STATE_FILE_WRITE,
+    POST_EXTRACTION_PRE_PIPELINE, POST_FETCH_PRE_EXTRACT, POST_FLUSH_PRE_COMMIT, PRE_FIRST_PERSIST,
+    TMP_WRITTEN_PRE_RENAME, WHILE_HOLDING_LOCK,
 };
 use webfang_core::domain::page_state::PageStatus;
 use webfang_core::infrastructure::export::RecordStore;
@@ -208,8 +208,20 @@ async fn crash_row(point: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// Matrix rows — one per pinned crash point. during_cancel_drain is reserved
-// for PR5b and intentionally absent here.
+// Matrix rows — one per pinned crash point.
+//
+// `during_cancel_drain` has NO row, and that is a fact about the code, not
+// an omission of this file: the point is armed in production
+// (`application/export_factory.rs`, the `Cancelled` branch of the drain
+// loop), but that branch is UNREACHABLE — the export session only observes
+// a cancellation token when `ResumeContext::observing_cancel` is called, and
+// in production nobody calls it (only the tests of `export_factory` do). So
+// the session's `cancelled()` is always false, the drain branch never runs,
+// and there is nothing for a row to trigger. The wiring that would make it
+// reachable is a production change (the CLI's export flow has to hand its
+// cancellation token to the `ResumeContext`), and it is NOT this file's
+// business. Until then, advertising a row here would be a row that cannot
+// pass — a false green of the exact kind this suite exists to prevent.
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
