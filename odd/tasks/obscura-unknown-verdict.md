@@ -158,3 +158,11 @@ L11 — **Desviación asumida y registrada**: el diff es +72/−0 contra un esti
 El estimado contaba solo la línea del warning; S4 exige un test in-module (~50 líneas) y el
 texto en español lleva su doc (~16). No hay comportamiento nuevo más allá del contenido del
 warning.
+
+L12 — Commits del lote: `0e52f031` (spec + espejo, con este registro) y `6b82e087` (el fix y
+su test). El commit es del padre: el worker no commitea. Estado: **cerrado** — el veredicto
+`Unknown` nombra el mínimo esperado, la degradación se conserva, y la suite de preflight queda
+en 79/79. Lo que NO se cierra con este lote: el pin 0.2.3 del issue (obsoleto: el piso
+vigente es 0.2.5), los docs y los contadores por capa (decididos: el hit-rate se deriva de los
+logs por capa, sin instrumentación nueva). El issue #1710 **no** se cierra: su parte del
+veredicto `Unknown` recién aterriza, y el resto de sus ACs siguen vivos.
