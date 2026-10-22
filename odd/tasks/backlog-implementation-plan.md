@@ -730,3 +730,33 @@ colgados y hay que barrerlos al terminar el lote*. Los 3 hijos del RED de `#2066
 recolectarlos con **SIGKILL** (el SIGTERM no los movió: estaban bloqueados en `do_sys_pause` con la
 señal pendiente). La evidencia del RED ya estaba capturada en el test y en el Log, así que no se
 pierde nada ⇒ la regla es: **al terminar un lote, barrer los procesos que su RED dejó vivos**.
+
+### 2026-10-22 · Las dos seeds del recipe vigente, publicadas y verificadas
+
+| Seed | Key | Features | Tamaño | Para qué |
+|---|---|---|---|---|
+| default | `v1-5256d5a74e9f8731` | `""` (features default) | 1,9 G | builds de features default |
+| `--all-features` (explícito) | `v1-5045d576a52507ec` | las 18 features calificadas del workspace | 2,1 G | las verificaciones de los lotes (que usan `--all-features`) |
+
+La de `--all-features` **no es un `--all-features` literal**: la recipe no tiene ese vocabulario (el
+escape hatch `--` se rechaza a propósito), así que se publica con la **lista explícita** que
+resuelve al mismo conjunto de features (`webfang_core/{adaptive-selectors,chromium,console,default,
+dev-tracing,loom-model,mcp,persistence}` + `webfang_cli/*` + `webfang_mcp/*`), calculada con
+`cargo metadata`. La key lo dice con verdad: `features = "webfang_cli/adaptive-selectors,…"` y el
+`workspace_contract` y el `cargo_lock` fijan contra qué árbol es válida. La seed incluye **BoringSSL
+compilado** (`btls-sys`, 147 M + 17 M) ⇒ es la parte cara, y esa parte es *independiente de las
+features*.
+
+**Las dos cubren la fase de apertura de PRs** (13 slices que se re-aplican sobre el `main` nuevo y se
+verifican). **No cubren L9 ni L10**: ambos cambian `Cargo.toml` y el lock ⇒ su `cargo_lock` y su
+`workspace_contract` son otros ⇒ hay que **volver a publicar las dos** sobre el árbol post-merge.
+
+**Dos aprendizajes de la operación** (que costaron un诊断 fallido de mi parte):
+
+- **El store hay que leerlo DESPUÉS de que la publicación termine**: comprobé el store a los 49 s,
+  la seed todavía no estaba, y concluí que la publicación había fallado. La verdad es que el script
+  construye la referencia en frío (con el C++ de BoringSSL) y publica al final; el job reporta el
+  fin del shell, no el de la transacción.
+- **Un `| tail -40` sobre la salida se come el error**: si la transacción falla, el error se pierde y
+  sólo queda un "Terminado" sin explicación. La verificación de una seed es *el store y su
+  `manifest.toml`*, no la última línea del log.
