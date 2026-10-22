@@ -233,3 +233,49 @@ Tests: `signal_lifecycle` 5/5 y `crash_matrix_test` 27/27 (los dos con exit
 real 0, sumarios capturados antes de cualquier pipe, porque un pipe a `tail`
 enmascara el fallo). `check_ignored_guard.sh`: exit 0, 12 menciones en 5
 grupos. Golden set: ok contra el árbol mergeado.
+
+L18 — Verificación INDEPENDIENTE (gentle-ai-verify, task `mvjo15lk-k-4qui`):
+**PASS en S1–S5** con evidencia propia y sobre el target aislado del worktree
+(`--lib export` 185/185, `--test behavioral` 167/167 con 1 flaky ajeno,
+`--test crash_matrix_test` 27/27). No aceptó mi palabra: verificó la firma
+`Option<CancellationToken>` owned, que el borrow de `observing_cancel` es del
+clone del closure, los cuatro call sites de `export_phase` (y señaló que los dos
+`CancellationToken::new()` son de tests que retornan por error de config antes
+de cualquier export ⇒ inocuos), que ningún `cancelled()` puede dispararse antes
+de completar la secuencia D3 del ítem, y que ningún `unwrap/expect` nuevo entró
+a `src/`. Sobre mi endurecimiento de `p85`: confirmó que **sí** atrapa el doble
+fetch por corrida, el record fantasma, el pago de página committed y el drenaje
+que no persiste nada; y que **no** atrapa "el export ignora el token y commitea
+todo" — que es exactamente lo que el Scope note declara y lo que la fila de la
+matriz cubre. El doc-comment, entonces, no sobrevende.
+
+Seis defectos report-only. Qué hice con cada uno:
+
+1. **`during_cancel_drain` era inalcanzable bajo `--clean-ai`** (`commit_ai_outcomes`
+   drenaba sin `hit`). ARREGLADO: el `hit` va también en el drain de la ruta de
+   IA, con su log simétrico. Sin esto, un `--clean-ai` armado drenaba por el
+   camino de IA y salía limpio: falso verde silencioso. **Queda como follow-up
+   aparte** que `clean_all_pages` (`export_flow.rs`, ruta IA) corre ENTERO antes
+   de mirar el token: bajo `--clean-ai` la cancelación no se observa durante el
+   cleaning. Es el pipeline de IA, no la decisión A de #2244.
+2. **Prosa falsa**: `batch_flow.rs` decía "the batch flow's OWN token" y esta
+   spec (T2) decía que `batch_flow.rs` "ya crea un CancellationToken". El
+   token es el del run, creado por `ShutdownGuard::install()` en `run()` y
+   pasado como parámetro hasta `run_batch`. Comentario corregido; la premisa de
+   la spec queda corregida acá.
+3. **Flake observado y ajeno**: `cli::batch_test::batch_file_timeout_does_not_hang`
+   TRY1 FAIL 26,2 s → TRY2 PASS 1,7 s. Es un presupuesto de "no colgarse" de
+   30 s sensible a carga, y ese test no manda señal ⇒ el wiring es inerte ahí.
+   Candidato a issue propio, no se toca en esta rama.
+4. **Vector de entorno del harness nuevo**: `spawn_crash_armed_child` limpiaba
+   `WEBFANG_*` pero no daba un `WEBFANG_CONFIG` hermético, así que un
+   `~/.config/webfang/config.toml` real con `clean-ai` habría cambiado la ruta
+   del export y matado la fila. ARREGLADO: config vacío en el cache dir del
+   test, con el motivo escrito.
+5. Los invariantes post-resume no distinguen "matado después de ≥1 commit" de
+   "matado antes del primer commit". Es estructural (el commit precede al check
+   de cancelación) y está cubierto por unit tests; se acepta sin asertar.
+6. El verificador no corrió `check`/`clippy`/`fmt`/`doc` (fuera de su set
+   autorizado): los corrí yo sobre el árbol mergeado, los cuatro con exit 0, y
+   él confirmó por su cuenta que el diff del golden set es **sólo** la columna
+   de números de línea (`cut -f1,3,4` idéntico, 1641 líneas).

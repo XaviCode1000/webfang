@@ -246,6 +246,17 @@ fn spawn_crash_armed_child(args: &[String], cache_dir: &Path, point: &str) -> st
             c.env_remove(&k);
         }
     }
+    // Hermetic config, same reason as `sanitize_env` in the shared harness:
+    // the strip above removes the developer's `WEBFANG_CONFIG`, and without a
+    // replacement the child falls back to `~/.config/webfang/config.toml`. A
+    // real file enabling `clean-ai` would route the export through the AI
+    // drain, which is exactly a path where this row's armed point must still
+    // fire; an empty file means the all-`None` defaults instead.
+    let hermetic_config = cache_dir.join("hermetic-config.toml");
+    if !hermetic_config.exists() {
+        std::fs::write(&hermetic_config, "").expect("write hermetic config.toml");
+    }
+    c.env("WEBFANG_CONFIG", &hermetic_config);
     c.env("XDG_CACHE_HOME", cache_dir);
     // SSRF entry-guard allowance (F-06 + F-32, #1217): the wiremock mock
     // binds 127.0.0.1, a forbidden literal — disarm ONLY the entry layer.
