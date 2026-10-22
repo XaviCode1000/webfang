@@ -1251,3 +1251,35 @@ mergeados (`ai-attribution-exact`, `ci-health`): reverts selectivos con `checkou
 clean`, que es hard-deny) y los untracked ajenos desplazados con **registro** a
 `/tmp/untracked-residues-20261022-165636` (no destructivo). Los CI re-run sobre los heads viejos
 quedan invalidados; las cabeceras nuevas disparan CI propio.
+
+### 2026-10-22 · Dos reglas nuevas del peer, medidas y mandadas al orquestador
+
+**Regla A — la FPAS (fixture) es el conflicto silencioso del batch.** La `real_tree_sites.txt`
+es un snapshot con números de línea y **9 PRs activas la modifican** respecto de `origin/main`:
+`fix/export-cancel-token` (2dd9e04e), `fix/prune-dead-store-seam` (20c5779c), `fix/exporter-tail-read`
+(1e5b9cec), `fix/unmaintained-crates` (79f45e0b), `fix/mcp-surface-truth` (a33284b6), `fix/build-graph-deps`
+(cd397920), `fix/docs-runbooks-wal` (134cf407), `fix/obscura-unknown-verdict` (21efa005), `fix/2234-hermetic-args`
+(e87698e2). Cada merge que mueve `core/src` deja RANCIA la fixture de TODAS las ramas que siguen, y el
+pairwise sobre el mismo ancestro conflictúa: si quien mergea resuelve tomando un lado, **main queda
+silenciosamente equivocado y el rojo del lint aparece DEPUÉS en main, no en la PR**. El protocolo que
+propuso y ejecuta el peer: **tras cada merge, quien mergea pasa el SHA nuevo de main y el peer regenera
+la fixture sobre el árbol mergeado y la pushea en la rama que sigue — UNA POR VEZ, nunca en lote**.
+(Además: `#2252` toca 3 ficheros de `core/src` SIN tocar la fixture y no es ranciedad — no contienen
+sitios del extractor; medido, no acusado.)
+
+**Regla B — ninguna evidencia sale de un árbol sucio.** Es la TERCERA aparición de la misma clase
+(los 3 marcadores `# NEGATION` del rojo original de `#2252`; hoy, los restos de `ai-attribution`/`ci-health`
+en mis worktrees). Cerrada de una vez: **NADA de evidencia se produce ni se cita desde un worktree con
+`git status --porcelain` no vacío**; lo desplazado a `/tmp` **se borra tras inspección** (no se archiva).
+Verificación de hoy: los 12 residuos existían ya en `origin/main` (cero info única) ⇒ borrado
+`/tmp/untracked-residues-20261022-165636`.
+
+**Encuadre corregido de mi lado:** lo que estaba desconocido tras el re-base fue el **diff base** de una
+rama atrasada (`#2259`), no "la integración entre ramas": con `merge-base` verificado, la integración se
+mide como cualquier otra. El peer verificó mis tres heads: 0 atraso, golden set EXACTO (0 líneas de
+diferencia, 1641/1643/1643).
+
+Aplicación inmediata de la Regla A para el orquestador: con la lista de 9 ramas arriba, cada merge del
+batch que toque `core/src` tiene que ir seguido del refresh de fixture de la próxima rama ANTES de que
+esa rama su merge reciba. Lineas actuales de fixture por head: 1641 (2dd9e04e si #2244pp) / 1643 si
+(#2258 y #2268 heredados).
