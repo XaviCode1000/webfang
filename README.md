@@ -444,7 +444,8 @@ codedb index .
 | [docs/src/debugging.md](docs/src/debugging.md) | Tracing, correlation IDs, `jq` query cookbook (`scripts/analyze-trace.sh`) |
 | [docs/src/troubleshooting.md](docs/src/troubleshooting.md) | Common failures: slow crawls, silent errors, WAF blocks, local/internal targets refused by the SSRF guard |
 | [docs/ssrf-layers.md](docs/ssrf-layers.md) | Which SSRF layer blocks what, and which `WEBFANG_*` variable lifts which layer |
-| [Wiki](https://github.com/XaviCode1000/webfang/wiki) | Architecture, API reference, guides |
+| [docs/src/overview.md](docs/src/overview.md) | Architecture, crate map and what each piece is for |
+| [docs/src/cli-reference.md](docs/src/cli-reference.md) | Generated reference of every flag, subcommand and exit code |
 | `webfang --help` | Full CLI reference |
 
 ---
