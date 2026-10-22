@@ -332,3 +332,38 @@ en `queued` ⇒ es espera de CI, no un defecto. L12 sigue esperando su cierre.
 - **#1815**: dos de sus AC están obsoletas (hablan de la feature `ai` y de un build "sin la feature ai"). La feature `ai` no existe en ninguna crate y no hay `ort`/`onnxruntime`; el feature set real de `webfang_core` es `default = []` + `loom-model`, `persistence`, `console`, `dev-tracing`, `adaptive-selectors`, `mcp`, `chromium` (verificado en los manifiestos y en la línea de comandos del `rustc` de un build `--all-features`). El pinning que queda es **default vs `--all-features`**, y las AI tools hoy están siempre registradas y responden *"funcionalidad no disponible"*. Corrección posteada en la issue: el texto contractual deja de pedir un build que no existe.
 - **Procesos colgados (hallazgo propio)**: hay **3 procesos `webfang --resume --state-dir /tmp/gpYNCL2W/...` vivos desde 01:52**, con el padre ya muerto (reparentados a systemd) ⇒ son los hijos del **RED de #2066** (el `SIGKILL` descartado deja el proceso con vida), anterior a los commits del fix de L8 (02:04 en adelante). Orfanados hace ~3 h, `do_sys_pause`, ~33 MB cada uno. El repo no admite procesos colgados en segundo plano: reportados al peer (son de su lote) para que los recole.
 - **Builds**: medido a las 04:48, **no hay ninguna compilación viva** (ni cargo ni rustc): el build de L3b terminó hace rato (el worktree está limpio en `b08323cd`) y el de L11 también. El slot de build está libre.
+
+### 2026-10-22 · El protocolo de las seeds (propuesta del peer, con una corrección de timing)
+
+La movida es correcta en mecanismo y hay que hacerla **con otro timing**:
+
+- **La key de una seed fija `cargo_lock` y `workspace_contract`**, y el contrato del workspace es
+  el hash de los manifiestos de los miembros (`cargo metadata --no-deps`, features + deps +
+  `uses_default_features`). ⇒ **cualquier cambio de `Cargo.toml` o del lock invalida la seed**.
+- La store tiene hoy `v1-5256d5a74e9f8731` (publicada 02:45, `built_from_commit` = main
+  `3a785d8e`) con **`features = ""`**: es la recipe de **features default**, no la de
+  `--all-features`. Las dos seeds de septiembre (`v1-da8aa82dd29c4018`, `v1-dfde71780c07a662`)
+  son de otro manifest.
+- `--all-features` **no es vocabulario de la recipe** (el escape hatch `--` se rechaza a
+  propósito), así que la recipe equivalente se expresa con la lista explícita. La lista
+  `--all-features` del workspace, verificada con `cargo metadata`, es:
+
+  ```text
+  webfang_cli/adaptive-selectors, webfang_cli/chromium, webfang_cli/console, webfang_cli/default,
+  webfang_cli/dev-tracing, webfang_cli/mcp, webfang_cli/persistence,
+  webfang_core/adaptive-selectors, webfang_core/chromium, webfang_core/console, webfang_core/default,
+  webfang_core/dev-tracing, webfang_core/loom-model, webfang_core/mcp, webfang_core/persistence,
+  webfang_mcp/chromium, webfang_mcp/mcp, webfang_mcp/persistence
+  ```
+
+  (canonicalizada por el propio script: `,` separado y ordenado; `webfang_benchmark` todavía no
+  declara features ⇒ L9 le añade `chromium` ⇒ **la lista también cambia** con L9).
+- **Timing**: publicar la seed de `--all-features` AHORA compra una ventana que se cierra en el
+  próximo merge, porque L9 (sysinfo/once_cell/built) y L10 (serde_yaml/keyring) cambian
+  `Cargo.toml` y el lock. La seed que vale es la del **main post-merge**: una vez publicados los
+  lotes que tocan dependencias, se publican **dos** seeds (features default + la lista explícita)
+  por ~18 min, y cubren todos los worktrees siguientes hasta el próximo cambio de dependencia.
+  Publicar antes es gastar 9 min de slot en una key que muere con el merge.
+
+⇒ Decisión: **no se publica ninguna seed hasta que L9/L10 aterricen en `main`**. El slot de build
+sigue siendo de un build a la vez, y ahora mismo no hay build pendiente de mi lado.
