@@ -50,10 +50,14 @@
 #     propia copia del predicado, dentro de `reconcile_one` — se evalúa sobre
 #     la corrida QUE EL BARRIDO LEE, no sobre la que lo disparó.
 #   - Idempotente: UNA issue por CLAVE (títulos abajo), un comentario por run
-#     fallido, auto-cierre al volver a verde — verde del MISMO origen, nunca
-#     de otro: un verde de `schedule` no cierra el rojo de un `push` ni al
-#     revés (#1712). Con el título constante anterior (`Scheduled ...` para
-#     todo) cualquier verde cerraba cualquier rojo.
+#     fallido, auto-cierre al volver a verde. El ORIGEN sigue dentro del
+#     título (#1712: dos causas distintas no pueden caer en la misma issue y
+#     taparse), pero el CIERRE matchea un SUBTÍTULO del título
+#     ("CI failed on main"), de modo que una corrida verde CUALQUIERA retira
+#     TODOS los trackers con clave CI — los de cada origen y los que
+#     quedaron bajo el título retirado (#2162, #1980). Con el título
+#     constante anterior (`Scheduled ...` para todo) cualquier verde cerraba
+#     cualquier rojo.
 #   - El ORIGEN del run es parte de la clave, no una línea del cuerpo. Es lo
 #     único que impide que dos causas distintas caigan en la misma issue y se
 #     tapen entre sí; por eso se lee del payload y no se supone.
@@ -107,30 +111,34 @@ env:
   # para que la clave no crezca con cada evento que GitHub añada, y para que un
   # origen inesperado siga siendo visible en un título en vez de diluirse.
   TITLE_CI: "CI failed on main ({origin}) [ci-health]"
-  # ── DECISIÓN de migración del título retirado (#1712), paso 3 del issue ──────
+  # ── CLAVE DE CIERRE: un SUBTÍTULO del título (#2162, #1980) ───────────────
+  # "CI failed on main" es un subtítulo de las DOS claves con clave CI:
+  #   - "CI failed on main ({origin}) [ci-health]"  (la que abre este observer)
+  #   - "Scheduled CI failed on main [ci-health]"    (la clave RETIRADA)
+  # Por eso el CIERRE usa esta clave y no el título completo: UNA sola
+  # implementación (close_mine en scripts/ci-health-close.sh) retira TODOS los
+  # trackers con clave CI, sin un segundo camino de cierre y sin una corrida
+  # `workflow_dispatch` verde a mano para desencolar un tracker.
+  #
+  # El ORIGEN sigue en el TÍTULO porque es lo que distingue dos causas
+  # mientras están rojas (#1712); no está en la clave de cierre porque un
+  # verde de la línea principal dice que la línea está verde, venga del
+  # origen que venga. La búsqueda real `in:title` ANDa palabras, y "CI failed
+  # on main" es un subconjunto de las palabras de los dos títulos: por eso
+  # los encuentra a los dos.
+  CI_CLOSE_KEY: "CI failed on main"
+  # ── Clave RETIRADA (#1712 paso 3, REVISADA por #2162, #1980) ──────────────
   # Antes: TITLE_CI = "Scheduled CI failed on main [ci-health]", constante.
-  # Ese título ya no debe existir; la clave nueva no lo encuentra, así que una
-  # issue abierta bajo él quedaría huérfana para siempre.
-  # Decisión: NO se auto-cierra, NO se renombra, y NO hay sweep que la barra.
-  # Motivos, con evidencia:
-  #   1. Estado real al aplicar este cambio: CERO issues abiertas con el título
-  #      retirado — `gh issue list --state open --label ci-health` sólo lista
-  #      #1576 (Bug Discovery) y #1697 (sin relación); y
-  #      `gh issue list --state open --search '"Scheduled CI failed on main"
-  #      in:title'` devuelve []. Las 15 históricas están CLOSED. No hay nada
-  #      que reparar hoy, así que la elección es sobre el CASO FUTURO, no
-  #      sobre datos.
-  #   2. Auto-cerrarla exigiría un segundo mensaje de cierre distinto de
-  #      "Green again" (aquí el run nunca volvió a verde: solo cambió la clave),
-  #      es decir una SEGUNDA implementación de close. El guard de deriva de
-  #      scripts/test_ci_health_close.sh (test 4) existe precisamente para
-  #      forbidla, y el helper compartido (scripts/ci-health-close.sh) está
-  #      fuera de la superficie de este cambio.
-  #   3. Renombrarla exige saber el origen del run que la abrió, dato que la
-  #      issue vieja no guarda: renombrar a ciegas fabricaría otra mentira.
-  # En su lugar el paso "Reconcile" la DETECTA y avisa por log una vez al día,
-  # para que un humano la cierre si aparece. Constante usada (no muerta) y
-  # pineada por el harness, para que nadie la borre sin leer esto.
+  # Ese título ya no se abre. Se conserva la constante porque es la clave
+  # histórica de los trackers abiertos antes de la migración, y el paso
+  # "Reconcile" la DETECTA.
+  # REVISADA: la decisión anterior ("detect, never close") convertía a #1980
+  # en un dead end — nada podía cerrar un tracker abierto bajo esa clave. La
+  # clave de cierre de arriba ("CI failed on main") es un subtítulo de este
+  # título, así que la MISMA implementación de cierre los retira con la
+  # próxima corrida verde de CI. Lo que queda por hacer es detectar y
+  # avisar: si un tracker sigue abierto bajo la clave retirada, es que
+  # todavía no corrió un CI verde desde que se abrió.
   RETIRED_TITLE_CI: "Scheduled CI failed on main [ci-health]"
   TITLE_DISCOVERY: "Bug Discovery findings [ci-health]"
   TITLE_BENCH: "Benches nightly failing [ci-health]"
@@ -341,10 +349,20 @@ jobs:
           RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           set -euo pipefail
-          LOG_SNIPPET="$(gh run view "$RUN_ID" --log 2>/dev/null | grep -E "$KNOWN_RED_TEST" || true)"
+          # A FAILURE LINE, not a mention of the test name (#2233).
+          # The Bug Discovery workflow prints its own nextest filter, and
+          # that filter CONTAINS the known RED test name, so grepping the
+          # NAME over the whole log matched EVERY run: known_only was always
+          # true and every real finding was filed as "Known FP only (W-03)".
+          # The failure line of `cargo nextest` has this shape (the same one
+          # the Bug Discovery workflow greps for in "Publish failure names"):
+          #   FAIL [   0.010s] <binary> <test_path>::<test_name>
+          # so the known RED counts as known ONLY when that line is there.
+          FAILURE_LINE_RE="(^|[^[:alnum:]_])FAIL[[:space:]]+\[[^]]*\][[:space:]]+.*${KNOWN_RED_TEST}"
+          LOG_SNIPPET="$(gh run view "$RUN_ID" --log 2>/dev/null | grep -E "$FAILURE_LINE_RE" || true)"
           if [ -n "$LOG_SNIPPET" ]; then
             echo "known_only=true" >> "$GITHUB_OUTPUT"
-            echo "W-03 known RED evidence seen; known-false-positive."
+            echo "W-03 known RED failure line seen; known-false-positive."
           else
             echo "known_only=false" >> "$GITHUB_OUTPUT"
             echo "Real or unclassified finding (or log unavailable)."
@@ -419,10 +437,12 @@ jobs:
               # own trigger (#1712).
               ci_context="Run origin: $CI_ORIGIN ($OBS_NOTE)."
               if [ "$PAYLOAD_CONCLUSION" = "success" ]; then
-                # Same-origin close only: close_mine searches by the exact key,
-                # and the key now names the origin. A green `push` cannot
-                # close the issue opened by a red `schedule` (#1712).
-                close_mine "$CI_TITLE" "$RUN_URL"
+                # Close by SUBTITLE (#2162, #1980): the close key is a
+                # subtitle of every CI-keyed title, so ONE green run retires
+                # the origin-qualified trackers AND the ones left under the
+                # retired title. One implementation (close_mine), no second
+                # close path.
+                close_mine "$CI_CLOSE_KEY" "$RUN_URL"
               else
                 open_or_comment "$CI_TITLE" "$ci_context" "Failed jobs: ${FAILED_JOBS:-unknown}. Gate may be green (W-02)." ""
               fi
@@ -469,7 +489,14 @@ jobs:
           . "$GITHUB_WORKSPACE/scripts/ci-health-close.sh"
           SERVER="${GITHUB_SERVER_URL:-https://github.com}"
           reconcile_one() {
-            title="$1"; concl="$2"; rid="$3"; wname="$4"; context="$5"; run_event="$6"
+            # open_key  = the title this source OPENS under (the origin-
+            #             qualified key for CI, the single key for the others)
+            # close_key = the key this source CLOSES with. For CI it is the
+            #             SUBTITLE ("CI failed on main"), so one green run
+            #             retires every CI-keyed tracker, the origin ones and
+            #             the retired-title ones (#2162, #1980). For the
+            #             others it is the same title they open under.
+            open_key="$1"; close_key="$2"; concl="$3"; rid="$4"; wname="$5"; context="$6"; run_event="$7"
             # SCOPE GATE, sweep path (#1714) — el mismo predicado del `if:` del
             # job, aplicado a la corrida SOBRE LA QUE el sweep va a actuar. El
             # sweep no causó esa corrida, así que tiene que releer su `event`
@@ -490,14 +517,14 @@ jobs:
             fi
             url="$SERVER/$GH_REPO/actions/runs/$rid"
             if [ "$concl" = "success" ]; then
-              # Key-scoped close (#1712): only the issue for THIS origin goes
-              # green-and-closed. The sweep therefore still closes what it
-              # opened (same key), and can never tap a red of another origin.
-              close_mine "$title" "$url"
+              # Close by the CLOSE key: for CI it is the subtitle that covers
+              # every CI-keyed tracker (#2162, #1980); for the other sources
+              # it is the same key they open under. One implementation.
+              close_mine "$close_key" "$url"
             elif [ "$concl" = "failure" ]; then
-              count="$(gh issue list --state open --search "${title} in:title" --json number --jq 'length')"
+              count="$(gh issue list --state open --search "${open_key} in:title" --json number --jq 'length')"
               if [ "$count" -eq 0 ]; then
-                gh issue create --title "$title" --body "$(printf '%s\n\n%s\n\nRun: %s\n\nReconciled latest %s on %s.\n\nAuto-managed by CI Health Observer.' "$title" "$context" "$url" "$wname" "$BRANCH")" --label "$LABEL" --label "$LABEL_AUTO"
+                gh issue create --title "$open_key" --body "$(printf '%s\n\n%s\n\nRun: %s\n\nReconciled latest %s on %s.\n\nAuto-managed by CI Health Observer.' "$open_key" "$context" "$url" "$wname" "$BRANCH")" --label "$LABEL" --label "$LABEL_AUTO"
               fi
             else
               # reconcile: only `failure` opens, only `success` closes.
@@ -505,22 +532,27 @@ jobs:
               echo "$wname: conclusion=$concl, no action."
             fi
           }
-          # CI gets the origin-qualified key the classify step derived from the
-          # latest CI run's own `event`. Bug Discovery and Benches keep their
-          # single-key titles: one run per source, no origin dimension that an
-          # operator would act on differently.
-          reconcile_one "$CI_TITLE" "$CI_C" "$CI_R" "CI" "Run origin: $CI_ORIGIN ($OBS_NOTE)." "$CI_E"
-          reconcile_one "$TITLE_DISCOVERY" "$PD_C" "$PD_R" "Bug Discovery" "Source: Production Bug Discovery, $OBS_NOTE." "$PD_E"
-          reconcile_one "$TITLE_BENCH" "$BE_C" "$BE_R" "Benches" "Source: Benches, $OBS_NOTE." "$BE_E"
+          # CI OPENS under the origin-qualified key the classify step derived
+          # from the latest CI run's own `event`, and CLOSES under the
+          # subtitle key (one green run retires every CI-keyed tracker).
+          # Bug Discovery and Benches keep their single-key titles: one run
+          # per source, no origin dimension that an operator would act on
+          # differently.
+          reconcile_one "$CI_TITLE" "$CI_CLOSE_KEY" "$CI_C" "$CI_R" "CI" "Run origin: $CI_ORIGIN ($OBS_NOTE)." "$CI_E"
+          reconcile_one "$TITLE_DISCOVERY" "$TITLE_DISCOVERY" "$PD_C" "$PD_R" "Bug Discovery" "Source: Production Bug Discovery, $OBS_NOTE." "$PD_E"
+          reconcile_one "$TITLE_BENCH" "$TITLE_BENCH" "$BE_C" "$BE_R" "Benches" "Source: Benches, $OBS_NOTE." "$BE_E"
 
-          # Migration watcher for the retired key (#1712). READ-ONLY on purpose:
-          # it detects, it never closes (rationale at RETIRED_TITLE_CI in env).
-          # The sweep runs daily, so a hand-created or half-migrated issue
-          # surfaces here within 24h instead of living forever.
+          # Migration watcher for the retired key (#1712, revised by #2162).
+          # READ-ONLY on purpose: the observer does not OPEN that key any
+          # more, and it is NOT a dead end either — the CI close key
+          # ("CI failed on main") is a subtitle of the retired title, so the
+          # next green CI run retires those trackers with the same close
+          # implementation. What this reports is trackers that are still
+          # open, i.e. no green CI run has happened since they were opened.
           RETIRED_OPEN="$(gh issue list --state open --search "${RETIRED_TITLE_CI} in:title" --json number --jq '.[].number' 2>/dev/null || true)"
           if [ -n "$RETIRED_OPEN" ]; then
             echo "WARNING: open issue(s) under the RETIRED title (${RETIRED_TITLE_CI}): ${RETIRED_OPEN//$'\n'/, }"
-            echo "  The observer no longer uses that key, so nothing will ever close them."
-            echo "  Close by hand with a comment pointing at the origin-qualified title (see the RETIRED_TITLE_CI comment in this workflow)."
+            echo "  The observer no longer opens that key, but the CI close key covers it:"
+            echo "  the next green CI run retires them (no manual action needed)."
           fi
 
