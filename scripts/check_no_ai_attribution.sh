@@ -9,11 +9,12 @@
 # branch) say nothing about trailers.
 #
 # WHY THIS IS NOT A BLANKET BAN ON `Co-Authored-By`. The release automation
-# signs every release commit. Measured over the last 200 commits on main:
+# signs every release commit. Measured over the last 200 commits on main
+# (`git log main -n 200 --format='%(trailers:key=Co-authored-by,valueonly)'`):
 #
-#   Co-authored-by: release-plz-tu-repo[bot]   x11  (every `chore: release`)
-#   Co-Authored-By: Claude Opus 4.8            x11  (human commits)
-#   Co-Authored-By: Codebuff                   x1   (a PR branch)
+#   Co-authored-by: release-plz-tu-repo[bot]   x19  (every `chore: release`)
+#   Co-Authored-By: Codebuff                   x2
+#   Co-Authored-By: Claude Opus 4.8            x2
 #
 # Banning the trailer outright would fail the release flow, which is the one
 # co-author the repository genuinely depends on. So the rule fails CLOSED on
@@ -35,15 +36,33 @@
 #       scan NUL-separated messages read from <file> (used by the test harness)
 set -euo pipefail
 
-# Co-authors accepted by NAME PREFIX, matched case-insensitively. The co-author
-# NAME is the part before any `<email>`; it must START with one of these, never
-# merely contain it (A1: `Codebuff, reviewed by renovate` used to pass because
-# it contained `renovate`). Short and explicit on purpose.
+# Co-authors accepted by EXACT IDENTITY, compared case-insensitively against
+# the WHOLE co-author name (the part before any `<email>`, trimmed). A prefix
+# is NOT enough and neither is containment: `Codebuff, reviewed by renovate`
+# used to pass because it CONTAINED `renovate` (A1), and
+# `renovate-bot, actually a human` used to pass because it STARTED with
+# `renovate`. Both are humans and both are rejected.
+#
+# The entries are MEASURED, not invented. Over the whole history of `main`
+# (`git log main --format='%(trailers:key=Co-authored-by,valueonly,separator=%x00)'`),
+# the automation actors that actually stamp a co-author trailer are:
+#
+#   release-plz-tu-repo[bot]   x20   (every `chore: release`)
+#   github-actions[bot]        x8
+#
+# Each entry is the FULL identity in the exact shape the bot stamps.
+# `renovate[bot]` and `dependabot[bot]` are kept in that same exact
+# `actor[bot]` shape: neither has signed a commit in this repository yet (no
+# renovate/dependabot config is enabled), so those two entries are an explicit
+# decision rather than a measurement.
+#
+# A new legitimate actor is a decision made by adding its full identity here,
+# never a drift that slips through.
 ALLOWED_CO_AUTHORS=(
-  "release-plz"
+  "release-plz-tu-repo[bot]"
   "github-actions[bot]"
-  "dependabot"
-  "renovate"
+  "renovate[bot]"
+  "dependabot[bot]"
 )
 
 # scan_message <message> -> prints one line per offence, nothing when clean.
@@ -87,15 +106,18 @@ scan_message() {
     return 0
   fi
 
-  # 2. Co-author trailers: accepted only when the co-author NAME starts with a
-  # known automation actor. Anchored at the START, never a substring: a plain
-  # `contains` match accepted `Co-Authored-By: Codebuff, reviewed by renovate`,
-  # because it merely contained an allowlisted token (A1).
+  # 2. Co-author trailers: accepted only when the co-author NAME IS a known
+  # automation actor — whole identity, not a prefix and not a substring. A
+  # plain `contains` match accepted `Co-Authored-By: Codebuff, reviewed by
+  # renovate` (A1); a prefix match accepted `Co-Authored-By: renovate-bot,
+  # actually a human`, because the name merely STARTED with an allowlisted
+  # token. The comparison is equality of the complete name.
   #
-  # `[[ "$name" == "$actor"* ]]` is load-bearing: `"$actor"` is quoted, so the
+  # `[[ "$name" == "$actor" ]]` is load-bearing: `"$actor"` is quoted, so the
   # literal bracket pair in `github-actions[bot]` is not read as a character
-  # class, while the unquoted `*` is the only wildcard. (Under `grep -E`/`-G`,
-  # `[bot]` would match `github-actionsb` and MISS the real string.)
+  # class. (Under `grep -E`/`-G`, `[bot]` would match `github-actionsb` and
+  # MISS the real string.) With both sides quoted the match is a literal
+  # string equality, so a trailing `*` wildcard is exactly what is NOT there.
   local line value name_lc allowed actor actor_lc
   while IFS= read -r line; do
     [ -n "$line" ] || continue
@@ -106,7 +128,7 @@ scan_message() {
     allowed=false
     for actor in "${ALLOWED_CO_AUTHORS[@]}"; do
       actor_lc="$(printf '%s' "$actor" | tr '[:upper:]' '[:lower:]')"
-      if [[ "$name_lc" == "$actor_lc"* ]]; then
+      if [[ "$name_lc" == "$actor_lc" ]]; then
         allowed=true
         break
       fi
@@ -145,10 +167,11 @@ Qué hacer: reescribir el/los commit(s) sin el trailer.
   git rebase -i <base>     # marca el commit con `reword` y quita las líneas
                            #   `Generated with …` / `Co-Authored-By: <AI>`
 
-La co-autoría de automatización (release-plz, github-actions, dependabot,
-renovate) SÍ está permitida. Un humano o una herramienta de AI nombrados como
-co-autores, no. Añadir un actor nuevo a ALLOWED_CO_AUTHORS es una decisión
-explícita, no un default.
+La co-autoría de automatización (release-plz-tu-repo[bot], github-actions[bot],
+renovate[bot], dependabot[bot]) SÍ está permitida, y sólo con el nombre
+completo. Un humano o una herramienta de AI nombrados como co-autores, no.
+Añadir un actor nuevo a ALLOWED_CO_AUTHORS es una decisión explícita, no un
+default.
 
 NOTE
   return 1
