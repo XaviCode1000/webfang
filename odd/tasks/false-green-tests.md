@@ -715,3 +715,50 @@ L11 — Estado de la entrega: este documento y su espejo
 (`odd/false-green-tests/tasks.md`) son **documentación**; no hay código de producción, no se corrió
 cargo y no hay commit (el commit es del padre). **No hay PR** (decisión del owner: las PRs se abren
 más adelante).
+
+L12 — **El RED del test del cuelgue fue INVALIDO dos veces, y por eso casi se
+registra como evidencia.** La primera corrida fallo con "--url is required for
+scraping": mi comando no pasaba `--url`, asi que el hijo salia por config y
+nunca llegaba al punto de crash. La segunda fallo con el guard SSRF
+rechazando el 127.0.0.1 del wiremock: el env hermetico del harness no lo
+heredaba mi comando crudo. **Un RED que falla por otra causa no es un RED**:
+en las dos anteriores el test fallaba, pero no por el defecto. La correccion
+fue expositar `hermetic_cache_dir` y `hermetic_empty_config_file` del harness
+como `pub(crate)` (dos palabras) y aplicar al comando la misma hermeticidad
+que el resto de los binarios lanzados —en el ORDEN correcto: primero se
+limpian las variables envenenadas y DESPUES se fijan las del test, porque
+una limpieza posterior se llevaria el punto de crash consigo—.
+
+L13 — **RED valido, por fin**: contra el codigo pre-fix el hijo se cuelga y
+el test falla con el sintoma real — "the crash child did not finish within
+30s: the SIGKILL was discarded and the child hung instead of dying" (la
+corrida tardo 30,3 s, o sea la ventana). GREEN: 27/27 en la matriz de crash
+(el nuevo test en 2,91 s: el hijo ahora muere en vez de colgarse). El fix
+detecta `getpid() == 1` ANTES de enviar la senal (enviarla y esperar ES el
+cuelgue) y comparte UN UNICO camino de muerte diagnostica con la rama del
+kill rehusado, para que un solo test cubra las dos ramas.
+
+L14 — **Guard de targets vacios: el RED medido y un fallo encontrado en mi
+propio guard.** El RED del guard: 24 targets declarados que compilan a CERO
+tests en el build por defecto (20 de `webfang_mcp`, gated en una feature
+fuera del default, y 4 de `webfang_core`) -> 20 tras declarar los 4 de core
+con `required-features` -> 0 con `default = ["mcp"]` en `webfang_mcp`. Y
+encontré un fallo en el guard que escribi: leia el gate con `head -40`, asi
+que en dos archivos el gate caia fuera de la ventana y el guard los contaba
+COMO SI NO TUVIERAN GATE — un falso PASS, el peor modo de fallo de un guard.
+Escaneando el archivo entero son 22 (el numero real), no 20. El harness
+cubre los cuatro casos del spec, mas el de vacuidad (un arbol sin ningun
+target tiene que fallar, no pasar) y el de la forma real de la issue.
+
+L15 — **Verificacion de T7 y T10, corrida por el padre**: el store sobrevive
+a una reopen y `PRAGMA integrity_check` responde `ok` (1 passed); el fixture
+429 con `Retry-After: 1` hace observable el pacing (el run tarda 19 s, o sea
+que espero) y el presupuesto agotado sale con 69 (1 passed); y el append
+emitido con un flush en vuelo es durable despues del siguiente flush (1
+passed).
+
+L16 — **Corte de slice de este lote**: el branch suma ~1618 lineas autorales
+en 6 commits (spec del peer · T3+T4 · T5 · T1+T2 · T7 · T10). El work-unit
+de T1+T2 (el fix del cuelgue y su test) va solo, porque el fix cambia el
+comportamiento observable de un camino de muerte y su test necesita el
+namespace de PID para discriminar.
