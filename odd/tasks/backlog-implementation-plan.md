@@ -805,3 +805,25 @@ pendiente: el criterio es *la clave de una entrada `(service, user)` debe ser **
 `keyring-rs:{user}@{service}`*; los dos mecanismos admitidos (configurar el store, o lectura
 legacy-first) quedan a elección de quien implementa, y el test nombrado es
 `the_credential_key_is_byte_identical_to_the_legacy_key`.
+
+### 2026-10-22 · El rebase de L10 sobre L9 es limpio: medido por mí con `merge-tree`
+
+El peer lo midió con `git merge-tree --write-tree` (sin tocar ninguna rama) y yo lo **verifiqué
+independientemente**: el merge de tres vías de **L9 + L10 sobre `main`** sale con **rc=0 (cero
+conflictos)** y el `Cargo.toml` resultante tiene `serde_norway = "0.9"` y **ni `once_cell` ni
+`sys-info` ni `serde_yaml`** ⇒ los tres cambios de dependencia coexisten.
+
+**Por qué importa** (el peer lo señaló bien): la premisa de que *"el lock queda quieto para todo lo
+demás"* es justo la que **L10 altera** — L9 quita `once_cell` y `sys-info`, L10 cambia `serde_yaml`
+por `serde_norway` **y regenera el lock del fuzz**— y los hunks de `[workspace.dependencies]` están
+a **ocho líneas** de distancia. Un rebase por parche puede fallar donde un merge de tres vías no:
+la distancia de los hunks, por sí sola, no es un conflicto. Con la medición, el orden firmado
+(L9 justo antes de L10) es seguro.
+
+**Consecuencia para las seeds**: como L9 y L10 cambian el manifiesto **y** el lock, las dos seeds
+que cubren la fase de apertura hay que publicarlas **después** de que ambos entren en `main` (dos
+keys: default y la lista explícita de `--all-features`, que además cambia con L9 porque
+`webfang_benchmark` pasa a declarar `chromium`).
+
+**Estado de L10**: tip `6b4bd8ed` (la rama avanzó con el commit del Log que registra la medición del
+merge).
