@@ -307,8 +307,9 @@ make_fixture() {
   # the fixture provides a no-op for each of them: the case under test is the
   # LANE SHAPE, not the harnesses' own semantics, and a missing script would
   # fail the step for a reason that has nothing to do with the case.
-  for harness in test_ci_health_close.sh tests/test_check_compatibility.sh \
+  for harness in     test_ci_health_close.sh tests/test_check_compatibility.sh \
     tests/test_check_target_isolation.sh ci_path_classifier_test.sh \
+    test_ci_plan.sh \
     test_docs_version_pins.sh test_docs_version_pins_wiring.sh \
     test_bump_docs_version_pins.sh test_apply_release_pins.sh \
     test_release_pins_wiring.sh test_declare_pending_publication.sh \
