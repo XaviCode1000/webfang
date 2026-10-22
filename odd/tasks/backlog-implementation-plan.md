@@ -485,3 +485,28 @@ salieron como comentarios verificados (`#2061` 6332290927 · `#1826` 6332291286 
 `#1609` 6332291798), con la ruta de `elastic_ingestion.rs` corregida y el borrador de `#1609`
 sustituido por un addendum (no se posteó tal cual: contradecía el veredicto ya publicado y
 cerraba el umbrella antes de tiempo).
+
+### 2026-10-22 · Dos issues nuevas del lane del exporter (#2237, #2238) y el cierre del hallazgo de procesos
+
+**#2237** (`perf(exporter)`, `status:approved`): `recover_torn_tail` lee el archivo de export
+**entero**, así que el pico de memoria sigue creciendo con el tamaño del archivo. Nació del
+verificador independiente de la PR #2230: el índice de resume pasó de +18,4 MiB a +2,0 MiB sobre
+un archivo de 16,5 MiB, pero el camino de recuperación del tail truncado no se midió.
+
+**#2238** (`feat(mcp)`, `status:approved`): el resultado del export **no expone** el conteo de
+líneas saltadas por no-UTF-8. La decisión de #1812 (saltar en vez de abortar, y que el skip sea
+ruidoso: error estructurado + `skipped_non_utf8` en el summary) existe, pero la superficie MCP
+no lo muestra ⇒ el operador que mira el resultado de la tool no ve lo que se saltó.
+
+**Orden del lane del exporter** (dependencia dura: las dos cuelgan de lo que #2230 mergee):
+`#2230` (abierta, `BLOCKED` por la **cola de 64 shards de cargo-mutants**, no por un defecto) →
+`#2237` → `#2238` → **L12** (duplicación, que también espera el cierre de #2230).
+
+**Cerrado el hallazgo de los 3 procesos colgados**: los pids `2441103`, `2441994` y `2442239`
+(los hijos del RED de #2066, con el padre muerto) **ya no están** ⇒ recolectados. Nada queda
+colgado en segundo plano.
+
+**L10 en vuelo**: el worker pasó de los archivos de código a `deny.toml` y `fuzz/Cargo.lock`
+(la fase T4/T5 del spec: purgar los ignores RUSTSEC-2026-0183/0184 sólo **después** de que
+`git2` salga de los DOS lock, y regenerar `fuzz/Cargo.lock` después de purgar) ⇒ el orden que
+exige el spec se está respetando.
