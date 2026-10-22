@@ -282,6 +282,17 @@ jobs:
       # file+test-name survive line drift. Runs the guard against fixtures only.
       - name: Ignored-test guard semantics harness
         run: bash scripts/test_ignored_guard.sh
+      # Semantics harness for the empty-test-target guard (#1852). A declared
+      # test target whose gate names a feature that is NOT in the package
+      # default is BUILT by cargo and contains ZERO tests: the run reports
+      # green and the file looks covered. That is how 151 tests of
+      # `webfang_mcp` stopped running without anybody noticing. The guard
+      # fails when such a target is not declared with `required-features`;
+      # the harness proves the guard can still fail, over mktemp fixtures.
+      # Offline, pure text over the checked-out tree plus mktemp fixtures: no
+      # cargo, no build.
+      - name: Empty test target guard semantics harness
+        run: bash scripts/test_empty_test_targets.sh
       # Semantics harness for the AI-attribution trailer check wired into
       # pr-validation.yml. Proves on fixtures that the release-plz co-author
       # PASSES (a blanket ban would break the release flow), that the Claude
