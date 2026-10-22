@@ -1350,3 +1350,35 @@ Fixture OK contra su propio árbol (**1641 líneas**).
 el motivo extra: es la rama del **meta-guard que juzga harnesses**, y su evidencia vale sólo si el
 árbol desde el que se corrió era el head. Re-medido por mí (protocolo): los cuatro puntos del peer
 verifican exacto (head, ancestro, delta, 0 core/src, 11 atraso, fixture OK 1641).
+
+### 2026-10-22 · Los cancels de `#2252` no eran misterio: cada PUSH cancela el run del head anterior (grupo por `head_ref`, no por SHA)
+
+El peer lo midió con timestamps y lo re-verifiqué: el grupo de concurrencia es
+`CI-pull_request-<rama>` — debe así documentado en el propio `ci.yml` (el `event_name` evita que
+`merge_group` cancele a los `pull_request`) — y **el grupo no incluye el SHA** ⇒ **cada push del
+mismo rama mata el run en vuelo del head anterior**. Timeline de la rama: el run de `768c67d5`
+se canceló a las 16:00:14, **15 segundos después** de que mi push de `fdec05ee7` creara su run a las
+15:59:59; el de `113a4398` se canceló 5 s después del push a `768c67d5`. La causa era legítima: mis
+propios pushes. No hay tercer actor.
+
+**Regla C (operativa, adoptada): no re-correr nada mientras haya un run en curso sobre el head
+actual.** Re-ejecutar un attempt viejo lo vuelve a registrar en el **mismo grupo** y puede matar
+al run vivo (lo que le pasó al attempt 2 de `768c67d5`). Desde ahora: un run por head, y el pedido
+de verificación espera a que cierre. **No se toca `ci.yml` por esto**: el keying es intencional.
+
+**El run vivo que importa: `39810057857` (fdc05ee7, attempt 2, in progress)** — queda en `job-4`,
+sin intentos paralelos.
+
+### Atribución de issues (trazabilidad)
+
+El peer abrió **`#2269`–`#2272`**. **`#2273` la abrí Yo (lane del orquestador de PRs)**, a pedido
+del owner como carrier para el tracker ODD; el owner le aplicó `status:approved` y con ella abrí la
+**PR `#2274`** (`Closes #2273`). Correo de attribution asentado en este ledger — la fila de mi
+mensaje anterior que decía "tu issue #2273" hacia el peer estaba equivocada: la issue es de este
+lane, no suya.
+
+### Estado del merge de `#2247` (verificado por el peer, y queda sobre su protocolo)
+
+`origin/main = de8173a4`: extracto del árbol + extractor vs fixture = **1641 líneas ambos, 0 diferencias**
+— el conflicto de la fixture se resolvió bien en el merge y **no dejó daño**. Es la verificación que
+el peer corre por cada merge (`git archive` + extractor) y hoy dio verde.
