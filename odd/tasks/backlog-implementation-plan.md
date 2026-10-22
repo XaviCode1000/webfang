@@ -904,3 +904,70 @@ de la matriz ⇒ el lane del exporter queda con un cabo visible: `#2237 → #223
 
 **El cableado de producción de `during_cancel_drain` no se toca** hasta que el owner lo decida
 (el peer lo deja explícito, y el lote lo dice).
+
+### 2026-10-22 · MATRIZ DE APERTURA (el owner abre: "ok abrimos las pr's")
+
+**Las tres reglas que decide la apertura, medidas y no supuestas:**
+
+1. **El `type:*` lo dicta el TÍTULO**, no el label de la issue: `scripts/auto_label_type.sh` (que
+   entró en `main` con #2228) mapea el prefijo del título al label (`fix`→`type:bug`,
+   `feat`→`type:feature`, `docs`→`type:docs`, `refactor`→`type:refactor`, `chore`/`ci`→`type:chore`,
+   `test`→`type:testing`). Los labels que existen: `type:bug`, `type:feature`, `type:docs`,
+   `type:refactor`, `type:chore`, `type:testing`, `type:breaking-change`. ⇒ el título se escribe
+   primero y el label sale de ahí; **no se agrega un segundo `type:*`**.
+2. **Cada issue enlazada tiene `status:approved`**: verificado en las 14 issues de esta matriz
+   (las 5 aprobaciones del owner, 2026-10-22, ya aplicadas). Ninguna se auto-aprueba.
+3. **La forma del cierre es por fila, no por regla**: `Closes #N` cierra la issue; `Closes part of #N`
+   no la cierra y deja el umbrella abierto. Las issues que **ya están cerradas** (`#1852`, `#2162`,
+   `#1980`, `#2063`, `#1584`) **no** aparecen en ningún cuerpo de PR.
+
+| Slice | Rama | Título del PR (prefijo → label) | Issues (forma exacta) |
+|---|---|---|---|
+| **L2a** | `fix/merge-when-green-merged-state-code` | `fix(ci): merge-when-green detecta la PR ya mergeada y la limpieza post-merge no queda encadenada` → `type:bug` | `Closes #1970` · `Closes #1971` · `Closes #1972` |
+| **L3a** | `fix/ci-health-w03-classifier` | `fix(ci): el observer del CI Health clasifica por línea de fallo y cierra por subtítulo` → `type:bug` | `Closes #2233` · `Closes part of #1936` |
+| **L3b** | `fix/2234-hermetic-args` | `fix(cli): el parseo de los tests es hermético por construcción` → `type:bug` | `Closes #2234` |
+| **L4** | `fix/guard-residuals` | `fix(ci): los residuales de guard tienen dueño (parser liberal, filtro de comentarios, semver en base 10)` → `type:bug` | `Closes #2070` (los ítems 1–3 implementados; el ítem 4 = decisión documentada de no hacer nada) |
+| **L5** | `fix/ai-attribution-exact` | `fix(ci): la allowlist de atribución exige identidades exactas` → `type:bug` | `Closes #1995` |
+| **L6** | `chore/mutation-shard-measurement` | `chore(ci): el conteo de mutantes medido y la matriz rebalanceada a 96 shards` → `type:chore` | `Closes #1844` |
+| **L7** | `fix/mcp-surface-truth` | `fix(mcp): la superficie del servidor MCP dice lo que hace` → `type:bug` | `Closes #1815` · `Closes #1837` · `Closes #2193` · `Closes part of #1817` |
+| **L8** | `fix/false-green-tests` | `fix(test): los falsos verdes de test mueren con diagnóstico en vez de colgar en verde` → `type:bug` | `Closes #2066` · `Closes #1816` · `Closes #1834` · `Closes part of #1828` |
+| **L9** | `fix/build-graph-deps` | `refactor(deps): el grafo deja de llevar lo que no se usa` → `type:refactor` | `Closes #1799` · `Closes #1797` · `Closes #1796` |
+| **L10** | `fix/unmaintained-crates` | *pendiente T4+* → el prefijo lo fija el commit que cierre la mitad de keyring | `Closes #1984` · `Closes #2031` *(cuando T4+ confirme la salida de zbus)* |
+| **L11** | `fix/obscura-unknown-verdict` | `fix(cli): el veredicto Unknown de obscura nombra el mínimo esperado` → `type:bug` | `Closes #1710` |
+| **L12** | `fix/duplication-arrange-helpers` | *pendiente la implementación* | `Closes part of #1757` (**no la cierra**: su AC 1 es self-clones de producción, otro alcance) |
+| **L14** | `fix/docs-runbooks-wal` | `docs: el runbook de recuperación de WAL/SQLite y la nota de obscura` → `type:docs` | `Closes #1826` · `Closes part of #1609` |
+| **L15** | `fix/miri-ub-lane` | `fix(ci): la lane de UB deja de saltarse árboles de test y tiene un guard de invariantes` → `type:bug` | `Closes #2235` |
+| **L13** | — | **DESCARTADO** (decisión del owner: `#1821` se deja, no se toca) | — |
+
+**Los veredictos por fila que la issue exige (no una regla):**
+
+- **#1936** (L3a): su cuerpo es *"Known FP only (W-03)"* ⇒ el lote arregla exactamente su contenido,
+  pero la issue la auto-gestiona el CI Health Observer ⇒ `Closes part of` y un comentario con la
+  evidencia; que la cierre el observer o el maintainer, no un PR.
+- **#1828** (L8): **sigue abierta** hasta que aterrice `#2244` (la fila `during_cancel_drain` de la
+  matriz de crash); el resto de su contenido (la fila WAL-kill con `PRAGMA integrity_check`, el
+  `cfg(loom)` documentado como aceptado, el catálogo que ya coincide con la realidad) sí aterriza.
+- **#1833** (L8): **no aparece**: su propuesta (un scratch-crate que compila una *copia*) está
+  rechazada (D19) y espera la decisión O4 del owner ⇒ no hay nada de esa issue en el PR.
+- **#1852** (L8): ya cerrada (con `default = ["mcp"]` y el guard nuevos) ⇒ no se vuelve a enlazar.
+- **#1817** (L7 + L14): la parte de **las cifras** aterriza en L7 y la del **runbook** en L14 ⇒
+  `Closes part of` en los dos; se cierra cuando landing ambos.
+- **#2061** (L14): **no se cierra**: la rotación automática está **rechazada** (el gate `published`
+  ya corre dentro de `Validate PR metadata`); lo que queda en pie es el gate, no un bot.
+- **#1609** (L14): umbrella de 25 filas ⇒ `Closes part of #1609`; cierra con la última de sus tres
+  issues vivas (`#2241`, `#2242`, `#2243`), cada una en su propio PR.
+- **#2241** (`type:docs`), **#2242** (`type:bug`), **#2243** (`type:chore`): tres tipos distintos ⇒
+  **tres PRs**, no uno.
+- **#1757** (L12): `Closes part of` ⇒ su AC 2 ("por debajo de 7602") es incomparable con la escala
+  vigente (7602 es del detector anterior).
+
+**L2 se parte en dos PRs, y por qué:** la rama del plan arrastra **42 commits** (el tracker ODD del
+backlog, ~2400 líneas de markdown en español) mezclados con los **2 commits de código**. Un PR con
+todo eso mezcla una corrección de script con un documento de proceso que nadie pidió en esa PR ⇒
+ruido para el revisor. ⇒ **L2a** lleva el código y las reglas (`d16ffef2`, `67ff6128`) desde una
+rama propia; **el tracker** se abre **al final**, como PR de docs, con su issue propia.
+
+**El orden de `ci.yml`:** abrir es paralelo, **merquear es en serie**. `ci.yml` lo tocan L2, L8, L12,
+L15 y L9 ⇒ ese orden relativo es el que gana; el segundo que llega re-aplica su step sobre el
+`main` nuevo (el conflicto aparece al mergear, no al abrir) ⇒ conflicto mecánico, con anclas
+distintas, resuelto en el momento del merge.
