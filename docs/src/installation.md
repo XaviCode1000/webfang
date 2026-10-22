@@ -202,7 +202,7 @@ fails with exit 78 (ADR-0004 §46, corrected 2026-10-21).
 
 ```powershell
 # 1. Download (PowerShell 5.1+)
-$Version = "v5.0.0"
+$Version = "v5.0.1"
 $Asset   = "webfang-x86_64-pc-windows-msvc.zip"
 Invoke-WebRequest "https://github.com/XaviCode1000/webfang/releases/download/$Version/$Asset" -OutFile $Asset
 Invoke-WebRequest "https://github.com/XaviCode1000/webfang/releases/download/$Version/SHA256SUMS.txt" -OutFile SHA256SUMS.txt
