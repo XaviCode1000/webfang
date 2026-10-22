@@ -67,18 +67,18 @@ build a la vez en la máquina (regla 3 del plan padre) y el protocolo acotado (j
 
 ## Tasks
 
-- [ ] T1 · S2, S9 — la key `mcp` de `webfang_cli` queda como `mcp = []` (marcador explícito), no
+- [x] T1 · S2, S9 — la key `mcp` de `webfang_cli` queda como `mcp = []` (marcador explícito), no
   se borra: sus cinco consumidores siguen funcionando.
-- [ ] T2 · S3, S7 — el path gate compara con `eq_ignore_ascii_case` (ASCII-narrow) y el caso
+- [x] T2 · S3, S7 — el path gate compara con `eq_ignore_ascii_case` (ASCII-narrow) y el caso
   nombrado prueba que no acepta la variante que el filesystem mantiene distinta; la
   limitación (root macOS no-ASCII) queda documentada.
-- [ ] T3 · S4 — el conteo de 36 tools (y el de crates) en **una sola fuente**, con la aserción
+- [x] T3 · S4 — el conteo de 36 tools (y el de crates) en **una sola fuente**, con la aserción
   del conteo exacto en `server.rs`.
-- [ ] T4 · S1, S5 — `match_url_pattern` documenta lo que hace: los modos que existen, o el
+- [x] T4 · S1, S5 — `match_url_pattern` documenta lo que hace: los modos que existen, o el
   doc comment corregido a los que existen.
-- [ ] T5 · S6 — la constante de shutdown pasa a `pub` y el mensaje de termination source deja
+- [x] T5 · S6 — la constante de shutdown pasa a `pub` y el mensaje de termination source deja
   de duplicarse.
-- [ ] T6 · S1-S9 — verificación: tests de `webfang_mcp` en verde (con el build acotado de S8),
+- [x] T6 · S1-S9 — verificación: tests de `webfang_mcp` en verde (con el build acotado de S8),
   `cargo fmt --all -- --check`, clippy del paquete, y **diferencial**: el handshake que pinea
   el conteo sigue verde con la misma cifra.
 
@@ -88,6 +88,10 @@ test. Lanza cuando haya ventana de build (un build a la vez en la máquina).
 ---
 
 ## Log
+
+L0 — Estado de los ítems al cerrar la implementación (el detalle de la evidencia va en L5):
+T1 ✅ · T2 ✅ · T3 ✅ · T4 ✅ · T5 ✅ · T6 ✅. T7 (el commit) lo cierra el owner: el worker no
+commitea.
 
 L1 — Petición original del owner (verbatim, del lote padre):
 
@@ -114,3 +118,62 @@ build de crate normal. La consecuencia práctica: L7 no necesita esperar a una v
 L4 — Correcciones del owner del plan al plan que afectan a este lote: el plan nombraba
 `scripts/tests/test_guard_coverage.sh` donde en realidad viven dos archivos (L4 ya lo
 resolvió); para L7 el plan no nombraba paths de archivo, así que este doc los fija (S9).
+
+L5 — **Implementación del lote en el worktree `fix/mcp-surface-truth`** (sin commit: el owner
+commitea el corte; T5 va en su propio work-unit porque toca `webfang_core`). Estado por ítem:
+
+- **T1 (S2, S9) — HECHO.** `crates/webfang_cli/Cargo.toml`: `mcp = ["webfang_core/mcp"]` →
+  `mcp = []`. La key NO se borra: `crates/webfang_core/tests/common/cli_harness.rs` construye el
+  binario del CLI con `--features mcp` (y `release.yml`, `docs.yml`, `check_compatibility.sh`,
+  `gen-cli-reference.sh` y los third-party notices hacen lo mismo), así que borrarla rompe esos
+  consumidores. `webfang_core/mcp` no gatea ningún sitio de PRODUCCIÓN; los que quedan son las
+  suites de test de `webfang_mcp` (con su feature PROPIO) y ese harness.
+- **T2 (S3, S7) — HECHO.** `path_gate.rs::components_start_with` compara con `eq_ignore_ascii_case`
+  sobre los BYTES del componente (`OsStr::as_encoded_bytes`), no con el `to_lowercase` de Unicode:
+  el folding Unicode no es el modelo de caso de NTFS/APFS (`ß` U+00DF y `ẞ` U+1E9E son una
+  variante para Unicode y dos nombres para el filesystem). ASCII-narrow es estrictamente más
+  estrecho que ambos ⇒ falla cerrado. La limitación (un root de macOS con nombre no-ASCII sólo casa
+  con su grafía exacta) queda escrita en el doc comment.
+- **T3 (S4) — HECHO.** El conteo vive en UNA sola fuente: `webfang_mcp::mcp_server::MCP_TOOL_COUNT`
+  (`pub`, 36). `server.rs` aserta el conteo EXACTO (antes: piso `>= 35`); el handshake stdio, el
+  gate de procedencia y el `long_about` de los dos binarios lo leen desde ahí. Los "35" sueltos:
+  `docs/manual/PLAN_PRUEBAS_REALES.md` (161 y la fila 6.4) → 36; `scripts/build-llm-artifact.sh`
+  deja de NOMBRAR un número (un número escrito a mano es una segunda fuente); `docs/src/overview.md`
+  lo corrigió L14 en su rama y NO se toca aquí.
+- **T4 (S1, S5) — HECHO.** La descripción de `match_url_pattern` dice lo que hace: el patrón se
+  compara contra la URL ENTERA como una cadena (glob anclado si trae metacaracter, subcadena si
+  no) y NO existen modos host-only ni path-only. Gate nuevo en `mcp_schema_compat_test.rs`.
+- **T5 (S6) — HECHO** (el owner amplió la superficie a
+  `crates/webfang_core/src/application/crawler/engine.rs`): `TERMINATION_REGISTRATION_REJECTED`
+  pasa a `pub` y el servidor MCP la adopta ⇒ un texto para un hecho, tres sitios (engine, CLI, MCP).
+- **T6 (S1-S9) — HECHO.** Evidencia abajo.
+
+Evidencia (protocolo acotado de S8: `$(rustup which cargo)`, `CARGO_BUILD_JOBS=1`,
+`CARGO_INCREMENTAL=0`, `CARGO_TARGET_DIR=~/.cache/cargo-target/fix-mcp-surface-truth`,
+`systemd-run --user --scope -p MemoryMax=3G`; el seed respondió `seed: cold reason=no-seed`):
+
+- **RED** — `cargo nextest run -p webfang_mcp --lib components_start_with_never_accepts_a_case_variant_the_filesystem_keeps_distinct`
+  (la producción seguía con el folding Unicode):
+
+      thread 'mcp_server::path_gate::tests::components_start_with_never_accepts_a_case_variant_the_filesystem_keeps_distinct'
+      panicked at crates/webfang_mcp/src/mcp_server/path_gate.rs:834:9:
+      a non-ASCII case variant must not be accepted: the comparison is ASCII-narrow, so a name
+      the filesystem may keep distinct is rejected instead of accepted (fail-closed, #1837)
+
+  ⇒ falla por el motivo del defecto (el folding Unicode acepta la variante), no por un stub.
+- **GREEN** — el mismo comando tras el cambio: `1 passed, 367 skipped`.
+- **Handshake** (pina el conteo) — `cargo nextest run -p webfang_mcp --features mcp --test stdio_handshake`:
+  9/9 verdes, incluido `stdio_tools_list_reports_the_pinned_tool_registry` (misma cifra: 36).
+- **Crate completo** — `cargo nextest run -p webfang_mcp --features mcp`: `637 tests run: 637 passed,
+  0 skipped`. Con `--features mcp` corren los 23 ficheros de test que la feature PROPIA de
+  `webfang_mcp` gatea; sin ella no existen. (Dos suites CLI↔MCP necesitan además el binario
+  `webfang` en el target dir: sin `cargo build -p webfang_cli` fallan por eso —"webfang binary not
+  found"— y no por el cambio.)
+- **Clippy** — `cargo clippy -p webfang_mcp -p webfang_cli --all-targets --all-features -- -D warnings
+  -W clippy::cognitive_complexity -W clippy::too_many_lines`: rc=0.
+- **Fmt** — `cargo fmt --all -- --check`: rc=0.
+- **Diferencial** — el CLI compilado con `--features mcp` y el compilado con las features por
+  defecto dan stdout, stderr y código de salida IDÉNTICOS (la opción es inerte, como antes);
+  `cargo tree -p webfang_cli` da un árbol byte-idéntico con `--features mcp`, con
+  `--features webfang_core/mcp` (el efecto del manifiesto viejo) y sin features; el `--help` de los
+  dos binarios MCP conserva la línea "Exposes 36 tools …" byte-idéntica.
