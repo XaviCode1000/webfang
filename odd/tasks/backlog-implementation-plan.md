@@ -760,3 +760,25 @@ verifican). **No cubren L9 ni L10**: ambos cambian `Cargo.toml` y el lock ⇒ su
 - **Un `| tail -40` sobre la salida se come el error**: si la transacción falla, el error se pierde y
   sólo queda un "Terminado" sin explicación. La verificación de una seed es *el store y su
   `manifest.toml`*, no la última línea del log.
+
+### 2026-10-22 · L10 plegado en el libro mayor: qué commit sostiene cada S#
+
+| S# | Qué exige | Commit que lo sostiene | Estado |
+|---|---|---|---|
+| **S1** | el ignore muerto de `RUSTSEC-2024-0436` se purga y no vuelve | `e02d1829` (el guard) + `905183ac` (su evidencia) | HECHO |
+| **S2** | el reemplazo de `serde_yaml` cubre los mismos casos de parseo que el camino actual | **`865652db`** (el swap a `serde_norway` + el borrado de `ScraperError::Yaml`, marcado BREAKING CHANGE) | HECHO |
+| **S3** | `cargo deny check` verde sin el error de `unsafe-libyaml`, y el build sigue verde | `1040d312` (el lock del fuzz regenerado **primero** y el ignore purgado **después**, que es el orden que D22 fija) | HECHO |
+| **S4** | la entrada de `deny.toml` lleva razón y `# Expires:` | `217c3959` (preexistente, PR #1986) | HECHO |
+| **S5**–**S8** | la mitad de `keyring` (el paquete `keyring` fuera del grafo, MSRV, las tres entradas de `deny.toml` de #2030, y que el audit lee el **lock**) | pendiente (T4+) | EN CURSO |
+
+**Evidencia de S2**: el lock del workspace tiene `serde_norway` + `unsafe-libyaml-norway` con **0**
+ocurrencias de `serde_yaml`; los 16 tests de `frontmatter.rs` pasan (incluidos los dos pines de PI-7)
+y el snapshot `obsidian_byline_artifact_test__empty_byline_fragment_repaired_in_excerpt` queda
+**byte-idéntico**, que es el criterio de aceptación del lote.
+
+**Una confirmación del mecanismo de seeds, aportada por el peer**: su worktree de L10 **invalidó su
+propia seed** al cambiar el manifiesto (por eso el rebuild post-cambio no fue instantáneo) ⇒ es
+exactamente lo que la key ata (`cargo_lock` + `workspace_contract`), y no un fallo. También queda
+anotado que **`webfang_benchmark` todavía no declara features** (L9 le añade `chromium`) ⇒ la lista
+explícita equivalente a `--all-features` **también** cambia con L9 ⇒ otra razón para publicar las
+seeds después de que L9 y L10 entren en `main` (en dos keys: default y la lista explícita).
