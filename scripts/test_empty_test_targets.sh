@@ -102,6 +102,12 @@ make_fixture "$T/case1" "mcp" "mcp" no yes
 run_guard "$T/case1"
 expect "case 1: gated + feature in the default passes" 0 "no declared test target compiles to zero tests"
 
+# NEGATION: a target gated on a feature that is NOT in the package default,
+# with no `required-features` declaration, must FAIL. Before the guard
+# existed, cargo built that target and it contained ZERO tests: the run
+# reported green and the file looked covered (#1852, 151 tests of
+# `webfang_mcp` that never ran). A guard that accepts this shape is the
+# defect itself.
 # ── case 2: gated + the feature NOT in the default + no declaration → FAIL ─
 make_fixture "$T/case2" "" "mcp" no yes
 run_guard "$T/case2"
@@ -119,12 +125,18 @@ make_fixture "$T/case4" "" "mcp" no no
 run_guard "$T/case4"
 expect "case 4: a target without a gate passes" 0 "no declared test target compiles to zero tests"
 
+# NEGATION: a tree with NO test target at all must FAIL. A guard that
+# inspects nothing and reports green is a green light wired to nothing: it
+# would pass on any tree where its enumeration broke.
 # ── case 5 (vacuity): a tree with no test target at all → FAIL ────────────
 make_fixture "$T/case5" "" "mcp" no no
 rm -rf "$T/case5/crates/pkg/tests"
 run_guard "$T/case5"
 expect "case 5: a tree with no test target fails (the guard must not pass by inspecting nothing)" 1 "inspected NO test target"
 
+# NEGATION: EVERY gated file must be named in the failure, not just the
+# first one. A guard that names one file out of twenty-two leaves the rest
+# invisible, and the operator fixes one and believes the tree is clean.
 # ── case 6 (the real shape of #1852): 22 files gated on a feature that is
 #     not in the default → the guard names EVERY one of them ───────────────
 make_fixture "$T/case6" "" "mcp" no yes
