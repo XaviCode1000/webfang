@@ -26,12 +26,15 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 /// can never blanket-permit a whole translation range (the embedded IPv4
 /// must be allowlisted individually instead).
 ///
-/// The entries record the RANGE THAT IS ACTUALLY DENIED at dial time, not
-/// the shape of the address that first revealed the gap: the IPv4 entry is
-/// the whole "this network on this host" family 0.0.0.0/8 (#1965, A5), and
-/// the NAT64 entry is the whole prefix space 64:ff9b::/32 — the canonical
-/// Well-Known Prefix included, since a Network-Specific Prefix cannot be
-/// decoded and fails closed (#1965, A6).
+/// The entries are the ranges the CONFIG-VALIDATION layer must refuse as a
+/// blanket allowlist entry, not the shape of the address that first revealed
+/// the gap. Where the dial layer also denies them unconditionally, the IPv4
+/// entry is the whole "this network on this host" family 0.0.0.0/8 (#1965,
+/// A5) — denied as a family at dial time too. The NAT64 entry is the whole
+/// prefix space 64:ff9b::/32, but only its NON-CANONICAL half (the
+/// Network-Specific Prefixes) is denied at dial time: the canonical
+/// Well-Known Prefix keeps deriving its verdict from the embedded IPv4, the
+/// standard NAT64 path that must keep working (#1965, A6).
 ///
 /// `pub(crate)` so the dial layer can read the very same table instead of
 /// keeping a second copy of it: `ssrf_guard`'s always-denied set is the
@@ -522,9 +525,9 @@ mod tests {
     }
 
     /// A5 (#1965): the "this network on this host" family 0.0.0.0/8 is never
-    /// allowlistable — Linux routes the whole family to the local host. An
-    /// entry that only touches the family OUTSIDE 0.0.0.0 itself must be
-    /// rejected too: the registry records the family that is actually denied.
+    /// allowlistable — it is reserved and never globally routable. An entry
+    /// that only touches the family OUTSIDE 0.0.0.0 itself must be rejected
+    /// too: the registry records the family that is actually denied.
     #[test]
     fn allowlist_this_network_family_is_rejected() {
         let err = serde_json::from_str::<NetworkPolicy>(&policy_json(

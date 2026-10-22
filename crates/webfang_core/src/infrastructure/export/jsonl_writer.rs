@@ -265,37 +265,28 @@ fn recover_torn_tail(path: &Path) -> io::Result<()> {
 /// in the logs to say why. Those lines are now counted and reported (#1617,
 /// D3), so the failure stays visible even when the compatibility test does not
 /// cover the exact file at hand.
+///
+/// The read is the application's
+/// [`read_jsonl_checksum_index`](crate::application::export_factory::read_jsonl_checksum_index):
+/// ONE reader for the export file, so this side and the application's
+/// `CommitSession` agree on what a line is. It is STREAMING (the file is never
+/// loaded whole) and it SKIPS a line that is not valid UTF-8 instead of
+/// failing the export — one damaged byte must not abort the whole export
+/// (#1812). The application layer owns the REPORTING of the skip: it is the
+/// layer that surfaces the count in the export summary, and this side reads
+/// the very same bytes a second time.
 fn build_hash_index(path: &Path) -> io::Result<HashSet<String>> {
-    let mut index = HashSet::new();
-    if !path.exists() {
-        return Ok(index);
-    }
-    let data = fs::read_to_string(path)?;
-    let mut without_checksum = 0usize;
-    for line in data.lines() {
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
-            continue;
-        };
-        match value
-            .get(CHECKSUM_FIELD)
-            .and_then(serde_json::Value::as_str)
-        {
-            Some(hash) => {
-                index.insert(hash.to_owned());
-            },
-            None => without_checksum += 1,
-        }
-    }
-    if without_checksum > 0 {
+    let index = crate::application::export_factory::read_jsonl_checksum_index(path)?;
+    if index.report.without_checksum > 0 {
         warn!(
-            lines_without_checksum = without_checksum,
-            indexed = index.len(),
+            lines_without_checksum = index.report.without_checksum,
+            indexed = index.hashes.len(),
             field = CHECKSUM_FIELD,
             path = %path.display(),
             "JSONL lines carry no checksum field; resume dedup will re-drive them (writer/reader field-name mismatch?)"
         );
     }
-    Ok(index)
+    Ok(index.hashes)
 }
 
 /// Remove stray `.tmp` siblings of this output left behind by crashes.
