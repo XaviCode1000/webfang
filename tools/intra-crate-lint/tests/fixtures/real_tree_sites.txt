@@ -1277,9 +1277,9 @@ extractor/mod.rs	137	inline	crate::domain::ValidUrl::try_from_url
 extractor/mod.rs	140	inline	crate::adapters::detector::detect_from_url
 extractor/mod.rs	208	inline	crate::domain::ValidUrl::try_from_url
 extractor/mod.rs	209	inline	crate::adapters::detector::detect_from_url
-infrastructure/autotuning.rs	62	inline	crate::domain::budget::detector::system_parallelism
-infrastructure/autotuning.rs	230	use	crate::domain::config::AutotuningConfig
-infrastructure/autotuning.rs	230	use	crate::domain::config::ElasticOverrides
+infrastructure/autotuning.rs	64	inline	crate::domain::budget::detector::system_parallelism
+infrastructure/autotuning.rs	260	use	crate::domain::config::AutotuningConfig
+infrastructure/autotuning.rs	260	use	crate::domain::config::ElasticOverrides
 infrastructure/axtree/mod.rs	21	use	crate::domain::axtree_port::AxTreePort
 infrastructure/axtree/mod.rs	23	use	crate::domain::axtree_port::RawAxNodeView
 infrastructure/axtree/mod.rs	25	use	crate::error::ScraperError
