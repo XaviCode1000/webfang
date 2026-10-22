@@ -589,3 +589,31 @@ de Windows es la única que compila Windows**; un gate que compila una copia no 
 de `webfang_test_utils` **no surtía efecto** (cargo avisa que se ignora mientras la dependencia
 del workspace no lo declare) ⇒ la inmunización de D8 estaba escrita y era un flag silenciosamente
 ignorado. Corregido en la dependencia del workspace (`80ae3571`).
+
+### 2026-10-22 · D21-A: el owner decide la salida A de #2244 (cablear la cancelación)
+
+**Decisión del owner (2026-10-22): salida A.** `cli/export_flow.rs` entrega el token de
+cancelación de la sesión al `ResumeContext` ⇒ la rama `Cancelled` del drain corre, y un export
+cancelado **no persiste estado parcial**. Es la intención de E8 ("drain before final persist") y es
+el requisito de auditoría registrado que el punto de crash guardaba.
+
+**Lo que queda fijado por esta decisión**:
+
+- **Cambia el comportamiento visible, a propósito**: hasta ahora `Ctrl-C` durante un export **no**
+  lo detenía — el export terminaba y persistía el estado final. A partir de ahora, un export
+  cancelado se detiene en el drain y no persiste nada parcial.
+- **`DURING_CANCEL_DRAIN` deja de ser un verde falso**: mientras el cableado no exista, el punto
+  está armado pero inalcanzable; una vez que existe, el punto es real y **la fila del matrix se
+  puede escribir** (y el catálogo `docs/persistence-resume.md` la lista con el test que la pinea).
+  Hasta entonces, la matriz sigue listando **sólo las filas que existen**.
+- El punto **se queda** (marcador de un requisito vivo, no código muerto) y su documentación en
+  `cli/crash_points.rs` **no** puede decir "reserved for PR5b".
+
+**Criterios de aceptación (en la issue `#2244`, ya con `status:approved`)**: el token se entrega;
+un test prueba que un export cancelado no persiste estado parcial (y que el camino no cancelado
+no cambia); la fila del matrix se escribe **después** de que el cableado exista; la documentación
+del punto lo describe como alcanzable y nombra el test que lo prueba.
+
+**Orden**: toca el camino del export, que `#2230` (abierta) también toca ⇒ aterriza **después** de
+que `#2230` mergee, para no re-basear dos veces seguidas el mismo camino. `#2237` y `#2238` son
+independientes de esta decisión y conservan su orden.
