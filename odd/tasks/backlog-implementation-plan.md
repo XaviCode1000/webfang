@@ -617,3 +617,42 @@ del punto lo describe como alcanzable y nombra el test que lo prueba.
 **Orden**: toca el camino del export, que `#2230` (abierta) también toca ⇒ aterriza **después** de
 que `#2230` mergee, para no re-basear dos veces seguidas el mismo camino. `#2237` y `#2238` son
 independientes de esta decisión y conservan su orden.
+
+### 2026-10-22 · L8 cerrado (peer) y el lado issues de L8 publicado (padre)
+
+**L8 HECHO** (peer): 13 commits sobre mi spec `da23c097` — `4919caaf` (T3+T4: `default=["mcp"]`,
+`default-features=false` en el harness, 4 targets gated con `required-features`), `072c0383` (T5: el
+guard `scripts/check_empty_test_targets.sh` + su harness + el step en `repo-guards`), `22972eaf`
+(T1+T2: el fix del cuelgue + su test), `335b8116` (T7: la integridad SQLite tras reabrir),
+`126c421f` (T10: el pacing del 429 observable + la barrera del flush), `80ae3571` (el
+`default-features` que no surtía efecto), `8ae91119` (T6: la tabla de la matriz y el runbook),
+`4221bb4f` (T7/T9), `fd9596a5` (T6 con desviación), `934e7f18` (el pacing era inestable), `1702d1ec`
+(el comentario de seguridad que exige clippy), `24a819c2` (evidencia y cierre).
+
+**Dos defectos de la misma clase que el lote audita, aparecidos en el propio lote**:
+el `default-features = false` de `webfang_test_utils` **no surtía efecto** (cargo avisa que se ignora
+mientras la dependencia del workspace no lo declare) ⇒ la inmunización estaba escrita y era un flag
+silenciosamente ignorado; y el guard nuevo leía el gate con `head -40`, así que dos archivos con el
+gate más abajo se contaban **sin** gate ⇒ un falso PASS (el número real es 22, no 20).
+
+**Verificación final del lote**: `check`, `clippy --all-targets --all-features -D warnings`, `fmt`,
+`doc` con `RUSTDOCFLAGS=-D warnings`, los tres guards, la matriz de crash **27/27**, el store SQLite
+con `persistence`, y la behavioral **168/168 dos veces seguidas** (el test del pacing era inestable:
+medía desde el inicio del run en vez de desde la respuesta 429, y `--backoff-max-ms 50` capaba un
+`Retry-After` de 1000 ms por debajo del límite que la aserción exigía).
+
+**Lado issues de L8, publicado y verificado**: `#1852` comentario `6333191158` + **CERRADA** (sus AC
+quedan satisfechas: AC1 con `default = ["mcp"]`, AC2 eliminada con el crate, AC3 con el guard
+nuevo, AC4 con el conteo real pinedo en el harness) · `#1828` comentario `6333191355` (las
+decisiones registradas de las filas sin test: la de WAL-kill con `PRAGMA integrity_check` sin kill
+ni punto de arming nuevo, la de `during_cancel_drain` **inalcanzable en producción** y por eso sin
+fila —con el hueco en `#2244`, ya aprobado—, y el `cfg(loom)` aceptado y documentado; el catálogo
+lista las **diez** filas que existen) · `#1833` comentario `6333191560` (la decisión del 2026-09-30
+sigue vigente: la lane real de Windows es la única que compila Windows; la propuesta del scratch
+crate se rechaza porque *un gate que copia el sujeto no gatea el sujeto*; la issue queda a la
+espera de O4).
+
+**Corrección al estado que reportó el peer**: L10 **no** espera ninguna definición mía (D20 está
+decidida desde `0509e2b8`: la clave de la credencial no cambia) y L13 **no** espera O3 (el owner lo
+descartó: *"la issue 1821 la dejamos, no la tocamos"*). Lo único pendiente de L10 es la
+implementación; lo único pendiente de L13 es nada.
