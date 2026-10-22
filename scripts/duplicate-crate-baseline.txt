@@ -31,28 +31,22 @@
 # with '#' and blank lines are ignored. A duplicated line is itself an error.
 #
 # Generated from `cargo deny check bans` on Cargo.lock at workspace version
-# 2.4.1 (2026-09-30, issue #1607).
-async-channel
+# 5.0.0 (2026-10-22, issue #1607 baseline refreshed by the L9 build-graph lote:
+# the default workspace graph no longer carries chromiumoxide, so its
+# transitive duplicates disappeared).
 base64
 block-buffer
 chacha20
-console
 cpufeatures
 crypto-common
 cssparser
 cssparser-macros
 dashmap
 digest
-dirs
-dirs-sys
-event-listener
 foldhash
 getrandom
 hashbrown
-heck
 html5ever
-indicatif
-linux-raw-sys
 lru
 markup5ever
 markup5ever_rcdom
@@ -60,9 +54,7 @@ r-efi
 rand
 rand_chacha
 rand_core
-redox_users
 rustc-hash
-rustix
 secrecy
 selectors
 sha2
