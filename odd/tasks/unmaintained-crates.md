@@ -236,13 +236,19 @@ aceptación es sobre el **lock**, así que la prueba es `cargo tree -p webfang_c
   `frontmatter.rs` (incluidos `test_generate_normalizes_excerpt_whitespace` y
   `test_title_with_newline_cannot_inject_yaml_keys`) y con el snapshot
   `obsidian_byline_artifact_test__empty_byline_fragment_repaired_in_excerpt.snap` **sin cambios**.
-- [ ] T2 · S2, S3, S4 — `deny.toml`: se borra la entrada `RUSTSEC-2024-0449` y su bloque de
-  comentario. Se prueba con `bash scripts/check_advisory_policy.sh` en verde y con el harness
-  `scripts/test_advisory_policy.sh` (el caso de S1).
 - [ ] T3 · S3 — `Cargo.lock` y `fuzz/Cargo.lock` regenerados (el del fuzz hoy está stale y es lo
   que mantiene viva la supresión de `RUSTSEC-2024-0449`). Se prueba con
   `cargo tree -p webfang_core --target all` (no aparece `unsafe-libyaml`) y con el audit del lock
   del fuzz dentro de `scripts/check_advisory_policy.sh`.
+
+  **Orden (D22): T3 va PRIMERO y T2 DESPUÉS.** El ignore `RUSTSEC-2024-0449` es de
+  `unsafe-libyaml`, y mientras el lock del fuzz siga llevando ese crate el ignore sigue
+  VIVO: no hay nada que purgar. Purgarlo primero sería un no-op silencioso, y hasta el
+  guard de S1 lo contaría como justificado. El ignore sólo muere cuando el lock del fuzz
+  entra `unsafe-libyaml-norway`, que es otro crate y no lo cubre.
+- [ ] T2 · S2, S3, S4 — `deny.toml`: se borra la entrada `RUSTSEC-2024-0449` y su bloque de
+  comentario. Se prueba con `bash scripts/check_advisory_policy.sh` en verde y con el harness
+  `scripts/test_advisory_policy.sh` (el caso de S1).
 - [ ] T4 · S5, S6, S8 — `crates/webfang_core/Cargo.toml`: `keyring` sale de las tres tablas
   target-specific; entran `keyring-core` y los tres stores. Módulo nuevo
   `crates/webfang_core/src/domain/keyring_store.rs` (el único lugar que decide store y clave),
