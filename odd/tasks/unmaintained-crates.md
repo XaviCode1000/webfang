@@ -592,3 +592,116 @@ requisito (clave byte-idéntica `keyring-rs:{user}@{service}`), los dos mecanism
 por qué de no migrar y el nombre del test. Corregir la spec ANTES de implementarla no es
 cosmético: con la premisa falsa, la implementación "correcta" habría buscado un modificador que no
 existe.
+
+L17 — **T4 y T5 implementados. El mecanismo es (a): configurar el store. Y la premisa del
+spec sobre el ORDEN de la clave era FALSA.**
+
+**Lo primero, la corrección que cambia el análisis.** L8 decía que el store nuevo arma la clave
+como `prefix + service + divider + user + suffix` ⇒ `keyring:{service}@{user}`, "distinto prefijo
+y distinto orden". Es falso. El código real de `linux-keyutils-keyring-store` 1.0.0
+(`src/cred.rs`, `build_from_specifiers`) es:
+
+```rust
+format!("{}{user}{}{service}{}", delimiters[0], delimiters[1], delimiters[2])
+```
+
+o sea `{prefix}{user}{divider}{service}{suffix}` ⇒ `keyring:{user}@{service}`. El **orden es el
+mismo que el legacy** (`keyring` 3: `keyring-rs:{user}@{service}`, `keyring-3.6.3/src/keyutils.rs`,
+`new_with_target`): lo único que cambia es el **prefijo** (`keyring:` vs `keyring-rs:`). La
+distinción importa porque acotaba el error: no hay dos claves que arreglar, hay un prefijo que
+fijar.
+
+**El mecanismo, con la API a la vista.** `keyring-core` 1.0.1 expone
+`api::CredentialStoreApi::build(&self, service, user, modifiers) -> Result<Entry>`; el store de
+Linux implementa `Store { id, delimiters: [String; 3], service_no_divider }` con
+`Store::new_with_configuration(&HashMap<&str, &str>)` que acepta las claves `"prefix"`,
+`"divider"`, `"suffix"` y `"*service_no_divider"`. Configurar el store es, por lo tanto, la vía
+**pública y documentada** para fijar la clave, y es exactamente el mecanismo (a) que D20 admite:
+sin migración, sin estado nuevo, sin lectura doble. Se usa
+`prefix = "keyring-rs:"`, `divider = "@"`, `suffix = ""` ⇒ `keyring-rs:{user}@{service}`,
+byte-idéntica a la legacy. `service_no_divider` queda en `false` (el default, y el de `keyring` 3:
+rechazar un `service` con `@` dentro dejaría fuera credenciales que hoy funcionan).
+
+**L16 era media verdad, y conviene dejarla escrita.** "No existe ningún modificador
+`description`" es cierto de la API **genérica** de `keyring-core` (`Entry::new_with_modifiers`
+pasa los modificadores al store, y cada store define los suyos) y falso de la API **del store**:
+`linux-keyutils-keyring-store` 1.0.0 acepta un modificador `description` propio
+(`Store::build` → `parse_attributes(&["description"], modifiers)`), documentado en su `lib.rs`
+("If a keyring entry is created with an explicit `description` modifier, that value is used as the
+keyutils description"). O sea que el mecanismo (b') —pasar la description legacy en cada build—
+también habría funcionado. **Se eligió (a) y no (b') por una razón que no es de gusto: la
+configuración es del store, y el store es el que decide la clave.** Con (b') la clave depende de
+que cada call site recuerde pasar el modificador: un `Entry` construido por otro camino (o un
+`store.build(...)` futuro) direccionaría `keyring:{user}@{service}` en silencio y la credencial
+quedaría huérfana sin que nada lo diga. Con (a) la clave es una propiedad del store y no hay
+llamadas que se puedan olvidar. Ninguno de los dos mecanismos toca el contrato de "sin fallback".
+
+**El RED y el GREEN, observados.** Con el store **por defecto** (`Store::new()`), la clave que el
+store real produce es:
+
+```
+left:  "keyring:webfang-legacy-key-account@webfang-legacy-key-service"
+right: "keyring-rs:webfang-legacy-key-account@webfang-legacy-key-service"
+```
+
+(`the_credential_key_is_byte_identical_to_the_legacy_key` falla; el assert sobre
+`store.delimiters` también falla: `["keyring:", "@", ""]` vs `["keyring-rs:", "@", ""]`). Con la
+configuración del módulo, el test pasa. El test es Linux-only, como pide D20: en macOS la clave
+es el par de atributos `service`/`account` y en Windows el `target_name = {account}.{service}`,
+idénticos por construcción (`keyring-3.6.3/src/macos.rs` usa
+`set_generic_password(&self.service, &self.account, …)` y el store nuevo hace
+`set_generic_password(&self.service, &self.account, secret)`; en Windows, `keyring` 3 usa
+`target_name: format!("{user}.{service}")` y el store nuevo, con su default
+`["", ".", ""]`, arma `{prefix}{user}{divider}{service}{suffix}` = `{user}.{service}`).
+
+**El test tiene dos capas, y por qué.** La primera (la configuración: `store.delimiters` y
+`store.service_no_divider`) no depende del entorno: es la que discrimina RED/GREEN y la que
+sostiene el contrato donde no hay keyring del kernel. La segunda (la clave real, sacada del
+`Cred.description` del store de verdad vía `Entry::as_any()`) sí necesita el keyring del kernel:
+si el keyring no está disponible, el test avisa por `eprintln!` y se apoya en la primera capa, en
+vez de fingir que comprobó la clave real.
+
+**Los otros tres stores, verificados con su código, no de memoria.** `apple-native-keyring-store`
+1.0.2 con la feature `keychain` (el keychain "legacy" (User/login), que es el que usaba
+`keyring` 3 con `apple-native`; el store "protected" es OTRO store de macOS y queda apagado, con
+`default-features = false`); `windows-native-keyring-store` 1.1.0 (misma construcción de
+`target_name` que 1.0.0: default `["", ".", ""]`); `linux-keyutils-keyring-store` 1.0.0 (con
+`linux-keyutils` 0.2, el MISMO crate y la MISMA versión 0.2.5 que ya estaban en el lock ⇒ el
+keyring del kernel y sus keyrings sesión/persistentes son los mismos).
+
+**La salida del grafo, medida.** `cargo tree -p webfang_core --target all` no encuentra `zbus`,
+`zvariant`, `secret-service`, `dbus`, `libdbus-sys` ni `unsafe-libyaml` (sólo
+`unsafe-libyaml-norway`, la fork mantenida del swap a `serde_norway`). Del lock del workspace
+salen, además de la cadena zbus: `keyring`, `secret-service`, `dbus-secret-service`, `dbus`,
+`libdbus-sys`, `nix`, `uds_windows`, `core-foundation` 2.11.1, `proc-macro-crate` y el segundo
+`toml_edit` (0.25.15) — o sea que el swap también **desduplica** `toml_edit`. El comentario de
+`crates/webfang_core/Cargo.toml` que describía ese segundo copy como "una segunda copia que
+existe" quedó viejo con el swap y se corrigió (era verdad y dejó de serlo en el mismo commit).
+
+**El orden real de T5, y es el mismo que L14.** Las tres supresiones de zbus mueren cuando el
+lock deja de tener zbus — y `cargo audit` lee **los dos** lockfiles. Con el lock del workspace
+ya limpio, la primera corrida del guard siguió en rojo: el lock del FUZZ todavía arrastraba
+`keyring` 3 y su cadena zbus (`fuzz/Cargo.lock` se regeneró en T3, antes del swap de T4, y el
+swap vuelve a cambiar el grafo). El rojo era literal: `error: 3 denied warnings found!` sobre
+`fuzz/Cargo.lock`, con `zbus_names` 3.0.0, `zvariant` 4.2.0 y `zvariant_derive` 4.2.0. El
+orden que funciona es: **lock del fuzz primero, ignores después**. Regenerado el lock del fuzz
+(el zbus sale de los dos lockfiles) y recién entonces las tres entradas de `deny.toml` se van
+— y el guard cierra en verde con **10 ignores justificados** (13 antes de este lote: 13 − 3).
+
+**Dos desviaciones de superficie, declaradas.** La lista de superficies editables de la tarea NO
+incluía `deny.toml` (la superficie de T5) ni `fuzz/Cargo.lock` (la superficie de T3), y las dos
+hizo falta tocarlas: sin `deny.toml` el ignore de zbus queda muerto y el guard (que falla cerrado
+por diseño) se pone rojo; sin el lock del fuzz el audit de ese lock encuentra zbus y también
+se pone rojo. Se editaron sólo para lo que T5 y T3 exigen — tres entradas de `deny.toml` y la
+regeneración del lock del fuzz — y nada más en esos dos archivos.
+
+**Un hallazgo colateral que este lote NO arregla.** El guard avisa de cinco crates duplicados que
+ya no aparecen: `console`, `dirs`, `dirs-sys`, `indicatif`, `redox_users` (se fueron con la
+cadena zbus/secret-service). El ratchet de duplicados es descendente, así que esas cinco líneas
+hay que borrarlas de `scripts/duplicate-crate-baseline.txt` — en un commit aparte, como dice el
+propio script. No se tocó ese archivo: está fuera de la superficie de esta unidad, y el guard
+está verde (las líneas obsoletas son un aviso, no un fallo).
+
+**Otro dato de L8 que hay que corregir:** `windows-native-keyring-store` declara
+`rust-version = 1.88` (no "≤ 1.85" como decía L8) — 1.88 es exactamente el MSRV del workspace,
+así que la elección sigue siendo válida, pero el número de L8 no.
