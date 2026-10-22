@@ -95,8 +95,14 @@ for lock in "${LOCKS[@]}"; do
         echo "::error::check_no_dead_ignores: el informe de cargo audit sobre $lock no es JSON legible: el check no puede ver los avisos matcheados, y un check que no ve dice 'todo bien'." >&2
         exit 1
     fi
-    # Every advisory the auditor reports, from both lists.
-    jq -r '(.warnings.list // [])[], (.vulnerabilities.list // [])[] | .advisory.id // empty' \
+    # Every advisory the auditor reports. The SHAPE is cargo-audit's, not an
+    # assumption: `warnings` is an object with an `unmaintained` and an
+    # `unsound` array, and `vulnerabilities` carries a `list`. A jq that looks
+    # for `warnings.list` finds nothing and reports EVERY ignore as dead —
+    # which is the fail-closed direction, but with the wrong reason: it says
+    # "the graph has no advisories" when the truth is "the check cannot see
+    # them".
+    jq -r '[(.warnings.unmaintained // [])[], (.warnings.unsound // [])[], (.vulnerabilities.list // [])[] | .advisory.id // empty] | .[]' \
         "$report" >>"$matched_file"
 done
 

@@ -264,8 +264,13 @@ echo ""# --- #1984: an ignore that matches NOTHING is DEAD ---------------------
 # one, so the declared ignore matches no crate in either lockfile. A dead
 # ignore silences nothing today and would silence the finding the day its
 # crate came back — so the guard must FAIL, naming it.
-AUDIT_JSON_MATCHED='{"warnings":{"found":true,"count":1,"list":[{"advisory":{"id":"RUSTSEC-2024-0436"}}]},"vulnerabilities":{"found":false,"count":0,"list":[]}}'
-AUDIT_JSON_OTHER='{"warnings":{"found":true,"count":1,"list":[{"advisory":{"id":"RUSTSEC-2099-0001"}}]},"vulnerabilities":{"found":false,"count":0,"list":[]}}'
+# The report SHAPE is cargo-audit's own: `warnings` is an object with an
+# `unmaintained` and an `unsound` array, and `vulnerabilities` carries a
+# `list`. A fake written to a GUESSED shape proves nothing: it agrees with
+# the guess by construction. This one is the shape a real `cargo audit
+# --json` printed, and the real guard run is the oracle.
+AUDIT_JSON_MATCHED='{"warnings":{"unmaintained":[{"advisory":{"id":"RUSTSEC-2024-0436"}}],"unsound":[]},"vulnerabilities":{"found":false,"count":0,"list":[]}}'
+AUDIT_JSON_OTHER='{"warnings":{"unmaintained":[{"advisory":{"id":"RUSTSEC-2099-0001"}}],"unsound":[]},"vulnerabilities":{"found":false,"count":0,"list":[]}}'
 write_policy "$SCRATCH/dead.toml" "[advisories]" '{ id = "RUSTSEC-2024-0436", reason = "fixture: an advisory that matches no crate in the graph" }'
 
 prefix="$(fake_cargo alive 0 "$AUDIT_JSON_MATCHED")"

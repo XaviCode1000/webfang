@@ -408,3 +408,62 @@ desde 2024-12. La mitigación es que **ningún** crate de esa cadena tiene advis
 que el frontmatter sigue siendo byte-idéntico (lo fijan tests y snapshot existentes, T1). Si en
 la implementación la salida no fuese byte-idéntica, el lote **no** debe aceptar el cambio de
 salida: habría que volver a la decisión de emitter.
+
+L11 — **S1: el ignore muerto, purgado, y un guard que no deja que vuelva.** El
+hecho: `RUSTSEC-2024-0436` (paste) no matchea nada — el crate que lo arrastraba
+(`macro_rules_attribute 0.2.2`, via `tokenizers`) salio del grafo con el paso 6
+del ADR-0004, y `paste` ya no esta en ningun lock. Un ignore muerto es
+peligroso justamente porque SILENCIA: si el crate vuelve al grafo, el ignore lo
+seguiria cubriendo sin que nadie lo note. Se purga de `deny.toml`, y la nota
+del "RE-ADD PROTOCOL" que lo justificaba como re-added queda corregida (dice
+que vuelve a estar muerto, y por que).
+
+El guard nuevo vive en `scripts/check_no_dead_ignores.sh` y lo llama el guard
+principal como check 6a. **Desviacion de la spec, y por que**: la spec dice
+que el check va dentro de `scripts/check_advisory_policy.sh`, y ese archivo ya
+esta en 701 lineas — por encima del limite de ~500 por archivo del repo, y
+anadirle mas lo empeoraria. Ademas, el check recibe la lista de ids YA
+DERIVADA (la variable `IDS` del guard principal), asi que no hay un SEGUNDO
+parser de `deny.toml` que mantener sincronizado: la fuente de verdad de los
+ids sigue siendo una sola.
+
+La regla: cada id de la lista de ignores tiene que matchear un advisory que
+el auditor REALmente reporte en alguno de los dos lockfiles. La fuente de
+verdad de "que matchea" es el propio auditor: el informe JSON de
+`cargo audit` (que corre SIN la lista de ignores, porque si no suprimiria
+exactamente lo que hay que ver) y los ids salen de los objetos `advisory.id`.
+El codigo de salida NO es la respuesta (una vulnerabilidad real tambien sale
+con codigo distinto de cero, y eso es asunto del check 5): lo que decide es
+si el INFORME se puede parsear. Un informe que no se parsea significa que el
+auditor no corrio, y eso es un FALLO, nunca un conjunto vacio de matcheos —
+un check que no ve no puede decir "todo bien".
+
+El flag `--skip-dead-ignores` existe por el mismo motivo que
+`--skip-duplicates`: los otros casos del harness usan un `cargo` falso que no
+produce un informe de auditoria, asi que lo saltan de forma explicita. El
+default NO lo salta: el camino de CI lo corre entero.
+
+**RED y GREEN**: el caso nuevo del harness ("un ignore que no matchea nada
+tiene que fallar el guard, nombrandolo") falla contra el guard SIN el check
+(12 pasan, 1 falla ⇒ el test discrimina) y pasa con el (13/13). El caso
+positivo accompanying ("un ignore que SI matchea pasa") esta ahi para que el
+check no pueda quedarse verde por no mirar nada.
+
+L12 — **El harness con un `cargo` falso no puede detectar que mi suposición
+era incorrecta: el oraculo es la corrida real.** El primer guard REAL (con
+el auditor de verdad) reporto los CATORCE ignores como muertos —imposible:
+casi todos matchean algo del grafo. La causa no era el grafo: mi jq pedia
+`warnings.list`, y la forma REAL del informe de `cargo audit --json` es
+`warnings.unmaintained[]` y `warnings.unsound[]` (mas `vulnerabilities.list`).
+Un jq que busca donde no hay nada no ve ningun matcheo y dice "todo el
+grafo esta limpio" — la direccion fail-closed, pero con el motivo
+equivocado.
+
+Y el harness NO lo agarro, porque el `cargo` falso lo escribi yo, con MI
+suposicion: la fixture coincidia con la suposicion por construccion, o sea
+una prueba tautologica. Las dos correcciones: el jq lee la forma real (que
+saque del informe que imprime el auditor de verdad) y la fixture del harness
+usa esa misma forma real. La distincion que queda escrita: un doble con
+forma SUPPUESTA prueba la logica del check; solo la corrida real prueba la
+suposicion. El guard real, con la forma real, da exit 0: 14 ignores
+justificados, ninguno muerto (el de paste, purgado en L11, ya no esta).
