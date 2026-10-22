@@ -615,6 +615,16 @@ jobs:
       # no cargo, mktemp fixtures only.
       - name: Merged-state semantics harness
         run: bash scripts/test_merge_when_green_merged_state.sh
+      # Merge-queue semantics harness. `--queue` enqueues without a strategy
+      # flag, treats BEHIND as non-fatal, waits for state=MERGED, and reports
+      # ejection/timeout distinctly. Offline: fake `gh`, no network.
+      - name: Merge-queue semantics harness
+        run: bash scripts/test_merge_when_green_queue.sh
+      # merge_group ref harness: the queue ref is
+      # `refs/heads/gh-readonly-queue/<base>/pr-<n>-<sha>`, not the PR head.
+      # Also pins the `refs/heads/` strip in mutants.yml. Offline.
+      - name: merge_group ref harness
+        run: bash scripts/test_pr_validation_merge_group_ref.sh
       # Regression guard for #836: block-scalar nesting bugs in workflow YAML
       # (steps swallowed into a `run: |` block) stay valid YAML and only fail
       # at runtime post-merge (#833→#835). actionlint + shellcheck catch them

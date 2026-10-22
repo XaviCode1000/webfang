@@ -100,7 +100,10 @@ jobs:
           BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref }}
         run: |
           # merge_group carries its own base_ref; fall back to main when absent.
-          BASE="${BASE_REF}"
+          # On merge_group, base_ref arrives as `refs/heads/main`; strip the
+          # prefix before building `origin/<branch>`, otherwise the diff fails
+          # and the required check fails on every merge group.
+          BASE="${BASE_REF#refs/heads/}"
           [ -z "$BASE" ] && BASE="main"
           git diff "origin/$BASE"...HEAD > git.diff
 
