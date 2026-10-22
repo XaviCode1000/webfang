@@ -367,3 +367,49 @@ La movida es correcta en mecanismo y hay que hacerla **con otro timing**:
 
 ⇒ Decisión: **no se publica ninguna seed hasta que L9/L10 aterricen en `main`**. El slot de build
 sigue siendo de un build a la vez, y ahora mismo no hay build pendiente de mi lado.
+
+### 2026-10-22 · Orden único de apertura (sirve también para la re-aplicación de `ci.yml`)
+
+**Un solo orden para las dos cosas**: el orden en que se abren las PRs y el orden en que se
+re-aplica el step de `ci.yml` sobre el `main` nuevo son la misma lista, restringida a los lotes
+que tocan el workflow. Así no hay dos listas que diverjan.
+
+```text
+L2 (s1 → s2 → s3) → L3a → L3b → L4 → L5 → L6 → L7 → L8 → L11 → L14 → L15 → L9 → L10
+```
+
+**Por qué este orden**:
+
+- **L2 primero**: es la corrección del tooling de merge y además es la primera que toca
+  `ci.yml`; fija el patrón de re-aplicación para el resto.
+- **L3a y L3b después**: el canal del CI Health es el defecto más visible (el observer cerraba
+  trackers de más) y L3b es la hermeticidad del mismo carril.
+- **L4, L5, L6**: residuales de guard, atribución de commits y la señal de mutación. **L6 no
+  toca `ci.yml`**: toca `.github/workflows/mutants.yml` (otro archivo) ⇒ no genera conflicto.
+- **L7, L8, L11, L14, L15**: lotes independientes que no cambian el grafo de dependencias.
+- **L9 y L10 al final, y por una razón dura**: cambian `Cargo.toml` **y** el lock ⇒ cualquier
+  slice abierta después tendría que re-aplicarse sobre un lock nuevo. Cerrarlos al final deja el
+  lock quieto para todo lo demás.
+
+**Conflicto de `ci.yml`, medido sobre `main...<rama>` (no de memoria)**:
+
+| Rama | Toca `ci.yml` | Otro workflow |
+|---|---|---|
+| `fix/merge-when-green-merged-state` (L2) | **sí** | — |
+| `fix/false-green-tests` (L8) | **sí** | — |
+| `fix/miri-ub-lane` (L15) | **sí** | — |
+| `fix/build-graph-deps` (L9) | **sí** | — |
+| `fix/mcp-surface-truth` (L7) | no (hoy) | — |
+| `chore/mutation-shard-measurement` (L6) | no | `mutants.yml` |
+| `fix/ci-health-w03-classifier` (L3a) | no | `ci-health.yml` |
+
+⇒ Los pasos de `ci.yml` se re-aplican **en este orden: L2 → L8 → L15 → L9** (L7 entra en el
+lugar que le toque si su worker añade un step), **uno por uno sobre el `main` nuevo**, y todos en
+el job `repo-guards`, junto a los `scripts/test_*.sh` vecinos, con el estilo de sus vecinos:
+`name` + comentario con el issue y el porqué + la nota de que el step no corre cargo (offline).
+Si dos steps caen en el mismo contexto, gana el que va primero en el orden de arriba.
+
+**Regla de calidad de los harnesses (del harness de L9, ahora general)**: todo harness nuevo
+necesita un **control positivo** — un check que falla cuando el defecto **no** está — además del
+RED. Ejemplo del de L9: `once_cell` ausente de los manifiestos pero **presente** en
+`Cargo.lock`. Un harness que puede dar verde por construcción no es evidencia.
