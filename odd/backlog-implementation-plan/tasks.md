@@ -32,9 +32,17 @@ que hizo el triage) cuando cada lote aterriza, con el sha de su branch. Ningún 
 - [ ] **L10** · S1–S5 — crates sin mantenimiento (#1984, #2031) — **spec commiteada** (`2f51441a` en `fix-unmaintained-crates`); implementación del peer.
 - [ ] **L11** · S1–S5 — obscura: el veredicto `Unknown` nombra el mínimo (#1710) — peer, `fix-obscura-unknown-verdict`.
 - [ ] **L12** · S1–S5 — duplicación: helpers de arrange + baseline medido (#1757) — espera **#2230** (sigue abierta).
-- [ ] **L13** · S1–S5 — entrega macOS: notarización no bloqueante, `xattr` intacto (#1821) — BLOQUEADO por O3 (acción del owner).
+- [ ] **L13** · S1–S5 — entrega macOS (#1821) — **DESCARTADO 2026-10-22** (O3): *"la issue 1821 la dejamos, no la tocamos"*. Sale del plan; la issue queda abierta y sin tocar.
 - [ ] **L14** · S1–S5 — docs y runbooks.
   - **Mi parte HECHA**: veredicto por fila de #1609 posteado (25 filas: 12 resueltas, 7 moot, 5 vivas, 1 no accionable) + **#2241** (doc de disclosure), **#2242** (degradación de config invisible), **#2243** (podar el seam muerto) abiertas. #1609 queda como umbrella.
   - **Del peer**: runbook WAL/SQLite (#1826), nota de #1710, implementación de #2241/#2242/#2243.
 - [ ] **L15** · S1–S5 — lane de UB: gate por test + skip-net justificado (#2235) — peer; Miri ya instalado (O8 resuelta).
-- [ ] **L16** · S1–S5 — cuando el owner lo ordene: abrir las PRs lote por lote (issue enlazada, un `type:*`, sin atribución de IA) y dejar el merge en sus manos.
+- [ ] **L16** · S1–S5 — cuando el owner lo ordene: abrir las PRs lote por lote (issue enlazada, un `type:*`, sin atribución de IA) y dejar el merge en sus manos. **Orden fijado 2026-10-22**: `L2 → L3a → L3b → L4/L5/L6 → L8/L9/L10`.
+
+## Decisiones del owner (2026-10-22, segunda tanda)
+
+| Decisión | Resolución |
+|---|---|
+| ADR-0013 (`#2243`) | **addendum fechado** en el propio ADR; el registro histórico no se reescribe |
+| O7 (orden de PRs) | `L2 → L3a → L3b → L4/L5/L6 → L8/L9/L10`, cada slice desde el `main` nuevo |
+| O3 (`#1821`, L13) | **descartado**: la issue se deja sin tocar; el lote sale del plan |
