@@ -9,7 +9,8 @@
 //! - **Torn-tail recovery**: on start the file tail is scanned for a half-
 //!   written last line; invalid trailing bytes are truncated back to the last
 //!   valid newline (warn! carries both byte counts) and a content-hash index
-//!   ([`CHECKSUM_FIELD`] per line) is built from the surviving lines.
+//!   ([`CHECKSUM_FIELD`] per line) is built from the surviving lines. The
+//!   recovery itself lives in the `tail_window` module.
 //! - **Flush barrier**: [`JsonlSession::flush`] awaits a oneshot ack that the
 //!   writer sends only AFTER the OS-level flush returns \u2014 this ack IS the D3
 //!   step-1 durability barrier.
@@ -34,6 +35,19 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
 
 use super::CHECKSUM_FIELD;
+
+/// The torn-tail recovery (#2237): the bounded window that finds the LAST
+/// newline boundary of the export, and the recovery that consumes it.
+///
+/// It lives in its own file (`export/tail_window.rs`, a sibling) because the
+/// recovery and its evidence are bulk. `export/mod.rs` is outside this
+/// slice's edit surface, so the module is wired from HERE with an explicit
+/// `#[path]`.
+#[path = "tail_window.rs"]
+pub(crate) mod tail_window;
+
+/// The window sizes keep the public path they had when they lived here.
+pub use self::tail_window::{MAX_TAIL_WINDOW_BYTES, TAIL_WINDOW_BYTES};
 
 /// Ack channel used by [`LineMsg::FlushAnd`]: the writer resolves it after
 /// flushing the file.
@@ -90,7 +104,7 @@ impl JsonlSession {
     /// Returns any I/O error raised while opening, scanning, or truncating
     /// the output file.
     pub fn open(path: &Path) -> io::Result<(Self, HashSet<String>)> {
-        recover_torn_tail(path)?;
+        tail_window::recover_torn_tail(path)?;
         let index = build_hash_index(path)?;
         gc_stray_tmp_siblings(path);
 
@@ -201,59 +215,6 @@ impl JsonlSession {
 
 fn closed_writer_error(_: tokio::sync::mpsc::error::SendError<LineMsg>) -> io::Error {
     io::Error::new(io::ErrorKind::BrokenPipe, "JSONL writer has exited")
-}
-
-/// Cut an invalid partial last line back to the last newline boundary.
-///
-/// Bytes after the final newline never got their terminator, so they cannot be
-/// a durable line regardless of content \u2014 truncate them and say how many.
-///
-/// M3 (#1617): truncation is a destructive rewrite, and the `None` branch
-/// below wipes the WHOLE file, so both branches back up the pre-truncation
-/// bytes first. Before this, a torn tail was the one destructive rewrite in
-/// the export pipeline with no recovery at all: once the file was reopened for
-/// append, the truncated records were gone.
-fn recover_torn_tail(path: &Path) -> io::Result<()> {
-    if !path.exists() {
-        return Ok(());
-    }
-    let data = fs::read(path)?;
-    match data.iter().rposition(|&b| b == b'\n') {
-        Some(last_newline) => {
-            let trailing = data.len() - (last_newline + 1);
-            if trailing > 0 {
-                crate::application::resume::preserve_abandoned_bytes(
-                    path,
-                    &data,
-                    "jsonl_torn_tail_truncated",
-                );
-                let f = OpenOptions::new().write(true).open(path)?;
-                f.set_len((last_newline + 1) as u64)?;
-                warn!(
-                    truncated_bytes = trailing,
-                    total_bytes = data.len(),
-                    "torn JSONL tail truncated back to the last valid newline"
-                );
-            }
-        },
-        None => {
-            // No newline at all: either empty, or one unterminated line that
-            // cannot be durable \u2014 unterminated means not durable.
-            if !data.is_empty() {
-                crate::application::resume::preserve_abandoned_bytes(
-                    path,
-                    &data,
-                    "jsonl_unterminated_file_wiped",
-                );
-                fs::write(path, b"")?;
-                warn!(
-                    truncated_bytes = data.len(),
-                    "unterminated JSONL line truncated: file had no newline boundary"
-                );
-            }
-        },
-    }
-    Ok(())
 }
 
 /// Build the content-hash index ([`CHECKSUM_FIELD`] per line) from surviving
@@ -372,51 +333,9 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // Torn-tail recovery (SC: crash mid-write leaves half-written line)
+    // Open-time scan: the hash index, the clean file and the stray siblings.
+    // The TORN TAIL lives in `super::tail_window`, with its own tests.
     // ------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn torn_tail_is_truncated_to_last_valid_newline_before_appends() {
-        let dir = tempfile::TempDir::new().expect("temp dir");
-        let path = dir.path().join("torn.jsonl");
-
-        let mut initial = String::new();
-        initial.push_str(&valid_line(1));
-        initial.push('\n');
-        initial.push_str(&valid_line(2));
-        initial.push('\n');
-        initial.push_str(r#"{"n":3,"checksum_sha256":"ha"#); // torn tail, no newline
-        fs::write(&path, &initial).expect("seed torn file");
-
-        let (session, index) = JsonlSession::open(&path).expect("open recovers torn tail");
-
-        // Truncation happened synchronously at open time, BEFORE appends.
-        let recovered = fs::read_to_string(&path).expect("read recovered file");
-        assert_eq!(
-            recovered,
-            format!("{}\n{}\n", valid_line(1), valid_line(2)),
-            "tail must be cut back to the last valid newline"
-        );
-        assert!(
-            index.contains("hash-1") && index.contains("hash-2") && !index.contains("hash-3"),
-            "hash index must reflect exactly the surviving valid lines"
-        );
-
-        session
-            .append(&terminated(&valid_line(3)))
-            .await
-            .expect("append after recovery");
-        session.close().await.expect("clean exit");
-
-        let final_content = fs::read_to_string(&path).expect("final read");
-        let lines: Vec<&str> = final_content.lines().collect();
-        assert_eq!(lines.len(), 3, "appends start at the newline boundary");
-        assert!(serde_json::from_str::<serde_json::Value>(lines[2]).is_ok());
-        // The recovered prefix is byte-identical to the two surviving lines,
-        // and the re-appended line starts exactly at that boundary.
-        let expected = format!("{}\n{}\n{}\n", valid_line(1), valid_line(2), valid_line(3));
-        assert_eq!(final_content, expected);
-    }
 
     /// #1617 (D3): a line that parses as JSON but lacks [`CHECKSUM_FIELD`] is the
     /// signature of a renamed writer. It must produce an EMPTY index (the
@@ -437,64 +356,6 @@ mod tests {
         assert!(
             index.is_empty(),
             "no line carries CHECKSUM_FIELD, so no line may be indexed"
-        );
-    }
-
-    #[tokio::test]
-    async fn clean_file_is_not_modified_by_open_scan() {
-        let dir = tempfile::TempDir::new().expect("temp dir");
-        let path = dir.path().join("clean.jsonl");
-        let pristine = format!("{}\n{}\n", valid_line(1), valid_line(2));
-        fs::write(&path, &pristine).expect("seed clean file");
-
-        let (_session, index) = JsonlSession::open(&path).expect("open clean file");
-
-        assert_eq!(
-            fs::read_to_string(&path).expect("read"),
-            pristine,
-            "a fully valid file must not be touched by recovery"
-        );
-        assert!(
-            !crate::application::resume::backup_sibling(&path).exists(),
-            "a clean file must not produce a .bak — only a destructive rewrite backs up"
-        );
-        assert_eq!(
-            index,
-            HashSet::from(["hash-1".to_string(), "hash-2".to_string()])
-        );
-    }
-
-    /// M3 (#1617): truncating a torn tail destroys bytes. The `.bak` is the
-    /// only way back to the pre-truncation file once the output is reopened
-    /// for append, so recovery must not be a one-way door. Also pins that the
-    /// backup keeps the artifact's own extension (`out.jsonl.bak`).
-    #[tokio::test]
-    async fn torn_tail_recovery_backs_up_the_pre_truncation_bytes() {
-        let dir = tempfile::TempDir::new().expect("temp dir");
-        let path = dir.path().join("out.jsonl");
-        let mut initial = String::new();
-        initial.push_str(&valid_line(1));
-        initial.push('\n');
-        initial.push_str(r#"{"n":2,"checksum_sha256":"partial"#);
-        fs::write(&path, &initial).expect("seed torn file");
-
-        let (_session, _index) = JsonlSession::open(&path).expect("open recovers torn tail");
-
-        let backup = crate::application::resume::backup_sibling(&path);
-        assert_eq!(
-            backup.file_name().and_then(|n| n.to_str()),
-            Some("out.jsonl.bak"),
-            "the backup keeps the artifact's own extension"
-        );
-        assert_eq!(
-            fs::read_to_string(&backup).expect("read backup"),
-            initial,
-            "the .bak must carry the exact pre-truncation bytes"
-        );
-        assert_eq!(
-            fs::read_to_string(&path).expect("read recovered"),
-            format!("{}\n", valid_line(1)),
-            "the live file is still truncated back to the last newline"
         );
     }
 
@@ -627,4 +488,9 @@ mod tests {
             "second close never hangs and never panics"
         );
     }
+
+    // ------------------------------------------------------------------
+    // #2237 (T2): the peak-RSS probe of the tail read lives with the tail
+    // window, in `super::tail_window` (it measures the window read).
+    // ------------------------------------------------------------------
 }
