@@ -300,34 +300,85 @@ async fn crash_mid_state_file_write_truncated_tmp_is_gced() {
 #[cfg(target_os = "linux")]
 const DISCARDED_SIGKILL_WINDOW: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// The `unshare` invocation the child needs: a USER namespace (the only
+/// unprivileged way to get a PID namespace) plus the PID namespace itself.
 #[cfg(target_os = "linux")]
-#[tokio::test]
-async fn crash_point_never_hangs_when_sigkill_is_discarded() {
-    use std::io::Read;
+fn unshare_args() -> Vec<&'static str> {
+    vec!["--user", "--map-root-user", "--fork", "--pid", "--"]
+}
+
+/// Probe whether THIS machine can create the namespace the test needs.
+///
+/// The child has to be the INIT of a PID namespace, and the only
+/// unprivileged way to get one is a user namespace. Some machines refuse
+/// it — the GitHub runners do, with `unshare: write failed
+/// /proc/self/uid_map: Operation not permitted` — and there the
+/// discarded-SIGKILL path cannot be exercised at all.
+///
+/// The probe runs the SAME `unshare` shape with a trivial command, so a
+/// failure names the ENVIRONMENT and not the crash point. `None` means the
+/// namespace is available; `Some(reason)` is the written reason the test
+/// SKIPS with.
+#[cfg(target_os = "linux")]
+fn pid_namespace_unavailable() -> Option<String> {
     use std::process::{Command, Stdio};
 
-    let t = BehavioralTest::new().await;
-    let sitemap_url = mount_crash_fixture(&t).await;
-    let state_dir = TempDir::new().expect("state tempdir");
+    let mut probe = Command::new("unshare");
+    probe
+        .args(unshare_args())
+        .arg("true")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    match probe.output() {
+        Ok(out) if out.status.success() => None,
+        Ok(out) => Some(format!(
+            "`unshare {}` exited with {}: {}",
+            unshare_args().join(" "),
+            out.status,
+            String::from_utf8_lossy(&out.stderr).trim()
+        )),
+        Err(err) => Some(format!("`unshare` could not be run: {err}")),
+    }
+}
 
-    // The matrix command, launched as the init of a NEW PID namespace:
-    // `unshare` propagates the child's exit status, and the child's
-    // `getpid()` is 1 inside that namespace.
+/// The line `unshare` prints when it could not create the namespace.
+///
+/// util-linux writes `unshare: <what it was doing>: <errno>` on stderr, and
+/// that line is the child's stderr too (the pipe carries both). A line that
+/// starts with `unshare:` is therefore the namespace failing to be created —
+/// an ENVIRONMENT fact, not a defect of the crash point.
+#[cfg(target_os = "linux")]
+fn unshare_failure(stderr: &str) -> Option<String> {
+    stderr
+        .lines()
+        .find(|line| line.trim_start().starts_with("unshare:"))
+        .map(|line| line.trim().to_owned())
+}
+
+/// Spawn the crash child as the init of a NEW PID namespace.
+///
+/// `unshare` propagates the child's exit status, and the child's
+/// `getpid()` is 1 inside that namespace — the only way to get there
+/// without being the real init of the machine.
+#[cfg(target_os = "linux")]
+fn spawn_discarded_sigkill_child(
+    t: &BehavioralTest,
+    sitemap_url: &str,
+    state_dir: &Path,
+) -> std::process::Child {
+    use std::process::{Command, Stdio};
+
     let mut cmd = Command::new("unshare");
-    cmd.arg("--user")
-        .arg("--map-root-user")
-        .arg("--fork")
-        .arg("--pid")
-        .arg("--")
+    cmd.args(unshare_args())
         .arg(common::cli_harness::webfang_path())
         .arg("--resume")
         .arg("--state-dir")
-        .arg(state_dir.path())
+        .arg(state_dir)
         .arg("--url")
         .arg(t.server.uri())
         .arg("--use-sitemap")
         .arg("--sitemap-url")
-        .arg(&sitemap_url)
+        .arg(sitemap_url)
         .arg("--quiet")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -358,7 +409,36 @@ async fn crash_point_never_hangs_when_sigkill_is_discarded() {
     );
     cmd.env(webfang_core::cli::crash_points::ENV_VAR, PRE_FIRST_PERSIST);
 
-    let mut child = cmd.spawn().expect("spawn the crash child");
+    cmd.spawn().expect("spawn the crash child")
+}
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn crash_point_never_hangs_when_sigkill_is_discarded() {
+    use std::io::Read;
+
+    // The environment decides FIRST, before any fixture is mounted: a
+    // machine that cannot create the namespace cannot exercise the
+    // discarded-SIGKILL path, and a test that fails for a platform fact is
+    // a red that says nothing about the defect (#2066). The test SKIPS
+    // with the reason written out — the rule of the repo: every skip
+    // carries its reason. `docs/persistence-resume.md` names who verifies
+    // this case when the runner cannot.
+    if let Some(reason) = pid_namespace_unavailable() {
+        eprintln!(
+            "SKIP: the discarded-SIGKILL path needs a PID namespace this machine cannot \
+             create — {reason}. Remediation: enable unprivileged user namespaces (e.g. \
+             `sysctl -w kernel.unprivileged_userns_clone=1`) or run this test as root. \
+             See docs/persistence-resume.md for who verifies this case."
+        );
+        return;
+    }
+
+    let t = BehavioralTest::new().await;
+    let sitemap_url = mount_crash_fixture(&t).await;
+    let state_dir = TempDir::new().expect("state tempdir");
+
+    let mut child = spawn_discarded_sigkill_child(&t, &sitemap_url, state_dir.path());
 
     // Bounded wait: the child must END inside the window. A child that is
     // still running when the window closes is the defect itself, so the
@@ -388,15 +468,21 @@ async fn crash_point_never_hangs_when_sigkill_is_discarded() {
     }
 
     // The namespace could not be created at all: that is an ENVIRONMENT
-    // failure, and it must not read as a pass. The remediation is named so
-    // the reader knows what to fix.
-    assert!(
-        !stderr.contains("unshare failed"),
-        "the PID namespace could not be created, so the discarded-SIGKILL path was never \
-         exercised; enable unprivileged user namespaces (e.g. `sysctl -w \
-         kernel.unprivileged_userns_clone=1`) or run this test as root. unshare said: \
-         {stderr}"
-    );
+    // failure. The probe above already skipped the machines that cannot
+    // create it; this catches the ones that can, but cannot on THIS call
+    // (the same platform fact, observed late). It SKIPS with the reason
+    // written out — it never reads as a pass that proved something, and it
+    // never fails for a platform fact. The remediation is named so the
+    // reader knows what to fix.
+    if let Some(reason) = unshare_failure(&stderr) {
+        eprintln!(
+            "SKIP: the PID namespace could not be created, so the discarded-SIGKILL path was \
+             never exercised — {reason}. Enable unprivileged user namespaces (e.g. `sysctl -w \
+             kernel.unprivileged_userns_clone=1`) or run this test as root. See \
+             docs/persistence-resume.md for who verifies this case."
+        );
+        return;
+    }
 
     assert!(
         !status.success(),

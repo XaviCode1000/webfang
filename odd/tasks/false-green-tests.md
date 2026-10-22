@@ -446,8 +446,11 @@ admite: *"resolved or explicitly waived"*), con su fundamento en el Log L6.
   espera con **ventana acotada**; afirma que el hijo **no se cuelga**, que **no** sale con éxito
   y que su stderr trae el diagnóstico. RED contra el código pre-fix = el hijo se cuelga y el test
   falla con el síntoma real. En plataformas sin namespaces de PID el test no existe (`cfg`), y en
-  Linux, si el namespace no se puede crear, el test **falla** con el comando de remediación (no se
-  salta en silencio: un test que no prueba nada es el verde falso que este lote cierra).
+  Linux, si el namespace no se puede crear, el test **se salta con el motivo escrito** (el runner
+  de GitHub no concede user namespaces: `unshare: write failed /proc/self/uid_map: Operation not
+  permitted`; un rojo por un hecho de plataforma no dice nada del defecto, y un skip mudo sería el
+  verde falso que este lote cierra). El catálogo (`docs/persistence-resume.md`) dice QUIÉN verifica
+  esa fila cuando el runner no puede.
 - [ ] T3 · S2 — `crates/webfang_mcp/Cargo.toml` (`[features] default = ["mcp"]`) y
   `crates/webfang_test_utils/Cargo.toml` (`webfang_core` con `default-features = false`). Se
   verifica con el conteo real: `cargo nextest list -p webfang_mcp` debe listar los 22 archivos
@@ -887,3 +890,39 @@ Orden de aterrizaje: la fila se escribe con el slice del token de
 cancelacion, que va **despues** del merge de #2230 (ambas tocan el flujo de
 exportacion). El wiring de produccion de `during_cancel_drain` no se toca
 hasta que el owner lo decida.
+
+L22 — **El CI rojo de esta rama: tres causas, las tres mecanicas, y el arreglo
+de cada una.** El run 39744670250 (head `659fbd0c`) dejo rojos cuatro jobs de
+test y `Repo guards`.
+
+1. `Tests (unit + integration + behavioral)`, `Tests (macos-latest)` y
+   `Tests (windows-latest)`: el paso `Integration tests` corria
+   `cargo nextest run --test '*' --retries 2`. Ese glob hace que cargo NOMBRE
+   cada target de test uno por uno, y un target declarado con `required-features`
+   cuya feature esta apagada es un ERROR DURO, no una seleccion: el log dice
+   `error: target 'adaptive_selector_integration' in package 'webfang_core'
+   requires the features: 'adaptive-selectors'` y el paso sale con 101 ⇒ la
+   corrida de nextest no produce resultados ⇒ de ahi el `ENOENT ... opendir
+   'target/tests/target'` de la anotacion (el sintoma secondary, no la causa).
+   El arreglo: `--tests` (seleccion POR TIPO), con el que cargo se SALTA los
+   targets gated en vez de fallar; las cuatro filas gated (`persistence`,
+   `console`, `adaptive-selectors`) siguen corriendo en la lane `Tests (all
+   features)`, que es donde vive su cobertura.
+2. `Tests (all features)`: `crash_point_never_hangs_when_sigkill_is_discarded`
+   FALLO con `unshare: write failed /proc/self/uid_map: Operation not
+   permitted`: el runner de GitHub no concede user namespaces (AppArmor), y el
+   test PANIQUEABA por un hecho de plataforma — un rojo que no dice nada del
+   defecto. El arreglo: una sonda que pregunta al ENTORNO antes de montar el
+   fixture; si el namespace no se puede crear, el test SE SALTA con el motivo
+   escrito (no falla, no se cuelga, y no se cuelga nunca), y las TRES
+   aserciones siguen vivas donde el namespace existe. El catalogo
+   (`docs/persistence-resume.md`) dice QUIEN verifica esa fila: un host Linux
+   con user namespaces sin privilegio, corrido a mano.
+3. `Repo guards`: `scripts/test_guard_coverage.sh` fallo con `no-marker:
+   scripts/test_empty_test_targets.sh carries no '# NEGATION:' case marker`: el
+   harness ya PROBABA las negaciones, pero sin el marcador que el meta-guard
+   exige. El arreglo: el marcador, con el porque de cada negacion.
+
+El golden set del lint intra-crate NO se toca en este arreglo: el repair no
+cambia `crates/webfang_core/src`, y el set de la rama esta medido byte a byte
+igual al arbol.

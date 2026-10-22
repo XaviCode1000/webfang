@@ -189,6 +189,36 @@ Run it with:
 cargo nextest run --test crash_matrix_test
 ```
 
+### The discarded-SIGKILL row and the machines that cannot create a PID namespace
+
+`crash_point_never_hangs_when_sigkill_is_discarded` is the row that proves the
+discarded-SIGKILL path cannot hang (#2066). Its child has to be the INIT of a
+**PID namespace** — the only way to get `getpid() == 1` without being the real
+init of the machine — and the only unprivileged way to get a PID namespace is a
+**user namespace**.
+
+The GitHub-hosted runners refuse the user namespace (their AppArmor profile
+answers `unshare: write failed /proc/self/uid_map: Operation not permitted`),
+so there the test **SKIPS with the reason written out** on stderr. It never
+hangs and never fails for that reason: a red that reports a platform fact says
+nothing about the defect, and a silent skip would be exactly the false green
+this row exists to prevent. The remediation for a machine that *should* allow
+it is `sysctl -w kernel.unprivileged_userns_clone=1` (or running the test as
+root).
+
+**Who verifies this row:** a Linux host that allows unprivileged user
+namespaces — the crash-matrix lane is run by hand there:
+
+```bash
+# on a Linux host with unprivileged user namespaces enabled
+cargo nextest run --test crash_matrix_test \
+  -E 'test(=crash_point_never_hangs_when_sigkill_is_discarded)'
+```
+
+Every OTHER row of the matrix runs in the ordinary CI lane
+(`cargo nextest run --test crash_matrix_test`): only the discarded-SIGKILL row
+needs the namespace.
+
 ---
 
 ## Where things live

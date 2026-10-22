@@ -14,8 +14,12 @@ Cierra #2066, #1852, #1828, #1834, #1816. **No** cierra #1833 (espera O4, decisi
   PID-namespace (`unshare --user --map-root-user --fork --pid`) con `WEBFANG_CRASH_AT` armado;
   espera con ventana acotada; afirma que el hijo **no se cuelga**, que **no** sale con éxito y que
   su stderr trae el diagnóstico. RED contra el código pre-fix = el hijo se cuelga (el síntoma real).
-  En Linux, si el namespace no se puede crear, el test **falla** con el comando de remediación
-  (no se salta en silencio). En plataformas sin namespaces de PID el test no existe (`cfg`).
+  En Linux, si el namespace no se puede crear, el test **se salta con el motivo escrito** (el runner
+  de GitHub no concede user namespaces: `unshare: write failed /proc/self/uid_map: Operation not
+  permitted`; un rojo por un hecho de plataforma no dice nada del defecto, y un skip mudo sería el
+  verde falso que este lote cierra). El catálogo (`docs/persistence-resume.md`) dice QUIÉN verifica
+  esa fila cuando el runner no puede. En plataformas sin namespaces de PID el test no existe
+  (`cfg`).
 - [ ] T3 · S2 — `crates/webfang_mcp/Cargo.toml`: `[features] default = ["mcp"]` (la feature `mcp`
   es un marker vacío: no cuesta build ni dependencias) + `crates/webfang_test_utils/Cargo.toml`:
   `webfang_core` con `default-features = false` (D8/O1). Se verifica con el conteo real:
