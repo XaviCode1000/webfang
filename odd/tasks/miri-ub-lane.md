@@ -111,23 +111,23 @@ lote en curso agrega un step en `ci.yml` (el owner del plan lo confirmó).
 
 ## Tasks
 
-- [ ] T1 · S1, S3 — identificar el test hermano de `scraper_service.rs` que dispara el UB
+- [x] T1 · S1, S3 — identificar el test hermano de `scraper_service.rs` que dispara el UB
   (familia `servo_arc`/`lol_html`) y gatearlo **por test** con
   `#[cfg_attr(miri, ignore = "<motivo escrito>")]`, siguiendo el patrón de #2187.
-- [ ] T2 · S1, S4 — determinar qué tests de los submódulos `wreq_downloader`,
+- [x] T2 · S1, S4 — determinar qué tests de los submódulos `wreq_downloader`,
   `obscura_downloader` y `chromiumoxide_downloader` necesitan de verdad FFI/asm, gatearlos
   **por test** con su motivo, y **eliminar** los tres `--skip` de los jobs Miri.
-- [ ] T3 · S5 — actualizar el bloque de comentario de diseño de los jobs Miri: el mecanismo
+- [x] T3 · S5 — actualizar el bloque de comentario de diseño de los jobs Miri: el mecanismo
   nuevo (gate por test con motivo; sin skip-net) y por qué el UB de `scraper_service.rs` queda
   atribuido a un test.
-- [ ] T4 · S7 — harness estático (shell, sin build) que fija las tres propiedades de S7, con su
+- [x] T4 · S7 — harness estático (shell, sin build) que fija las tres propiedades de S7, con su
   caso RED contra el estado pre-fix.
-- [ ] T5 · S6, S8 — verificación: harness estático en verde; **scoped Miri** con el toolchain y
+- [x] T5 · S6, S8 — verificación: harness estático en verde; **scoped Miri** con el toolchain y
   los flags de la lane: el módulo del UB completa (con el gate) y los submódulos antes
   skipeados corren sin UB bajo Miri (o con su gate explícito). La corrida de la lane completa en
   verde **no** se puede producir localmente: es un run schedule, y lo da el CI cuando el owner
   abra la PR.
-- [ ] T6 · S1-S9 — commit de work-unit en `fix/miri-ub-lane` (sin PR: la abre el owner cuando el
+- [x] T6 · S1-S9 — commit de work-unit en `fix/miri-ub-lane` (sin PR: la abre el owner cuando el
   plan entero esté implementado).
 
 Ruta: **worker** (`gentle-ai-worker`) para T1-T4; el padre da la ventana de build para T5 y
@@ -177,3 +177,64 @@ skips, no justificarlos.
 L6 — El skip de #1423 queda documentado como **residual de un AC que nunca se cumplió**: el
 dispatch manual ocurrió (run `37038367607`) pero la cláusula "4/4 verdes sin skip-net" no se
 cumplió. Este lote la cumple.
+
+L7 — **El arbitraje del gate defensivo se corrigió ANTES de que costara una corrida.** El
+worker proponía "la corrida scoped de Miri es el árbitro" con el gate **puesto** en el brazo de
+error. Un test con `#[cfg_attr(miri, ignore = "…")]` queda `ignored` bajo Miri: la corrida iba
+a reportar "2 passed, 1 ignored" **sin ejecutar el brazo de error**, o sea, el arbitraje era
+lógicamente vacío — la evidencia de un falso verde. La secuencia correcta (sacar el gate, correr,
+y recién ahí decidir) se la pedí explícitamente.
+
+L8 — **El arbitraje, por evidencia: la premisa de la issue queda refutada.** Con el gate
+fuera, la corrida scoped de `application::scraper_service::` dio **2 passed / 0 failed / 1
+ignored** (el de éxito, gateado por #2187). El brazo de error **pasa limpio**: el 404 retorna
+antes de `clean_html` y el único test que llega a `clean_html → lol_html::rewrite_str` es el de
+éxito, ya gateado. Consecuencia: **no hay gate nuevo** — `scraper_service.rs` queda intacto
+y la frase de #2187 ("The error arm below returns before `clean_html` and needs no gate")
+sigue siendo cierta. El AC de la issue ("el hermano sigue disparando el UB") se cumplió
+**refutándolo con la corrida**, que es más honesto que dejarlo escrito.
+
+L9 — **Las tres correcciones de robustez al harness** que pidió el padre: (a) la extracción de
+nombres de `--skip` **ignora las líneas de comentario** (hoy no muerde porque los comentarios
+usan la forma con backticks, pero un autor futuro que escribiera "--skip foo" en un
+comentario disparaba un fallo confuso); (b) la invariante 4 se reformuló: ya no exige gate a
+todo test que maneja el caso de uso, sino al que **alcanza la superficie del UB**, con una
+**exención nominal** para el brazo de error que lleva motivo **y evidencia** (la corrida de
+2026-10-22: 2 passed, 0 failed, 1 ignored) — una entrada vieja o un test no exento sin gate
+hacen fallar el harness; (c) **guard de vacuidad**: si el marcador `scrape_with_config(`
+desaparece por un renombre del use case, la invariante **falla** en vez de quedarse verde sin
+mirar nada.
+
+L10 — **Verificación revisada por el padre, no aceptada por informe.** El harness da exit 0
+sobre el árbol real (con control RED por check, más el control RED de vacuidad y el control
+GREEN del filtro del core). Su RED es real: reconstruido contra el árbol pre-fix falla con 12
+skips sin motivo (3 submódulos × 3 jobs, más `wikilinks`) y 4 gates sin razón en
+`resource_governor.rs`. El único `--skip` **real** que queda en todo `ci.yml` es el del job de
+cobertura (`cargo llvm-cov … --skip test_mcp`), que no es la lane Miri.
+
+L11 — **Las corridas scoped, con el toolchain y los flags de la lane**
+(`nightly-2026-08-27`, `-Zmiri-tree-borrows -Zmiri-disable-isolation -Zmiri-ignore-leaks
+-Zmiri-seed=42 -Zmiri-permissive-provenance`): `application::scraper_service::` → 2 passed /
+1 ignored; los **tres submódulos antes skipeados** → **21 passed / 0 failed / 29 ignored** (los
+que el skip borraba ahora corren: los 5 del parser de cookies, los 2 del fallo ruidoso en
+build, los 4 del constructor de obscura y los de drain/stub de chromiumoxide);
+`infrastructure::converter::` → 41 passed / 0 failed (wikilinks pasa bajo Miri, así que quitar
+su `--skip` no cambia la selección de tests y no hace falta un gate nuevo). `cargo check
+--all-targets` exit 0 (9m49s) y `cargo fmt --all -- --check` exit 0.
+
+L12 — **Riesgos que quedan anotados**: `cargo miri test --lib` unifica features, así que el
+feature `chromium` está EN la lane → el E2E de chromiumoxide (que lanza Chrome) necesita su
+gate, y lo tiene. Y la lane infra-slow ahora interpreta los tres submódulos de downloader (~6
+min bajo Miri, dentro de su presupuesto de 120 min). La corrida **completa** de la lane no se
+puede producir localmente (es un run schedule): la da el CI cuando el owner abra la PR.
+
+L13 — **Corte de slice de este lote**: el branch suma ~1045 líneas autorales repartidas en
+cinco commits (spec · skip-net y gates por test · guard · harness con su wiring ·
+evidencia). El harness del worker mediría 566 líneas en un solo archivo, por encima del
+límite de ~500 del repo, así que se partió en el par idiomático del repo: el guard
+(`scripts/check_miri_lane_invariants.sh`, 454 líneas, con las cuatro invariantes) y su
+harness hermano (`scripts/test_miri_lane_invariants.sh`, 163 líneas, con el control RED).
+El guard corre solo (exit 0/1) y el harness lo carga como librería (`MIRI_LANE_LIBRARY=1`)
+para correrlo sobre sus fixtures: un guard que puede correr sobre fixtures es la mitad de
+un guard reusable. Si el owner prefiere una PR más chica, el corte natural es (1) el
+skip-net y los gates, (2) el guard, (3) el harness con su wiring.
