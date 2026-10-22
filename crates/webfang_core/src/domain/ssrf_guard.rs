@@ -174,13 +174,14 @@ pub fn disables_ssrf(raw: Option<&str>) -> bool {
 /// Covers:
 /// - IPv4: loopback (127.0.0.0/8), private (10/8, 172.16/12, 192.168/16),
 ///   link-local (169.254/16), the "this network on this host" family
-///   (0.0.0.0/8 — Linux routes the whole family to the local host),
+///   (0.0.0.0/8 — reserved and never globally routable, RFC 1122 §3.2.1.3),
 ///   broadcast (255.255.255.255), reserved (240.0.0.0/4), CGNAT
 ///   (100.64.0.0/10).
 /// - IPv6: loopback (::1), unspecified (::), unique-local (fc00::/7),
 ///   unicast link-local (fe80::/10), IPv4-mapped and IPv4-compatible
-///   (re-validated as IPv4), NAT64 well-known prefix 64:ff9b::/96 and
-///   6to4 2002::/16 (embedded IPv4 re-validated as IPv4), the NAT64
+///   (re-validated as IPv4), NAT64 well-known prefix 64:ff9b::/96,
+///   6to4 2002::/16 and ISATAP (RFC 5214 §6.1, ATOP identifier 0x5efe)
+///   (embedded IPv4 re-validated as IPv4), the NAT64
 ///   Network-Specific Prefixes (the rest of 64:ff9b::/32, fail-closed),
 ///   Teredo 2001:0000::/32 (fail-closed).
 #[must_use]
@@ -190,10 +191,11 @@ pub fn is_forbidden_ip(ip: &IpAddr) -> bool {
             v4.is_loopback()
                 || v4.is_private()
                 || v4.is_link_local()
-                // 0.0.0.0/8 ("this network on this host", RFC 1122): Linux
-                // routes the WHOLE family to the local host, so 0.0.0.1
-                // reaches this machine — the family is denied, not just the
-                // 0.0.0.0 address (#1965, A5).
+                // 0.0.0.0/8 ("this network on this host", RFC 1122
+                // §3.2.1.3): the whole family is reserved and never globally
+                // routable, and 0.0.0.0 is the unspecified address — a
+                // local-host alias as a destination. The family is denied,
+                // not just the 0.0.0.0 address (#1965, A5).
                 || is_ipv4_this_network(v4)
                 || v4.is_broadcast()
                 || is_reserved_v4(v4)
@@ -229,21 +231,34 @@ pub fn is_forbidden_ip(ip: &IpAddr) -> bool {
             if let Some(v4) = v6.to_ipv4() {
                 return is_forbidden_ip(&IpAddr::V4(v4));
             }
-            // Translation/encapsulation prefixes carry an embedded IPv4 address
-            // that the socket stack dials directly on IPv6-only networks with
-            // live NAT64 (mobile carriers, enterprises): `64:ff9b::a.b.c.d`
-            // connects to `a.b.c.d` through the NAT64 gateway, and neither
-            // native-range checks nor `to_ipv4()` ever see it. Re-validate every
-            // embedded IPv4 against the same deny list.
-            if let Some(v4) = ipv6_nat64_embedded_v4(v6).or_else(|| ipv6_6to4_embedded_v4(v6)) {
-                return is_forbidden_ip(&IpAddr::V4(v4));
-            }
             // Teredo (RFC 4380, 2001:0000::/32): the client IPv4/port are
             // XOR-obfuscated against the attacker-controllable relay's view of
             // them, so embedded-address re-validation cannot be trusted. Fail
             // closed over the whole range.
+            //
+            // BEFORE the encapsulation checks below, and not after: the ISATAP
+            // marker (RFC 5214 §6.1) sits at a FIXED position that the Teredo
+            // range overlaps, so an encapsulation check evaluated first could
+            // shadow this fail-closed verdict with the embedded address's
+            // (#2232). Neither NAT64 nor 6to4 can shadow it — their prefixes
+            // are disjoint from 2001:0000::/32.
             if is_ipv6_teredo(v6) {
                 return true;
+            }
+            // Translation/encapsulation prefixes carry an embedded IPv4 address
+            // that the socket stack dials directly on IPv6-only networks with
+            // live NAT64 (mobile carriers, enterprises): `64:ff9b::a.b.c.d`
+            // connects to `a.b.c.d` through the NAT64 gateway, and neither
+            // native-range checks nor `to_ipv4()` ever see it. ISATAP
+            // (RFC 5214 §6.1) encapsulates the IPv4 the same way, and its
+            // marker position is FIXED — so the embedded address can be
+            // located and re-validated like the other two (#2232).
+            // Re-validate every embedded IPv4 against the same deny list.
+            if let Some(v4) = ipv6_nat64_embedded_v4(v6)
+                .or_else(|| ipv6_6to4_embedded_v4(v6))
+                .or_else(|| ipv6_isatap_embedded_v4(v6))
+            {
+                return is_forbidden_ip(&IpAddr::V4(v4));
             }
             false
         },
@@ -283,9 +298,21 @@ pub fn is_forbidden_ip_with(ip: &IpAddr, allow_loopback: bool) -> bool {
 /// Dial-time always-denied set (FIN-017): link-local, the "this network on
 /// this host" family (0.0.0.0/8), unspecified, multicast, broadcast,
 /// reserved, Teredo and the NAT64 Network-Specific Prefixes — the ranges no
-/// allowlist entry can ever reach. IPv4-mapped IPv6 forms normalize to IPv4
-/// first; the deprecated IPv4-compatible form is deliberately NOT normalized
-/// here (it never matches an allowlist, so it stays denied either way).
+/// allowlist entry can ever reach.
+///
+/// BOTH IPv4-in-IPv6 spellings normalize to IPv4 first: the IPv4-mapped
+/// (`::ffff:a.b.c.d`) and the deprecated IPv4-compatible (`::a.b.c.d`) one.
+/// The compatible form USED to be left unnormalized here, on the belief that
+/// it "never matches an allowlist, so it stays denied either way" — that
+/// justification was FALSE: a hand-built allowlist of `::/120` does match
+/// `::2`, and the policy path then ALLOWED it while the flat path denied it.
+/// The whole contract of this set is "ranges no allowlist entry can ever
+/// reach", so normalizing the compatible spelling is what makes the three
+/// verdict paths agree (#2231).
+///
+/// The NATIVE V6 special ranges keep their own spelling: `::1` and `::` also
+/// carry compatible projections, and `::1` belongs to the exclusive
+/// `allow_loopback` flag (B1, #1462) — not to this never-allowable set.
 ///
 /// The CANONICAL translation prefixes are absent on purpose: their verdict
 /// derives from the embedded IPv4 via [`is_forbidden_ip_with_policy`], and
@@ -293,18 +320,33 @@ pub fn is_forbidden_ip_with(ip: &IpAddr, allow_loopback: bool) -> bool {
 /// path that must keep working. The NON-CANONICAL NAT64 space (the rest of
 /// 64:ff9b::/32) is the opposite case and IS in this set: a
 /// Network-Specific Prefix does not encode where the embedded IPv4 sits, so
-/// it cannot be validated and fails closed (#1965, A6).
+/// it cannot be validated and fails closed (#1965, A6). ISATAP is absent for
+/// the same reason as the canonical NAT64 prefix: its verdict derives from
+/// the embedded IPv4, so the allowlist opt-in still reaches a legitimate
+/// private address through it (#2232).
 #[must_use]
 pub fn is_always_denied_ip(ip: &IpAddr) -> bool {
     let normalized = match ip {
-        IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(*ip, IpAddr::V4),
+        // RFC 4291 §2.5.5.2: the mapped and the deprecated compatible
+        // spellings both surface through `to_ipv4()`. The native V6 special
+        // ranges are checked FIRST, exactly like in [`is_forbidden_ip`]:
+        // `::1` (loopback) and `::` (unspecified) also carry compatible
+        // projections, and the loopback belongs to the `allow_loopback` flag.
+        IpAddr::V6(v6) => {
+            if v6.is_loopback() || v6.is_unspecified() {
+                *ip
+            } else {
+                v6.to_ipv4().map_or(*ip, IpAddr::V4)
+            }
+        },
         v4 @ IpAddr::V4(_) => *v4,
     };
     match normalized {
         IpAddr::V4(v4) => {
             v4.is_link_local()
-                // 0.0.0.0/8: Linux routes the whole family to the local
-                // host, so 0.0.0.1 reaches this machine (#1965, A5).
+                // 0.0.0.0/8: reserved and never globally routable, and
+                // 0.0.0.0 is the unspecified address — a local-host alias
+                // as a destination (#1965, A5).
                 || is_ipv4_this_network(&v4)
                 || v4.is_broadcast()
                 || v4.is_multicast()
@@ -335,12 +377,14 @@ pub fn is_always_denied_ip(ip: &IpAddr) -> bool {
 ///    (#1462) — an allowlist entry cannot open it (validation rejects
 ///    those too, this re-checks).
 /// 3. Public addresses allow, exactly like [`is_forbidden_ip`].
-/// 4. NAT64/6to4-embedded IPv4 re-validates the embedded address against
-///    the same policy, so an allowlist is applied to the address the
-///    socket actually dials, never to the translation prefix as a blanket.
+/// 4. NAT64/6to4/ISATAP-embedded IPv4 re-validates the embedded address
+///    against the same policy, so an allowlist is applied to the address
+///    the socket actually dials, never to the translation prefix as a
+///    blanket.
 ///    The loopback exemption does NOT travel through a translation prefix:
 ///    `64:ff9b::7f00:1` reaches `127.0.0.1` through a NAT64 gateway, and
-///    the B1 flag is for the literal loopback only (#1965).
+///    the B1 flag is for the literal loopback only (#1965). The same holds
+///    for the encapsulation form `::5efe:7f00:1` (#2232).
 ///    The denial is unconditional — a translated loopback is refused even
 ///    with the flag off. The only verdict it changes is one a hand-built
 ///    policy could reach by allowlisting `127.0.0.0/8`, and the config
@@ -364,11 +408,16 @@ pub fn is_forbidden_ip_with_policy(
         return false;
     }
     if let IpAddr::V6(v6) = ip {
-        if let Some(v4) = ipv6_nat64_embedded_v4(v6).or_else(|| ipv6_6to4_embedded_v4(v6)) {
+        if let Some(v4) = ipv6_nat64_embedded_v4(v6)
+            .or_else(|| ipv6_6to4_embedded_v4(v6))
+            .or_else(|| ipv6_isatap_embedded_v4(v6))
+        {
             // The loopback exemption does not travel through a translation
             // prefix: `64:ff9b::7f00:1` reaches `127.0.0.1` through a NAT64
             // gateway, and the flag exempts the literal loopback only
-            // (#1965, A2).
+            // (#1965, A2). The same holds for the encapsulation forms:
+            // `::5efe:7f00:1` reaches `127.0.0.1` through an ISATAP router
+            // (#2232).
             if is_permitted_loopback(&IpAddr::V4(v4)) {
                 return true;
             }
@@ -397,10 +446,16 @@ pub fn is_reserved_v4(v4: &Ipv4Addr) -> bool {
 /// Returns `true` if `v4` falls within the "this network on this host"
 /// family 0.0.0.0/8 (RFC 1122 §3.2.1.3).
 ///
-/// Only `0.0.0.0` itself is the unspecified address, but the WHOLE /8 is
-/// routed to the local host on Linux and macOS: `0.0.0.1` reaches the
-/// machine itself, so the family is denied as a family and not only the one
-/// address (#1965, A5).
+/// The whole /8 is RESERVED and never globally routable — IANA keeps
+/// 0.0.0.0/8 out of the global unicast space — so no public target lives
+/// there and the family is denied as a family, not only the one address
+/// (#1965, A5). Which member of the family routes where is a property of
+/// the local routing table, not of the address space: the denial never
+/// depends on it.
+///
+/// `0.0.0.0` itself is the unspecified address, and as a DESTINATION it is
+/// a local-host alias on several stacks — `http://0.0.0.0/` and `http://0/`
+/// reach a listener bound on the machine, a documented SSRF bypass.
 ///
 /// Denying the family also closes the translated forms: `64:ff9b::0:1`
 /// (NAT64) and `2002:0:1::` (6to4) embed an address of this family, and
@@ -504,6 +559,45 @@ pub fn ipv6_6to4_embedded_v4(v6: &Ipv6Addr) -> Option<Ipv4Addr> {
     ))
 }
 
+/// Returns the IPv4 address encapsulated in an ISATAP address (RFC 5214
+/// §6.1) when `v6` carries the ATOP identifier; `None` otherwise.
+///
+/// RFC 5214 §6.1 builds the ISATAP interface identifier in Modified EUI-64
+/// format by concatenating the 24-bit IANA OUI, the 16-bit ATOP identifier
+/// `0101111011111110` (0x5efe) and the 32-bit IPv4 address:
+///
+/// ```text
+///   |000000ug00000000|0101111011111110|mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm|
+///   \____ 24 bits ___/\___ ATOP _______/\______ IPv4 address _________/
+/// ```
+///
+/// The interface identifier is the last 64 bits of the address, so the ATOP
+/// identifier sits at bits 80..96 (segments\[5\]) and the encapsulated IPv4
+/// occupies the LOW 32 bits (segments\[6..8\]) — the very same fixed
+/// position the NAT64 Well-Known Prefix uses. Unlike a NAT64
+/// Network-Specific Prefix, the ISATAP position never moves, which is
+/// exactly why the encapsulated address can be located and validated
+/// (#2232).
+///
+/// Only the ATOP identifier is checked: the prefix in front of it is the
+/// site's own prefix, and the `u`/`g` bits of the OUI field vary per
+/// interface. A false positive (a public address that happens to carry
+/// `0x5efe` there) is re-validated as the IPv4 it encapsulates, like every
+/// other translation form.
+#[must_use]
+pub fn ipv6_isatap_embedded_v4(v6: &Ipv6Addr) -> Option<Ipv4Addr> {
+    let segments = v6.segments();
+    if segments[5] != 0x5efe {
+        return None;
+    }
+    Some(Ipv4Addr::new(
+        (segments[6] >> 8) as u8,
+        segments[6] as u8,
+        (segments[7] >> 8) as u8,
+        segments[7] as u8,
+    ))
+}
+
 /// Returns `true` if `v6` falls within the Teredo range 2001:0000::/32
 /// (RFC 4380).
 #[must_use]
@@ -582,8 +676,8 @@ pub fn is_forbidden_literal_host_with_policy(
 ///
 /// Evaluation order is the same security-first ladder as
 /// [`is_forbidden_ip_with_policy`]: always-denied set, then the exclusive
-/// loopback flag, then public addresses, then the NAT64/6to4 embedded IPv4,
-/// and only then the allowlist plus the host gate.
+/// loopback flag, then public addresses, then the NAT64/6to4/ISATAP embedded
+/// IPv4, and only then the allowlist plus the host gate.
 #[must_use]
 pub fn is_forbidden_resolved_address(
     ip: &IpAddr,
@@ -601,7 +695,10 @@ pub fn is_forbidden_resolved_address(
         return false;
     }
     if let IpAddr::V6(v6) = ip {
-        if let Some(v4) = ipv6_nat64_embedded_v4(v6).or_else(|| ipv6_6to4_embedded_v4(v6)) {
+        if let Some(v4) = ipv6_nat64_embedded_v4(v6)
+            .or_else(|| ipv6_6to4_embedded_v4(v6))
+            .or_else(|| ipv6_isatap_embedded_v4(v6))
+        {
             // Same invariant as in `is_forbidden_ip_with_policy`: the
             // loopback exemption does not travel through a translation
             // prefix (#1965, A2). This is the live path — the resolver and
@@ -1226,9 +1323,9 @@ mod tests {
     }
 
     /// A5 (#1965): the "this network on this host" family 0.0.0.0/8 must be
-    /// denied as a FAMILY. Only `0.0.0.0` itself is the unspecified address,
-    /// but Linux routes the whole /8 to the local host — `0.0.0.1` reaches
-    /// the machine itself.
+    /// denied as a FAMILY. The whole /8 is reserved and never globally
+    /// routable, and `0.0.0.0` itself is the unspecified address — a
+    /// local-host alias as a destination.
     ///
     /// The deny list must hold on every path, and a hand-built policy that
     /// allowlists the family must not reach it either: the always-denied set
