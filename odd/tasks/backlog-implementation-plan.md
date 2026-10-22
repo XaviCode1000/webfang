@@ -316,11 +316,12 @@ convencional, cero atribución de IA. El orden de apertura ya está firmado por 
 | L15 | `fix-miri-ub-lane` | `6065049e`, `cf4403fa`, `f0e39852` | #2235 | ✓ | `type:chore` | **SÍ** |
 | L14 (a) | `fix-docs-runbooks-wal` | `08d46907` | #1826 | — | `type:docs` | **falta `status:approved` en #1826** |
 | L14 (b) | ídem | `da990e2d` | #1609 (`Closes part of #1609`) | ✓ | `type:docs` | **SÍ** |
-| L14 (c) | — | — | #2241, #2242, #2243 | **NO** | `type:docs`/`type:bug`/`type:chore` | **BLOQUEADO: el owner tiene que aprobar las 3 issues nuevas** |
+| L14 (c) | — | — | #2241, #2242, #2243 | ✓ (aplicadas 2026-10-22) | `type:docs`/`type:bug`/`type:chore` | **SÍ** (3 issues con 3 tipos distintos ⇒ un PR por issue, no uno solo) |
 
-**Lo único que bloquea una apertura ahora mismo**: `status:approved` en **#2241, #2242 y #2243**
-(las issues que abrí con el veredicto de #1609) y en **#1826** (el runbook WAL/SQLite). Las
-labels las pone el owner: `status:approved` nunca se auto-aplica.
+**Aprobaciones resueltas (2026-10-22)**: el owner autorizó y se aplicó `status:approved` en
+**#2241, #2242, #2243** (las issues del veredicto de #1609) y en **#1826** (el runbook
+WAL/SQLite). Verificado por la API. Con esto **ningún lote queda bloqueado por el gate**: las
+cuatro aprobaciones las pone el owner, nunca el agente.
 
 **#2230** (la PR del exporter) no está rota: su cuerpo tiene `Closes #1812`, la issue tiene
 `status:approved` y `type:bug`. Está `BLOCKED` por la **cola de 64 shards de cargo-mutants**
