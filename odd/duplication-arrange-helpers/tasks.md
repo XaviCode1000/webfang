@@ -73,8 +73,13 @@ en el Log de la spec (P3, P4, P9). Sin PR (decisión del owner).
 - Lote **L12** del plan de backlog (`odd/tasks/backlog-implementation-plan.md`), rama
   `fix/duplication-arrange-helpers`, base `main@89ff9d46` (con #2230 ya mergeado ⇒ el bloqueo que
   arrastraba el lote está levantado).
-- Este archivo es **sólo especificación**: no se escribió código de producción, no se corrió
-  `cargo`, no se commiteó nada. Sin PR (decisión del owner).
+- **T1–T5 implementados** (worker del lote, sobre este worktree): el **Log L13** de la spec
+  (`odd/tasks/duplication-arrange-helpers.md`) tiene el detalle, las divergencias resueltas y la
+  evidencia. El árbol queda **sin commitear** y sin PR (decisión del owner, L1). T6–T11 (baseline,
+  guard, harness, `ci.yml`) siguen **sin hacer**: son otra unidad, sobre el árbol final.
+- **Delta medido** (mismo comando del gate, mismo commit): antes **9009** líneas duplicadas / 839
+  clones / 479 ficheros rust → después **8515** / 811 / 480 ⇒ **−494 líneas, −28 clones**. El
+  baseline commiteado (**9272**) debe bajar a **8515** en T6.
 - **Medición de partida** (jscpd 5.4.0, `--min-tokens 50 --format rust --mode mild`, el comando
   del gate): `main@89ff9d46` = **9009** líneas duplicadas / 839 clones / 479 ficheros rust. El
   baseline commiteado es **9272** ⇒ **está rancio en 263 líneas** (en `b1673234`, el commit que lo

@@ -576,3 +576,168 @@ L12 — **Estado de esta entrega**: este documento y su espejo
 (`odd/duplication-arrange-helpers/tasks.md`) son **lo único** que produce esta entrega. No se
 escribió código de producción, no se corrió `cargo`, no se commiteó nada. La implementación es
 del worker del lote, sobre su propio worktree, a partir de esta spec.
+
+---
+
+L13 — **Implementación de T1–T5** (la escribe el worker del lote, sobre el worktree
+`fix/duplication-arrange-helpers`; el árbol queda **sin commitear**, L1). T6–T11 **no** se
+tocaron: `scripts/`, `.github/`, `Cargo.toml` y `Cargo.lock` están intactos.
+
+**L13.1 — S1 · T1–T3: el arrange de sitemap, una sola vez**
+
+- `crates/webfang_core/tests/common/sitemap_arrange.rs` (nuevo): `parser()`,
+  `serve_and_parse(mock, mount_path, response, entry_path)`,
+  `serve_many_and_parse(mock, mounts, entry_path)` — **el mismo texto** que hoy vivía duplicado en
+  `sitemap_integration.rs` (S1: *"el cuerpo de `serve_and_parse` **no** se reescribe"*) — más el
+  helper del arrange de sitemap-index, `serve_index_and_parse(mock, index_path, index_xml,
+  child_mounts)`, y `sitemap_index_with_base(base_url)`.
+- `crates/webfang_core/tests/common/mod.rs`: `pub mod sitemap_arrange;` (una línea, el patrón de
+  los otros cuatro submódulos). La forma del `mod` import es la de esta crate:
+  `#[path = "common/mod.rs"] mod common;` (11 binarios de `webfang_core` lo usaban; ahora son 14).
+- `sitemap_integration.rs`: fuera los tres helpers locales; los **seis** tests de índice usan
+  `serve_index_and_parse` (los cuatro que la spec nombraba + los dos que comparten la misma
+  forma: `test_sitemap_index_malformed_child_included_in_error` y
+  `test_sitemap_index_deduplicates_across_children`).
+- `sitemap_behavioral.rs` (8 tests) y `orchestrator_unit_tests.rs` (5 tests): usan el arrange
+  compartido. **Nombres de test y aserciones intactos.**
+- **El helper no toca el entorno**: la postura del entry guard sigue siendo del llamador, así que
+  `sitemap_malformed_xml_returns_error` (el único que hoy **no** llama a
+  `EnvGuard::entry_guard_off()`) **conserva esa diferencia** (S1 lo pedía explícitamente).
+- **Honestidad del cronómetro**: `sitemap_large_1000_plus_urls` cronometra ahora el
+  `serve_and_parse` completo (mount + parse) en vez de sólo el parse. El presupuesto (2 s) y el
+  mensaje de aserción quedan **intactos**; lo medido se ensancha en el mount (milisegundos).
+
+**L13.2 — S2 · T4–T5: el harness MCP compartido, una sola vez**
+
+- `crates/webfang_mcp/tests/common/mod.rs`: `RelTempDir` (struct + `new` + `path` + `Drop`),
+  `normalized_records`, `walk_dir` y `webfang_binary()` — **una vez cada uno** — y
+  `init_ssrf_disabled` pasa a `pub`.
+- `webfang_binary()` **delega** en `webfang_test_utils::webfang_path()` (T4): cero dependencias
+  nuevas (`webfang_test_utils` ya era dev-dependency de `webfang_mcp`) y la regla del repo
+  (`webfang_path()`, nunca `assert_cmd::cargo_bin`).
+- Copias locales borradas (sitios de la copia → módulo compartido):
+
+  | Copia local borrada | Sitios | Queda en |
+  |---|---|---|
+  | `init_ssrf_disabled` | 2 (`mcp_behavioral_test.rs`, `scraping_coverage_test.rs`) | `common::init_ssrf_disabled` |
+  | `start_test_server` | 1 (`mcp_behavioral_test.rs`) | `common::start_test_server` |
+  | `start_seeded_server` | 1 (`mcp_behavioral_test.rs`) | `common::start_seeded_server` |
+  | `redact_path` | 1 (`mcp_behavioral_test.rs`) | `common::redact_path` |
+  | `RelTempDir` | 4 (`mcp_behavioral_test.rs`, `cli_mcp_export_jsonl_parity_test.rs`, `sitemap_crawl_run_staleness_test.rs`, `export_coverage_test.rs`) + 1 (`scraping_coverage_test.rs`) | `common::RelTempDir` |
+  | `webfang_binary` | 2 (`cli_mcp_export_jsonl_parity_test.rs`, `sitemap_crawl_run_staleness_test.rs`) | `common::webfang_binary` → `webfang_test_utils::webfang_path()` |
+  | `normalized_records` | 2 (los mismos dos) | `common::normalized_records` |
+  | `walk_dir` (módulo `mod walkdir`) | 2 (los mismos dos) | `common::walk_dir` |
+  | `start_server` local | 2 (`cli_mcp_export_jsonl_parity_test.rs`, `sitemap_crawl_run_staleness_test.rs`) | `common::start_server(None)` |
+
+- El comentario de cabecera de `mcp_behavioral_test.rs` que reservaba el dedup para *"the
+  arrange-helpers slice"* se borró con las copias: describía un estado que ya no existe.
+
+**L13.3 — Las divergencias que la regla "gana el compartido" no cerraba sola** (S2 pide
+explícitamente que la diferencia se documente aquí y no se resuelva con un `if`):
+
+1. **`start_seeded_server`: buffer de sesión vs. repositorio.** La copia local de
+   `mcp_behavioral_test.rs` sembraba el **buffer de sesión**; la compartida sembraba el
+   **repositorio** de resultados. Con la compartida, las herramientas de export —que leen la
+   sesión desde #1290— verían una sesión vacía, y `test_export_jsonl_writes_real_file` (y su
+   snapshot) se caerían. Se resolvió **sembrando la sesión en el helper compartido**: el sembrado
+   del repositorio sólo se ejercitaba con `n = 0` (`export_coverage_test`), o sea, era código
+   muerto; y las dos copias sembraban **exactamente el mismo contenido** (`Seed Title {i}`,
+   `Seed body content number {i} for export testing.`, `https://seed.example.com/page/{i}`), así
+   que **el snapshot no cambia**.
+2. **`init_ssrf_disabled`: las dos capas y el `Once`.** Las tres copias no eran iguales: la de
+   `mcp_behavioral_test.rs` levantaba las **dos** capas (MCP + entry guard), la de
+   `scraping_coverage_test.rs` sólo la **capa MCP**, y la compartida las dos. **Ganó la
+   compartida** (las dos capas) y se le puso el `Once` que las copias locales ya traían: sin él, el
+   `env_set` reentrante **deadlockea** contra el `EnvGuard` que `scraping_coverage_test.rs`
+   sostiene en `mcp_crawl_static_literal_ip_rejected_by_entry_guard` (invariante #1224).
+   Consecuencia documentada: en ese fichero el entry guard queda **desarmado en el ambiente del
+   proceso**; el test que lo pinna **armado** lo limpia explícitamente (`EnvGuard::clean`), así
+   que su contrato sigue intacto (0 páginas, 1 error, 0 peticiones).
+3. **`RelTempDir`**: la copia de `sitemap_crawl_run_staleness_test.rs` nombraba el directorio con
+   nanos; las otras cuatro con un contador por proceso. **Ganó la del contador** (mismo criterio
+   de unicidad: pid + contador).
+4. **`normalized_records`**: la copia de `sitemap_crawl_run_staleness_test.rs` ordenaba por `url`;
+   la de `cli_mcp_export_jsonl_parity_test.rs` ordenaba por `url` con respaldo en `failed_url`.
+   **Ganó la segunda**; para los registros que ambas suites producen (todos con `url`) el orden es
+   idéntico.
+5. **`webfang_binary()`**: cambio de comportamiento **deliberado** (L9.3): las dos copias sondeaban
+   un `target/` que cargo no puebla en este workspace virtual y **entraban en pánico**; el helper
+   canónico **construye** el binario bajo demanda.
+6. **`start_server` local de los dos ficheros de paridad**: no era una copia del
+   `common::start_server` (devolvía además un `TempDir` y usaba un `Container` con `output_dir`
+   propio). Se borró y se usa `common::start_server(None)`: ninguna aserción dependía del
+   `TempDir` (los exports van a un `RelTempDir` **relativo**, que la puerta de rutas acepta por el
+   contrato del CWD) ni del `output_dir` del contenedor (esas suites no usan el pipeline).
+
+**L13.4 — La medición del delta (el número que T6 necesita)** — mismo comando del gate
+(jscpd 5.4.0, `--min-tokens 50 --format rust --mode mild`), sobre el **mismo** commit:
+
+| Árbol | `statistics.formats.rust.duplicatedLines` | Clones | Ficheros rust |
+|---|---|---|---|
+| antes (`HEAD` `05aece2e` = `main@89ff9d46` + el commit de la spec; `crates/` idéntico a main) | **9009** | 839 | 479 |
+| después (árbol con T1–T5) | **8515** | 811 | 480 |
+| delta | **−494** | **−28** | +1 (el módulo nuevo) |
+
+La estimación aritmética de la spec (176 + 817 = 993) **exageraba el descenso en 499 líneas**:
+confirma la regla de S3 (el número medido manda, la estimación no). ⇒ **el baseline de
+`scripts/quality-baselines.json` (9272) debe bajar a 8515 en T6.** Este lote **no** tocó ese
+fichero (T6 es otra unidad).
+
+**L13.5 — Verificación** (los diez comandos del encargo, en el worktree, con
+`CARGO_TARGET_DIR=$HOME/.cache/cargo-target/fix-duplication-arrange-helpers`,
+`CARGO_INCREMENTAL=0`, `CARGO_BUILD_JOBS=1` y `$(rustup which cargo)`):
+
+| Comando | Resultado |
+|---|---|
+| `cargo nextest run -p webfang_core --test sitemap_integration` | `32 tests run: 32 passed, 0 skipped` (exit 0) |
+| `cargo nextest run -p webfang_core --test sitemap_behavioral` | `24 tests run: 24 passed, 0 skipped` (exit 0) |
+| `cargo nextest run -p webfang_core --test orchestrator_unit_tests` | `21 tests run: 21 passed, 0 skipped` (exit 0) |
+| `cargo nextest run -p webfang_mcp --test mcp_behavioral_test` | **`0 tests run`** (exit 4, `no tests to run`) — ver L13.6 |
+| `cargo nextest run -p webfang_mcp --test cli_mcp_export_jsonl_parity_test` | **`0 tests run`** (exit 4) — ver L13.6 |
+| `cargo nextest run -p webfang_mcp --test sitemap_crawl_run_staleness_test` | **`0 tests run`** (exit 4) — ver L13.6 |
+| `cargo nextest run -p webfang_mcp --test export_coverage_test` | **`0 tests run`** (exit 4) — ver L13.6 |
+| `cargo nextest run -p webfang_mcp --test scraping_coverage_test` | **`0 tests run`** (exit 4) — ver L13.6 |
+| `git status --short` | sólo los 10 ficheros de código + el módulo nuevo; **ningún `.snap.new`**, ningún snapshot modificado |
+| `cargo fmt --all -- --check` | exit 0 (sin salida) |
+
+**L13.6 — La advertencia de L13.5: los cinco comandos MCP del encargo son verdes por vacuidad.**
+Los cinco ficheros son `#![cfg(feature = "mcp")]` y la feature `mcp` **no** es default en
+`webfang_mcp` ⇒ sin ella el binario de test se compila **vacío** y nextest sale con
+`error: no tests to run` (exit 4). Es **exactamente la forma del FAIL-OPEN que S4 denuncia** en el
+guard de duplicación ("no medí" confundido con "no hay nada"). La evidencia real es la misma
+orden **con la feature**:
+
+| Comando (con `--features mcp`) | Resultado |
+|---|---|
+| `cargo nextest run -p webfang_mcp --features mcp --test mcp_behavioral_test` | `27 tests run: 27 passed, 0 skipped` |
+| `cargo nextest run -p webfang_mcp --features mcp --test cli_mcp_export_jsonl_parity_test` | `1 test run: 1 passed, 0 skipped` |
+| `cargo nextest run -p webfang_mcp --features mcp --test sitemap_crawl_run_staleness_test` | `2 tests run: 2 passed, 0 skipped` |
+| `cargo nextest run -p webfang_mcp --features mcp --test export_coverage_test` | `3 tests run: 3 passed, 0 skipped` |
+| `cargo nextest run -p webfang_mcp --features mcp --test scraping_coverage_test` | `15 tests run: 15 passed, 0 skipped` |
+| `cargo nextest run -p webfang_mcp --features mcp` (suite completa, no pedida) | `634 tests run: 634 passed, 0 skipped` (36 binarios) |
+| `cargo nextest run -p webfang_core --test retention_test` (binario que ya incluía `common/mod.rs`; no pedido) | `19 tests run: 19 passed, 0 skipped` |
+| `cargo check -p webfang_core --all-targets` | exit 0, sin avisos |
+| `cargo check -p webfang_mcp --all-targets --features mcp` | exit 0, sin avisos |
+| `cargo clippy -p webfang_core --all-targets -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines` | exit 0 |
+| `cargo clippy -p webfang_mcp --all-targets --features mcp,chromium -- -D warnings …` | exit 0 |
+
+⇒ **CERO cambios de snapshot** (los `.snap` de `mcp_behavioral_test.rs` —`export_jsonl_success`,
+`export_vector_success`, `process_export_pipeline_success`, `export_file_success`— y los de
+`sitemap_crawl_run_staleness_test.rs` siguen byte a byte igual: el `git status` no lista ningún
+`.snap` y no hay ningún `.snap.new`).
+
+**L13.7 — Dos efectos secundarios documentados** (no son defectos, pero cambian el coste de las
+suites):
+
+1. Los tres binarios de `webfang_core` que ahora incluyen `common/mod.rs` heredan también los
+   **tests internos de `cli_harness`** (4 por binario), y uno de ellos **construye el binario
+   `webfang`** la primera vez (~3 min; después, no-op). Antes esos binarios eran de 8 tests; ahora
+   son de 11/24/32 según el fichero.
+2. `common::init_ssrf_disabled` es ahora **una vez por proceso**: `common::start_test_server` ya no
+   rearma las dos capas en cada llamada. Ningún otro fichero de `webfang_mcp` limpia esas variables
+   y luego llama a `start_test_server` (el único que limpia es
+   `mcp_ssrf_knob_matrix_test.rs`, que usa `start_test_server_ssrf_enabled`, que no rearma), así
+   que la suite completa de la crate (634 tests) queda verde.
+
+**L13.8 — Lo que este lote NO tocó**: `Cargo.toml` (de ninguna crate), `Cargo.lock`, `scripts/`,
+`.github/`, `docs/`, `CHANGELOG.md`. No se commiteó nada (L1).
