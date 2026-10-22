@@ -703,3 +703,30 @@ La PR **#2230** (exporter: un JSONL no-UTF-8 degrada y salta en vez de abortar, 
 El ciclo de release siguió su curso: la PR `#2240` (v5.0.1) se cerró y hay una `#2245` (v5.0.1) abierta
 ⇒ las PRs del backlog se abrirán sobre un `main` que se mueve, que es exactamente el motivo por el
 que el orden de apertura es **secuencial** (cada slice desde el `main` nuevo) y no apilado.
+
+### 2026-10-22 · D22: el orden real de T2 y T3 en L10 (inversión de premisa en mi spec)
+
+**Lo que encontró el peer, y es cierto**: mi spec de L10 listaba **T2 antes de T3**, y eso está
+**al revés**. La entrada `RUSTSEC-2024-0449` es de `unsafe-libyaml`, y mientras el **lock del fuzz**
+siga llevando ese crate, la supresión **sigue viva**: no hay nada que purgar (borrarla antes de
+re-resolver el lock dejaría el `cargo audit` en rojo, y el guard de S1 —"ningún ignore puede quedar
+muerto"— la detectaría). El ignore **muere** cuando el lock del fuzz se re-resuelve (y entonces entra
+`unsafe-libyaml-norway`, que es otro crate y no lo cubre). ⇒ **El orden real es T3 (lock del fuzz) y
+después T2 (purgar el ignore)**.
+
+La spec **decía la verdad en su texto** (L84 y L103-104 lo explicaban: *"Mientras ese lock exista
+con el crate adentro, la supresión sigue viva y borrarla del `deny.toml`…"*) pero **su lista de
+tasks contradecía su propio texto**. El peer ejecutó el orden correcto (un solo commit con el lock
+re-resuelto **primero** y el ignore purgado después). ⇒ La corrección pendiente es en la **lista de
+tasks** del spec de L10, no en su fundamento.
+
+**Estado real medido** (rama `fix-unmaintained-crates`): el lock del fuzz lleva
+`unsafe-libyaml-norway` (no `unsafe-libyaml`), el lock del workspace lleva `serde_norway` +
+`unsafe-libyaml-norway` y **0** ocurrencias de `serde_yaml`, y `deny.toml` **ya no** tiene la entrada
+`RUSTSEC-2024-0449` ⇒ nada que purgar y la cadena queda consistente.
+
+**Corolario de proceso (del peer, y lo adopto)**: *el residuo de un RED puede dejar procesos
+colgados y hay que barrerlos al terminar el lote*. Los 3 hijos del RED de `#2066` hubo que
+recolectarlos con **SIGKILL** (el SIGTERM no los movió: estaban bloqueados en `do_sys_pause` con la
+señal pendiente). La evidencia del RED ya estaba capturada en el test y en el Log, así que no se
+pierde nada ⇒ la regla es: **al terminar un lote, barrer los procesos que su RED dejó vivos**.
