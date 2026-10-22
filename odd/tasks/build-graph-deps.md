@@ -522,3 +522,48 @@ L9 — **Estado de la entrega**:
   el documento tiene `## Specs` → `## Tasks` → `## Log` en ese orden, y sus 24 bloques
   `>` se compararon carácter a carácter contra el texto de las tres issues (REST) y del
   plan: **0 citas no literales**.
+
+L10 — **El harness era FAIL-OPEN, y de la peor manera: devolvia un verde que
+no decia nada.** Un `cargo tree` fallido devolvia 0, y 0 es exactamente el
+valor que significa "el grafo no lleva chromiumoxide": un dev sin las
+fuentes del registry obtenia un PASS en el check que este lote existe para
+probar. Corregido: la resolucion (`CHROMIUM_RESOLVED`) esta separada del
+conteo (`CHROMIUM_COUNT`), un check que no pudo correr es un FAIL que nombra
+la causa y el remedio (`cargo fetch --locked`), y hay un control nuevo con un
+`cargo` stub que siempre falla: un grafo que no se pudo resolver NO se lee
+como un grafo vacio. El worker encontro ademas dos fallos PROPIOS suyos
+mientras corria el harness (la polaridad invertida de dos checks S4, y un
+reporter que imprimia FAIL sin llamar a `fail()`: la corrida terminaba
+`PASS=24 FAIL=0` con dos lineas FAIL en pantalla y exit 0 — un fail-open en
+el reporter). Los tres bugs son de la clase "un harness que se pone verde
+sin mirar", que es la que este lote audita.
+
+L11 — **El RED es de GRAFO y el GREEN son los ocho comandos.** RED: el harness
+final contra un export pre-fix (`git archive HEAD`, sin mutar el repo) da
+PASS=9 FAIL=17 con los 8 controles positivos en verde — cada FAIL es la
+razon del defecto (los crates ESTAN en el grafo). GREEN: PASS=26 FAIL=0. Y
+los ocho comandos de T9 en verde: `nextest autotuning` (21/21, con el test
+nombrado `ram_budget_from_bytes_converts_to_kib` en PASS), `--lib` (2892
+passed), `--test behavioral` (167 passed, con
+`version_contains_version_string` en PASS con `version_string()` borrada),
+el benchmark con y sin la feature (76/76 en ambos, con el conjunto de tiers
+distinto), `cargo check`, `cargo clippy --all-targets --all-features` y el
+job de doc con `RUSTDOCFLAGS=-D warnings`.
+
+L12 — **Las decisiones del padre, aplicadas.** (a) El delta quirurgico de
+`fuzz/Cargo.lock` se acepta: el lock commiteado esta viejo (pinea
+`webfang_core 2.0.0` con el workspace en 5.0.0, y no trae `keyring`/`age`/
+`chromiumoxide`); una regeneracion real arrastra la pila keyring/zbus/age
+—que es de L10— y falla en offline (`zerocopy-derive 0.8.55` no esta en
+cache). Ningun lane de CI valida ese lock con `--locked`; solo lo audita, y
+esta en verde. (b) El `cargo fetch --locked` del step de repo-guards se
+acepta y su comentario dice el volumen (101,5 MiB de archivos .crate) y que
+es una descarga, no un build. (c) La baseline de duplicados se regenera con
+el comando canonico del header del propio archivo (52 -> 42 nombres, sin
+red) en un commit separado y ultimo.
+
+L13 — **Corte de slice de este lote**: el branch suma ~1212 lineas autorales
+en 4 commits (spec del peer · el harness con su wiring · el cambio de grafo
+entero con T4+T5 juntos · la baseline). T4 y T5 van juntos a proposito: los
+dos advisories de git2 solo se purgan cuando git2 salio de AMBOS locks, y
+separarlos dejaria un commit con un ignore que no cubre nada.
