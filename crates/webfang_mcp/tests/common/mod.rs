@@ -249,6 +249,74 @@ pub async fn start_seeded_server(
     (base_url, handle, container_tmp)
 }
 
+/// Start a test MCP server whose SESSION-owned results buffer is pre-seeded
+/// with `n` `ScrapedContent` items — the buffer the export tools READ.
+///
+/// [`start_seeded_server`] seeds the CRAWL-RESULT REPOSITORY instead, which
+/// the export path does not read: #1290 re-pointed the export tools from the
+/// repository to the session (`McpState::session_results`), so a suite that
+/// needs an export to have something to export needs THIS starter.
+///
+/// Returns `(base_url, server_handle, container_tmp)`. The container temp dir
+/// is returned so the caller keeps it alive (it is the container's configured
+/// `output_dir`) and so it can locate the exports.
+pub async fn start_session_seeded_server(
+    n: usize,
+) -> (String, tokio::task::JoinHandle<()>, tempfile::TempDir) {
+    use webfang_core::domain::config::ScraperConfig;
+    use webfang_core::domain::{CrawlerConfig, ScrapedContent, ValidUrl};
+
+    let container_tmp = tempfile::TempDir::new().expect("create container temp dir");
+    let crawler_config =
+        CrawlerConfig::new(url::Url::parse("https://seed.example.com").expect("valid seed URL"));
+    let scraper_config = ScraperConfig {
+        output_dir: container_tmp.path().to_path_buf(),
+        ..Default::default()
+    };
+    let container = Container::new(crawler_config, scraper_config)
+        .await
+        .expect("container creation failed");
+
+    // The pipeline's write target is the container's configured `output_dir`;
+    // process_export_pipeline enforces the export-root gate at request time
+    // (XP-P-08/G-9, issue #1608), so the fixture declares the container temp
+    // dir as a root.
+    let state =
+        McpState::new(container).with_export_roots(vec![container_tmp.path().to_path_buf()]);
+    for i in 0..n {
+        let url_str = format!("https://seed.example.com/page/{i}");
+        let url = url::Url::parse(&url_str).expect("valid seeded URL");
+        let content = ScrapedContent {
+            title: format!("Seed Title {i}"),
+            content: format!("Seed body content number {i} for export testing."),
+            url: ValidUrl::try_from_url(url).expect("seeded fixture is a plain https URL"),
+            excerpt: None,
+            author: None,
+            date: None,
+            html: None,
+            assets: vec![],
+            correlation_id: None,
+            quality_hint: None,
+        };
+        // In-memory session seed: no background writer to wait for (the
+        // repository path's flush-poll is gone with its read source).
+        state
+            .session_results
+            .lock()
+            .expect("fresh session lock is never poisoned")
+            .push(content);
+    }
+
+    // Disable BOTH wiremock hatches (see `arm_wiremock_hatches`).
+    // Permanent set serialized under ENV_LOCK by `env_set` — see #1126.
+    arm_wiremock_hatches();
+
+    let app = build_mcp_router(state, &anonymous_server_options());
+    let (base_url, handle) = serve_on_random_port(app).await;
+
+    (base_url, handle, container_tmp)
+}
+
 /// Start a test MCP server with SSRF protection ENABLED.
 ///
 /// Every other starter sets `WEBFANG_MCP_DISABLE_SSRF=1` because wiremock binds
