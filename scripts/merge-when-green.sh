@@ -10,7 +10,14 @@
 #   MERGE_WHEN_GREEN_TIMEOUT=1800 scripts/merge-when-green.sh <PR-NUMBER>  # same via env
 #
 # Behavior:
-#   0. Refuses a squash-merge that would destroy a breaking declaration. A
+#   0. If the PR is ALREADY MERGED (state == MERGED), reports "already merged"
+#      and exits 0: the merge already happened, so there is nothing to wait for
+#      and nothing to merge. GitHub answers mergeStateStatus=UNKNOWN for a
+#      closed PR FOREVER (the mergeability of a closed PR is never computed),
+#      so the UNKNOWN retry loop used to burn its 90s window and then FAIL on a
+#      PR whose merge was already done (#1970). `state` is the field that tells
+#      the two apart, and it is read in the SAME call as mergeStateStatus.
+#   1. Refuses a squash-merge that would destroy a breaking declaration. A
 #      breaking marker lives in a commit subject (`feat(ai)!: ...`) or in a
 #      `BREAKING CHANGE:` footer, and `gh pr merge --squash` rebuilds the subject
 #      from the PR TITLE — dropping the `!` — while release-plz ignores a footer
@@ -18,7 +25,7 @@
 #      patches with the marker gone. So this runs BEFORE the wait: if the PR
 #      title or any branch commit declares a break and the strategy is squash,
 #      it exits 5 and names the remedy (--merge). See #2081.
-#   1. Reads the required status-check contexts from branch protection, then polls
+#   2. Reads the required status-check contexts from branch protection, then polls
 #      `gh pr checks --json name,bucket` until EVERY one of them has REPORTED with
 #      a terminal bucket, and all report `pass`. Waiting on
 #      `gh pr checks --watch --required` alone is not enough: it evaluates against
@@ -28,11 +35,11 @@
 #      behaviour and says so on stderr. That fallback is bounded by the SAME
 #      effective deadline as the polling branch (B46): a deadline that applies to
 #      one branch only is not a deadline.
-#   2. Verifies mergeStateStatus is CLEAN or UNSTABLE (not BEHIND, BLOCKED, or
+#   3. Verifies mergeStateStatus is CLEAN or UNSTABLE (not BEHIND, BLOCKED, or
 #      CONFLICT). UNSTABLE with required checks green is this repo's normal
 #      green state: several jobs are skipped by design on PRs (Deploy Docs,
 #      Miri shards), and each SKIPPED pushes the state to UNSTABLE (#823).
-#   3. Merges with `gh pr merge --squash` (default) or `gh pr merge --merge` when
+#   4. Merges with `gh pr merge --squash` (default) or `gh pr merge --merge` when
 #      `--merge` is passed, then deletes the remote head
 #      branch for same-owner PRs. Local branch/worktree cleanup is left to the
 #      post-merge runbook (see 'Post-merge runbook' below). A remote-cleanup
@@ -40,7 +47,8 @@
 #      `cleanup: failed branch=<name> reason=<reason>` (#1072).
 #
 # Exit codes:
-#   0  PR merged. Remote-branch cleanup failure after a successful merge also
+#   0  PR merged, OR the PR was already merged (nothing to do — step 0). A
+#      remote-branch cleanup failure after a successful merge also
 #      exits 0 — by design: a non-zero exit post-merge teaches callers the
 #      merge failed and re-arms the #819 retry trap (double merge), which is
 #      worse than a stale branch. Parse the `cleanup: failed` stdout line
@@ -58,12 +66,18 @@
 #   - Respects branch protection: uses `gh pr merge --squash` (or `--merge`), NOT
 #     --admin, NOT the synchronous PUT bypass. Required checks must be green before
 #     merge.
+#   - An already merged PR is NOT a failure. The desired state is reached, so the
+#     script says "already merged" and exits 0 — no wait, no second merge (#1970).
+#     Re-running the script on a merged PR is normal (the runbook asks for
+#     `gh pr view` afterwards) and must not burn the 90s UNKNOWN window nor
+#     report a failure. No new exit code: a caller would have to learn a second
+#     table for a state the repo already calls "merged".
 #   - `--merge` exists for batch PRs (see AGENTS.md "Batch merge of multiple green
 #     PRs"): squashing N independent fixes into one commit destroys per-fix revert
 #     granularity, so a batch needs a merge commit. It is the same merge with a
 #     different strategy flag — every guard above still applies. `--squash` stays
 #     the default so no existing invocation changes behaviour.
-#   - The breaking-marker guard (step 0) has NO override flag on purpose. A
+#   - The breaking-marker guard (step 1) has NO override flag on purpose. A
 #     bypass would re-arm exactly the silent failure it exists to stop: the
 #     release would ship as a patch and nobody would notice until the tag was
 #     public. The marker is a property of the branch, so the remedy is always
@@ -154,7 +168,8 @@ Environment:
               flag wins over env, env wins over the 600s default.
 
 Exit codes:
-  0  Merged (or dry-run reports green).
+  0  Merged, or the PR was already merged (nothing to do). A --dry-run that
+     reports green exits 0 too.
   1  Bad args (including --squash together with --merge).
   2  A required check failed/cancelled.
   3  Checks green but PR is BEHIND or BLOCKED — rebase first.
@@ -249,7 +264,51 @@ if ! command -v gh >/dev/null 2>&1; then
   exit 1
 fi
 
-# --- 0. Breaking-marker guard (before the wait, not after) -------------------
+# --- Read the PR state in ONE call ------------------------------------------
+# `state` (MERGED / OPEN / CLOSED) and `mergeStateStatus` (the mergeability
+# verdict) are read TOGETHER, so the two can never come from two different
+# points in time and so a single call can tell "this PR is already merged"
+# from "GitHub is still computing mergeability" (#1970).
+#
+# ONE reader, no fallback: a second projection of the same fact is the shape
+# this repo's own triage calls out ("one fact, two readers — the second one
+# wins"). `gh pr view` serves both fields in one call since the API version
+# that introduced `mergeStateStatus` (the field this script already reads),
+# so a single-field fallback would only exist to serve a stub — and it would
+# silently DISABLE the already-merged detection, which is the defect this
+# change fixes.
+pr_state=""
+merge_status=""
+read_pr_merge_state() {
+  local raw
+  raw="$(gh pr view "$pr_number" --json state,mergeStateStatus)"
+  pr_state="$(printf '%s' "$raw" | jq -r '.state // ""')"
+  merge_status="$(printf '%s' "$raw" | jq -r '.mergeStateStatus // ""')"
+}
+
+# The single message for the already-merged case. Exit 0 by design: the state
+# the caller wanted ("the PR is merged") is ALREADY reached, and a new exit
+# code would only teach the caller a second table.
+exit_already_merged() {
+  echo "PR #${pr_number} is already merged — nothing to merge (state=MERGED)."
+  exit 0
+}
+
+# --- 0. Already merged? (#1970) ---------------------------------------------
+# A merged PR is a terminal fact: the merge already happened and this script has
+# nothing left to do. GitHub answers mergeStateStatus=UNKNOWN for a closed PR
+# FOREVER (the mergeability of a closed PR is never computed), so the UNKNOWN
+# retry loop below used to burn its 90s window and then exit 4 on a PR whose
+# merge was already done. `state` is the field that tells the two apart.
+#
+# The check runs BEFORE the wait: a merged PR must not sit in the check wait
+# either, and it must not reach the breaking-marker guard, whose refusal
+# ("nothing was merged") would be a lie about a PR that IS merged.
+if read_pr_merge_state && [[ "$pr_state" == "MERGED" ]]; then
+  exit_already_merged
+fi
+
+# --- 1. Breaking-marker guard (before the wait, not after) -------------------
 # The marker has to SURVIVE the merge, and squash is the strategy that kills it:
 #   - `gh pr merge --squash` rebuilds the subject from the PR TITLE and drops the
 #     `!`: `fix(cli)!: ...` landed as `fix(cli): ... (#2078)`;
@@ -341,7 +400,7 @@ elif [[ $title_declares_breaking -eq 1 && -z "$breaking_commits" ]]; then
   exit 5
 fi
 
-# --- 1. Wait for required checks to finish -----------------------------------
+# --- 2. Wait for required checks to finish -----------------------------------
 # Do NOT trust `gh pr checks --watch --required` as the "all done" signal.
 # `--required` evaluates against the checks GitHub has REPORTED SO FAR, not
 # against the required-context list from branch protection. Immediately after a
@@ -462,12 +521,16 @@ else
   done
 fi
 
-# --- 2. Verify merge state is CLEAN ------------------------------------------
+# --- 3. Verify merge state is CLEAN ------------------------------------------
 # UNKNOWN is not a verdict, it is GitHub still computing mergeability — which is
 # the same class of bug as #1011 (acting on an incomplete answer). Reproduced on
 # PR #1017 right after its required checks all went green. Retry within a bounded
 # window before treating it as a failure.
-state="$(gh pr view "$pr_number" --json mergeStateStatus --jq .mergeStateStatus)"
+read_pr_merge_state
+if [[ "$pr_state" == "MERGED" ]]; then
+  exit_already_merged
+fi
+state="$merge_status"
 state_deadline=$((SECONDS + 90))
 while [[ "$state" == "UNKNOWN" ]]; do
   if [[ $SECONDS -ge $state_deadline ]]; then
@@ -477,7 +540,14 @@ while [[ "$state" == "UNKNOWN" ]]; do
   fi
   echo "    mergeStateStatus is UNKNOWN (still computing); retrying..."
   sleep 10
-  state="$(gh pr view "$pr_number" --json mergeStateStatus --jq .mergeStateStatus)"
+  # The PR can be merged by someone else while this script waits, so the
+  # re-consult reads `state` again: a PR that became MERGED is done, not
+  # "still computing" (#1970).
+  read_pr_merge_state
+  if [[ "$pr_state" == "MERGED" ]]; then
+    exit_already_merged
+  fi
+  state="$merge_status"
 done
 
 case "$state" in
@@ -497,7 +567,7 @@ case "$state" in
     ;;
 esac
 
-# --- 3. Merge (or report dry-run) -------------------------------------------
+# --- 4. Merge (or report dry-run) -------------------------------------------
 # Resolve head branch + owner up front. The remote head branch is deleted only
 # for same-owner PRs; fork PRs keep their branch on the fork's remote. The local
 # branch is NEVER deleted here (see the worktree note in the header).
