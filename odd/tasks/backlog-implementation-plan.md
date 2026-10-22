@@ -1382,3 +1382,27 @@ lane, no suya.
 `origin/main = de8173a4`: extracto del árbol + extractor vs fixture = **1641 líneas ambos, 0 diferencias**
 — el conflicto de la fixture se resolvió bien en el merge y **no dejó daño**. Es la verificación que
 el peer corre por cada merge (`git archive` + extractor) y hoy dio verde.
+
+### 2026-10-22 · Auto-corrección del peer con dato duro: un merge LIMPIO de la fixture NO prueba nada (la Regla A queda con mejor fundamento)
+
+El peer había afirmado que combinar ramas que tocan la fixture "conflictúa SIEMPRE". Lo midió y **NO
+es cierto**: en `#2268` el merge de `real_tree_sites.txt` fue limpio (`merge-tree rc=0`,
+"Auto-fusionando", cero conflicto) **y el resultado fue CORRECTO** (0 diffs del extractor sobre el
+árbol mergeado). La razón: las dos partes tocan filas de ficheros distintos, así que el merge textual
+une bien.
+
+**Pero la regla sigue — y ahora mejor dicha**: un merge limpio de un **artefacto derivado** no es
+prueba de nada. Es **peor que un conflicto**, porque no avisa: el conflicto al menos obliga a mirar;
+el merge limpio pasa sin que nadie verifique y puede quedar mal. **La única prueba real** es la que
+el peer corre: extractor sobre el árbol **mergeado** contra la fixture del árbol **mergeado** —
+siempre, haya conflicto o no.
+
+**Verificación del merge de `#2268` con exit codes**: merge-tree rc=0 sin conflicto · fixture
+fusionada vs extractor sobre el árbol mergeado = **0 diffs** · `cargo test
+--manifest-path tools/intra-crate-lint` = **exit 0** (2 passed, incluido el golden) ·
+`merge-base --is-ancestor origin/main HEAD` OK, 0 atraso.
+
+**Estado de `#2268`**: head nuevo **`2dd9e04e → 46d10cbe`** (merge de `origin/main de8173a4` dentro
+de la rama). Ya basada en el main actual ⇒ el orquestador la puede mergear **sin tocar la fixture**.
+Su CI se relanza sobre el head nuevo — es el único caso en que relanzar está justificado, porque el
+head cambió de verdad (Regla C: no re-correr mientras ese run esté vivo).
