@@ -1149,3 +1149,52 @@ Verificación con exit codes reales: check/clippy/fmt/doc exit 0; `nextest --lib
 crash matrix **27/27** (con la fila nueva); `signal_lifecycle` **5/5**; behavioral **167/167** (un
 flake ajeno: `batch_file_timeout_does_not_hang`); `check_intra_crate_direction` OK strict;
 `check_ignored_guard` exit 0; golden set regenerado en el mismo commit del cambio.
+
+### 2026-10-22 · #2268: el tip se movió a `2dd9e04e` (docs-only) y la Carencia quedó declarada
+
+El `d19722e9` se corrige por documentación: el **re-verificador del delta dio CLEARED** en los tres
+arreglos, pero marcó que el Log afirmaba *"cubierto por unit tests"* para el invariante de **≥1
+commit antes del drenaje**, cuando esos tests cubren **sólo la ruta estándar** ⇒ la **rama de
+drenaje de la ruta `--clean-ai`** no tiene NINGÚN test que la ejecute (ni unit test ni fila de
+matriz). El hit del armado en IA es correcto **por estructura** (sólo se entra con
+`session.cancelled()`, y el `final_persist` posterior está verificado), pero **no está probado por
+ejecución** ⇒ el texto se corrigió en vez de dejar la afirmación inflada: **una cobertura declarada
+de más es peor que una carencia declarada**.
+
+**La Carencia queda en pie como slice propio, no bloquea `#2268`**: falta una fila de matriz con
+`--clean-ai` (necesita mock de embeddings) más un unit test del corte temprano del drenaje de IA.
+
+Dos notas del re-verificador, también asentadas:
+
+- El **gate intra-crate sigue OK en estricto**: la capa `cli` no está en `TARGET_LAYERS`, así que
+  armar el punto desde `application/export_factory.rs` no crea arista nueva (mismo criterio de los
+  dos sitios preexistentes).
+- **Cavidad preexistente y espejada**, no de este diff: una corrida armada donde **todos** los items
+  son `AlreadyCommitted` **no entra al check de cancelación** en ninguna de las dos rutas ⇒ sale
+  limpia bajo armado. Sólo posible con *resume totalmente commiteado + cancelación simultánea*.
+
+Resultado: **#2244 queda cerrada del lado del implementador** (($S1$-$S5$ cumplidas y verificadas,
+UNA carencia declarada), y la PR `#2268` no necesita re-verificación (docs-only).
+
+### 2026-10-22 · El orquestador mergeó `#2250` (L5) y las cabezas de `#2252`/`#2258` avancen
+
+El `main` ganó `#2250` (`4a17cb66` en `c6af63be`), y **las ramas `fix/false-green-tests` y
+`fix/unmaintained-crates` se re-based en main nuevo** (`768c67d5` y `8664ae67`). El extracto de
+golden set contra el head mergeado sigue **OK** en ambas (`768c67d5` y `8664ae67`) — el merge de
+`#2250` no movió `core/src` (documentación + allowlist de ci). Mi conclusión: las ramas ya tienen
+los pasos de test lane que el worker dispuso (`--tests`).
+
+**Los dos CI de `#2252`/`#2258` estaban `cancelled`, no rojos** (la anotación del job cancelado
+es el `Tests (windows-latest)` del snapshot `test_process_export_pipeline_real_export` — se
+canceló a media dif de `insta`, no un rojo real). Re-lanzé ambos CI:
+- `fix/false-green-tests`: `39787062045` (r-r).
+- `fix/unmaintained-crates`: `39787038521` ya verde en el resto de corridas; `CI 39787038515` re-r.
+
+---
+
+### 2026-10-22 · CI `#2252` y `#2258` re-run
+
+Vale: la conclusion era `failure` en la fase del cancel — un snapshot branch
+marchando a mitad de cancelación. Con ambos re-run en vuelo, la pregunta honesta es si llaman al
+mismo error en el camino de Windows del snapshot. Si ambos salen verdes, el orquestador puede
+tomar la verificación de los merges.
