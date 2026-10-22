@@ -241,6 +241,32 @@ jobs:
       # invisible. Offline, no repo state touched.
       - name: Dependency direction gate semantics harness
         run: bash scripts/test_dependency_direction.sh
+      # Build-graph hygiene guard (issues #1799, #1797, #1796). The graph must
+      # carry ONE source of RAM (`sysinfo`, never `sys-info`, whose unit was
+      # undocumented), NO `built`/`git2`/`libgit2-sys` (they fed a function with
+      # zero call sites), NO `once_cell` in the manifests (std carries
+      # `LazyLock` since 1.80 and the MSRV is 1.88), and NO browser in the
+      # DEFAULT workspace graph (the benchmark declares its own forwarding
+      # `chromium` feature instead of forcing it onto `webfang_core`).
+      #
+      # WHY THIS STEP EXISTS: three of those four changes have NO observable
+      # behaviour — they only change the dependency graph — so without a lane
+      # that asserts the graph, the deletions would be invisible to CI and
+      # trivially revertible. The harness asserts the NEGATION (the crates are
+      # ABSENT) with a positive control per check, so it cannot go green by
+      # construction.
+      #
+      # OFFLINE / NO-CARGO: the harness RESOLVES graphs with `cargo tree
+      # --offline` and compiles NOTHING — no rustc, no linker, no build script.
+      # `cargo tree` still READS the registry sources of the packages it prints,
+      # and a cold runner has none, so the step fetches them once with
+      # `cargo fetch --locked`: ~100 MiB of .crate archives for the 658
+      # registry packages of this lockfile. It is a DOWNLOAD, not a build, and
+      # `--locked` fails loudly if the lockfile has drifted from the manifests.
+      - name: Build graph hygiene harness
+        run: |
+          cargo fetch --locked
+          bash scripts/test_build_graph.sh
       # Regression guard for #990 (ADR-0010): intra-crate Clean Architecture
       # layering `infrastructure → adapters → application → domain` (inward only).
       # Fails if `application` imports `infrastructure` etc. (see
