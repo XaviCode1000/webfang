@@ -1406,3 +1406,37 @@ fusionada vs extractor sobre el árbol mergeado = **0 diffs** · `cargo test
 de la rama). Ya basada en el main actual ⇒ el orquestador la puede mergear **sin tocar la fixture**.
 Su CI se relanza sobre el head nuevo — es el único caso en que relanzar está justificado, porque el
 head cambió de verdad (Regla C: no re-correr mientras ese run esté vivo).
+
+### 2026-10-22 · Protección de `main` medida (`/branches/main/protection`, confirmados los tres datos del peer)
+
+- **`strict: True`** (exige rama al día para mergear) · **`enforce_admins: True`** · sin reviews
+  requeridas · `allow_deletions: false`.
+- **Checks requeridos: SÓLO 3**: `Validate PR metadata`, `cargo-mutants (PR diff)` (el agregado de
+  los 64 shards, el lento), `CI Gate` (el paraguas). El resto (Docs, Fuzz, Mutation esencial, etc.)
+  es **informativo**: no bloquea el merge.
+
+**Consecuencia 1**: mergeable = esos 3 verdes. No hay que esperar 64 shards ni Docs/Fuzz
+individuales.
+
+**Consecuencia 2 (protocolo de secuencia, asentado)**: con strict, cada merge deja atrás a todas
+las demás; y un update-branch es un PUSH ⇒ relanza el CI y cancela el run en vuelo (Regla C) ⇒
+la secuencia "esperar verde → update-branch → mergear" es **imposible**: el update mata el verde
+recién pagado. El orden correcto es **el inverso**:
+
+```text
+update-branch PRIMERO → esperar los 3 requeridos en el head nuevo → mergear DE INMEDIATO
+(rama por rama; nunca varios updates por adelantado: la segunda landing deja atrás a las
+otras y quema el verde ya pagado)
+```
+
+Con ~15 PRs y strict, el costo real es **O(n × tiempo_de_CI)**, no O(tiempo_de_CI): no hay
+paralelismo posible por este lado.
+
+**Solución de fondo (para el owner, no se enciende sin su orden)**: el repo **NO tiene merge queue**
+configurada (el único ruleset es `release-tags-immutable`, sobre tags). Pero los tres workflows YA
+escuchan el evento `merge_group` (ci.yml, fuzz.yml, mutants.yml): se anticipó el mecanismo y nunca
+se encendió. La merge queue es exactamente lo que resuelve el O(n × CI): GitHub actualiza, corre el
+CI sobre el resultado mergeado y mergea sin re-corridas manuales.
+
+**Regla práctica para `#2268`**: está al día (`46d10cbe`) pero su verde **expira con el próximo
+merge ajeno a main** ⇒ mergearla **en el turno en que esté verde y al día**, no al final de la cola.
