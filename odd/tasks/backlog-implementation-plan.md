@@ -1016,3 +1016,55 @@ cargo run --quiet --locked --manifest-path tools/intra-crate-lint/Cargo.toml -- 
   por REST (`gh api -X POST repos/.../pulls`). Y `gh api -f body=@archivo` **no** lee el archivo
   (envía la cadena literal `@/tmp/...`): tiene que ser `-F` ⇒ el body de #2248 salió con la cadena
   literal y se corrigió con un PATCH.
+
+### 2026-10-22 · Las 17 PRs abiertas (el owner: "abrimos las pr's")
+
+| PR | Lote | Rama | Label | Cierra |
+|---|---|---|---|---|
+| **#2246** | L2a | `fix/merge-when-green-merged-state-code` | `type:bug` | #1970, #1971, #1972 |
+| **#2248** | L3a | `fix/ci-health-w03-classifier` | `type:bug` | #2233 + `part of #1936` |
+| **#2247** | L3b | `fix/2234-hermetic-args` | `type:bug` | #2234 |
+| **#2249** | L4 | `fix/guard-residuals` | `type:bug` | #2070 |
+| **#2250** | L5 | `fix/ai-attribution-exact` | `type:bug` | #1995 |
+| **#2251** | L6 | `chore/mutation-shard-measurement` | `type:chore` | #1844 |
+| **#2257** | L7 | `fix/mcp-surface-truth` | `type:bug` | #1815, #1837, #2193 + `part of #1817` |
+| **#2252** | L8 | `fix/false-green-tests` | `type:bug` | #2066, #1816, #1834 + `part of #1828` |
+| **#2260** | L12 | `fix/duplication-arrange-helpers` | `type:chore` | `part of #1757` |
+| **#2253** | L11 | `fix/obscura-unknown-verdict` | `type:bug` | #1710 |
+| **#2254** | L14 | `fix/docs-runbooks-wal` | `type:docs` | #1826 + `part of #1609` |
+| **#2255** | L15 | `fix/miri-ub-lane` | `type:bug` | #2235 |
+| **#2256** | L9 | `fix/build-graph-deps` | `type:refactor` | #1799, #1797, #1796 |
+| **#2258** | L10 | `fix/unmaintained-crates` | `type:chore` | #1984 |
+| **#2261** | #2237 | `fix/exporter-tail-read` | `type:bug` | #2237 |
+| **#2259** | #2238 | `feat/mcp-export-skipped-count` | `type:chore` | #2238 |
+| **#2262** | #2243 | `fix/prune-dead-store-seam` | `type:chore` | #2243 |
+
+**Las 24 issues enlazadas, verificadas una por una por API: existen TODAS y TODAS llevan
+`status:approved`** ⇒ ninguna PR queda bloqueada por el gate de "Require status:approved on linked
+issues", que además exige la aprobación **de cada** número enlazado (incluidos los `part of`).
+
+**Dos correcciones al libro mayor, con su causa:**
+
+- **El `type:*` lo deriva el TÍTULO, no el label de la issue** (`scripts/auto_label_type.sh`, que entró
+  en `main` con #2228): `fix`→`type:bug`, `chore`→`type:chore`, `docs`→`type:docs`,
+  `test`→`type:testing`, `feat`→`type:feature`, `refactor`→`type:refactor`, `!`→`type:breaking-change`.
+  El gate exige **una sola** `type:*`, así que el prefijo del título y la label tienen que coincidir
+  siempre. La convención del repo (medida en sus PRs mergeadas: #2230 `fix`→`type:bug`, #2223
+  `chore`→`type:chore`, #2216 `fix(test)`→`type:bug`) es que **la label sigue al tipo del commit**,
+  no al label de la issue enlazada.
+- **`#1852` no aparece en ningún cuerpo**: está **CERRADA** (lo cerró el lote L8 con `default =
+  ["mcp"]` y el guard nuevo) ⇒ enlazarla sería un no-op. `#1797`, `#1796`, `#2031` y `#2235` **sí**
+  existen (y están aprobadas); una medición única contra una API caída las dio por inexistentes, y se
+  corrigió con reintentos.
+
+**El golden set del lint intra-crate** (`tools/intra-crate-lint/tests/fixtures/real_tree_sites.txt`)
+es un **snapshot con números de línea** de `crates/webfang_core/src` ⇒ toda PR que toca el core lo
+deja rancio y el job `Repo guards` falla con exit 101. Refrescado y commiteado en L3b, L7, L11, L14
+y L9. El comando (la CLI del tool imprime los sites con el mismo formato que el test):
+
+```bash
+$BIN --root crates/webfang_core/src > tools/intra-crate-lint/tests/fixtures/real_tree_sites.txt
+```
+
+⇒ **es un segundo recurso serializado**, junto a `ci.yml`: en el orden de merge hay que refrescarlo
+en cada PR que toque el core.
