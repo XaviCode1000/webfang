@@ -34,8 +34,8 @@ que hizo el triage) cuando cada lote aterriza, con el sha de su branch. Ningún 
 - [ ] **L12** · S1–S5 — duplicación: helpers de arrange + baseline medido (#1757) — espera **#2230** (sigue abierta).
 - [ ] **L13** · S1–S5 — entrega macOS (#1821) — **DESCARTADO 2026-10-22** (O3): *"la issue 1821 la dejamos, no la tocamos"*. Sale del plan; la issue queda abierta y sin tocar.
 - [ ] **L14** · S1–S5 — docs y runbooks.
-  - **Mi parte HECHA**: veredicto por fila de #1609 posteado (25 filas: 12 resueltas, 7 moot, 5 vivas, 1 no accionable) + **#2241** (doc de disclosure), **#2242** (degradación de config invisible), **#2243** (podar el seam muerto) abiertas. #1609 queda como umbrella.
-  - **Del peer HECHO**: `f79e42ba`, `08d46907`, `0616c3bf`, `da990e2d` (tip `da990e2d`): runbook WAL/SQLite, nota de #1710, carry-over del wiki.
+  - **Mi parte HECHA**: veredicto por fila de #1609 posteado (25 filas: 12 resueltas, 7 moot, 5 vivas, 1 no accionable) + **#2241** (doc de disclosure), **#2242** (degradación de config invisible), **#2243** (podar el seam muerto) abiertas y aprobadas. #1609 queda como umbrella. Comentarios del lado issues posteados: #2061, #1826, #1710 y el addendum de #1609.
+  - **Del peer HECHO**: `f79e42ba`, `08d46907`, `0616c3bf`, `da990e2d`, `a902229f` (tip `a902229f`): runbook WAL/SQLite, nota de #1710, carry-over del wiki, evidencia. Sin PR ni publicación en GitHub; no toca `ci.yml`.
 - [x] **L15** · S1–S5 — lane de UB: gate por test + skip-net justificado (#2235) — peer: `6065049e`, `cf4403fa`, `f0e39852`, `4a9cb8c0` (tip `4a9cb8c0`). Miri ya instalado (O8 resuelta).
 - [ ] **L16** · S1–S5 — cuando el owner lo ordene: abrir las PRs lote por lote (issue enlazada, un `type:*`, sin atribución de IA) y dejar el merge en sus manos. **Orden fijado 2026-10-22**: `L2 → L3a → L3b → L4/L5/L6 → L8/L9/L10`.
 

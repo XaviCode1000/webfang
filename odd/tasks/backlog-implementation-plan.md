@@ -92,7 +92,7 @@ una decisión del owner).
 | **L11** | obscura | #1710 | el veredicto `Unknown` **nombra el mínimo esperado**; el hit-rate se deriva de los logs por capa; sin modo estricto, sin contadores | `preflight.rs::unknown_verdict_names_the_expected_minimum` | +6/−1 | inline | **HECHO** (peer): `0e52f031` spec, `6b82e087` (el veredicto `Unknown` nombra el mínimo esperado, `#1710`), `0747fea3` (cierre con los shas); tip `0747fea3` en `fix-obscura-unknown-verdict` ||
 | **L12** | Duplicación | #1757 | helpers de arrange compartidos; bajar el baseline por el delta **medido** (9272) | `scripts/check_duplication.sh` | −60/+12 | inline | PENDIENTE (espera **#2230**, que sigue abierta) |
 | **L13** | Entrega macOS | #1821 | — | — | 0 | inline | **DESCARTADO 2026-10-22** (O3): el owner decide *"la issue 1821 la dejamos, no la tocamos"*. El lote sale del plan; la issue queda abierta y sin tocar |
-| **L14** | Docs y runbooks | #1609, #2061, #1826 | cerrar #1609 con veredicto por fila y abrir ≤2 slices vivas; **rechazar** el auto-PR de rotación (el gate `published` ya corre dentro de `Validate PR metadata`); el WAL/SQLite no tiene runbook en ningún lado | `state_store.rs::test_load_or_default_*` | +55/−40 | inline | **DIVIDIDA**: el veredicto por fila de #1609 lo cierro yo (worker read-only + comentario en la issue); la implementación (runbook WAL/SQLite, nota de #1710, slices) es **DEL PEER** y está HECHA (`f79e42ba` spec, `08d46907` runbook WAL/SQLite + nota de obscura, `0616c3bf` registro, `da990e2d` carry-over del wiki; tip `da990e2d` en `fix/docs-runbooks-wal`). **Veredicto posteado** (25 filas: 12 resueltas, 7 moot, 5 vivas, 1 no accionable) y las 5 vivas abiertas como **#2241** (doc de disclosure: DF-D1+DF-D4+DF-D6), **#2242** (la degradación de config es invisible: FR-10) y **#2243** (podar el seam muerto: M1/G1). #1609 **queda abierta** como umbrella; sus PRs la cierran con `Closes part of #1609` |
+| **L14** | Docs y runbooks | #1609, #2061, #1826 | cerrar #1609 con veredicto por fila y abrir ≤2 slices vivas; **rechazar** el auto-PR de rotación (el gate `published` ya corre dentro de `Validate PR metadata`); el WAL/SQLite no tiene runbook en ningún lado | `state_store.rs::test_load_or_default_*` | +55/−40 | inline | **DIVIDIDA**: el veredicto por fila de #1609 lo cierro yo (worker read-only + comentario en la issue); la implementación (runbook WAL/SQLite, nota de #1710, slices) es **DEL PEER** y está HECHA: `f79e42ba` spec, `08d46907` docs, `0616c3bf` registro, `da990e2d` carry-over del wiki, `a902229f` evidencia; tip `a902229f` en `fix/docs-runbooks-wal` (~650 líneas en 3 commits, cada uno bajo el corte de ~400, **sin PR y sin publicar nada en GitHub**, sin tocar `ci.yml` ⇒ no colisiona con la re-aplicación de los steps). **Veredicto posteado** (25 filas: 12 resueltas, 7 moot, 5 vivas, 1 no accionable) y las 5 vivas abiertas como **#2241** (doc de disclosure: DF-D1+DF-D4+DF-D6), **#2242** (la degradación de config es invisible: FR-10) y **#2243** (podar el seam muerto: M1/G1), las tres con `status:approved` del owner. #1609 **queda abierta** como umbrella; sus PRs la cierran con `Closes part of #1609` ||
 | **L15** | Lane de UB | #2235 | el UB de `scraper_service.rs` con gate **por test**; cada `--skip` con motivo escrito; la lane deja resultado, no aborta el proceso | job `Miri (core)` en verde en una corrida schedule | +20/−10 | worker | **HECHO** (peer): `6065049e` (la lane de UB deja de saltarse árboles de test, `#2235`), `cf4403fa` (guard de las invariantes de la lane), `f0e39852` (harness que prueba que el guard puede fallar), `4a9cb8c0` (registro del cierre con su evidencia); tip `4a9cb8c0` en `fix-miri-ub-lane`. O8 resuelta 2026-10-22 ||
 
 ---
@@ -413,3 +413,42 @@ Si dos steps caen en el mismo contexto, gana el que va primero en el orden de ar
 necesita un **control positivo** — un check que falla cuando el defecto **no** está — además del
 RED. Ejemplo del de L9: `once_cell` ausente de los manifiestos pero **presente** en
 `Cargo.lock`. Un harness que puede dar verde por construcción no es evidencia.
+
+### 2026-10-22 · L14 cerrado (peer) y el lado issues publicado (padre)
+
+**L14 HECHO** (peer): `f79e42ba` spec · `08d46907` docs · `0616c3bf` registro · `da990e2d`
+carry-over del wiki · `a902229f` evidencia; tip `a902229f`, ~650 líneas en 3 commits, sin PR y
+sin publicar nada en GitHub. El runbook nuevo (`docs/src/state-recovery-runbook.md` + entrada en
+`SUMMARY.md`) sigue el principio pedido: **cada afirmación cita el test que la pinea, y lo que
+ningún test cubre queda MARCADO como no cubierto** (`created_at` NULL, el VACUUM posterior al
+prune y `PRAGMA integrity_check` / `wal_checkpoint` son herramientas de SQLite, no promesas de
+webfang).
+
+**Cuatro correcciones suyas, verificadas por mí contra el árbol**: `docs/src/overview.md` decía
+"MCP server (35 tools)" → el número real y pineado es 36 (`crates/webfang_mcp/tests/stdio_handshake.rs`);
+`troubleshooting.md` sugería "Try a different TLS fingerprint profile (`--tls-emulation`) **or JS
+rendering**" contra un desafío WAF, y es falso: `hybrid_router.rs` dice que la detección de WAF
+cortocircuita en la capa que la vio y **nunca** se escala al render ⇒ se quitó esa mitad; el
+comentario del módulo de `obscura_downloader.rs` llevaba el piso viejo (0.2.0) contra el real
+(0.2.5); y la fila del wiki (que prometía "Architecture, API reference, guides" en un wiki sin
+páginas) quedó fuera del README.
+
+**Un hallazgo que NO se corrigió y queda abierto**: la tabla **"Build Features"** del README sigue
+mintiendo sobre `default` — `crates/webfang_core/Cargo.toml` tiene `default = []` (set vacío
+explícito desde #1813 T4) y la fila sigue diciendo
+`` `default` (`images` + `documents`) | Image and document extraction | ✅ Yes ``. El resto de la
+tabla es correcto. Lo cierra la Slice B / un one-liner.
+
+**Lado issues: los 4 comentarios del peer, posteados y verificados por la API** (`#2061` rechazo
+del auto-PR de rotación · `#1826` estado real de las 4 filas · `#1710` estado real de los AC ·
+`#1609` addendum), con **una corrección de ruta**: el borrador citaba
+`infrastructure/crawler/elastic_ingestion.rs`, que no existe; el archivo real es
+`crates/webfang_core/src/application/elastic_ingestion.rs` (los hechos del borrador se confirman
+ahí: `ram_budget_bytes` y `.buffer_unordered(self.config.cpu_cores)`).
+
+**El borrador de `#1609` NO se posteó tal cual**: contradecía el veredicto por fila ya publicado en
+esa issue y proponía cerrar el umbrella con ≤2 slices, cuando el estado real son **3 issues por
+raíz** ya abiertas y aprobadas con `#1609` como umbrella. Lo que se posteó fue un **addendum**: el
+puntero al veredicto, las 3 issues, los 2 hallazgos nuevos (la fila de "Build Features" y la tabla
+de sub-issues desactualizada: `#1647` y `#1622` ya están cerradas) y la decisión de **no cerrar**
+`#1609` hasta que aterrice la última de las tres.
