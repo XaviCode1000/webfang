@@ -86,7 +86,7 @@ una decisión del owner).
 | **L5** | Atribución de commits | #1995 | allowlist = identidades **exactas** de los bots (borra el prefix match) | `scripts/test_no_ai_attribution.sh` (caso nuevo) | −2/+18 | inline | **HECHO** (`0f004bf4` doc + `4a17cb66` código en `fix-ai-attribution-exact`; identidades medidas sobre la historia de main: `release-plz-tu-repo[bot]` ×20, `github-actions[bot]` ×8) ||
 | **L6** | Señal de mutación | #1844 | una medición (`cargo mutants list`) → `N`; borrar la estimación | shard `k/N` dentro de 90 min | −8/+12 | inline | **HECHO** (`01767192` doc + `26792e6b` código en `chore-mutation-shard-measurement`): 1477 mutantes medidos (0,71 s, sin compilar) ⇒ 23,1 por shard en 64 ⇒ matriz rebalanceada a **96 shards** ||
 | **L7** | MCP: superficie verdadera | #1815, #1817, #1837, #2193 | `match_url_pattern` documenta lo que hace; `mcp = []` (la key **no** se borra); el conteo 36 en una sola fuente; `eq_ignore_ascii_case` en el path gate; la constante de shutdown `pub` | `path_gate.rs::components_start_with_never_accepts_a_case_variant_the_filesystem_keeps_distinct` | +18/−10 | worker | **HECHO** (peer): `dccd06da` spec, `c40fac93` (`#1815`, `#1817`), `80be9903` (`#2193`), `315441ab` evidencia; tip `315441ab` en `fix-mcp-surface-truth`. No necesita build de ONNX: `webfang_core` **no tiene** feature `ai` (`[features]`: `default = []`, `loom-model`, `persistence`, `console`, `dev-tracing`, `adaptive-selectors`, `mcp`) y `crates/webfang_ai` no existe (ADR-0004 paso 6) ⇒ `--all-features` no enciende ONNX ||
-| **L8** | Falsos verdes de test | #2066, #1852, #1828, #1833, #1834, #1816 | detectar el descarte de SIGKILL (`getpid()==1`) y morir diagnosticamente; `default = ["mcp"]` + guard de target con 0 tests; `PRAGMA integrity_check` en vez de un punto de arming nuevo; el test de Windows **in-module** | `crash_matrix_test.rs::crash_point_never_hangs_when_sigkill_is_discarded` | +25/+150 | worker | **HECHO** (peer): spec `da23c097` (padre) + `8ae91119` (matriz de crash y runbook, `#1828`), `4221bb4f` (cierre de consola REAL de Windows, `#1834`), `934e7f18` (pacing 429 observable, `#1816`), `1702d1ec` (comentario de seguridad que exige clippy en el `getpid` nuevo), `fd9596a5` (T6 cerrado con desviación), `24a819c2` (verificación final); tip `99833e11` (15 commits) en `fix-false-green-tests`. O1 resuelta; O4 ya decidido (D19) ||
+| **L8** | Falsos verdes de test | #2066, #1852, #1828, #1833, #1834, #1816 | detectar el descarte de SIGKILL (`getpid()==1`) y morir diagnosticamente; `default = ["mcp"]` + guard de target con 0 tests; `PRAGMA integrity_check` en vez de un punto de arming nuevo; el test de Windows **in-module** | `crash_matrix_test.rs::crash_point_never_hangs_when_sigkill_is_discarded` | +25/+150 | worker | **HECHO** (peer): spec `da23c097` (padre) + `8ae91119` (matriz de crash y runbook, `#1828`), `4221bb4f` (cierre de consola REAL de Windows, `#1834`), `934e7f18` (pacing 429 observable, `#1816`), `1702d1ec` (comentario de seguridad que exige clippy en el `getpid` nuevo), `fd9596a5` (T6 cerrado con desviación), `24a819c2` (verificación final); tip `99e05793` (16 commits) en `fix-false-green-tests`. O1 resuelta; O4 ya decidido (D19) ||
 | **L9** | Grafo de build | #1799, #1797, #1796 | borrar `sys-info` (devuelve **KiB en todas las plataformas**: la premisa de la issue era falsa) y `once_cell`; dropear `version_string()` (0 call sites) y no escribir `build.rs`; el benchmark declara su propia feature `chromium` | `autotuning.rs::ram_budget_from_bytes_converts_to_kib` | −20/+40 | worker | **HECHO** (peer; Risk item 5 ⇒ commit propio): spec `eb40ecbb` (padre) + `b62a4ac2` (guard del grafo de build), `845bfb08` (el grafo deja de llevar lo que no se usa, `#1799`/`#1797`/`#1796`), `6b109426` (baseline de crates duplicados regenerada), `713502cd` (evidencia); tip `713502cd` en `fix/build-graph-deps`. D9 corregida: `sys-info` devuelve KiB en todas las plataformas ||
 | **L10** | Crates sin mantenimiento | #1984, #2031 | borrar `serde_yaml` (sólo serializa en prod) y salir de `keyring` 3 preservando el **mismo store** (linux-keyutils); las 3 supresiones zbus expiran 2027-01-17 | `scripts/test_advisory_policy.sh` (caso nuevo) | −30/+45 | worker | **HECHO** (peer; Risk item 5 ⇒ commit propio): spec `2f51441a` (padre) + `e02d1829` (ningún ignore de `deny.toml` puede quedar muerto, `#1984`), `905183ac` (evidencia de S1); tip `6b4bd8ed` (8 commits) en `fix/unmaintained-crates` ||
 | **L11** | obscura | #1710 | el veredicto `Unknown` **nombra el mínimo esperado**; el hit-rate se deriva de los logs por capa; sin modo estricto, sin contadores | `preflight.rs::unknown_verdict_names_the_expected_minimum` | +6/−1 | inline | **HECHO** (peer): `0e52f031` spec, `6b82e087` (el veredicto `Unknown` nombra el mínimo esperado, `#1710`), `0747fea3` (cierre con los shas); tip `0747fea3` en `fix-obscura-unknown-verdict` ||
@@ -628,7 +628,7 @@ guard `scripts/check_empty_test_targets.sh` + su harness + el step en `repo-guar
 `126c421f` (T10: el pacing del 429 observable + la barrera del flush), `80ae3571` (el
 `default-features` que no surtía efecto), `8ae91119` (T6: la tabla de la matriz y el runbook),
 `4221bb4f` (T7/T9), `fd9596a5` (T6 con desviación), `934e7f18` (el pacing era inestable), `1702d1ec`
-(el comentario de seguridad que exige clippy), `24a819c2` (evidencia y cierre), `99833e11` (la fila del inventario nombra la lane de Windows y no insinúa un gate). Tip `99833e11`, 15 commits.
+(el comentario de seguridad que exige clippy), `24a819c2` (evidencia y cierre), `99833e11` (la fila del inventario nombra la lane de Windows y no insinúa un gate) · `99e05793` (el rótulo de `during_cancel_drain`: de imposible a *aún no llega*). Tip `99e05793`, 16 commits.
 
 **Dos defectos de la misma clase que el lote audita, aparecidos en el propio lote**:
 el `default-features = false` de `webfang_test_utils` **no surtía efecto** (cargo avisa que se ignora
@@ -878,3 +878,29 @@ son **118** líneas (96 en `jsonl_exporter.rs` + 22 en `checkpoint.rs`), no ~136
 "batch_flow/discovery_phase ~40" **no se confirma** (batch_flow 0, discovery_phase 6); y el "el resto
 es boilerplate de tests" es **a medias**: el **43 %** de las 9009 líneas duplicadas (**3864**) está
 **en ficheros de test** — es la masa mayor, y ahí ya hay campaña.
+
+### 2026-10-22 · `during_cancel_drain`: el rótulo "imposible" era una afirmación temporal
+
+El peer corrigió el rótulo de la fila del crash point en los **cuatro** lugares que declaraban la
+falsedad (el doc-comment de la constante en `crates/webfang_core/src/cli/crash_points.rs`, el
+comentario de la suite en `crates/webfang_core/tests/crash_matrix_test.rs`, la tabla de
+`docs/persistence-resume.md` y el doc del lote: S4 + Log **L18** nuevo, con **L17** conservando el
+registro histórico y su corrección de rótulo, sin reescribirlo). El espejo lleva la NOTA.
+
+**Por qué el rótulo era falso**: decía *"that branch is UNREACHABLE"*, que es una afirmación
+**absoluta** ("imposible"). Con **D21-A aprobado** (`#2244`, decisión A: el export entrega su token
+de cancelación al `ResumeContext`), el cableado **está aprobado y va a llegar** ⇒ la fila pasa de
+*"armada e inalcanzable"* a *"armada y **aún no llega**"*: una fila que **aterriza con el
+cableado**, no antes.
+
+**El invariante sigue intacto** (verificado en el diff): la matriz de crash **no tiene fila** para
+`during_cancel_drain` ⇒ hoy no hay un falso verde, que es exactamente lo que la suite existe para
+prevenir. El texto nuevo no anuncia una fila; explica **por qué** todavía no la hay y **cuándo**
+llega.
+
+**Coherencia del lane**: el slice del token de cancelación (`#2244`) es el que **aterriza la fila**
+de la matriz ⇒ el lane del exporter queda con un cabo visible: `#2237 → #2238 → L12 → #2244`, y
+`#2244` entrega además la fila de `during_cancel_drain` en la matriz de crash.
+
+**El cableado de producción de `during_cancel_drain` no se toca** hasta que el owner lo decida
+(el peer lo deja explícito, y el lote lo dice).
