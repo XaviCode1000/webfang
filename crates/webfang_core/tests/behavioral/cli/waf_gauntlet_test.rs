@@ -12,7 +12,7 @@ use crate::BehavioralTest;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tempfile::TempDir;
 use url::Url;
 use webfang_core::application::crawler::engine::EngineOptions;
@@ -739,16 +739,26 @@ async fn issue_1816_waf_gauntlet_429_retry_after_is_observed_and_exits_69() {
     const RETRY_AFTER_MS: u64 = RETRY_AFTER_SECS * 1000;
 
     let t = BehavioralTest::new().await;
+    // The moment the server ANSWERED the 429: the pacing is measured from
+    // there, not from the start of the run. Measuring from the start would
+    // fold the spawn's latency into the number — and that is how this test
+    // first went green for the wrong reason (a slow spawn passed the
+    // assertion; a warm spawn failed it).
+    let answered_at = Arc::new(Mutex::new(None::<std::time::Instant>));
+    let answered_at_for_mock = Arc::clone(&answered_at);
     Mock::given(method("GET"))
         .and(path("/paced"))
-        .respond_with(
-            ResponseTemplate::new(429).insert_header("Retry-After", RETRY_AFTER_SECS.to_string()),
-        )
+        .respond_with(move |_req: &wiremock::Request| {
+            let mut slot = answered_at_for_mock.lock().expect("the answer slot lock");
+            if slot.is_none() {
+                *slot = Some(std::time::Instant::now());
+            }
+            ResponseTemplate::new(429).insert_header("Retry-After", RETRY_AFTER_SECS.to_string())
+        })
         .mount(&t.server)
         .await;
 
     let base = t.server.uri();
-    let started = std::time::Instant::now();
     let output = cmd()
         .arg("--url")
         .arg(format!("{base}/paced"))
@@ -759,12 +769,16 @@ async fn issue_1816_waf_gauntlet_429_retry_after_is_observed_and_exits_69() {
         .arg("2")
         .arg("--backoff-base-ms")
         .arg("10")
+        // The cap has to be ABOVE the Retry-After we assert: the downloader
+        // clamps the server's Retry-After to `backoff_max_ms`, so a cap
+        // below it would silently make the pacing unobservable (and the
+        // assertion would be measuring the clamp, not the pacing).
         .arg("--backoff-max-ms")
-        .arg("50")
+        .arg("2000")
         .arg("--quiet")
         .output()
         .expect("run webfang binary");
-    let elapsed = started.elapsed();
+    let finished = std::time::Instant::now();
 
     assert_eq!(
         output.status.code(),
@@ -774,10 +788,16 @@ async fn issue_1816_waf_gauntlet_429_retry_after_is_observed_and_exits_69() {
         String::from_utf8_lossy(&output.stderr)
     );
 
+    // The pacing window: from the 429's answer to the end of the run.
+    let answered = answered_at
+        .lock()
+        .expect("the answer slot lock")
+        .expect("the server must have answered the 429");
+    let paced = finished.saturating_duration_since(answered);
     assert!(
-        elapsed.as_millis() as u64 >= RETRY_AFTER_MS,
-        "the run finished in {}ms, but the server asked for a {RETRY_AFTER_MS}ms \
-         Retry-After: the pacing was NOT observed",
-        elapsed.as_millis()
+        paced.as_millis() as u64 >= RETRY_AFTER_MS,
+        "the run ended {}ms after the 429 was answered, but the server asked for a \
+         {RETRY_AFTER_MS}ms Retry-After: the pacing was NOT observed",
+        paced.as_millis()
     );
 }
