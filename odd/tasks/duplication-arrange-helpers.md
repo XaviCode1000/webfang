@@ -741,3 +741,160 @@ suites):
 
 **L13.8 — Lo que este lote NO tocó**: `Cargo.toml` (de ninguna crate), `Cargo.lock`, `scripts/`,
 `.github/`, `docs/`, `CHANGELOG.md`. No se commiteó nada (L1).
+
+---
+
+L14 — **Implementación de T6–T11** (la escribe el worker de esta unidad, sobre el mismo worktree
+`fix/duplication-arrange-helpers`; el árbol queda **sin commitear**, L1). T1–T5 ya estaban
+commiteadas (`b833fcef`, `b4b347a4`) ⇒ el árbol sobre el que se mide ya tiene el dedup aplicado.
+
+**L14.1 — T6 · S3: el baseline baja al número MEDIDO, y la nota dice los tres números.**
+
+| Árbol | `statistics.formats.rust.duplicatedLines` | Clones | Ficheros rust |
+|---|---|---|---|
+| antes (`main@89ff9d46`, `crates/` extraído con `git archive 89ff9d46 crates`) | **9009** | 839 | 479 |
+| después (árbol con T1–T5, worktree `fix-duplication-arrange-helpers`) | **8515** | 811 | 480 |
+| delta | **−494** | **−28** | +1 (el módulo nuevo) |
+
+El **antes** se re-medió en esta unidad, no se copió: `git archive 89ff9d46 crates | tar -x -C
+<tmp>` y el comando del gate sobre ese `crates/` ⇒ 9009 / 839 / 479, idéntico a la medición de
+L6 y de L13.4. El **después** es la medición sobre el árbol de este worktree ⇒ 8515 / 811 / 480.
+⇒ **La medición coincide exactamente con los 8515 de la estimación de la spec**: la cifra que el
+encargo fijó (8515) es la medida, y la **estimación** de la spec (993) era la que se equivocaba
+(499 líneas de exceso), como ya anticipaba L13.4 y la precedente de #1892.
+
+- `scripts/quality-baselines.json`: `duplicated_lines_rust` **9272 → 8515**; `updated` →
+  **2026-10-22** (`date -I`); `notes` → entrada nueva con la fecha, el comando exacto
+  (`jscpd "$PWD/crates/" --min-tokens 50 --format rust --mode mild --silent --reporters json
+  --output "$WORKDIR"`, leyendo `statistics.formats.rust.duplicatedLines`), el **antes** (9009), el
+  **después** (8515), el **delta** (−494), la **versión del detector** (jscpd 5.4.0,
+  kucherenko/jscpd v5) y el **motivo** (la extracción de los helpers de arrange), más la
+  confirmación de que el 9272 estaba rancio en 263 líneas (el árbol ya medía 9009 cuando se
+  escribió ⇒ el gate pasaba con 263 de margen sin que nadie hubiera deduplicado nada) ⇒ la
+  bajada es una corrección de error de medición (cláusula (a)) **y** un paso descendente, no una
+  relajación: el número escrito es el medido.
+- El pin del detector (`jscpd 5.4.0`) queda **intacto**: no se tocó esa parte del guard.
+
+**L14.2 — T7 · S4: el guard deja de tener el CERO POR DEFECTO.** La lectura del informe pasó de
+"imprime 0 si no sé" a "cada causa tiene su estado y su mensaje". Los tres casos de vacuidad de
+S4, reproducidos sobre un árbol de `mktemp` (copia del guard + copia del baseline + stub de
+`jscpd`), con el mensaje **literal** que ahora imprime:
+
+| Caso | Antes (pre-fix) | Ahora |
+|---|---|---|
+| informe sin `statistics.formats.rust` | `Duplicated lines (rust): 0` ⇒ `OK` ⇒ **exit 0** | `::error::El informe de jscpd no trae la sección 'statistics.formats.rust': el detector no produjo un informe de Rust (medición no realizada).` ⇒ **exit 1** |
+| corpus con **cero** ficheros rust | `Duplicated lines (rust): 0` ⇒ `OK` ⇒ **exit 0** | `::error::jscpd no midió ningún fichero Rust (corpus con 0 ficheros): no hay medición sobre la que decidir.` ⇒ **exit 1** |
+| `duplicatedLines` **no entero** | `int(val)` reventaba ⇒ traceback ⇒ exit 1 (diagnóstico feo) | `::error::'statistics.formats.rust.duplicatedLines' no es un número entero de líneas ('200'): la medición es inválida.` ⇒ **exit 1** |
+
+Los **cinco** caminos que ya eran fail-closed se **verificaron** (no se tocaron): detector que
+falla (`::error::jscpd exited with code 3`), versión equivocada (`::error::jscpd es 'jscpd
+0.1.12', se esperaba 'jscpd 5.4.0' …`), `crates/` inexistente (`::error::jscpd exited with code
+1`), baseline ausente (`::error::Missing baseline file …`) y baseline sin la clave (que antes
+salía con un **traceback de Python** — veredicto correcto, diagnóstico feo — y ahora sale con
+`::error::Missing baseline key 'duplicated_lines_rust' in …`, que **nombra la causa**). El
+"baseline no-JSON" es un sexto caso del mismo grupo y ahora dice `::error::Baseline file … is not
+valid JSON: …`.
+
+**L14.3 — T8 · S4: el harness de negación (`scripts/test_duplication.sh`, nuevo).**
+
+- **Hermético**: el detector real **no** se usa; el harness mete un **stub** de `jscpd` en el
+  `PATH` que reproduce las dos cosas de las que depende el guard (la línea de `--version` y el
+  fichero `<output-dir>/jscpd-report.json`) y el error del binario real cuando el corpus no
+  existe. Motivo (restricción, no comodidad): el meta-guard corre en el job `repo-guards`, donde
+  **no hay jscpd** (se instala en `code-quality`) ⇒ un harness que exigiera el binario real
+  dejaría ese job rojo. El reparto es explícito: **el harness prueba la DECISIÓN del guard; la
+  fidelidad del detector real la prueba el ratchet** que corre en `code-quality` (que este lote
+  también baja). El harness corre el guard como **copia** dentro de un sandbox (su `ROOT` sale
+  de su propia ubicación) ⇒ **no escribe en el repo**.
+- **9 casos, 18 aserciones**, cada negativa con su **control positivo** en la misma arena:
+  1. `Duplication INCREASED` ⇒ falla; *control*: el mismo informe con el baseline subido ⇒ pasa.
+  2. informe sin sección `rust` ⇒ falla; *control*: el mismo corpus con la sección ⇒ pasa.
+  3. corpus con cero ficheros rust ⇒ falla (en sus dos formas: `formats` vacío con `sources: 0`
+     — la forma que escribe el detector real — y sección `rust` con `sources: 0`);
+     *control*: un fichero medido ⇒ pasa.
+  4. detector que falla (exit 3) ⇒ falla ruidosamente y **no** se lee como "0 duplicadas"
+     (la aserción prohíbe explícitamente la cadena `Duplicated lines (rust): 0`);
+     *control*: el mismo guard con un detector que sale bien ⇒ pasa.
+  5. versión equivocada (`jscpd 0.1.12`) ⇒ rechazada; *control*: la versión fijada ⇒ aceptada.
+  6. baseline ausente ⇒ falla; *control*: con el baseline de vuelta ⇒ pasa.
+  7. baseline sin la clave / no-JSON ⇒ falla nombrando la causa; *control*: baseline bien formado
+     ⇒ pasa.
+  8. corpus inexistente ⇒ falla; *control*: corpus presente ⇒ pasa.
+- **Salida**: `PASS=18 FAIL=0` (forma de `scripts/test_build_graph.sh`), `exit != 0` con un solo
+  FAIL, y marcador `# NEGATION:` por caso (el que el meta-guard exige).
+
+**Evidencia RED (real, contra el guard pre-fix `HEAD:scripts/check_duplication.sh`):** el
+harness se ejecutó con la copia del guard **anterior** a T7 ⇒ **`PASS=13 FAIL=5`**, con estos
+cinco fallos, que son exactamente el defecto y su diagnóstico:
+
+```
+FAIL a report without the rust section fails          expected FAIL, got rc=0
+     Duplicated lines (rust): 0  (baseline: 100) / OK: duplication at or below baseline.
+FAIL a corpus with zero Rust files fails              expected FAIL, got rc=0
+     Duplicated lines (rust): 0  (baseline: 100) / OK: duplication at or below baseline.
+FAIL a rust section without files fails               expected FAIL, got rc=0
+     Duplicated lines (rust): 0  (baseline: 100) / OK: duplication at or below baseline.
+FAIL a baseline without the ratchet key fails         the message does not name the cause
+     KeyError: 'duplicated_lines_rust'   (traceback de Python)
+FAIL a baseline that is not JSON fails                the message does not name the cause
+     json.decoder.JSONDecodeError: Expecting value: line 1 column 1 (char 0)
+```
+
+⇒ los **casos 2 y 3 dan verde contra el guard pre-fix** (vacuidad) y el **GREEN** posterior es
+`PASS=18 FAIL=0` con el guard de T7.
+
+**Control positivo de la unidad (el meta-guard):** con el guard sustituido por `exit 0`, el
+harness da **`PASS=8 FAIL=10`** y sale con **1** ⇒ **ROJO**; con el guard intacto, `PASS=18
+FAIL=0` ⇒ **VERDE**. El meta-guard `scripts/test_guard_coverage.sh` (que hace esa mutación él
+mismo) sale **`OK: 18 wired guard(s) covered (mutation: on)`** ⇒ el harness quedó aceptado.
+
+**L14.4 — T9 + T10: la baseline del meta-guard y el cableado en CI.**
+
+- `scripts/guard_coverage_baseline.txt`: **borrada** la línea `no-harness check_duplication.sh …`
+  (y el comentario de cabecera que decía "3 guards … duplication, orphan_snapshots,
+  regression_naming, release_dispatch" pasa a "2 guards"). La lista sólo puede encogerse: el
+  meta-guard falla con `stale-baseline` si la entrada deja de reproducirse.
+- `.github/workflows/ci.yml`, job `repo-guards`: un step nuevo, *"Duplication ratchet semantics
+  harness"* (`bash scripts/test_duplication.sh`), con el estilo de sus vecinos: nombre + el
+  porqué en comentario (la vacuidad del guard) + la nota de que **no corre cargo ni red** (el
+  detector va stubbeado). El job `code-quality` **no cambia**: ahí sigue corriendo el ratchet
+  real contra `crates/`.
+
+**L14.5 — T11: la verificación completa** (worktree `fix-duplication-arrange-helpers`, con
+`CARGO_TARGET_DIR=$HOME/.cache/cargo-target/fix-duplication-arrange-helpers`,
+`CARGO_INCREMENTAL=0`, `CARGO_BUILD_JOBS=1` y `$(rustup which cargo)`):
+
+| Comando | Resultado |
+|---|---|
+| `bash scripts/check_duplication.sh` | `Duplicated lines (rust): 8515  (baseline: 8515)` ⇒ `OK: duplication at or below baseline.` (exit 0) |
+| `bash scripts/test_duplication.sh` | `PASS=18 FAIL=0` (exit 0) |
+| `bash scripts/test_guard_coverage.sh` | `guard coverage: 18 wired guard(s)` ⇒ `OK: 18 wired guard(s) covered (mutation: on)` (exit 0, **sin `stale-baseline`**) |
+| el comando de medición del gate (L14.1) | antes 9009 / 839 / 479 ⇒ después **8515 / 811 / 480** ⇒ delta **−494** |
+| `cargo check --workspace --all-features` | exit 0 (`Finished dev profile … in 2m 35s`) |
+| `cargo clippy --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines` | exit 0 (`Finished … in 3m 52s`) |
+| `cargo fmt --all -- --check` | exit 0, sin salida |
+| `env "RUSTDOCFLAGS=-D warnings" cargo doc --workspace --all-features --no-deps` | exit 0 (`Finished … in 15.02s`) |
+| `cargo nextest run -p webfang_core --test sitemap_integration --test sitemap_behavioral --test orchestrator_unit_tests` | `77 tests run: 77 passed, 0 skipped` (exit 0) |
+| `cargo nextest run -p webfang_mcp --features mcp --test mcp_behavioral_test --test cli_mcp_export_jsonl_parity_test --test sitemap_crawl_run_staleness_test --test export_coverage_test --test scraping_coverage_test` | `48 tests run: 48 passed, 0 skipped` (exit 0) — **con `--features mcp`**, por la razón de L13.6: sin la feature los cinco binarios son `#![cfg(feature = "mcp")]` y nextest sale con `no tests to run` (verde por vacuidad) |
+
+**L14.6 — Dos cosas del entorno, para que nadie las lea como defectos del lote.**
+
+1. El meta-guard exige que **todos** los harnesses de los guards cableados estén verdes sobre el
+   árbol intacto, y el de `scripts/test_intra_crate_direction.sh` necesita el extractor
+   (`tools/intra-crate-lint`) **construido**: en este worktree no lo estaba ⇒ el meta-guard
+   reportaba `broken-harness: scripts/test_intra_crate_direction.sh fails on an intact tree`.
+   Es una **precondición ambiental**, no un efecto de este lote (el lote no toca ese harness ni
+   ese guard); se resolvió como lo resuelve el propio job de CI, construyendo la herramienta
+   (`env -u CARGO_TARGET_DIR cargo build --manifest-path tools/intra-crate-lint/Cargo.toml
+   --locked`, que deja el binario en `tools/intra-crate-lint/target/debug/`, directorio
+   gitignorado ⇒ el árbol sigue limpio). Con la precondición cumplida, el meta-guard sale verde.
+2. `scripts/duplicate-crate-baseline.txt` tiene **cinco líneas obsoletas** (`console`, `dirs`,
+   `dirs-sys`, `indicatif`, `redox_users`): es la baseline de otro guard y la mide el owner del
+   plan con la baseline regenerada por L9 ⇒ **esta unidad no la tocó** (queda fuera de su
+   superficie de edición), y se reporta aquí para que no se pierda.
+
+**L14.7 — Lo que esta unidad NO tocó**: `crates/` (T1–T5 ya commiteadas), `Cargo.toml` de
+ninguna crate, `Cargo.lock`, `docs/`, `CHANGELOG.md`, `scripts/duplicate-crate-baseline.txt`, y
+el job `code-quality` de `.github/workflows/ci.yml`. La PR del lote es `Closes part of #1757`:
+**no** cierra la issue entera (su AC 1 es el alcance de producción medido en P3/P4/P9, que queda
+pendiente de decisión del owner). No se commiteó nada (L1).

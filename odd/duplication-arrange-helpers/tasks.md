@@ -7,26 +7,26 @@ Origen: #1757 (fila **L12** del plan de backlog). Test nombrado del lote:
 **No cierra #1757**: su AC 1 es un alcance distinto (self-clones de producción) y queda medida
 en el Log de la spec (P3, P4, P9). Sin PR (decisión del owner).
 
-- [ ] T1 · S1 — `crates/webfang_core/tests/common/sitemap_arrange.rs` (nuevo) +
+- [x] T1 · S1 — `crates/webfang_core/tests/common/sitemap_arrange.rs` (nuevo) +
   `crates/webfang_core/tests/common/mod.rs` (`pub mod sitemap_arrange;`): los helpers `parser()`,
   `serve_and_parse(mock, mount_path, response, entry_path)`,
   `serve_many_and_parse(mock, mounts, entry_path)` y el helper del arrange de sitemap-index, con
   el **mismo cuerpo** que hoy vive en `sitemap_integration.rs`. Prueba: los tres binarios de test
   verdes; el clon medido de S1 desaparece del informe de jscpd.
-- [ ] T2 · S1 — `crates/webfang_core/tests/sitemap_integration.rs`: se borran los helpers locales
+- [x] T2 · S1 — `crates/webfang_core/tests/sitemap_integration.rs`: se borran los helpers locales
   y se usan los del módulo compartido; los cuatro tests de sitemap-index pasan a usar el helper
   de índice. Prueba: `cargo nextest run -p webfang_core --test sitemap_integration` verde, **sin**
   cambio de snapshot.
-- [ ] T3 · S1 — `crates/webfang_core/tests/sitemap_behavioral.rs` y
+- [x] T3 · S1 — `crates/webfang_core/tests/sitemap_behavioral.rs` y
   `crates/webfang_core/tests/orchestrator_unit_tests.rs`: sus 8 + 5 tests pasan a usar el arrange
   compartido; aserciones y nombres intactos; el test que no desactiva el entry guard sigue sin
   desactivarlo. Prueba: `cargo nextest run -p webfang_core --test sitemap_behavioral` y
   `cargo nextest run -p webfang_core --test orchestrator_unit_tests` verdes.
-- [ ] T4 · S2 — `crates/webfang_mcp/tests/common/mod.rs`: añadir `RelTempDir`, `normalized_records`
+- [x] T4 · S2 — `crates/webfang_mcp/tests/common/mod.rs`: añadir `RelTempDir`, `normalized_records`
   y `walk_dir` (una vez), y el `webfang_binary()` que **delegue** en
   `webfang_test_utils::webfang_path()`. Prueba: los cinco ficheros MCP de T5 compilan y sus
   helpers nuevos existen en el módulo compartido.
-- [ ] T5 · S2 — `crates/webfang_mcp/tests/mcp_behavioral_test.rs`,
+- [x] T5 · S2 — `crates/webfang_mcp/tests/mcp_behavioral_test.rs`,
   `cli_mcp_export_jsonl_parity_test.rs`, `sitemap_crawl_run_staleness_test.rs`,
   `export_coverage_test.rs`, `scraping_coverage_test.rs`: se borran las copias locales
   (`init_ssrf_disabled`, `start_test_server`, `start_seeded_server`, `redact_path`, `RelTempDir`,
@@ -36,29 +36,29 @@ en el Log de la spec (P3, P4, P9). Sin PR (decisión del owner).
   `--test cli_mcp_export_jsonl_parity_test`, `--test sitemap_crawl_run_staleness_test`,
   `--test export_coverage_test`, `--test scraping_coverage_test` verdes, **sin** cambio de
   snapshot; el binario que ejecutan es el de `webfang_test_utils::webfang_path()`.
-- [ ] T6 · S3 — `scripts/quality-baselines.json`: `duplicated_lines_rust` ← la **medición** del
+- [x] T6 · S3 — `scripts/quality-baselines.json`: `duplicated_lines_rust` ← la **medición** del
   candidato con el comando del gate; `notes` ← la entrada con comando, antes, después, delta,
   versión del detector y motivo; `updated` ← la fecha. Prueba: la medición re-hecha sobre el
   árbol final **iguala** el valor commiteado, y el gate sale verde.
-- [ ] T7 · S4 — `scripts/check_duplication.sh`: la lectura del informe deja de tener el cero por
+- [x] T7 · S4 — `scripts/check_duplication.sh`: la lectura del informe deja de tener el cero por
   defecto (sección `rust` ausente, número no entero y corpus de cero ficheros ⇒ fallo con
   mensaje que nombre la causa); el pin del detector (`jscpd 5.4.0`) intacto. Prueba: `bash
   scripts/check_duplication.sh` verde sobre el árbol, y los tres casos de fallo por vacuidad
   reproducibles sobre un árbol de `mktemp`.
-- [ ] T8 · S4 — `scripts/test_duplication.sh` (nuevo): harness de negación, hermético (stub de
+- [x] T8 · S4 — `scripts/test_duplication.sh` (nuevo): harness de negación, hermético (stub de
   `jscpd` en el `PATH`), con marcador `# NEGATION:` por caso, control positivo por cada
   aserción negativa, los siete casos de S4 y salida `PASS=<n> FAIL=<n>`. Prueba: **RED** contra
   el guard pre-fix por la razón del defecto (los casos 2 y 3 dan verde por vacuidad) y **GREEN**
   después de T7; el meta-guard lo acepta (harness verde con el guard intacto, rojo con el guard
   sustituido por `exit 0`).
-- [ ] T9 · S4 — `scripts/guard_coverage_baseline.txt`: borrar la línea
+- [x] T9 · S4 — `scripts/guard_coverage_baseline.txt`: borrar la línea
   `no-harness check_duplication.sh …`. Prueba: `bash scripts/test_guard_coverage.sh` verde **sin**
   `stale-baseline`.
-- [ ] T10 · S4 — `.github/workflows/ci.yml`, job `repo-guards`: un step que corra `bash
+- [x] T10 · S4 — `.github/workflows/ci.yml`, job `repo-guards`: un step que corra `bash
   scripts/test_duplication.sh`, con el estilo de sus vecinos (nombre + comentario con el issue y
   el porqué + la nota de que no corre cargo). Prueba: el meta-guard ve el harness cableado; el
   job `code-quality` no cambia.
-- [ ] T11 · S1–S4 — verificación: `bash scripts/test_duplication.sh`; `bash
+- [x] T11 · S1–S4 — verificación: `bash scripts/test_duplication.sh`; `bash
   scripts/check_duplication.sh`; el comando de medición de S3 (con el número antes y después);
   `bash scripts/test_guard_coverage.sh`; `cargo nextest run -p webfang_core --test
   sitemap_integration --test sitemap_behavioral --test orchestrator_unit_tests`; `cargo nextest run
@@ -73,13 +73,34 @@ en el Log de la spec (P3, P4, P9). Sin PR (decisión del owner).
 - Lote **L12** del plan de backlog (`odd/tasks/backlog-implementation-plan.md`), rama
   `fix/duplication-arrange-helpers`, base `main@89ff9d46` (con #2230 ya mergeado ⇒ el bloqueo que
   arrastraba el lote está levantado).
-- **T1–T5 implementados** (worker del lote, sobre este worktree): el **Log L13** de la spec
-  (`odd/tasks/duplication-arrange-helpers.md`) tiene el detalle, las divergencias resueltas y la
-  evidencia. El árbol queda **sin commitear** y sin PR (decisión del owner, L1). T6–T11 (baseline,
-  guard, harness, `ci.yml`) siguen **sin hacer**: son otra unidad, sobre el árbol final.
+- **T1–T11 implementados** (worker del lote, sobre este worktree): el **Log L13** de la spec
+  (`odd/tasks/duplication-arrange-helpers.md`) tiene el detalle de T1–T5 (las divergencias
+  resueltas y su evidencia) y el **Log L14** el de T6–T11 (el baseline medido, los tres casos de
+  vacuidad del guard con su mensaje literal, el harness de negación con su RED/GREEN, y la
+  verificación). T1–T5 están commiteadas (`b833fcef`, `b4b347a4`); **T6–T11 quedan sin
+  commitear** en el working tree (el padre revisa y commitea) y sin PR (decisión del owner, L1).
+- **Baseline del ratchet (T6, ya escrito)**: `scripts/quality-baselines.json` →
+  `duplicated_lines_rust` **9272 → 8515** (`updated: 2026-10-22`), con la nota que dice la fecha,
+  el comando exacto del gate, el antes (**9009**), el después (**8515**), el delta (**−494**), la
+  versión del detector (jscpd 5.4.0) y el motivo. El 9272 estaba rancio en 263 líneas ⇒ la bajada
+  es corrección de error de medición **y** paso descendente, no relajación.
+- **Guard fail-closed (T7)**: `scripts/check_duplication.sh` ya no tiene el cero por defecto —
+  informe sin `statistics.formats.rust`, `duplicatedLines` no entero y corpus de cero ficheros
+  rust fallan con **tres mensajes distintos** que nombran la causa; el pin `jscpd 5.4.0` queda
+  intacto y los otros cinco caminos fail-closed se verificaron.
+- **Harness de negación (T8)**: `scripts/test_duplication.sh` (nuevo), hermético (stub de
+  `jscpd` en el `PATH`), 9 casos / 18 aserciones con control positivo por cada negativa y salida
+  `PASS=<n> FAIL=<n>`. **RED** real contra el guard pre-fix (`PASS=13 FAIL=5`: los casos 2 y 3
+  dan verde por vacuidad) y **GREEN** con el guard de T7 (`PASS=18 FAIL=0`). Con el guard
+  sustituido por `exit 0` da `PASS=8 FAIL=10` (**ROJO**) ⇒ el meta-guard lo acepta.
+- **CI (T9+T10)**: la línea `no-harness check_duplication.sh` sale de
+  `scripts/guard_coverage_baseline.txt` (la lista sólo puede encogerse) y el job `repo-guards` de
+  `.github/workflows/ci.yml` corre `bash scripts/test_duplication.sh`. El job `code-quality` no
+  cambia: ahí sigue el ratchet real contra `crates/`.
 - **Delta medido** (mismo comando del gate, mismo commit): antes **9009** líneas duplicadas / 839
   clones / 479 ficheros rust → después **8515** / 811 / 480 ⇒ **−494 líneas, −28 clones**. El
-  baseline commiteado (**9272**) debe bajar a **8515** en T6.
+  baseline commiteado (**9272**) bajó a **8515** en T6 (medición re-hecha en esta unidad, no
+  copiada: el "antes" se volvió a medir sobre `git archive 89ff9d46 crates`).
 - **Medición de partida** (jscpd 5.4.0, `--min-tokens 50 --format rust --mode mild`, el comando
   del gate): `main@89ff9d46` = **9009** líneas duplicadas / 839 clones / 479 ficheros rust. El
   baseline commiteado es **9272** ⇒ **está rancio en 263 líneas** (en `b1673234`, el commit que lo
