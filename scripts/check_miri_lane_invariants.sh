@@ -33,9 +33,20 @@ set -uo pipefail
 # The semantics harness that proves this guard CAN fail is the sibling
 # `scripts/test_miri_lane_invariants.sh` (the repo's guard/harness pair).
 #
+# The guard is a PROGRAM, never a library: the harness calls it as a
+# subprocess, so a guard that is broken — or replaced by `exit 0` — cannot
+# take the harness down with it. A harness that SOURCES its guard inherits
+# the guard's exit path, and then the controls that prove the guard can fail
+# never run: that is the fail-open shape this pair exists to close (issue
+# #2056, `scripts/test_guard_coverage.sh`).
+#
 # Usage: bash scripts/check_miri_lane_invariants.sh
 # Env:   MIRI_LANE_ROOT — point the guard at a fixture tree.
-#        MIRI_LANE_LIBRARY=1 — sourced as a library: do not run the checks.
+#        MIRI_LANE_CHECK — run ONE invariant, by name
+#                (`check_skips`, `check_gate_reasons`, `check_core_filter`,
+#                `check_ub_attribution`). The harness isolates one invariant
+#                per fixture: a fixture that violates four invariants at
+#                once proves nothing about which one detected it.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="${MIRI_LANE_ROOT:-$(cd "$SCRIPT_DIR/.." && pwd)}"
@@ -421,9 +432,7 @@ check_ub_attribution() {
 }
 
 
-# When sourced as a library the checks do NOT run: the harness calls them
-# on its own fixtures. Executed directly, the guard IS the check.
-
+# run_checks <root> — every invariant. The guard's own entry point.
 run_checks() {
   local root="$1"
   local rc=0
@@ -434,21 +443,28 @@ run_checks() {
   return "$rc"
 }
 
-# When sourced as a library the checks do NOT run: the harness calls them
-# on its own fixtures. Executed directly, the guard IS the check.
-if [ "${MIRI_LANE_LIBRARY:-0}" != "1" ]; then
-    # ---------------------------------------------------------------------------
-    # Runner
-    # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Runner
+# ---------------------------------------------------------------------------
 
-
-    printf '== Miri lane invariants (%s)\n' "$REPO_ROOT"
-    real_rc=0
-    run_checks "$REPO_ROOT" || real_rc=1
-    if [ "$real_rc" -eq 0 ]; then
-      printf 'OK: all Miri lane invariants hold\n'
-    else
-      printf 'FAIL: at least one Miri lane invariant is broken\n'
-    fi
-
+printf '== Miri lane invariants (%s)\n' "$REPO_ROOT"
+real_rc=0
+if [ -n "${MIRI_LANE_CHECK:-}" ]; then
+  case "$MIRI_LANE_CHECK" in
+    check_skips|check_gate_reasons|check_core_filter|check_ub_attribution)
+      "$MIRI_LANE_CHECK" "$REPO_ROOT" || real_rc=1
+      ;;
+    *)
+      printf 'FAIL: unknown MIRI_LANE_CHECK: %s\n' "$MIRI_LANE_CHECK"
+      real_rc=1
+      ;;
+  esac
+else
+  run_checks "$REPO_ROOT" || real_rc=1
 fi
+if [ "$real_rc" -eq 0 ]; then
+  printf 'OK: all Miri lane invariants hold\n'
+else
+  printf 'FAIL: at least one Miri lane invariant is broken\n'
+fi
+exit "$real_rc"
