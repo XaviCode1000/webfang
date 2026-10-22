@@ -115,7 +115,7 @@ Acceptance:
 
 | ID | Spec | Route | Status | Evidence |
 |---|---|---|---|---|
-| T1 | S1 | inline | in_progress | edits done; targeted tests green; full gate green (PASS=49 FAIL=0 SKIP=2); commit `7d2113bb` |
+| T1 | S1 | inline | in_progress | edits done; targeted tests green; full gate green (PASS=49 FAIL=0 SKIP=2); commit `7d2113bb`; PR #2287 open |
 | T2 | S2 | inline | pending | blocked by T1 merge (sequential delivery) |
 | T3 | S3 | inline | pending | blocked by T1 merge; coordinate S6 |
 | T4 | S4 | inline | pending | blocked by T1 merge; queue settings live |
@@ -133,3 +133,4 @@ Acceptance:
 - L7 (2026-10-22): shellcheck on changed scripts clean; actionlint only reports pre-existing SC2012 in `release.yml`. Seeded this worktree's target, then started the full `ci_fast_gate.sh`; the run saturated the machine and the terminal closed. No `cargo`/`nextest` process remains. Full gate result is unknown; do not treat it as green.
 - L8 (2026-10-22): re-ran the full gate with `CARGO_BUILD_JOBS=2` and `NEXTEST_TEST_THREADS=2`; result **GREEN** (PASS=49, FAIL=0, SKIP=2). No commit or push yet.
 - L9 (2026-10-22): work unit committed as `7d2113bb62c15e04069e9eabded045c28c525b11` (`fix(infra): migrate release automation to the current owner (#2281)`). This entry is the doc-only follow-up; no push yet.
+- L10 (2026-10-22): pushed `chore/ci-redesign`; opened PR #2287 (`https://github.com/XaviCodeDev1000/webfang/pull/2287`). PR is `MERGEABLE`, base `main`, no labels yet while auto-label runs. CI is pending; no merge.
