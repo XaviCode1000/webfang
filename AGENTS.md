@@ -633,9 +633,10 @@ equivalent you can execute yourself.
    protected: **never** self-approve — request the maintainer's approval. If the PR was opened
    before the label landed, validation does not re-evaluate on its own: `gh run rerun <id>
    --failed`.
-3. **Exactly one `type:*` label.** The label vocabulary is **not** the commit-type vocabulary:
-   `feat`→`type:feature`, `fix`→`type:bug`, `refactor`→`type:refactor`, `docs`→`type:docs`,
-   `chore`→`type:chore`, breaking→`type:breaking-change`, tests→`type:testing`.
+3. **Exactly one `type:*` label.** The label vocabulary is **not** the commit-type vocabulary,
+   and it is not written here: the map lives in `scripts/auto_label_type.sh` (the single
+   source of truth — `bash scripts/auto_label_type.sh --map` prints it), which is also what
+   the auto-label job of `pr-validation.yml` applies from the PR title.
 4. **Conventional branch name** — the regex lives in `pr-validation.yml`; do not restate it
    here (a regex citation rots: the workflow is the source of truth).
 5. **No AI attribution** in the PR's commits.

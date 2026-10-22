@@ -7,7 +7,7 @@
 #
 #   - `Co-authored-by: release-plz-tu-repo[bot]` MUST pass. It is on every
 #     release commit; a blanket `Co-Authored-By` ban would fail the release
-#     flow. Measured: 11 such commits in the last 200 on main.
+#     flow. Measured: 19 such commits in the last 200 on main.
 #   - `Co-Authored-By: Claude Opus 4.8` MUST fail. It is the same
 #     attribution shape as the Codebuff trailer that slipped through, and it
 #     is already on main 11 times — this check is forward-looking and does not
@@ -18,6 +18,10 @@
 # path reads it through a command substitution, which strips the trailing
 # newlines; the --fixture path did not, so the trailer block was read from
 # different bytes and a marker read as clean.
+#
+# And it pins the whole-IDENTITY rule: a co-author name that merely STARTS
+# with an allowlisted actor (`renovate-bot, actually a human`) is a human and
+# is rejected, even though the prefix used to authorize it.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -74,7 +78,11 @@ expect ok "github-actions bot co-author" \
 
 Co-authored-by: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>"
 
-expect ok "renovate bot co-author (short actor, NAME-prefix match)" \
+# The legitimate automation identities, written in the EXACT form the bot
+# stamps. The allowlist compares whole names, so these are literal identities:
+# `release-plz-tu-repo[bot]` is not `release-plz`, and `renovate[bot]` is not
+# `renovate`.
+expect ok "renovate bot co-author (exact actor[bot] identity)" \
 "chore(deps): bump the wreq group
 
 Co-authored-by: renovate[bot] <29139614+renovate[bot]@users.noreply.github.com>"
@@ -149,6 +157,29 @@ expect reject "allowlisted token at the END of the name, not the start (A1)" \
 "fix(cli): the co-author is not an automation actor
 
 Co-Authored-By: Ada, with help from renovate <ada@example.com>"
+
+# The co-author name is compared by WHOLE IDENTITY, not by prefix. A human
+# whose display name merely STARTS with an allowlisted actor is not that
+# actor, and must not inherit its authorization.
+expect reject "human name that merely STARTS with an allowlisted token" \
+"fix(cli): the co-author is a human, not an automation actor
+
+Co-Authored-By: renovate-bot, actually a human <someone@example.com>"
+
+expect reject "allowlisted actor with a suffix wearing the bot shape" \
+"chore(deps): bump the wreq group
+
+Co-Authored-By: release-plz-fan[bot] <somebot@users.noreply.github.com>"
+
+expect reject "allowlisted actor with a suffix wearing the dependabot shape" \
+"chore(deps): bump the wreq group
+
+Co-Authored-By: dependabot-wrangler[bot] <somebot@users.noreply.github.com>"
+
+expect reject "allowlisted actor with a suffix wearing the github-actions shape" \
+"ci: refresh generated schemas
+
+Co-Authored-By: github-actions[bot]-fan <somebot@users.noreply.github.com>"
 
 expect reject "second of two commits is the offender" \
 "refactor(ai): slice 1
