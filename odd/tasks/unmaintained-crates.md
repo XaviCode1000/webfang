@@ -136,9 +136,40 @@ Salida elegida: `keyring-core` 1 + los stores por plataforma, **el mismo store**
 
 | Plataforma | Hoy (`keyring` 3) | Después | Clave de la credencial |
 |---|---|---|---|
-| Linux | `linux-native` (keyutils) | `linux-keyutils-keyring-store` | `keyring-rs:{account}@{service}` (hoy) — la nueva store usa `keyring:{service}@{account}` por defecto, así que hay que pasar el modificador `description` para **no dejar huérfanas las credenciales ya guardadas** |
+| Linux | `linux-native` (keyutils) | `linux-keyutils-keyring-store` | `keyring-rs:{account}@{service}` (hoy) — **D20**: la clave la construye el STORE y su construcción es configuración pública (`Store { id, delimiters, service_no_divider }`); **no hay ningún modificador `description`** ⇒ hay que configurar el store para que produzca la clave legacy byte-idéntica, o, si no puede, que la lectura consulte primero la clave legacy |
 | macOS | `apple-native` (keychain) | `apple-native-keyring-store` con la feature `keychain` | atributo `service` = service, `account` = account (idéntico) |
 | Windows | `windows-native` (Credential Manager) | `windows-native-keyring-store` | `target_name` = `{account}.{service}` (idéntico) |
+
+**D20 — el requisito, y el mecanismo queda a elección de quien implementa** (decidido por el peer
+el 2026-10-22; **no hace falta el owner**: el requisito de producto es inequívoco — un refactor
+de dependencias de seguridad no puede dejar huérfanas las credenciales del usuario).
+
+El criterio de aceptación es **uno**, y verificable: **la clave de una entrada (service, user)
+debe ser byte-idéntica a la de hoy, `keyring-rs:{user}@{service}`**.
+
+Corrección de la premisa de esta spec: la idea de que "hay que pasar el modificador
+`description`" era **falsa**. En `keyring` 3.6.3 la clave la arma `new_with_target` en
+`src/keyutils.rs` sin target explícito ⇒ `keyring-rs:{user}@{service}`. En la store nueva la clave
+la construye el **store**, y su construcción es configuración pública
+(`Store { id: String, delimiters: [String; 3], service_no_divider: bool }`), cuyo default es prefijo
+`keyring:`, divider `@` y sin sufijo ⇒ cambia el prefijo **y** el orden. No hay ningún modificador
+`description` en la API nueva que fije la clave.
+
+Dos mecanismos admitidos, y el requisito es la clave, no el mecanismo:
+
+- **(a) configurar el store** para que produzca la clave legacy byte-idéntica ⇒ sin migración, sin
+  estado nuevo, sin lectura doble.
+- **(b) si el store no puede producirla**, que la lectura consulte **primero** la clave legacy.
+
+En los dos casos: **cero migración, cero huérfanas, cero estado nuevo**.
+
+Por qué **no** migrar: una migración escribe una credencial nueva y borra la vieja ⇒ estado nuevo,
+deja restos si falla a mitad, y no arregla a quien ya la tenía guardada con la clave vieja si el
+borrado falla. Una clave que no cambia no tiene ninguno de esos problemas.
+
+**Test**: `the_credential_key_is_byte_identical_to_the_legacy_key` — falla con el store por defecto,
+pasa con la configuración correcta. Aplica **sólo a Linux**: en macOS y Windows la clave es idéntica
+por construcción (`service`/`account` y `target_name = {account}.{service}`).
 
 Código que hay que cambiar:
 
@@ -547,3 +578,11 @@ Lo registro porque el orden de las PRs pone a L9 y L10 al final, justo por
 cambiar manifiesto y lock, y porque la premisa "el lock queda quieto" es
 justo la que este lote altera: L10 cambia el manifiesto y regenera el lock
 del fuzz. Que el rebase sea limpio era un supuesto; ahora es una medicion.
+
+L16 — **D20 entra al spec antes de cerrar el trabajo** (peer, 2026-10-22). La premisa del spec
+—"hay que pasar el modificador `description`"— era falsa: ese modificador no existe en la API
+nueva, donde la clave la construye el store con su configuración pública. El spec ahora lleva el
+requisito (clave byte-idéntica `keyring-rs:{user}@{service}`), los dos mecanismos admitidos, el
+por qué de no migrar y el nombre del test. Corregir la spec ANTES de implementarla no es
+cosmético: con la premisa falsa, la implementación "correcta" habría buscado un modificador que no
+existe.
