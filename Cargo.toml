@@ -152,6 +152,25 @@ async-compression = { version = "0.4.41", features = ["tokio", "gzip", "deflate"
 # Browser automation (CDP)
 chromiumoxide = { version = "0.7", features = ["tokio-runtime"] }
 
+# Credential store (keyring).
+#
+# The `keyring` 3 facade is replaced by `keyring-core` + the per-platform
+# store, and the replacement is NOT cosmetic: EVERY version of `keyring`
+# (3.x and 4.x) declares the secret-service back ends as OPTIONAL
+# dependencies, and `Cargo.lock` records optional dependencies too. So the
+# unmaintained `zbus 4` chain only leaves the lockfile when the `keyring`
+# PACKAGE itself leaves the graph — a feature change cannot do it.
+#
+# The stores are the SAME back ends the project uses today, so the credential
+# store the user already has keeps working: keyutils on Linux, the legacy
+# keychain on macOS, Credential Manager on Windows. The `keychain` feature of
+# the Apple store selects the "legacy keychain" (the one `keyring` 3 used);
+# the "protected data" store is a DIFFERENT macOS store and is not enabled.
+keyring-core = "1"
+linux-keyutils-keyring-store = "1"
+apple-native-keyring-store = { version = "1", default-features = false, features = ["keychain"] }
+windows-native-keyring-store = "1"
+
 # Dev dependencies
 assert_cmd = "2"
 predicates = "3"
