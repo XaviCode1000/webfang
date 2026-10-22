@@ -29,7 +29,7 @@ que hizo el triage) cuando cada lote aterriza, con el sha de su branch. Ningún 
 - [x] **L7** · S1–S5 — MCP: superficie verdadera (#1815, #1817, #1837, #2193) — peer: `dccd06da`, `c40fac93`, `80be9903`, `315441ab` (tip `315441ab`).
 - [x] **L8** · S1–S5 — falsos verdes de test (#2066, #1852, #1828, #1833, #1834, #1816) — spec `da23c097` (padre) + implementación del peer (tip `99833e11`, 15 commits).
 - [x] **L9** · S1–S5 — grafo de build (#1799, #1797, #1796) — spec `eb40ecbb` (padre) + implementación del peer (tip `713502cd`). D9 corregida: `sys-info` devuelve KiB en todas las plataformas.
-- [x] **L10** · S1–S5 — crates sin mantenimiento (#1984, #2031) — spec `2f51441a` (padre) + implementación del peer (tip `71a2d02e`, 7 commits).
+- [x] **L10** · S1–S5 — crates sin mantenimiento (#1984, #2031) — spec `2f51441a` (padre) + implementación del peer (tip `6b4bd8ed`, 8 commits; el spec ya lleva D20 y el orden real T3→T2).
 - [x] **L11** · S1–S5 — obscura: el veredicto `Unknown` nombra el mínimo (#1710) — peer: `0e52f031`, `6b82e087`, `0747fea3` (tip `0747fea3`).
 - [ ] **L12** · S1–S5 — duplicación: helpers de arrange + baseline medido (#1757) — espera **#2230** (sigue abierta).
 - [ ] **L13** · S1–S5 — entrega macOS (#1821) — **DESCARTADO 2026-10-22** (O3): *"la issue 1821 la dejamos, no la tocamos"*. Sale del plan; la issue queda abierta y sin tocar.
