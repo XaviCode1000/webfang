@@ -194,3 +194,35 @@ crash point.". La fila de `docs/persistence-resume.md` (fila 9) **ya existía**
 y NO se duplicó (HECHO 1). El cuarto texto de S5
 (`odd/tasks/false-green-tests.md`) **no existe en este árbol** — no hay nada
 que corregir ahí; reportado al padre.
+
+L14 — Corrección del PADRE sobre la aserción de `p85_signal_case` (el cambio
+más sensible del lote, revisado a mano antes de commitear). El worker dejó el
+comentario afirmando "fetched at most once per run — never twice in the same
+run" pero la aserción era `count <= 2` sobre el total cross-run: un doble
+fetch DENTRO de la corrida señalada pasaba verde, y `committed.len() <=
+fetched_paths.len()` aceptaba un récord de una URL nunca fetcheada (commit
+fantasma). Endurecido a lo que el texto ya prometía, con los contadores que la
+prueba ya tenía: (a) pertenencia — todo record drenado tiene que ser una URL
+fetcheada en esa corrida; (b) por corrida — `fetched_before` se muestrea justo
+después de que la corrida señalada sale, así que `run1 <= 1` y `run2 =
+total − run1 <= 1` prueban "a lo sumo una vez por corrida" de verdad. Además
+el doc-comment ya no sobrevende: declara que esta prueba fija la SEGURIDAD del
+drenaje y que la ALCANZABILIDAD del punto la fija la fila de la matriz (sin el
+cableado esa fila falla con "got clean exit"). Medido después del cambio:
+`signal_lifecycle` 5/5, `crash_matrix_test` 27/27, ambos con exit real 0.
+
+L15 — Slice y forma de entrega. El hook del commit midió 680 líneas cambiadas
+en 2 commits desde `origin/main`: producción ~70, fila de matriz ~255, spec
+~70, fixture del golden set 66, más el ajuste de `p85`. NO se parte en dos
+PRs: la fila de la matriz ES la prueba RED del cableado (sin el token, el
+punto no se alcanza y el hijo sale limpio), y este repo no admite PRs
+apiladas (`scripts/check-topology.sh`) ⇒ un PR secuencial con el cableado
+solo llegaría sin RED. El límite de slice queda registrado acá: 680 líneas
+autoradas, de las cuales el código de producción es ~70.
+
+L16 — La rama estaba ATRÁS de `main` al entregar (`89ff9d46`; `origin/main`
+ya en `276d0b05`, con #2246 y #2248 dentro). Traído con `merge` (nunca rebase:
+`89b6b145` ya está pusheado), sin conflictos. Consecuencia verificada, no
+supuesta: el golden set regenerado sobre la base vieja SIGUE coincidiendo con
+el árbol mergeado (`the_real_tree_parses_without_errors_and_matches_the_golden_set`
+ok, exit 0), porque las dos PRs mergeadas tocan scripts y no `crates/webfang_core/src`.
