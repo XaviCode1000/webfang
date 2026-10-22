@@ -262,6 +262,7 @@ pub async fn run(
         &opts,
         state_store.as_deref(),
         ai_cleaner,
+        &cancel,
     )
     .await;
 
@@ -373,11 +374,17 @@ fn resolve_export_dir(opts: &CrawlOptions) -> std::path::PathBuf {
 /// hands the slice to the blocking pool (issue #1814, slice B AC4), which
 /// needs 'static data, while the caller keeps its own handle for the report
 /// phase. See [`crate::cli::export_flow::ExportConfig`].
+///
+/// `cancel` is the run's cooperative cancellation token (from the
+/// `ShutdownGuard` in `run()`, or the batch flow's own token): it is CLONED
+/// into the [`ExportConfig`] so the blocking-pool export can observe it
+/// through `ResumeContext::observing_cancel` (#2244 decision A).
 pub(crate) async fn export_phase(
     results: std::sync::Arc<[domain::ScrapedContent]>,
     opts: &CrawlOptions,
     state_store: Option<&dyn StateStorePort>,
     ai_cleaner: Option<std::sync::Arc<dyn SemanticCleaner>>,
+    cancel: &tokio_util::sync::CancellationToken,
 ) -> CliExit {
     if opts.export.output_dir == std::path::Path::new("-") {
         return CliExit::UsageError(
@@ -436,6 +443,7 @@ pub(crate) async fn export_phase(
         obsidian_options,
         state_store,
         resume: opts.crawl.resume,
+        cancel: Some(cancel.clone()),
         ai_threshold: opts.ai_config.threshold,
         ai_max_chars: opts.ai_config.max_chars,
         ai_offline: opts.ai_config.offline,
@@ -844,7 +852,14 @@ mod tests {
 
         let results: std::sync::Arc<[crate::domain::ScrapedContent]> =
             std::sync::Arc::from(Vec::new());
-        let exit = export_phase(results, &opts, None, None).await;
+        let exit = export_phase(
+            results,
+            &opts,
+            None,
+            None,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
 
         assert!(
             matches!(exit, CliExit::UsageError(_)),
@@ -887,7 +902,14 @@ mod tests {
 
         let results: std::sync::Arc<[crate::domain::ScrapedContent]> =
             std::sync::Arc::from(Vec::new());
-        let exit = export_phase(results, &opts, None, None).await;
+        let exit = export_phase(
+            results,
+            &opts,
+            None,
+            None,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await;
 
         // Restore permissions so the TempDir can clean up.
         let _ = std::fs::set_permissions(&vault, std::fs::Permissions::from_mode(0o700));

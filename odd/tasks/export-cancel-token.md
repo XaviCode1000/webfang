@@ -46,7 +46,7 @@ S5. El texto que hoy dice que la rama es inalcanzable se corrige en los
 
 ## Tasks
 
-- [ ] T1 · S1 — `crates/webfang_core/src/cli/export_flow.rs`: el `ExportConfig`
+- [x] T1 · S1 — `crates/webfang_core/src/cli/export_flow.rs`: el `ExportConfig`
       gana un campo `cancel: Option<&'a CancellationToken>` (o el tipo que
       corresponda a la vida útil), y los **dos** sitios que construyen el
       `ResumeContext` (`run_standard_export` y `run_ai_export`) le enganchan
@@ -54,25 +54,28 @@ S5. El texto que hoy dice que la rama es inalcanzable se corrige en los
       construye **dentro** de `spawn_blocking`, así que el token tiene que
       entrar al closure como **clone propio** (owned), no como borrow del
       stack del async.
-- [ ] T2 · S1 — `crates/webfang_core/src/cli/orchestrator.rs`: `export_phase`
+- [x] T2 · S1 — `crates/webfang_core/src/cli/orchestrator.rs`: `export_phase`
       recibe el token y lo pasa al `ExportConfig`; el `ShutdownGuard` instalado
       en `run()` (`orchestrator.rs`, `ShutdownGuard::install()`) es la fuente.
       OJO: `export_phase` se llama desde **tres** sitios (dos en
       `orchestrator.rs` —el normal y uno de test— y uno en `batch_flow.rs`);
       todos los call sites se actualizan, y el de `batch_flow.rs` recibe el
       token que ya maneja (`batch_flow.rs` ya crea un `CancellationToken`).
-- [ ] T3 · S1, S2, S3 — `crates/webfang_core/tests/`: el test que prueba que
+- [x] T3 · S1, S2, S3 — `crates/webfang_core/tests/`: el test que prueba que
       un export cancelado **no** persiste estado parcial del item cancelado y
       que el camino no cancelado no cambia. El test cita el punto de crash en
       `cli/crash_points.rs` (como manda el inventario de L8).
-- [ ] T4 · S4 — `crates/webfang_core/tests/crash_matrix_test.rs`: la fila
+- [x] T4 · S4 — `crates/webfang_core/tests/crash_matrix_test.rs`: la fila
       `during_cancel_drain` (SIGINT entregado cuando wiremock vio la k-ésima
       petición, con el patrón de
       `tests/behavioral/cli/signal_lifecycle_test.rs`) + el **borrado** del
-      comentario "reserved for PR5b" + la tabla de `docs/persistence-resume.md`
-      pasa a listar las **once** filas (las diez actuales + `during_cancel_drain`).
-- [ ] T5 · S5 — los cuatro textos de S5, corregidos a "alcanzable" + la
-      entrada de `## Log` del doc del lote de L8 con la evidencia.
+      comentario "reserved for PR5b" ya está; la tabla de
+      `docs/persistence-resume.md` **ya listaba la fila 9** (HECHO 1, no se
+      duplicó — la spec presumía diez filas previas, hay nueve).
+- [x] T5 · S5 — los textos de "reserved/PR5b" de S5, corregidos a
+      "alcanzable": `cli/crash_points.rs` y el comentario de la suite de crash
+      (HECHO 2); la fila de `docs/persistence-resume.md` ya era verdadera;
+      `odd/tasks/false-green-tests.md` **no existe en este árbol** (reportado).
 - [ ] T6 · S1–S5 — verificación: los tests afectados verdes; `cargo check`;
       `cargo clippy --all-targets --all-features -- -D warnings`; `cargo fmt
       --all -- --check`; `env "RUSTDOCFLAGS=-D warnings" cargo doc --workspace
@@ -140,3 +143,54 @@ L8 — El wiring de producción de `during_cancel_drain` (el `hit()` en la rama
 `Cancelled`) **no se toca**: ya existe y ya está en el lugar correcto. Lo que
 faltaba era que la rama fuera alcanzable. La fila de la matriz lo prueba
 matando al hijo en ese punto.
+
+L9 — Implementación de T1–T3 (worktree `fix-export-cancel-token`, sobre la
+spec commiteada en 89b6b145). El token viaja como **
+`Option<CancellationToken>` owned dentro de `ExportConfig`** — no como
+`Option<&'a CancellationToken>` — porque el `ResumeContext` se construye
+DENTRO de `spawn_blocking` (#1814 slice B): el closure necesita `'static`, un
+borrow del stack async no puede cruzar esa frontera, y `CancellationToken`
+es clonable por diseño. En los dos constructores (`run_standard_export`,
+`run_ai_export`) el `config.cancel` entra al closure como propio y
+`.observing_cancel(token)` toma `&token` / `cancel.as_ref()` sobre ese clone
+local. `export_phase` recibe `&CancellationToken` y hace
+`Some(cancel.clone())` en el `ExportConfig`.
+
+L10 — Call sites de `export_phase`: son **cuatro**, no tres (la spec contó
+"dos en orchestrator, uno de test", pero en `orchestrator.rs` hay **dos**
+tests que la llaman: `export_phase_rejects_stdout_as_output_dir` y
+`export_phase_reports_inbox_creation_failure`): el de `run()` pasa
+`&shutdown.token()`, los dos tests un `CancellationToken::new()` y el de
+`batch_flow.rs` el `cancel` que ya maneja.
+
+L11 — RED/GREEN medido de la fila `during_cancel_drain`
+(`crash_during_cancel_drain_sigint_drain_kills_then_recovers`): el test se
+escribió ANTES del wiring y FALLÓ con "armed crash point must terminate the
+child by signal, got clean exit" (el hijo salió limpio: la cancelación nunca
+llegaba al drenaje). Con T1+T2 cableados, la misma fila pasa y muere por
+SIGKILL(9). El SIGINT se entrega determinísticamente cuando wiremock vio la
+1ª petición de página (patrón `signal_lifecycle_test`, con delay de 200 ms en
+las respuestas para que la ventana exista) — nunca con un sleep.
+
+L12 — Consecuencia prevista del contrato nuevo (S2/L2): los tres `p85_*` de
+`signal_lifecycle_test.rs` codificaban el contrato VIEJO ("todas las páginas
+fetcheadas quedan COMMITTED tras la señal", porque el export ignoraba el
+token y corría hasta el final) y quedaron ROJOS con el drenaje. Se
+actualizaron al contrato nuevo: el record store sólo contiene ítems
+COMMITTED (nunca parciales), el drenaje persiste ≥1 ítem completado, el
+`--resume` no re-fetchea lo drenado y lo demás se re-dibuja a lo sumo una vez
+por corrida (`count ≤ 2`). También quedó el invariante explícito "the drain
+may only persist COMMITTED items, never partial ones" (S2 hecho test). Los
+tres pasan: 5/5 en `signal_lifecycle`, 167/167 en `behavioral` completo.
+
+L13 — Textos de "reserved/PR5b" corregidos (HECHO 2): (1) `cli/crash_points.rs`
+— "Reserve for PR5b: during cancellation drain before final persist." →
+"During cancellation drain, before final persist (#2244 decision A): hit when
+a cancelled export drains after observing the run's token, before
+`final_persist()` writes the drained state."; (2) `crash_matrix_test.rs` —
+"Matrix rows — one per pinned crash point. during_cancel_drain is reserved
+for PR5b and intentionally absent here." → "Matrix rows — one per pinned
+crash point.". La fila de `docs/persistence-resume.md` (fila 9) **ya existía**
+y NO se duplicó (HECHO 1). El cuarto texto de S5
+(`odd/tasks/false-green-tests.md`) **no existe en este árbol** — no hay nada
+que corregir ahí; reportado al padre.

@@ -47,6 +47,16 @@ pub struct ExportConfig<'a> {
     pub(crate) obsidian_options: ObsidianOptions,
     pub(crate) state_store: Option<&'a dyn StateStorePort>,
     pub(crate) resume: bool,
+    /// Run's cooperative cancellation token (#2244 decision A), cloned from
+    /// the `ShutdownGuard` at the `export_phase` call site.
+    ///
+    /// Owned rather than borrowed: the `ResumeContext` is built INSIDE
+    /// `spawn_blocking` (#1814 slice B), which needs `'static` data — a
+    /// `&CancellationToken` borrowed from the async stack cannot cross that
+    /// boundary. `CancellationToken` is clone-by-design, so the token enters
+    /// the closure as its own clone and `observing_cancel` borrows that
+    /// closure-local clone.
+    pub(crate) cancel: Option<tokio_util::sync::CancellationToken>,
     /// AI settings (only used when clean_ai is true and feature is enabled)
     pub(crate) ai_threshold: f32,
     pub(crate) ai_max_chars: usize,
@@ -101,6 +111,11 @@ async fn run_standard_export(config: ExportConfig<'_>) -> Result<Vec<String>, Cl
     let output_dir = config.output_dir;
     let export_format = config.export_format;
     let results = config.results;
+    // Lifetime trap (#2244 decision A): the token moves into the blocking
+    // closure as its OWN CLONE (owned), never as a borrow of the async
+    // stack — `spawn_blocking` requires 'static data and the `ResumeContext`
+    // is constructed inside the closure, borrowing the closure-local clone.
+    let cancel = config.cancel;
     // Re-enter the current span inside the blocking task: `spawn_blocking`
     // does not propagate the tracing context, and spanless export events
     // would fall back to the run seed and split the run's trace_id
@@ -109,9 +124,13 @@ async fn run_standard_export(config: ExportConfig<'_>) -> Result<Vec<String>, Cl
     let span = tracing::Span::current();
     let handle = tokio::task::spawn_blocking(move || {
         let _span_guard = span.enter();
-        let ctx = record_store
-            .as_ref()
-            .map(|store| export_factory::ResumeContext::new(store).with_resume(resume));
+        let ctx = record_store.as_ref().map(|store| {
+            let ctx = export_factory::ResumeContext::new(store).with_resume(resume);
+            match cancel.as_ref() {
+                Some(token) => ctx.observing_cancel(token),
+                None => ctx,
+            }
+        });
         export_factory::process_results(&results, output_dir, export_format, "export", ctx.as_ref())
     });
     await_blocking_export(handle, "scrape", export_format).await
@@ -148,14 +167,21 @@ async fn run_ai_export(
     let resume = config.resume;
     let output_dir = config.output_dir;
     let export_format = config.export_format;
+    // Same owned-clone lifetime trap as `run_standard_export` (#2244): the
+    // token crosses `spawn_blocking` as its own clone, never as a borrow.
+    let cancel = config.cancel;
     // Same span re-entry as `run_standard_export`: the trace context does not
     // cross `spawn_blocking` on its own.
     let span = tracing::Span::current();
     let handle = tokio::task::spawn_blocking(move || {
         let _span_guard = span.enter();
-        let ctx = record_store
-            .as_ref()
-            .map(|store| export_factory::ResumeContext::new(store).with_resume(resume));
+        let ctx = record_store.as_ref().map(|store| {
+            let ctx = export_factory::ResumeContext::new(store).with_resume(resume);
+            match cancel.as_ref() {
+                Some(token) => ctx.observing_cancel(token),
+                None => ctx,
+            }
+        });
         export_factory::process_results_with_chunks(
             &cleaned_chunks,
             output_dir,
@@ -470,6 +496,7 @@ mod standard_export_dispatch {
             obsidian_options: Default::default(),
             state_store: None,
             resume: false,
+            cancel: None,
             ai_threshold: 0.5,
             ai_max_chars: 512,
             ai_offline: false,

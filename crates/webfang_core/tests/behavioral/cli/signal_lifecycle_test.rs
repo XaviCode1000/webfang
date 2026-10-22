@@ -351,9 +351,24 @@ async fn p84_resume_after_completion_is_idempotent() {
 
 /// One signal case for the graceful-shutdown evidence: run the sitemap scrape,
 /// deliver `signal` after the 3rd page fetch, and prove (1) exit 0 (cooperative
-/// cancellation, #509 semantics), (2) fetched pages were committed to the
-/// record store, (3) the resumed run finishes every remaining page without
-/// re-fetching anything already committed.
+/// cancellation, #509 semantics), (2) the cancelled export DRAINS instead of
+/// running to completion (#2244 decision A): every item whose D3 sequence
+/// finished before the token was observed is COMMITTED and persisted, while
+/// pages that had not reached their export turn have NO record — nothing
+/// half-written (S2: the in-flight item never persists partially), and (3) the
+/// resumed run finishes every remaining page without re-fetching anything the
+/// drain already committed.
+///
+/// Scope note: this case pins drain SAFETY, not the drain's reachability. That
+/// the token actually reaches the export is pinned by
+/// `crash_matrix_test::crash_during_cancel_drain_sigint_drain_kills_then_recovers`
+/// (the crash point arms only in the `Cancelled` branch, so an unwired token
+/// makes that row fail with a clean exit). Here the invariants are the weaker,
+/// honest ones: every persisted record is COMMITTED (never partial, S2), every
+/// drained record belongs to a page fetched in this run and is never
+/// re-fetched, and no page is fetched more than once per run. Before #2244 the
+/// export ignored the token and committed EVERY fetched page of the signalled
+/// run, which is exactly what made this case red under the new wiring.
 #[cfg_attr(not(unix), allow(dead_code))]
 async fn p85_signal_case(signal: &str, label: &'static str) {
     let t = BehavioralTest::new().await;
@@ -388,8 +403,12 @@ async fn p85_signal_case(signal: &str, label: &'static str) {
         "{label}: at least 3 pages must have been fetched before the signal"
     );
 
-    // State persisted: the record store exists and every fetched page is
-    // committed (SC-gate truth: only COMMITTED allows skip-on-resume).
+    // State persisted: the record store exists, and it tells the drain truth
+    // (#2244 decision A): every record it holds is COMMITTED — the drain
+    // persists completed items, never partial ones — and at least the first
+    // drained item made it (S2: lo completado se persiste, lo cancelado no).
+    // Pages that had not reached their export turn have NO record yet; the
+    // resume below re-drives them (SC-gate: only COMMITTED allows skip).
     // Records live under the `StoreFile.records` envelope, keyed by canonical
     // URL (full origin incl. port).
     let state_file = state_dir.path().join("127.0.0.1.json");
@@ -399,12 +418,30 @@ async fn p85_signal_case(signal: &str, label: &'static str) {
     );
     let records: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(&state_file).unwrap()).unwrap();
-    for p in &fetched_paths {
-        let url = format!("{base}{p}");
-        let record = &records["records"][&url];
-        assert_eq!(
-            record["status"], "COMMITTED",
-            "{label}: {url} fetched before the signal must be COMMITTED"
+    let committed: Vec<String> = records["records"]
+        .as_object()
+        .expect("record envelope must be an object")
+        .iter()
+        .map(|(url, record)| {
+            assert_eq!(
+                record["status"], "COMMITTED",
+                "{label}: {url} — the drain may only persist COMMITTED items, never partial ones"
+            );
+            url.clone()
+        })
+        .collect();
+    assert!(
+        !committed.is_empty(),
+        "{label}: the drain must persist at least the item that completed before the token was observed"
+    );
+    // Membership, not cardinality: a record for a URL this run never fetched
+    // would be a phantom commit, and `committed.len() <= fetched.len()` alone
+    // cannot see it.
+    let fetched_urls: Vec<String> = fetched_paths.iter().map(|p| format!("{base}{p}")).collect();
+    for url in &committed {
+        assert!(
+            fetched_urls.contains(url),
+            "{label}: {url} has a drained record but was never fetched in the signalled run"
         );
     }
 
@@ -418,11 +455,35 @@ async fn p85_signal_case(signal: &str, label: &'static str) {
 
     let final_counts = fetches_by_path(&t.server).await;
     for p in &pages {
-        let count = final_counts.get(p).copied().unwrap_or(0);
-        assert_eq!(
-            count, 1,
-            "{label}: {p} must have been fetched EXACTLY once across both runs (got {count})"
+        // `fetched_before` was sampled right after the signalled run exited,
+        // so the two counters below are PER RUN, not the cross-run total: a
+        // `count <= 2` on the total would accept a double fetch inside a
+        // single run, which is the regression this invariant exists to catch.
+        let run1 = fetched_before.get(p).copied().unwrap_or(0);
+        let total = final_counts.get(p).copied().unwrap_or(0);
+        let run2 = total.saturating_sub(run1);
+        assert!(
+            run1 <= 1,
+            "{label}: {p} fetched {run1} times in the signalled run (max 1 per run)"
         );
+        assert!(
+            run2 <= 1,
+            "{label}: {p} fetched {run2} times in the resume run (max 1 per run)"
+        );
+        // The drain commit blocks a re-fetch of the committed page; a page the
+        // drain left without a record is driven again by the resume — once,
+        // never a replay loop.
+        if committed.contains(&format!("{base}{p}")) {
+            assert_eq!(
+                total, 1,
+                "{label}: {p} was COMMITTED by the drain and must NOT be re-fetched (got {total})"
+            );
+        } else {
+            assert!(
+                total >= 1,
+                "{label}: {p} must have been driven by some run (got {total})"
+            );
+        }
     }
     assert!(
         t.find_files("md").len() >= 8,
