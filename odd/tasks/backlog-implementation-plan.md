@@ -1324,3 +1324,29 @@ merge, y para verificar el estado final.
 **Observación de fondo (para el owner):** el repo tiene un artefacto derivado **sin comando documentado
 de regeneración** — eso es lo que empuja a resolver a mano. Vale un issue chico; el peer no lo abre sin
 que se lo pidan.
+
+### 2026-10-22 · #2255 (L15) head nuevo `19ead943`, medido por el peer y re-medido por mi — listo en el ledger
+
+**#2255 (L15, `fix/miri-ub-lane`)**: head remoto **`19ead943`** "Merge branch 'main' into
+fix/miri-ub-lane", reemplaza a `8e7cd30a`, que **SIGUE SIENDO ANCESTRO** (el trabajo del lote no se
+reescribió). Delta `8e7cd30a..19ead943` = sólo integración de main: `4a17cb66` (#1995, allowlist de
+atribución exacta), `c6af63be` (merge de #2250), `0f004bf4` (docs del lote L5), `558d1cb4` (merge).
+Cuatro ficheros, todos `odd/` y `scripts/`. **NO toca `crates/webfang_core/src` ni la fixture.**
+Fixture OK contra su propio árbol (**1641 líneas**).
+
+**Dos matices que la fila vieja tampoco decía:**
+
+1. El merge trajo main **hasta `c6af63be`, NO hasta `276d0b05`** ⇒ "traer main" fue **PARCIAL**: la
+   rama sigue **11 commits** atrás del main real. Consecuencia práctica: mergeable sin problema
+   (GitHub mide three-dot), pero un **assess dos-dot sobre ella HOY mide de más**. Si alguien opera
+   esa rama, primero `git merge-base --is-ancestor origin/main origin/fix/miri-ub-lane`; si da NO,
+   **traer main del todo**.
+2. Quien lo movió lo hizo con **MERGE, no rebase**: correcto, porque `8e7cd30a` ya estaba pusheado.
+   Así se seguirá en esa rama; reescribirla ahora sería force-push, que en este repo **no tiene
+   camino de aprobación**.
+
+**Orden de verificación asentado (ya vale para todas las ramas, motivo extra en ésta):**
+`git status --porcelain` vacío primero, `merge-base` después, y recién ahí tocar. En `fix/miri-ub-lane`
+el motivo extra: es la rama del **meta-guard que juzga harnesses**, y su evidencia vale sólo si el
+árbol desde el que se corrió era el head. Re-medido por mí (protocolo): los cuatro puntos del peer
+verifican exacto (head, ancestro, delta, 0 core/src, 11 atraso, fixture OK 1641).
