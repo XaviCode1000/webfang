@@ -1038,6 +1038,7 @@ cargo run --quiet --locked --manifest-path tools/intra-crate-lint/Cargo.toml -- 
 | **#2261** | #2237 | `fix/exporter-tail-read` | `type:bug` | #2237 |
 | **#2259** | #2238 | `feat/mcp-export-skipped-count` | `type:chore` | #2238 |
 | **#2262** | #2243 | `fix/prune-dead-store-seam` | `type:chore` | #2243 |
+| **#2268** | #2244 | `fix/export-cancel-token` | `type:bug` | #2244 |
 
 **Las 24 issues enlazadas, verificadas una por una por API: existen TODAS y TODAS llevan
 `status:approved`** ⇒ ninguna PR queda bloqueada por el gate de "Require status:approved on linked
@@ -1117,3 +1118,34 @@ que blob-vs-worktree: la pregunta "¿qué corrió CI?" se responde con el headSh
 requisitos del `no-harness` están probados **en el blob de `de0e160b`**: el marcador (1),
 el step cableado (línea 673 del `ci.yml` del blob), el no-mutation (ROJO, rc=1, re-corrido sobre
 el worktree limpio en ese head) y el meta-guard OK sobre ese árbol.
+
+### 2026-10-22 · #2268 (L-2244): el export cancelado ya no persiste estado parcial
+
+La PR del lane del exporter (decisión A del owner, issue **#2244**): `Closes #2244`, `type:bug`,
+**9 ficheros / 725+ / 64−**, tip `d19722e9`, base `276d0b05` (el `main` actual — el merge
+preexistente `66eff283` dentro de la rama quedó porque la rama estaba atrás).
+
+**Tres cosas que el lote arregla y qué miraría un revisor:**
+
+1. **El token con dueño**: `export_flow.rs` entrega el token de la sesión al `ResumeContext`; entra al
+   closure del `spawn_blocking` como **clone owned** y `observing_cancel` presta **el clone local**,
+   nunca el stack async. Es el foco del reviewer: que el token **no se capture por referencia** del
+   stack del caller.
+2. **La aleabilidad la fija la fila, no un skip**: la fila nueva de la **matriz de crash** cablea el
+   punto de drenaje; sin el wiring esa fila **falla con `got clean exit`** (fallo, no skip).
+3. **El armado corre también en la ruta de IA** (`--clean-ai`): el defecto del falso verde estaba en
+   el camino de IA y lo encontró el **verificador independiente** del RDD (escalado del item 4,
+   concurrencia) con PASS en S1-S5 ⇒ arreglado en `d19722e9` junto con el helper del harness que no
+   hermetizaba `WEBFANG_CONFIG`.
+
+**El assess nativo NO necesita re-corrida**: `nativeRisk=medium`, `reviewDue=FALSE` (`under_budget`)
+con el escalado ITEM 4 a plan high.
+
+**La nueva p85 de `signal_lifecycle_test.rs` fija la SEGURIDAD del drenaje** (pertenencia de cada
+record a una URL fetcheada + a lo sumo un fetch por corrida); la **ALCANZABILIDAD** del punto la fija
+la fila de la matriz.
+
+Verificación con exit codes reales: check/clippy/fmt/doc exit 0; `nextest --lib export` **185/185**;
+crash matrix **27/27** (con la fila nueva); `signal_lifecycle` **5/5**; behavioral **167/167** (un
+flake ajeno: `batch_file_timeout_does_not_hang`); `check_intra_crate_direction` OK strict;
+`check_ignored_guard` exit 0; golden set regenerado en el mismo commit del cambio.
