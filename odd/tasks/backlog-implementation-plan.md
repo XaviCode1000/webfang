@@ -550,3 +550,42 @@ nombrado lo pinea (el que falla con el store por defecto y pasa con la configura
 **Por qué no "migrar"**: una migración escribe una credencial nueva y borra la vieja: es estado
 nuevo, deja restos si falla a mitad, y no arregla a quien ya tenía la credencial guardada con la
 clave vieja si el borrado falla. La clave que no cambia no tiene ninguno de esos problemas.
+
+### 2026-10-22 · D21 (el punto de crash inalcanzable) y la verificación del código de Windows
+
+**D21 — el punto `DURING_CANCEL_DRAIN`:** el peer descubrió, midiendo, que el punto está **armado
+pero no puede dispararse**: la sesión de export sólo observa un token de cancelación cuando se
+llama `ResumeContext::observing_cancel`, y **el único llamador en todo el crate está en el módulo
+de tests de `export_factory`** ⇒ en producción `cancelled()` es siempre `false`, la rama
+`Cancelled` del drain nunca corre, y el hijo del crash matrix con el token ya cancelado **sale
+con código 0 sin llegar al drain**.
+
+**Decisión**: el punto **se queda** (es el marcador de un requisito registrado: E8, "drain before
+final persist"), pero **rotulado como lo que es** —un punto que hoy la producción no alcanza—; la
+**fila del matrix no se escribe** (una fila de un punto inalcanzable es un verde falso, que es
+justo la clase que este lote audita); y el **hueco de fondo se abre como issue propia** (**#2244**)
+con las dos salidas explícitas: (A) cablear el token en `cli/export_flow.rs` —el export observa la
+cancelación y no persiste estado parcial, que es la intención de E8— o (B) aceptar "el export
+siempre termina" como contrato, y entonces **borrar el punto** y su expectativa. Es decisión de
+producto ⇒ la lleva el issue con `status:approved` del owner, no un follow-up automático. Mi
+recomendación: **A** (E8 es un requisito de auditoría registrado y el punto existe para guardarlo),
+pero cambia el comportamiento visible del export ante `Ctrl-C` ⇒ la elige el owner.
+
+**Verificación del código `#[cfg(windows)]` (T9 de L8): no hay check cruzado local.** Medido en
+`.github/workflows/ci.yml`: la lane `test-crossplatform` corre en `[windows-latest, macos-latest]`
+y ejecuta `cargo build -p webfang_cli --bin webfang` + `cargo nextest run --lib` +
+`cargo nextest run --test '*'` ⇒ **un test in-module sí corre en la lane de Windows**, con
+cmake/NASM preinstalados en el runner (lo dice el propio comentario de la lane). Un
+`cargo check --target x86_64-pc-windows-msvc` en un host Linux **no puede** cerrar el caso:
+`wreq → btls → btls-sys` compila BoringSSL desde C++ y necesita el toolchain MSVC, que aquí no
+existe ⇒ el check local fallaría en el build script, y un check local que falla no es evidencia.
+⇒ **La verificación de T9 es la lane de Windows**, que hoy es **advisory** (no está en `gate`
+needs) ⇒ la fila del catálogo congelado (`docs/test-inventory.md`) dice **qué** la verifica
+("lane de Windows") y el promote a required queda como follow-up aparte, como ya anticipa el
+comentario de la propia lane. Es la misma principio que rechazó el scratch-crate: **la lane real
+de Windows es la única que compila Windows**; un gate que compila una copia no gatea el sujeto.
+
+**Un fallo propio del peer, de la misma clase que el lote audita**: el `default-features = false`
+de `webfang_test_utils` **no surtía efecto** (cargo avisa que se ignora mientras la dependencia
+del workspace no lo declare) ⇒ la inmunización de D8 estaba escrita y era un flag silenciosamente
+ignorado. Corregido en la dependencia del workspace (`80ae3571`).
