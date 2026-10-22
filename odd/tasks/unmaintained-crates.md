@@ -530,3 +530,20 @@ correspondia. Verificado en el lock del fuzz: `unsafe-libyaml` 0,
 `unsafe-libyaml-norway` 1, `serde_yaml` 0, `serde_norway` 1. El guard real
 (offline, con el DB de advisories ya en cache) da exit 0 con 13 ignores
 justificados, y el harness sigue 13/13.
+
+L15 — **El rebase de L10 sobre L9 es limpio: MEDIDO, no supuesto.** El orden
+firmado pone L9 justo antes de L10, y los dos cambian `[workspace.dependencies]`
+— L9 quita `once_cell` y `sys-info`, L10 cambia `serde_yaml` por
+`serde_norway` — con los hunks a ocho lineas de distancia (context overlap).
+La distancia alarming por si misma: un rebase por parche puede fallar donde un
+merge de tres vías no.
+
+Medido con `git merge-tree --write-tree` (sin tocar ninguna rama): el merge
+de L9 con L10 sobre la base `main` sale CONFLICT = 0, y el `Cargo.toml`
+resultante tiene `serde_norway` y ni `once_cell` ni `sys-info` ni
+`serde_yaml`. Los tres cambios coexisten.
+
+Lo registro porque el orden de las PRs pone a L9 y L10 al final, justo por
+cambiar manifiesto y lock, y porque la premisa "el lock queda quieto" es
+justo la que este lote altera: L10 cambia el manifiesto y regenera el lock
+del fuzz. Que el rebase sea limpio era un supuesto; ahora es una medicion.
