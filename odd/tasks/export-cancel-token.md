@@ -274,7 +274,21 @@ Seis defectos report-only. Qué hice con cada uno:
    test, con el motivo escrito.
 5. Los invariantes post-resume no distinguen "matado después de ≥1 commit" de
    "matado antes del primer commit". Es estructural (el commit precede al check
-   de cancelación) y está cubierto por unit tests; se acepta sin asertar.
+   de cancelación) y está cubierto por unit tests **de la ruta estándar
+   únicamente** (`export_factory.rs`, los dos tests de `observing_cancel`): la
+   rama de drenaje de la ruta de IA **no tiene ningún test que la ejecute**, ni
+   unit test ni fila de matriz. Se acepta sin asertar, y se declara como
+   carencia real: el `hit` que agregué en la ruta de IA es correcto por
+   estructura (la rama sólo se entra con `session.cancelled()` y el
+   `final_persist()` posterior está verificado) pero **no está probado por
+   ejecución**. La prueba que falta es una fila de matriz con `--clean-ai`
+   (necesita un mock de embeddings) más un unit test del corte temprano del
+   drenaje de IA; va como trabajo de seguimiento, no en esta rama.
+   Chequeo de revisión independiente sobre el delta: los tres arreglos
+   CLEARED; y una tercera cavidad preexistente y espejada: una corrida armada
+   donde TODOS los ítems son `AlreadyCommitted` no entra al check de
+   cancelación en ninguna de las dos rutas ⇒ sale limpia bajo armado. Sólo
+   posible con un resume totalmente commiteado + cancelación.
 6. El verificador no corrió `check`/`clippy`/`fmt`/`doc` (fuera de su set
    autorizado): los corrí yo sobre el árbol mergeado, los cuatro con exit 0, y
    él confirmó por su cuenta que el diff del golden set es **sólo** la columna
