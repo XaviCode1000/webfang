@@ -288,3 +288,40 @@ el padre de forma independiente, no por el informe del worker:
 - **L15 no lo tomé**: sólo verifiqué que `nightly` + `miri` ya estaban instalados. El lote está implementado por el peer en `fix-miri-ub-lane` (4 commits).
 - **L13/#1821**: descartado por el owner (no diferido). No se implementa.
 - **Review nativo de L4**: el assess del candidato `fix/guard-residuals` (tip `5f19fbb5`) devuelve `nativeRisk high` / `reviewDue true` ⇒ el review **sí** correspondía. Arrancó `review-74427c00c7b8343a` (2 lentes, 379 líneas, budget 190) y el forecast del slot 0 salió, pero el ack se rechaza con `collectBinding is missing or stale for current STATUS` aunque el binding entregado es **byte-idéntico** al que imprime el facade y al que reconstruye el CLI nativo (verificado con `diff`). Queda **abierto y documentado** (junto al lineage del peer `review-ead5e692fc9ea607`): el trabajo no depende del review, cada fix tiene su RED/GREEN, que es exactamente el `writerSelfVerification` que el assess pide. La receta **sí** funcionó en L3a: lineage `review-7279a44bd00f4c9f` ⇒ APROBADO, 3 hallazgos no bloqueantes, autoridad quemada.
+
+---
+
+## Readiness de PRs (2026-10-22): qué falta para abrir cada una
+
+Las 5 puertas del gate `Validate PR metadata`: issue enlazada con `Closes #N`, la issue con
+`status:approved` (**nunca auto-aprobada**), exactamente un `type:*`, nombre de branch
+convencional, cero atribución de IA. El orden de apertura ya está firmado por el owner:
+`L2 → L3a → L3b → L4/L5/L6 → L8/L9/L10`.
+
+| Lote | Rama | Commits del PR | Cierra | `status:approved` | `type:*` | Listo |
+|---|---|---|---|---|---|---|
+| L2 (s1) | `fix/merge-when-green-merged-state` | `d16ffef2` | #1970 | ✓ | `type:chore` | **SÍ** |
+| L2 (s2) | ídem | `67ff6128` | #1971, #1972 | ✓ | `type:chore` | **SÍ** (reglas de proceso en `AGENTS.md`) |
+| L2 (s3) | ídem | `66f23d63` + el libro mayor | — (documental) | — | `type:docs` | **SÍ** (sin issue que cerrar) |
+| L3a | `fix/ci-health-w03-classifier` | `1b49ef71`, `eaa172d7` | #2233 | ✓ | `type:chore` | **SÍ** (#2162 y #1980 ya cerrados; #1936 sigue abierto) |
+| L3b | `fix/2234-hermetic-args` | `b08323cd` | #2234 | ✓ | `type:chore` | **SÍ** |
+| L4 | `fix/guard-residuals` | `b2cf0a94`, `1111cd9d`, `cd333e76` + 4 docs | #2070 | ✓ | `type:chore` | **SÍ** |
+| L5 | `fix-ai-attribution-exact` | `4a17cb66` + `0f004bf4` | #1995 | ✓ | `type:chore` | **SÍ** |
+| L6 | `chore-mutation-shard-measurement` | `26792e6b` + `01767192` | #1844 | ✓ | `type:chore` | **SÍ** |
+| L7 | `fix-mcp-surface-truth` | `c40fac93`, `80be9903` + spec/evidencia | #1815, #1817, #1837, #2193 | ✓ | `type:bug` | **SÍ** (4 issues, un `type:*` ⇒ revisar el tipo: el lote mezcla bug y docs ⇒ dos slices o un `type:bug` con nota) |
+| L8 | `fix-false-green-tests` | `8ae91119`, `4221bb4f`, `934e7f18`, `1702d1ec` + docs | #2066, #1852, #1828, #1834, #1816 | ✓ | `type:testing` | **SÍ** (#1833 queda abierto: su S# está sin implementar a la espera de O4) |
+| L9 | `fix-build-graph-deps` | `b62a4ac2`, `845bfb08`, `6b109426` | #1799, #1797, #1796 | ✓ | `type:chore` | **SÍ** |
+| L10 | `fix-unmaintained-crates` | `e02d1829` + el commit en vuelo | #1984, #2031 | ✓ | `type:chore` | **espera** al worker (el worktree tiene 4 archivos sin commitear) |
+| L11 | `fix-obscura-unknown-verdict` | `6b82e087` + spec/cierre | #1710 | ✓ | `type:chore` | **SÍ** |
+| L15 | `fix-miri-ub-lane` | `6065049e`, `cf4403fa`, `f0e39852` | #2235 | ✓ | `type:chore` | **SÍ** |
+| L14 (a) | `fix-docs-runbooks-wal` | `08d46907` | #1826 | — | `type:docs` | **falta `status:approved` en #1826** |
+| L14 (b) | ídem | `da990e2d` | #1609 (`Closes part of #1609`) | ✓ | `type:docs` | **SÍ** |
+| L14 (c) | — | — | #2241, #2242, #2243 | **NO** | `type:docs`/`type:bug`/`type:chore` | **BLOQUEADO: el owner tiene que aprobar las 3 issues nuevas** |
+
+**Lo único que bloquea una apertura ahora mismo**: `status:approved` en **#2241, #2242 y #2243**
+(las issues que abrí con el veredicto de #1609) y en **#1826** (el runbook WAL/SQLite). Las
+labels las pone el owner: `status:approved` nunca se auto-aplica.
+
+**#2230** (la PR del exporter) no está rota: su cuerpo tiene `Closes #1812`, la issue tiene
+`status:approved` y `type:bug`. Está `BLOCKED` por la **cola de 64 shards de cargo-mutants**
+en `queued` ⇒ es espera de CI, no un defecto. L12 sigue esperando su cierre.
