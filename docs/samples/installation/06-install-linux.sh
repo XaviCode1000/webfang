@@ -1,7 +1,7 @@
 # 1. Download (x86_64; use aarch64-unknown-linux-gnu on ARM64)
 VERSION=v2.12.0
-curl -fLO "https://github.com/XaviCode1000/webfang/releases/download/${VERSION}/webfang-x86_64-unknown-linux-gnu.tar.gz"
-curl -fLO "https://github.com/XaviCode1000/webfang/releases/download/${VERSION}/SHA256SUMS.txt"
+curl -fLO "https://github.com/XaviCodeDev1000/webfang/releases/download/${VERSION}/webfang-x86_64-unknown-linux-gnu.tar.gz"
+curl -fLO "https://github.com/XaviCodeDev1000/webfang/releases/download/${VERSION}/SHA256SUMS.txt"
 
 # 2. Verify BEFORE extracting
 sha256sum -c SHA256SUMS.txt --ignore-missing

@@ -1,0 +1,51 @@
+# Historical release-signing identities.
+#
+# Frozen at the migration from XaviCode1000/webfang to
+# XaviCodeDev1000/webfang. Format: <tag><TAB><owner>/<repo>.
+#
+# Only tags published by the old owner BEFORE the migration belong here. Do not
+# add a new tag: the release gate uses the current identity only, and the
+# legacy identity is reachable only through the explicit --tag path in
+# verify-release-signatures.sh.
+#
+# Hygiene (maintainer): do not delete or rename XaviCode1000; do not create a
+# webfang repository under it (it would shadow the redirect); keep 2FA enabled;
+# update current-facing links.
+v1.0.0	XaviCode1000/webfang
+v1.0.4	XaviCode1000/webfang
+v1.0.7	XaviCode1000/webfang
+v1.1.0	XaviCode1000/webfang
+v1.1.1	XaviCode1000/webfang
+v2.0.0	XaviCode1000/webfang
+v2.1.0	XaviCode1000/webfang
+v2.1.1	XaviCode1000/webfang
+v2.2.0	XaviCode1000/webfang
+v2.3.0	XaviCode1000/webfang
+v2.3.1	XaviCode1000/webfang
+v2.4.0	XaviCode1000/webfang
+v2.4.1	XaviCode1000/webfang
+v2.4.2	XaviCode1000/webfang
+v2.4.3	XaviCode1000/webfang
+v2.5.0	XaviCode1000/webfang
+v2.6.0	XaviCode1000/webfang
+v2.6.1	XaviCode1000/webfang
+v2.6.2	XaviCode1000/webfang
+v2.6.3	XaviCode1000/webfang
+v2.6.4	XaviCode1000/webfang
+v2.6.5	XaviCode1000/webfang
+v2.7.0	XaviCode1000/webfang
+v2.7.1	XaviCode1000/webfang
+v2.7.2	XaviCode1000/webfang
+v2.7.3	XaviCode1000/webfang
+v2.8.0	XaviCode1000/webfang
+v2.9.0	XaviCode1000/webfang
+v2.10.0	XaviCode1000/webfang
+v2.10.1	XaviCode1000/webfang
+v2.11.0	XaviCode1000/webfang
+v2.12.0	XaviCode1000/webfang
+v2.13.0	XaviCode1000/webfang
+v3.0.0	XaviCode1000/webfang
+v3.0.1	XaviCode1000/webfang
+v4.0.0	XaviCode1000/webfang
+v4.0.1	XaviCode1000/webfang
+v5.0.0	XaviCode1000/webfang
