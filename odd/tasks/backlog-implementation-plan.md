@@ -90,7 +90,7 @@ una decisión del owner).
 | **L9** | Grafo de build | #1799, #1797, #1796 | borrar `sys-info` (devuelve **KiB en todas las plataformas**: la premisa de la issue era falsa) y `once_cell`; dropear `version_string()` (0 call sites) y no escribir `build.rs`; el benchmark declara su propia feature `chromium` | `autotuning.rs::ram_budget_from_bytes_converts_to_kib` | −20/+40 | worker | **HECHO** (peer; Risk item 5 ⇒ commit propio): spec `eb40ecbb` (padre) + `b62a4ac2` (guard del grafo de build), `845bfb08` (el grafo deja de llevar lo que no se usa, `#1799`/`#1797`/`#1796`), `6b109426` (baseline de crates duplicados regenerada), `713502cd` (evidencia); tip `713502cd` en `fix/build-graph-deps`. D9 corregida: `sys-info` devuelve KiB en todas las plataformas ||
 | **L10** | Crates sin mantenimiento | #1984, #2031 | borrar `serde_yaml` (sólo serializa en prod) y salir de `keyring` 3 preservando el **mismo store** (linux-keyutils); las 3 supresiones zbus expiran 2027-01-17 | `scripts/test_advisory_policy.sh` (caso nuevo) | −30/+45 | worker | **HECHO** (peer; Risk item 5 ⇒ commit propio): spec `2f51441a` (padre) + `e02d1829` (ningún ignore de `deny.toml` puede quedar muerto, `#1984`), `905183ac` (evidencia de S1); tip `905183ac` en `fix/unmaintained-crates` ||
 | **L11** | obscura | #1710 | el veredicto `Unknown` **nombra el mínimo esperado**; el hit-rate se deriva de los logs por capa; sin modo estricto, sin contadores | `preflight.rs::unknown_verdict_names_the_expected_minimum` | +6/−1 | inline | **HECHO** (peer): `0e52f031` spec, `6b82e087` (el veredicto `Unknown` nombra el mínimo esperado, `#1710`), `0747fea3` (cierre con los shas); tip `0747fea3` en `fix-obscura-unknown-verdict` ||
-| **L12** | Duplicación | #1757 | helpers de arrange compartidos; bajar el baseline por el delta **medido** (9272) | `scripts/check_duplication.sh` | −60/+12 | inline | PENDIENTE (espera **#2230**, que sigue abierta) |
+| **L12** | Duplicación | #1757 | helpers de arrange compartidos; bajar el baseline por el delta **medido** (9272) | `scripts/check_duplication.sh` | −60/+12 | inline | **DESBLOQUEADO 2026-10-22** (la PR `#2230` mergeó): spec ODD en escritura por un worker; la implementación la lleva el peer |
 | **L13** | Entrega macOS | #1821 | — | — | 0 | inline | **DESCARTADO 2026-10-22** (O3): el owner decide *"la issue 1821 la dejamos, no la tocamos"*. El lote sale del plan; la issue queda abierta y sin tocar |
 | **L14** | Docs y runbooks | #1609, #2061, #1826 | cerrar #1609 con veredicto por fila y abrir ≤2 slices vivas; **rechazar** el auto-PR de rotación (el gate `published` ya corre dentro de `Validate PR metadata`); el WAL/SQLite no tiene runbook en ningún lado | `state_store.rs::test_load_or_default_*` | +55/−40 | inline | **DIVIDIDA**: el veredicto por fila de #1609 lo cierro yo (worker read-only + comentario en la issue); la implementación (runbook WAL/SQLite, nota de #1710, slices) es **DEL PEER** y está HECHA: `f79e42ba` spec, `08d46907` docs, `0616c3bf` registro, `da990e2d` carry-over del wiki, `a902229f` evidencia; tip `a902229f` en `fix/docs-runbooks-wal` (~650 líneas en 3 commits, cada uno bajo el corte de ~400, **sin PR y sin publicar nada en GitHub**, sin tocar `ci.yml` ⇒ no colisiona con la re-aplicación de los steps). **Veredicto posteado** (25 filas: 12 resueltas, 7 moot, 5 vivas, 1 no accionable) y las 5 vivas abiertas como **#2241** (doc de disclosure: DF-D1+DF-D4+DF-D6), **#2242** (la degradación de config es invisible: FR-10) y **#2243** (podar el seam muerto: M1/G1), las tres con `status:approved` del owner. #1609 **queda abierta** como umbrella; sus PRs la cierran con `Closes part of #1609` ||
 | **L15** | Lane de UB | #2235 | el UB de `scraper_service.rs` con gate **por test**; cada `--skip` con motivo escrito; la lane deja resultado, no aborta el proceso | job `Miri (core)` en verde en una corrida schedule | +20/−10 | worker | **HECHO** (peer): `6065049e` (la lane de UB deja de saltarse árboles de test, `#2235`), `cf4403fa` (guard de las invariantes de la lane), `f0e39852` (harness que prueba que el guard puede fallar), `4a9cb8c0` (registro del cierre con su evidencia); tip `4a9cb8c0` en `fix-miri-ub-lane`. O8 resuelta 2026-10-22 ||
@@ -686,3 +686,20 @@ cero credenciales huérfanas, cero estado nuevo. Test: `the_credential_key_is_by
 publicada sobre el `main` actual **no** la consume L10 (ni L9). Las dos seeds que cubren la fase de
 apertura de PRs son las del lock de `main`; cuando L9 y L10 mergeen, hay que **volver a publicar**
 las dos sobre el lock nuevo.
+
+### 2026-10-22 · #2230 mergeada: L12 desbloqueado y el lane del exporter puede avanzar
+
+La PR **#2230** (exporter: un JSONL no-UTF-8 degrada y salta en vez de abortar, `#1812`) **mergeó**
+⇒ dos cosas que esperaban su cierre se destraban:
+
+- **L12** (duplicación, `#1757`) queda **desbloqueado**: estaba esperando ese merge. Es el último
+  lote de código del plan, así que ahora la spec ODD se escribe (con el baseline de duplicación
+  **medido** con la herramienta del repo —la premise del plan dice 9272 y hay que **verificarla**,
+  no darla por cierta—) y la implementación la lleva el peer.
+- **El lane del exporter** (`#2237` —el pico de memoria de `recover_torn_tail`— y `#2238` —el
+  resultado MCP del export no expone el conteo de líneas saltadas—) puede abrir sus PRs, y **L12**
+  va después de ellos.
+
+El ciclo de release siguió su curso: la PR `#2240` (v5.0.1) se cerró y hay una `#2245` (v5.0.1) abierta
+⇒ las PRs del backlog se abrirán sobre un `main` que se mueve, que es exactamente el motivo por el
+que el orden de apertura es **secuencial** (cada slice desde el `main` nuevo) y no apilado.
