@@ -166,3 +166,19 @@ en 79/79. Lo que NO se cierra con este lote: el pin 0.2.3 del issue (obsoleto: e
 vigente es 0.2.5), los docs y los contadores por capa (decididos: el hit-rate se deriva de los
 logs por capa, sin instrumentación nueva). El issue #1710 **no** se cierra: su parte del
 veredicto `Unknown` recién aterriza, y el resto de sus ACs siguen vivos.
+
+L13 — El job "Coverage" de la PR #2253 falló con un panic de SQLite
+("init pragmas: database is locked") en
+`cli::orchestrator::tests::build_elastic_ingestion_wires_both_sinks_not_exclusive`.
+NO lo causó este lote: la causa es que los tests de `build_elastic_ingestion`
+dejaban `opts.elastic.db_path` en None ⇒ el pool de vectores se abría en el
+path por defecto (`default_db_path`, bajo el home del usuario) ⇒ todos los
+procesos que corren ese binario abrían el MISMO SQLite, y el hook
+`post_create` que aplica las pragmas WAL necesita un lock exclusivo breve.
+Con `cargo test` (hilos dentro de un mismo proceso) dos runs chocan.
+Medido: la suite lib completa en un proceso fallaba 2 de cada 4 corridas en
+la rama antes del arreglo (5 tests de red/loopback caían por la misma
+colisión de recursos) y pasa 2970/2970 en las dos corridas posteriores.
+El arreglo da a cada test su base en su propio tempdir, y el sink JSONL
+dejó de usar el path fijo `/tmp/test.jsonl`. El golden set del extractor
+intra-crate NO cambia: `cli/orchestrator.rs` no aparece en él.
