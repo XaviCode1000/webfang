@@ -234,7 +234,13 @@ evidencia). El harness del worker mediría 566 líneas en un solo archivo, por e
 límite de ~500 del repo, así que se partió en el par idiomático del repo: el guard
 (`scripts/check_miri_lane_invariants.sh`, 454 líneas, con las cuatro invariantes) y su
 harness hermano (`scripts/test_miri_lane_invariants.sh`, 163 líneas, con el control RED).
-El guard corre solo (exit 0/1) y el harness lo carga como librería (`MIRI_LANE_LIBRARY=1`)
-para correrlo sobre sus fixtures: un guard que puede correr sobre fixtures es la mitad de
-un guard reusable. Si el owner prefiere una PR más chica, el corte natural es (1) el
+El guard corre como **programa** (exit 0/1) y el harness lo invoca como **subproceso**
+(`MIRI_LANE_ROOT` para el árbol que hay que juzgar, `MIRI_LANE_CHECK` para aislar una
+invariante) para correrlo sobre sus fixtures: un guard que puede correr sobre fixtures es
+la mitad de un guard reusable. El harness NO lo carga como librería: un guard cargado con
+`.` hereda su `exit`, así que un guard roto (o sustituido por `exit 0`) se llevaría por
+delante al harness y los controles RED nunca correrían — el harness quedaría verde sobre un
+guard que no decide nada. Eso es exactamente la forma fail-open que el meta-guard
+`scripts/test_guard_coverage.sh` mide (#2056), y por eso el par tiene que cumplir su
+contrato: marcador `# NEGATION:` y rojo con el guard sustituido por `exit 0`. Si el owner prefiere una PR más chica, el corte natural es (1) el
 skip-net y los gates, (2) el guard, (3) el harness con su wiring.
