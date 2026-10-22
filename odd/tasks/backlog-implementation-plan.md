@@ -1283,3 +1283,44 @@ Aplicación inmediata de la Regla A para el orquestador: con la lista de 9 ramas
 batch que toque `core/src` tiene que ir seguido del refresh de fixture de la próxima rama ANTES de que
 esa rama su merge reciba. Lineas actuales de fixture por head: 1641 (2dd9e04e si #2244pp) / 1643 si
 (#2258 y #2268 heredados).
+
+### 2026-10-22 · Regla A v2 (MEJOR): la fixture se REGENERA en el momento del merge, no se refresca por push
+
+El peer midió el tablero completo (16 PRs abiertas) y la recomendación cambia. Confirmaciones y datos:
+
+- **9 PRs tocan la fixture** (`#2247 #2253 #2254 #2256 #2257 #2258 #2261 #2262 #2268`). `#2255` toca
+  `core/src` en 4 ficheros pero NO la fixture, y su fixture igual coincide: sus ediciones no mueven
+  sitios del extractor.
+- Las 9 fixtures **coinciden hoy con el árbol de su propia rama** (0 líneas de diff con extractor
+  `git archive` — ninguna rota por dentro). Pero los conteos son **1637 / 1641 / 1643**: dos ramas con
+  el MISMO fichero respecto del MISMO ancestro y contenido distinto **conflictúan SIEMPRE**. Es
+  estructural, no se evita rebaseando.
+- Sólo **7 PRs están a 0 commits de atraso** (`#2247 #2249 #2251 #2252 #2258 #2266 #2268`); las otras
+  están a 11 o 15 ⇒ **cualquier assess dos-dot sobre esas 9 es HOY una medición inflada**.
+- `#2255` cambió de head: **`19ead943`** (antes `8e7cd30a`) — presumiblemente el orquestador al traer
+  main.
+
+**El argumento**: la fixture es un **ARTEFACTO DERIVADO**. Su valor correcto no es "el de una rama" ni
+"el de main": es exactamente lo que el extractor produce sobre el árbol mergeado. El conflicto NUNCA es
+semántico y NUNCA se resuelve eligiendo un lado: **se resuelve REGENERANDO en el momento del merge**.
+Eso determina también por qué es mejor que "refresh en la rama que sigue": pulshear en una rama ajena
+invalida su CI y obliga a esperar otra corrida ⇒ nueve ramas = ocho invalidaciones innecesarias.
+
+**La receta determinista y autoverificada** (en el worktree del merge, conflicto abierto):
+
+```bash
+git checkout --ours tools/intra-crate-lint/tests/fixtures/real_tree_sites.txt   # o --theirs: da igual
+env -u CARGO_TARGET_DIR cargo build --quiet --locked --manifest-path tools/intra-crate-lint/Cargo.toml
+env -u CARGO_TARGET_DIR cargo run --quiet --locked --manifest-path tools/intra-crate-lint/Cargo.toml -- \
+    --root crates/webfang_core/src > tools/intra-crate-lint/tests/fixtures/real_tree_sites.txt
+env -u CARGO_TARGET_DIR cargo test --quiet --locked --manifest-path tools/intra-crate-lint/Cargo.toml   # verde = regenerado bien
+git add tools/intra-crate-lint/tests/fixtures/real_tree_sites.txt
+```
+
+Cero juicio humano: si el test pasa, la fixture corresponde al árbol. **El default pasa a ser regenerar
+en el merge, no ocho pushes.** El peer queda disponible para ejecutarlo si el orquestador delega el
+merge, y para verificar el estado final.
+
+**Observación de fondo (para el owner):** el repo tiene un artefacto derivado **sin comando documentado
+de regeneración** — eso es lo que empuja a resolver a mano. Vale un issue chico; el peer no lo abre sin
+que se lo pidan.
