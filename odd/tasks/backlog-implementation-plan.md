@@ -1108,3 +1108,12 @@ La prueba no discutible es `git show <sha>:<path>` — nunca el fichero del work
 **El flake** `js_strategy_test::non2xx_browser_page_is_honest_error_exit_69` queda **fuera**: es
 preexistente y ajeno al diff (el cambio del harness compartido es `fn` → `pub(crate) fn`).
 Defecto separado si el owner lo quiere, con su issue propia.
+
+**Nota de proceso del run stale (2026-10-22)**: el orquestador arrastró el log del run
+`39778513468` (13:01) con la misma violación `no-harness` — pero ese run corrió sobre el head
+**anterior** al push de `de0e160b`. La regla cuando un log no coincide con el reporte: mirar el
+**headSha del run contra el head actual de la rama** antes de diagnostizar (misma clase de lección
+que blob-vs-worktree: la pregunta "¿qué corrió CI?" se responde con el headSha del run). Los cuatro
+requisitos del `no-harness` están probados **en el blob de `de0e160b`**: el marcador (1),
+el step cableado (línea 673 del `ci.yml` del blob), el no-mutation (ROJO, rc=1, re-corrido sobre
+el worktree limpio en ese head) y el meta-guard OK sobre ese árbol.
