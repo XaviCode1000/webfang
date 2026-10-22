@@ -1198,3 +1198,20 @@ Vale: la conclusion era `failure` en la fase del cancel — un snapshot branch
 marchando a mitad de cancelación. Con ambos re-run en vuelo, la pregunta honesta es si llaman al
 mismo error en el camino de Windows del snapshot. Si ambos salen verdes, el orquestador puede
 tomar la verificación de los merges.
+
+### 2026-10-22 · `#2250` (L5) mergeada y ambas ramas re-baseadas; ambas CI canceladas ⇒ re-run
+
+El orquestador mergeó la PR `#2250` (el fix de la allowlist de atribución, `4a17cb66`) y re-baseó
+las ramas de **`#2252` (`768c67d5`) y `#2258` (`8664ae67`)** contra el `main` nuevo
+(`c6af63be`). El archivo `ci.yml` ya tenía `--tests` en ambas ramas, así que el re-render es
+sólo de contexto.
+
+**El extracto de golden set sigue OK contra el head mergeado** (el de `#2252` dice `OK
+(sha 768c67d5)` y el de `#2258` `OK (sha 8664ae67)`); la cantidad de sitios no cambió. El test
+`test_process_export_pipeline_real_export` **estaba fallando en `windows-latest` cuando el run
+fue cancelado** — era un rojo del snapshot, no de la fase del cancel; **los dos CI fueron
+cancelados** (`conclusion=cancelled`), no rojos. Re-los relancé:
+- `#2252`: run `39787062045`.
+- `#2258`: run `39787038515`.
+
+Si los dos re-run salen verdes, el orquestador puede tomar la verificación de los merges.
