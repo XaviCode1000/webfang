@@ -14,7 +14,10 @@
 #   repo-guards (parallel) runs dead-test detection + the other architectural
 #   guards + the MCP public-surface version-marker gate + actionlint/shellcheck
 #   lint; gate still blocks merge on it.
-#   test-core runs: unit tests (--lib) then integration/behavioral tests (--test '*')
+#   test-core runs: unit + integration/behavioral tests in ONE invocation
+#   (--tests: the lib unit tests, the binaries' unit tests and the
+#   integration targets selected BY KIND, so a feature-gated target whose
+#   feature is off is skipped instead of failing the lane)
 #   test-full runs: all features enabled (full workspace compile + test, NO AI inference)
 #   security runs in parallel with tests (no Rust compile)
 #   feature-matrix runs after clippy (cargo-hack --each-feature, catches broken feature combos)
@@ -954,10 +957,22 @@ jobs:
           tool: nextest@0.9.114
       - name: Pre-build test binary
         run: cargo build -p webfang_cli --bin webfang
-      - name: Unit tests (lib)
-        run: cargo nextest run --lib --retries 2
-      - name: Integration tests
-        run: cargo nextest run --test '*' --retries 2
+      # ONE invocation for the whole default-feature surface: the lib unit
+      # tests, the binaries' unit tests and the integration/behavioral
+      # targets.
+      #
+      # WHY NOT `--test '*'`: that glob makes cargo NAME every test target
+      # explicitly, and a target declared with `required-features` whose
+      # feature is off is then a HARD ERROR ("target `sqlite_integration` in
+      # package `webfang_core` requires the features: `persistence`"). The
+      # #1852 declarations put four targets of `webfang_core` in exactly that
+      # shape, so the glob stopped being a selection and became a failure.
+      # `--tests` selects the same targets BY KIND, and cargo SKIPS the ones
+      # whose features are off: the four gated targets (`persistence`,
+      # `console`, `adaptive-selectors`) run in the `Tests (all features)`
+      # lane, which is where their coverage lives.
+      - name: Unit + integration tests
+        run: cargo nextest run --tests --retries 2
 
   # ============================================================================
   # TIER 4: TEST FULL (4-6 minutes)
@@ -1055,10 +1070,13 @@ jobs:
           tool: nextest@0.9.114
       - name: Pre-build test binary
         run: cargo build -p webfang_cli --bin webfang
-      - name: Unit tests (lib)
-        run: cargo nextest run --lib --retries 2
-      - name: Integration tests
-        run: cargo nextest run --test '*' --retries 2
+      # ONE invocation for the whole default-feature surface: the lib unit
+      # tests, the binaries' unit tests and the integration/behavioral
+      # targets. `--tests` selects the targets BY KIND, so cargo SKIPS the
+      # ones whose `required-features` are off instead of failing on them
+      # (see the same comment in `test-core`).
+      - name: Unit + integration tests
+        run: cargo nextest run --tests --retries 2
       # #1834: the Windows console-control path was only ever COMPILED by this
       # lane, never EXERCISED — nobody drove a real CTRL_CLOSE_EVENT through
       # the handler, so the whole console path was unproven on the platform
