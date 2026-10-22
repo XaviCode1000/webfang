@@ -122,6 +122,8 @@ fn kill_self() -> ! {
     // and the signal NEVER arrives. Sending it and waiting for it IS the
     // hang, so the detection comes BEFORE the signal: the only observable
     // sign is the pid, and in that environment `getpid() == 1` (#2066).
+    // SAFETY: `getpid()` takes no arguments and touches no memory: it
+    // returns the calling process's own pid, which is always a valid pid.
     if unsafe { libc::getpid() } == 1 {
         die_diagnostically(
             "SIGKILL was discarded: this process is the init of its PID namespace, \
