@@ -552,8 +552,9 @@ EOF
   # cargo, <1s — cheap enough that it is never skipped once triggered.
   # Mirrors the `repo-guards` step of the same
   # harness in .github/workflows/ci.yml.
-  if grep -Eq '^(scripts/ci_path_classifier\.sh|scripts/ci_path_classifier_test\.sh)$' "$UNION_TMP" 2>/dev/null || [[ "$CI_HARNESS_MODE" == "always" ]]; then
+  if grep -Eq '^(scripts/ci_path_classifier\.sh|scripts/ci_path_classifier_test\.sh|scripts/ci_plan\.sh|scripts/ci_crossplatform_scope\.sh|scripts/test_ci_plan\.sh)$' "$UNION_TMP" 2>/dev/null || [[ "$CI_HARNESS_MODE" == "always" ]]; then
     run_step "path classifier harness semantics (offline)" bash scripts/ci_path_classifier_test.sh
+    run_step "CI plan semantics harness (offline)" bash scripts/test_ci_plan.sh
   else
     skip_step "path classifier harness semantics" "no path classifier files changed"
   fi
@@ -892,6 +893,10 @@ lane_fmt_and_guards() {
     bash scripts/test_release_owner.sh
   run_guard "release signature identity semantics" scripts/test_verify_release_signatures.sh \
     bash scripts/test_verify_release_signatures.sh
+  # CI planner semantics (#2282): event -> comparison-SHA contract and the
+  # crossplatform table. Hermetic mktemp git trees; no cargo, no network.
+  run_guard "CI plan semantics harness (#2282)" scripts/test_ci_plan.sh \
+    bash scripts/test_ci_plan.sh
   # Degraded lint + audit guards (changed-scope / cached-only, never download).
   run_pinned_lint_changed_scope
   run_zizmor_cached_only
