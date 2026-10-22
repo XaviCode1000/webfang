@@ -172,35 +172,6 @@ ignore = [
     # Tracking: https://rustsec.org/advisories/RUSTSEC-2026-0253
     # Expires: 2027-03-20
     { id = "RUSTSEC-2026-0253", reason = "lru 0.16.4 and 0.18.1 unsound; potential use-after-free on a panicking Drop inside LruCache::pop(), via html-to-markdown-rs and wreq, neither of which runs panicking code inside pop" },
-
-
-    # --- zbus 4 absorption set: RUSTSEC-2026-0370/0371/0372 (retire together) ---
-    # zvariant, zbus_names and zvariant_derive were absorbed into zbus 6.0.0 as
-    # its `wire`/`names` modules and its derive macros, and every one of the
-    # three advisories declares `patched = []` — no version bump retires them,
-    # which is why they carry one shared `reason` and one shared expiry.
-    # They reach this workspace ONLY through lockfile resolution:
-    # crates/webfang_core/Cargo.toml:316 enables keyring 3.6.3 with
-    # `linux-native` (= `dep:linux-keyutils`), while `crypto-rust` only carries
-    # the WEAK `secret-service?/crypto-rust` / `dbus-secret-service?/crypto-rust`
-    # edges — nothing activates `dep:secret-service` or `dep:zbus`. Verified, not
-    # assumed: `cargo tree -p webfang_core --target x86_64-unknown-linux-gnu`
-    # resolves keyring to `linux-keyutils` + `log` and nothing else, so the
-    # zbus stack is neither compiled nor executed. Informational only
-    # (`informational = "unmaintained"`, no CVE, no unsound code): this is an
-    # upstream consolidation, not a defect in code we ship.
-    # Upstream: https://github.com/z-galaxy/zbus/issues/2043 — tracking: #2030
-    # RUSTSEC-2026-0370 (zvariant 4.2.0) — https://rustsec.org/advisories/RUSTSEC-2026-0370
-    # Expires: 2027-01-17
-    { id = "RUSTSEC-2026-0370", reason = "zvariant 4.2.0 / zbus_names 3.0.0 / zvariant_derive 4.2.0 unmaintained as ONE set (absorbed into zbus 6.0.0, `patched = []` so no bump retires them); lockfile-only via keyring 3.6.3, whose `linux-native` is keyutils and whose `crypto-rust` only touches weak optional edges, so the zbus stack is never compiled nor executed; informational, no CVE; the three retire together" },
-    # RUSTSEC-2026-0371 (zbus_names 3.0.0) — same set, same reason
-    # https://rustsec.org/advisories/RUSTSEC-2026-0371
-    # Expires: 2027-01-17
-    { id = "RUSTSEC-2026-0371", reason = "zvariant 4.2.0 / zbus_names 3.0.0 / zvariant_derive 4.2.0 unmaintained as ONE set (absorbed into zbus 6.0.0, `patched = []` so no bump retires them); lockfile-only via keyring 3.6.3, whose `linux-native` is keyutils and whose `crypto-rust` only touches weak optional edges, so the zbus stack is never compiled nor executed; informational, no CVE; the three retire together" },
-    # RUSTSEC-2026-0372 (zvariant_derive 4.2.0) — same set, same reason
-    # https://rustsec.org/advisories/RUSTSEC-2026-0372
-    # Expires: 2027-01-17
-    { id = "RUSTSEC-2026-0372", reason = "zvariant 4.2.0 / zbus_names 3.0.0 / zvariant_derive 4.2.0 unmaintained as ONE set (absorbed into zbus 6.0.0, `patched = []` so no bump retires them); lockfile-only via keyring 3.6.3, whose `linux-native` is keyutils and whose `crypto-rust` only touches weak optional edges, so the zbus stack is never compiled nor executed; informational, no CVE; the three retire together" },
 ]
 
 [licenses]
