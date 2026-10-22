@@ -805,3 +805,34 @@ feature `Win32_System_Console` habilitada en el manifiesto, y tokio con
 `#[ignore]` sube de 12 a 14 (el atributo nuevo y la mencion del doc comment)
 y el guard de inventario queda en verde: 14 menciones (9 atributos + 5
 doc/comment) en 6 grupos.
+
+L19 — **T12: la verificacion del lote, con sus dos correcciones.** El clippy
+FALLO la primera vez: `clippy::undocumented_unsafe-blocks` (que el CI corre
+con -D warnings) exige que todo bloque `unsafe` diga por que es seguro, y
+el `getpid()` que detecta el init de un namespace no lo decia. Corregido.
+Y el test del pacing era INESTABLE — loRz la suite completa, donde solo
+aparece: media el reloj desde el INICIO del run (la latencia del spawn
+entraba en la cuenta: aislado, un spawn lento lo hacia pasar por el motivo
+equivocado; en la suite, con el binario caliente, el run terminaba en
+464ms y fallaba) y pasaba `--backoff-max-ms 50`, que CAPA el `Retry-After`
+de 1000ms por debajo del limite que la asercion exigia (la asercion
+estaba midiendo el recorte, no el pacing). Ahora la ventana se mide desde
+el instante en que el servidor respondio el 429 (el mock lo registra) y el
+cap es 2000ms. Verificacion: la suite behavioral completa, DOS corridas
+seguidas, 168/168 en verde y sin flakes.
+
+Verificacion final del lote: `cargo check --all-targets` exit 0 (los tres
+warnings de `webfang_mcp` en la build sin features son preexistentes de
+`main` y no aparecen con `--all-features`, que es lo que corre el CI);
+`cargo clippy --all-targets --all-features` con `-D warnings`,
+`clippy::cognitive_complexity` y `clippy::too_many_lines` exit 0;
+`cargo fmt --all -- --check` exit 0; `RUSTDOCFLAGS=-D warnings cargo doc
+--workspace --all-features --no-deps` exit 0; los tres guards en verde
+(el de targets vacios con su harness, el de inventario y el de tests
+muertos); la matriz de crash 27/27, el store SQLite con `persistence` en
+verde, y la suite behavioral 168/168.
+
+L20 — **Cierre del lote**: L8 queda cerrado con 13 commits. Los criterios que
+NO se cierran aqui: T8 y T11 son del lado issues (del owner del plan), y
+T6 se cierra con la desviacion de L17. El issue #1852 no se cierra con este
+lote: la parte que le toca al otro agente (el lado issues) sigue abierta.
