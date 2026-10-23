@@ -2,7 +2,7 @@
 
 **Web scraper de alto rendimiento con arquitectura modular para datasets RAG, crawling inteligente y exportación multi-formato.**
 
-[![CI](https://github.com/XaviCode1000/webfang/actions/workflows/ci.yml/badge.svg)](https://github.com/XaviCode1000/webfang/actions)
+[![CI](https://github.com/XaviCodeDev1000/webfang/actions/workflows/ci.yml/badge.svg)](https://github.com/XaviCodeDev1000/webfang/actions)
 [![License](https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.88+-orange)](https://rust-lang.org)
 [![Tests](https://img.shields.io/badge/tests-1%2C337+-green)](#testing)
@@ -16,7 +16,7 @@
 
 WebFang is a **binaries-only** distribution. Nothing is published to crates.io,
 so `cargo install webfang` cannot work. Every release publishes four archives
-plus a checksum manifest, on [GitHub Releases](https://github.com/XaviCode1000/webfang/releases/latest):
+plus a checksum manifest, on [GitHub Releases](https://github.com/XaviCodeDev1000/webfang/releases/latest):
 
 | Platform | Asset | Format |
 | :--- | :--- | :--- |
@@ -37,8 +37,8 @@ checksum, then `chmod +x` and put it on your `PATH`.
 
 ```bash
 VERSION=v5.0.0   # ← the tag from the releases page
-curl -fLO "https://github.com/XaviCode1000/webfang/releases/download/${VERSION}/webfang-x86_64-unknown-linux-gnu.tar.gz"
-curl -fLO "https://github.com/XaviCode1000/webfang/releases/download/${VERSION}/SHA256SUMS.txt"
+curl -fLO "https://github.com/XaviCodeDev1000/webfang/releases/download/${VERSION}/webfang-x86_64-unknown-linux-gnu.tar.gz"
+curl -fLO "https://github.com/XaviCodeDev1000/webfang/releases/download/${VERSION}/SHA256SUMS.txt"
 sha256sum -c SHA256SUMS.txt --ignore-missing   # verify BEFORE extracting
 tar xzf webfang-x86_64-unknown-linux-gnu.tar.gz
 sudo install -m 0755 webfang /usr/local/bin/webfang
@@ -62,7 +62,7 @@ Requires Rust 1.88, a C/C++ compiler, and **`cmake`** — `wreq` → `btls` →
 nothing about the real cause.
 
 ```bash
-git clone https://github.com/XaviCode1000/webfang.git
+git clone https://github.com/XaviCodeDev1000/webfang.git
 cd webfang
 cmake --version
 cargo build --release --locked --features mcp -p webfang_cli
@@ -444,7 +444,7 @@ codedb index .
 | [docs/src/debugging.md](docs/src/debugging.md) | Tracing, correlation IDs, `jq` query cookbook (`scripts/analyze-trace.sh`) |
 | [docs/src/troubleshooting.md](docs/src/troubleshooting.md) | Common failures: slow crawls, silent errors, WAF blocks, local/internal targets refused by the SSRF guard |
 | [docs/ssrf-layers.md](docs/ssrf-layers.md) | Which SSRF layer blocks what, and which `WEBFANG_*` variable lifts which layer |
-| [Wiki](https://github.com/XaviCode1000/webfang/wiki) | Architecture, API reference, guides |
+| [Wiki](https://github.com/XaviCodeDev1000/webfang/wiki) | Architecture, API reference, guides |
 | `webfang --help` | Full CLI reference |
 
 ---

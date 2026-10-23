@@ -154,24 +154,43 @@ jobs:
         id: prnum
         env:
           GH_TOKEN: ${{ github.token }}
-          HEAD_REF: ${{ github.event.pull_request.head.ref || github.event.merge_group.head_ref }}
           REPO: ${{ github.repository }}
           EVENT_NAME: ${{ github.event_name }}
-          HEAD_OWNER: ${{ github.event.pull_request.head.repo.owner.login || github.repository_owner }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MERGE_GROUP_REF: ${{ github.event.merge_group.head_ref }}
         run: |
           set -euo pipefail
-          if [ -z "$HEAD_REF" ]; then
-            echo "::error::No se pudo resolver el head ref del PR (evento: $EVENT_NAME)."
+          case "$EVENT_NAME" in
+            pull_request|pull_request_target)
+              PR="$PR_NUMBER"
+              ;;
+            merge_group)
+              # A merge_group run carries a SYNTHETIC ref, not the PR head:
+              #   refs/heads/gh-readonly-queue/<base>/pr-<N>-<sha>
+              # The old `pulls?head=<owner>:<ref>` lookup could never match it,
+              # so this required check failed on every merge group and the
+              # queue rejected every entry. Parse the PR number the ref encodes.
+              # Accept both forms: the payload may or may not prefix the ref
+              # with `refs/heads/`.
+              PR="$(printf '%s' "$MERGE_GROUP_REF" \
+                | sed -nE 's#^(refs/heads/)?gh-readonly-queue/.+/pr-([0-9]+)-[^/]+$#\2#p')"
+              ;;
+            *)
+              echo "::error::Evento no soportado para resolver el PR: $EVENT_NAME"
+              exit 1
+              ;;
+          esac
+          if ! printf '%s' "$PR" | grep -qE '^[0-9]+$'; then
+            echo "::error::No se pudo resolver el PR (evento: $EVENT_NAME, ref: ${MERGE_GROUP_REF:-})."
             exit 1
           fi
-          # REST API (deterministic): the "head" filter requires user:branch format.
-          PR=$(gh api "repos/$REPO/pulls?state=open&head=$HEAD_OWNER:$HEAD_REF" --jq '.[0].number' 2>&1 || true)
-          if ! printf '%s' "$PR" | grep -qE '^[0-9]+$'; then
-            echo "::error::No se pudo resolver el PR para la rama '$HEAD_REF' (evento: $EVENT_NAME). Detalle: $PR"
+          state="$(gh pr view "$PR" --repo "$REPO" --json state --jq '.state')"
+          if [ "$state" != "OPEN" ]; then
+            echo "::error::El PR #$PR no está abierto (state=$state)."
             exit 1
           fi
           echo "pr=$PR" >> "$GITHUB_OUTPUT"
-          echo "Resolved PR #$PR"
+          echo "Resolved PR #$PR (event: $EVENT_NAME)"
 
       - name: Require linked issue
         env:
@@ -279,6 +298,16 @@ jobs:
         # support-line heads (hotfix/*, release/*, support/*) so no enforced
         # arm is dead on arrival.
         env:
-          HEAD_REF: ${{ github.head_ref || github.event.merge_group.head_ref }}
-          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref }}
-        run: scripts/check-topology.sh
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ steps.prnum.outputs.pr }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          # Read the refs from the resolved PR, never from the event. In a
+          # merge_group run github.head_ref/base_ref are the synthetic queue ref
+          # (`refs/heads/gh-readonly-queue/<base>/pr-<N>-<sha>`), which the
+          # topology table rejects.
+          meta="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefName,baseRefName)"
+          HEAD_REF="$(printf '%s' "$meta" | jq -r '.headRefName')"
+          BASE_REF="$(printf '%s' "$meta" | jq -r '.baseRefName')"
+          HEAD_REF="$HEAD_REF" BASE_REF="$BASE_REF" scripts/check-topology.sh

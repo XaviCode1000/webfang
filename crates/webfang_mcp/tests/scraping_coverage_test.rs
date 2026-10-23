@@ -34,10 +34,14 @@ use webfang_mcp::mcp_server::state::McpState;
 // own server prologue (`start_test_server` declares the system temp dir as
 // its export root) plus the crawl-specific helpers below — and a glob would
 // collide with those. The JSON-RPC client (`call_tool`,
-// `init_session_with_name`, `tool_text`, `is_tool_error`) is shared via
-// `common` (mcp_request/extract_json live there too).
+// `init_session_with_name`, `tool_text`, `is_tool_error`), the SSRF priming
+// (`init_ssrf_disabled`) and the relative output dir (`RelTempDir`) are
+// shared via `common` (mcp_request/extract_json live there too).
 mod common;
-use common::{call_tool, init_session_with_name, is_tool_error, mount_page_200, tool_text};
+use common::{
+    call_tool, init_session_with_name, init_ssrf_disabled, is_tool_error, mount_page_200,
+    tool_text, RelTempDir,
+};
 
 /// Minimal article HTML that Readability extracts deterministically (mirrors
 /// mcp_behavioral_test.rs), so scraped pages produce real content.
@@ -89,21 +93,6 @@ async fn ssrf_guards_off() -> webfang_test_utils::EnvGuard {
             "1",
         ),
     ])
-}
-
-/// Initialize SSRF disable flag for tests (idempotent).
-fn init_ssrf_disabled() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        // Process-wide, permanent setup (no restore-on-drop): `env_set`
-        // acquires ENV_LOCK itself, so the mutation stays serialized under
-        // the workspace ENV_LOCK invariant (issue #1126) without a manual
-        // `env_lock` binding.
-        webfang_test_utils::env_set(
-            webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
-            "1",
-        );
-    });
 }
 
 // Server prologue — stays local: unlike `common::start_test_server`, this
@@ -1099,34 +1088,6 @@ fn chrome_present_for_e2e() -> bool {
             .status()
             .is_ok_and(|status| status.success())
     })
-}
-
-/// Relative hermetic dir for `export_jsonl` output: absolute paths require
-/// server-configured export roots, so exports in tests use a relative dir
-/// (same pattern as the CLI↔MCP parity test). Removed on drop.
-struct RelTempDir {
-    path: std::path::PathBuf,
-}
-
-impl RelTempDir {
-    fn new(prefix: &str) -> Self {
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let name = format!("{prefix}-{}-{n}", std::process::id());
-        let path = std::path::PathBuf::from(name);
-        std::fs::create_dir_all(&path).expect("create relative temp dir");
-        RelTempDir { path }
-    }
-
-    fn path(&self) -> &std::path::Path {
-        &self.path
-    }
-}
-
-impl Drop for RelTempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
 }
 
 /// Crawl one page through the tool, then export the session buffer, returning

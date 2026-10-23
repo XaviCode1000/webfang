@@ -154,19 +154,47 @@ const FS_CASE_INSENSITIVE: bool = cfg!(windows) || cfg!(target_os = "macos");
 /// switch.
 ///
 /// `case_insensitive = false` behaves byte-identically to
-/// [`Path::starts_with`]. With `true`, each overlapping component compares
-/// ASCII-lowercased lossy strings, so a root stated with different case still
-/// contains the candidate on case-insensitive filesystems (NTFS, APFS). The
-/// check stays component-based in both branches: a string-prefix sibling
-/// (`/srv/exports_evil`) never matches.
+/// [`Path::starts_with`]. With `true`, each overlapping component is compared
+/// with `eq_ignore_ascii_case` over the component's RAW BYTES, so a root
+/// stated with different ASCII case still contains the candidate on
+/// case-insensitive filesystems (NTFS, APFS). The check stays component-based
+/// in both branches: a string-prefix sibling (`/srv/exports_evil`) never
+/// matches.
+///
+/// # The case model is ASCII-NARROW, and it is EXACT for ASCII names (#1837)
+///
+/// The comparison folds ASCII case and NOTHING else. Unicode's case folding
+/// is not the filesystems' case model: NTFS compares names with an uppercase
+/// table and APFS with its own Unicode-derived one, and the two disagree with
+/// Unicode in BOTH directions — `ß` (U+00DF) and `ẞ` (U+1E9E) are one case
+/// variant to Unicode (`to_lowercase` maps both to `ß`) and two names to a
+/// filesystem that keeps them apart.
+///
+/// ASCII-narrow is STRICTLY NARROWER than both filesystems, so the gate can
+/// only ever REJECT a path the filesystem would have accepted: it fails
+/// CLOSED, never open. The price is stated, not hidden: a root whose name
+/// carries a non-ASCII letter is matched only by its exact spelling, so on a
+/// case-insensitive host (macOS APFS) a root with a non-ASCII name is
+/// REJECTED when the candidate spells it with a different case. That is the
+/// documented limitation of this decision (D7), and it is the safe direction
+/// — a rejected legitimate path is reported to the operator, an accepted
+/// escape is not.
+///
+/// The comparison runs over the RAW BYTES of the component
+/// (`OsStr::as_encoded_bytes`), NOT over a lossy UTF-8 rendering: a lossy
+/// conversion collapses DIFFERENT byte sequences into the same replacement
+/// character, and two names that differ must never compare equal in a
+/// containment check.
 fn components_start_with(path: &Path, root: &Path, case_insensitive: bool) -> bool {
     let mut path_comps = path.components();
     for root_comp in root.components() {
         match path_comps.next() {
             Some(path_comp) => {
                 let equal = if case_insensitive {
-                    path_comp.as_os_str().to_string_lossy().to_lowercase()
-                        == root_comp.as_os_str().to_string_lossy().to_lowercase()
+                    path_comp
+                        .as_os_str()
+                        .as_encoded_bytes()
+                        .eq_ignore_ascii_case(root_comp.as_os_str().as_encoded_bytes())
                 } else {
                     path_comp.as_os_str() == root_comp.as_os_str()
                 };
@@ -799,6 +827,51 @@ mod tests {
         // The candidate ending before the root is not contained in either.
         assert!(!components_start_with(Path::new("/srv"), root, true));
         assert!(!components_start_with(Path::new("/srv"), root, false));
+    }
+
+    /// #1837 — the containment check folds case in the ASCII range ONLY, and
+    /// a case variant the filesystem keeps distinct is never accepted.
+    ///
+    /// `ß` (U+00DF) and `ẞ` (U+1E9E) are case VARIANTS of one another by
+    /// UNICODE's rules: `str::to_lowercase` maps both to `ß`, so the
+    /// Unicode-folding comparison this gate used to perform folded them
+    /// together and accepted a spelling the target filesystem may keep
+    /// distinct. The comparison is ASCII-narrow (`eq_ignore_ascii_case`), so
+    /// nothing outside ASCII is folded and the variant is rejected — the
+    /// failure direction is CLOSED (D7).
+    ///
+    /// The other pair #1837 names, `ß` vs `SS`, is distinct on NTFS and on
+    /// APFS alike: `SS` is an ASCII run and `ß` is not, so the ASCII-narrow
+    /// comparison keeps them apart too. Both are pinned here so the answer is
+    /// a decision and not an accident.
+    #[test]
+    fn components_start_with_never_accepts_a_case_variant_the_filesystem_keeps_distinct() {
+        // "ß" is U+00DF; the escapes keep the codepoints unambiguous in the
+        // source, whatever an editor does to the literal characters.
+        let root = Path::new("/srv/\u{00DF}-exports");
+
+        // The root's own spelling stays contained: the gate must not become
+        // stricter than the filesystem for the exact bytes.
+        assert!(
+            components_start_with(Path::new("/srv/\u{00DF}-exports/file.txt"), root, true),
+            "the root's own spelling must stay contained"
+        );
+
+        // The Unicode case variant must NOT be contained: the comparison is
+        // ASCII-narrow, so a non-ASCII case variant is not folded.
+        assert!(
+            !components_start_with(Path::new("/srv/\u{1E9E}-exports/file.txt"), root, true),
+            "a non-ASCII case variant must not be accepted: the comparison is \
+             ASCII-narrow, so a name the filesystem may keep distinct is \
+             rejected instead of accepted (fail-closed, #1837)"
+        );
+
+        // `ß` and `SS` are different names on both filesystems: rejected in
+        // the case-insensitive branch as well.
+        assert!(
+            !components_start_with(Path::new("/srv/SS-exports/file.txt"), root, true),
+            "`ß` and `SS` are distinct names on NTFS and APFS alike"
+        );
     }
 
     #[test]

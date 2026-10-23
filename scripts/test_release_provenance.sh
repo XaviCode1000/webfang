@@ -29,7 +29,7 @@ mkdir -p "$BIN" "$STATE"
 # TOCTOU drift (I.7, I.11) and unreadable server (I.16).
 #
 # RULESET WRITE VALIDATION mirrors the LIVE GitHub contract (probed 2026-09-22
-# against XaviCode1000/webfang) — the previous stub accepted payloads the real
+# against XaviCodeDev1000/webfang) — the previous stub accepted payloads the real
 # API 422s, so 54/54 rows were green while `apply` failed live:
 #   - update with "parameters": {}  -> 422 "Invalid property /rules/0: data
 #     matches no possible input." (probe A). update WITHOUT a parameters key is

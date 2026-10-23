@@ -15,8 +15,8 @@ edition = "2021"
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 authors = ["GazaDev"]
-repository = "https://github.com/XaviCode1000/webfang"
-homepage = "https://github.com/XaviCode1000/webfang"
+repository = "https://github.com/XaviCodeDev1000/webfang"
+homepage = "https://github.com/XaviCodeDev1000/webfang"
 
 [workspace.dependencies]
 # Internal crates — version is REQUIRED for `cargo package` (used by the
