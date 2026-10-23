@@ -1217,7 +1217,14 @@ jobs:
   doc-quality:
     name: Documentation quality
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    # 15 min: warm-cache rustdoc takes ~2 min, but a PR whose rust-cache key
+    # missed (e.g. after a large merge into main) builds the whole workspace
+    # documentation cold and can exceed 5. Per #1512, a job timeout CANCELS
+    # THE WHOLE RUN (continue-on-error absorbs failures, not cancellations),
+    # so this budget must fit the cold path, not just the warm one.
+    # Provisional value from #2283, recalibrated after the first observed
+    # cold-cache kill (PR #2260 runs, 2026-10-23).
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
