@@ -124,3 +124,15 @@ Dependencia: #2251 (merged, 1477 medidos / 96 shards).
   se corrieron también (relevo del stderr del binario en el path fail-closed,
   probe manual confirma el WARN/ERROR con el hunk); el resto queda como trabajo
   aparte (R4-budget → recalibrar MUTANT_SHARD_SIZE tras medir).
+- 2026-10-23 — CI run 2 sobre 61855a0a: Fast-gate semantics GREEN (fix (a)
+  confirmado), pero el siguiente step falló: `merge_group ref harness`
+  (`test_pr_validation_merge_group_ref.sh`) FIX=2. Causa raíz: el harness
+  fija la mecánica VIEJA del diff (`BASE="${BASE_REF#refs/heads/}"` y
+  `git diff "origin/$BASE"...HEAD`), eliminada por T3 (base de registro =
+  HEAD^1 vía `ci_mutant_shards.sh prepare-diff`, con `EVENT_BASE_SHA`
+  cotejado). Mismo patrón que el detector eliminado. Fix: los dos checks
+  reemplazados por la fijación del wiring nuevo (EVENT_BASE_SHA con
+  pull_request||merge_group + prepare-diff del helper). Barrido anti-surpresa
+  (BASE_REF#refs/heads | origin/\$BASE | hotpath | shardm%/64): solo este
+  archivo fija los literales viejos. Verificado: ese harness FAIL=0,
+  `test_ci_fast_gate.sh` 69/0.

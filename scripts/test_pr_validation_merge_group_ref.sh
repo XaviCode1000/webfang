@@ -34,7 +34,13 @@ check "topology no longer reads merge_group.base_ref" bash -c '! grep -q "merge_
 check "resolved PR is checked OPEN" grep -q 'if \[ "$state" != "OPEN" \]' "$WF"
 
 check "mutants.yml triggers on merge_group" grep -q '^  merge_group:' "$MUT"
-check "mutants.yml strips refs/heads/ from merge_group base_ref" grep -Fq 'BASE="${BASE_REF#refs/heads/}"' "$MUT"
-check "mutants.yml diff uses the normalized branch" grep -Fq 'git diff "origin/$BASE"...HEAD' "$MUT"
+# The inline three-dot branch diff is gone (#2285): the base of record is the
+# checked-out head's first parent, and the event's base sha (pull_request.base
+# || merge_group.base_sha) crosses it as intent through the shards helper.
+# Pin the new wiring: no `refs/heads/` normalization exists to strip.
+check "mutants.yml passes the event base sha (pull_request || merge_group)" \
+  grep -Fq 'EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}' "$MUT"
+check "mutants.yml builds the diff through the shards helper" \
+  grep -Fq 'run: bash scripts/ci_mutant_shards.sh prepare-diff' "$MUT"
 echo "test_pr_validation_merge_group_ref: FAIL=$fails"
 [[ $fails -eq 0 ]]
