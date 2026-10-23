@@ -18,7 +18,22 @@ homepage.workspace = true
 default = []
 adaptive-selectors = ["webfang_core/adaptive-selectors"]
 chromium = ["webfang_core/chromium"]
-mcp = ["webfang_core/mcp"]
+# #1815 T4: the `mcp` key becomes an EXPLICIT EMPTY MARKER — it is NOT
+# deleted, because the key has to EXIST: the CLI harness
+# (`crates/webfang_core/tests/common/cli_harness.rs`) forwards its own `mcp`
+# feature into the child build, so the binary under test is built with
+# `--features mcp`, and `release.yml`, `docs.yml`,
+# `scripts/check_compatibility.sh`, `scripts/gen-cli-reference.sh` and the
+# third-party notices do the same. Removing the key breaks those consumers; an
+# empty marker keeps the flag valid and says out loud that it selects nothing.
+#
+# It selected nothing before either: `webfang_core/mcp` is itself an empty
+# marker and gates NO production site in `webfang_core`. The consumers that
+# remain are the `webfang_mcp` test suites — which carry webfang_mcp's OWN
+# `mcp` feature, not this one — and the CLI harness above, which builds the
+# binary with `--features mcp`. The forwarding edge was the only thing left of
+# it.
+mcp = []
 persistence = ["webfang_core/persistence"]
 console = ["webfang_core/console"]
 dev-tracing = ["webfang_core/dev-tracing"]

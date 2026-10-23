@@ -95,8 +95,31 @@ if [[ -z "$REPO" ]]; then
   exit 2
 fi
 
-PROTECTION_JSON="$(gh api "repos/${REPO}/branches/${BRANCH}/protection" 2>/dev/null || true)"
-if [[ -z "$PROTECTION_JSON" ]]; then
+PROTECTION_RC=0
+PROTECTION_JSON="$(gh api "repos/${REPO}/branches/${BRANCH}/protection" 2>/dev/null)" || PROTECTION_RC=$?
+# gh writes the API error body (e.g. the 404 "Branch not protected" envelope)
+# to STDOUT while exiting nonzero, so an empty-check alone misreads the
+# response as a readable protection whose checks[]/contexts[] are absent.
+# An rc != 0 response is NOT a readable protection: the ruleset fallback
+# below then decides between a migrated protection and a hard failure.
+RULESET_RULES_JSON=""
+if [[ $PROTECTION_RC -ne 0 ]]; then
+  PROTECTION_JSON=""
+  # Classic branch protection may be migrated to repository rulesets (the
+  # merge queue configuration is ruleset-only): the classic endpoint then
+  # answers 404 and the required contexts live under the active
+  # required_status_checks rules of
+  # GET /repos/{owner}/{repo}/rules/branches/{branch} (#2284).
+  RULESET_RULES_RC=0
+  RULESET_RULES_JSON="$(gh api "repos/${REPO}/rules/branches/${BRANCH}" 2>/dev/null)" || RULESET_RULES_RC=$?
+  # Same stdout-envelope hazard as the classic read: a nonzero rc means there
+  # is no ruleset data, and the ruleset 404 envelope must not masquerade as
+  # "0 required contexts" either.
+  if [[ $RULESET_RULES_RC -ne 0 ]]; then
+    RULESET_RULES_JSON=""
+  fi
+fi
+if [[ -z "$PROTECTION_JSON" && -z "$RULESET_RULES_JSON" ]]; then
   echo "error: could not read branch protection for ${REPO}@${BRANCH} (gh api failed — check auth/permissions)" >&2
   exit 2
 fi
@@ -105,10 +128,14 @@ fi
 # the deprecated `contexts[]` still exists on older ones. Reading ONLY the
 # deprecated shape reported 0 required contexts for a checks[]-only protection
 # and the snapshot claimed "no required contexts" while exiting 0 (B54). Both
-# shapes are read, exactly like merge-when-green.sh does.
+# shapes are read, exactly like merge-when-green.sh does, plus the ruleset
+# shape (an active required_status_checks rule item per context).
 REQUIRED_CHECKS="$(printf '%s' "$PROTECTION_JSON" | jq -r '.required_status_checks.checks[]?.context // empty' 2>/dev/null || true)"
 if [[ -z "$REQUIRED_CHECKS" ]]; then
   REQUIRED_CHECKS="$(printf '%s' "$PROTECTION_JSON" | jq -r '.required_status_checks.contexts[]? // empty' 2>/dev/null || true)"
+fi
+if [[ -z "$REQUIRED_CHECKS" && -n "$RULESET_RULES_JSON" ]]; then
+  REQUIRED_CHECKS="$(printf '%s' "$RULESET_RULES_JSON" | jq -r '.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context // empty' 2>/dev/null || true)"
 fi
 REQUIRED_COUNT="$(printf '%s' "$REQUIRED_CHECKS" | grep -c . || true)"
 # grep -c exits 1 on empty input; the `|| true` above keeps `set -e` quiet and

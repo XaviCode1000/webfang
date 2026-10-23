@@ -119,6 +119,22 @@ jobs:
 YML
 }
 
+# Wires only the guard, and mentions the harness in a COMMENT — a mention is
+# not a step. This is the shape that let a harness pass as "wired" while no
+# job ever ran it (#2070 ítem 2).
+wire_guard_only_commenting_harness() { # fixture-dir
+  cat > "$1/.github/workflows/ci.yml" <<'YML'
+name: fixture
+jobs:
+  guards:
+    runs-on: ubuntu-latest
+    steps:
+      - name: guard step
+        run: bash scripts/check_foo.sh
+      # TODO: also run scripts/test_foo.sh
+YML
+}
+
 run_guard() { # fixture-dir [args...]
   local dir="$1"
   shift
@@ -312,6 +328,18 @@ else
   fail "stale unwired-harness entry: wrong violation reported"
   sed 's/^/       /' "$fx/out.log"
 fi
+
+# --- case 13: a harness named only in a COMMENT is not wired ----------------
+# NEGATION (#2070 ítem 2): `harness_wired` searched the workflow file RAW,
+# while the neighbouring `guard_refs_in` / `script_refs_in` strip the comment
+# lines. A harness cited only in a comment therefore counted as WIRED: the
+# meta-guard reported "OK: 1 wired guard(s) covered" with exit 0, and the
+# #1707 shape (assertions that no job runs) came back as covered.
+fx="$(new_fixture commented-harness)"
+write_guard "$fx"
+write_catching_harness "$fx"
+wire_guard_only_commenting_harness "$fx"
+expect_fail_naming "$fx" "unwired-harness: scripts/test_foo.sh" "a harness named only in a comment is not wired"
 
 # --- summary ----------------------------------------------------------------
 

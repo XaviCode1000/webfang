@@ -79,14 +79,19 @@ on:
         description: "Reconcile open tracking issues against latest runs"
         required: false
         default: "false"
+      days:
+        description: "Days of history for queue-wait metrics (#2284, queue-metrics job)"
+        required: false
+        default: "7"
 
 concurrency:
   group: ci-health-${{ github.ref }}
   cancel-in-progress: false # never drop a tracking update mid-write
 
+# Job-level permissions only (zizmor excessive-permissions): with two jobs of
+# different needs (observe writes issues, queue-metrics only reads actions),
+# a single workflow-level grants block was overly broad for the reader job.
 permissions:
-  actions: read # listar runs y jobs de los workflows observados
-  issues: write # abrir/comentar/cerrar SOLO issues con label ci-health
   contents: read
 
 env:
@@ -148,6 +153,10 @@ jobs:
     name: Observe and reconcile tracking issues
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      actions: read # listar runs y jobs de los workflows observados
+      issues: write # abrir/comentar/cerrar SOLO issues con label ci-health
+      contents: read
     # ── SCOPE GATE (#1714) ───────────────────────────────────────────────────
     # Predicado (única fuente de verdad de la ruta evento):
     #   workflow_run -> head_branch ∈ {main, develop} ∧ event ≠ pull_request
@@ -556,3 +565,46 @@ jobs:
             echo "  the next green CI run retires them (no manual action needed)."
           fi
 
+
+  # ── Queue-wait metrics (#2284) ─────────────────────────────────────────────
+  # Read-only measurement of how long work waits BEFORE it starts running:
+  # workflow queue wait (startedAt − createdAt), per-job queue wait and the
+  # macOS lane. Published into $GITHUB_STEP_SUMMARY. The numbers are the
+  # before/after evidence for the queue-knob proposal (#2284): measure first,
+  # move the merge-queue knobs only with data.
+  #
+  # Schedule + manual dispatch ONLY: on the workflow_run path this would run
+  # the metric's API walk on every CI completion for numbers nobody asked
+  # for. The observer job above owns that path.
+  queue-metrics:
+    name: Queue-wait metrics (workflow + job + macOS lane)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name != 'workflow_run'
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Measure queue waits and publish summary
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DAYS: ${{ inputs.days || '7' }}
+        run: |
+          set -euo pipefail
+          # fail-closed accounting: the script exits 0 with per-source
+          # counters even when gh fails or payloads are unparseable; the
+          # accounting lines in the summary make a degraded run visible.
+          OUT="$(bash scripts/ci_queue_metrics.sh --days "$DAYS")"
+          {
+            echo "## Queue-wait metrics (last $DAYS days)"
+            echo ""
+            echo "$OUT"
+            echo ""
+            echo "Measured by scripts/ci_queue_metrics.sh for #2284."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "$OUT"
