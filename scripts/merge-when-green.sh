@@ -539,6 +539,22 @@ if [[ -z "$required" ]]; then
     --jq '.required_status_checks.contexts[]? // empty' 2>/dev/null || true)"
 fi
 
+# Classic branch protection may be migrated to repository rulesets (the merge
+# queue configuration is ruleset-only). The classic endpoint then answers 404
+# while the same required contexts are exposed by the active rules, one item
+# per context: GET /repos/{owner}/{repo}/rules/branches/{branch} only returns
+# rules from active rulesets (#2284). An rc != 0 response (gh also writes the
+# error envelope to stdout) yields no contexts: the read must not mistake the
+# envelope for ruleset data.
+if [[ -z "$required" ]]; then
+  RULESET_RULES_RC=0
+  required="$(gh api "repos/${repo}/rules/branches/${protection_branch}" \
+    --jq '.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context // empty' 2>/dev/null)" || RULESET_RULES_RC=$?
+  if [[ $RULESET_RULES_RC -ne 0 ]]; then
+    required=""
+  fi
+fi
+
 if [[ -z "$required" ]]; then
   echo "warning: could not read required contexts from branch protection." >&2
   echo "         Falling back to 'gh pr checks --watch --required', which is the" >&2
