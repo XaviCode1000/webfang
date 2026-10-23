@@ -48,10 +48,10 @@ pub(crate) mod test_support;
 ///   `catch_unwind` in `McpHandler::call_tool`: the session survives, the
 ///   caller gets the normal `isError: true` result, and the process keeps
 ///   serving. It cannot crash the server, and it grants no access to anything
-///   the 36 real tools do not already expose.
+///   the real tools do not already expose.
 /// - **It exists only when an operator sets the variable.** Unset or empty, the
 ///   advertised surface is byte-for-byte what it was before this was added,
-///   which the `tools.len() == 36` stdio assertion pins.
+///   which the `tools.len() == MCP_TOOL_COUNT` stdio assertion pins.
 /// - **What it costs:** a deployment that sets the variable in production gets
 ///   one extra advertised tool that always fails. That is a configuration
 ///   mistake with a visible symptom, not a latent vulnerability — and the
