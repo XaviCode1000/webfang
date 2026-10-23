@@ -552,10 +552,11 @@ EOF
   # cargo, <1s — cheap enough that it is never skipped once triggered.
   # Mirrors the `repo-guards` step of the same
   # harness in .github/workflows/ci.yml.
-  if grep -Eq '^(scripts/ci_path_classifier\.sh|scripts/ci_path_classifier_test\.sh|scripts/ci_plan\.sh|scripts/ci_crossplatform_scope\.sh|scripts/test_ci_plan\.sh|scripts/test_ci_gate_structure\.sh)$' "$UNION_TMP" 2>/dev/null || [[ "$CI_HARNESS_MODE" == "always" ]]; then
+  if grep -Eq '^(scripts/ci_path_classifier\.sh|scripts/ci_path_classifier_test\.sh|scripts/ci_plan\.sh|scripts/ci_crossplatform_scope\.sh|scripts/test_ci_plan\.sh|scripts/test_ci_gate_structure\.sh|scripts/ci_queue_metrics\.sh|scripts/test_ci_queue_metrics\.sh|scripts/tests/queue_metrics_fake_gh\.sh|\.github/workflows/ci-health\.yml)$' "$UNION_TMP" 2>/dev/null || [[ "$CI_HARNESS_MODE" == "always" ]]; then
     run_step "path classifier harness semantics (offline)" bash scripts/ci_path_classifier_test.sh
     run_step "CI plan semantics harness (offline)" bash scripts/test_ci_plan.sh
     run_step "CI gate structure harness (offline, #2286)" bash scripts/test_ci_gate_structure.sh
+    run_step "queue metrics semantics harness (offline, #2284)" bash scripts/test_ci_queue_metrics.sh
   else
     skip_step "path classifier harness semantics" "no path classifier files changed"
   fi
