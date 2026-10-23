@@ -118,7 +118,18 @@ mutant_files_of_diff() {
     | jq -r '.[].file' | sort -u)
 }
 
-FIXTURE="$(mktemp -d /tmp/opencode/mutant-fixture.XXXXXX)"
+# Portable scratch root (#2295 native review, R3-2/R4): a machine-specific
+# hardcoded parent does not exist on every runner, the failure is silent here
+# (no set -e) and the run degenerates into spurious FAILs. Respect the host's
+# TMPDIR and abort loudly when mktemp fails.
+FIXTURE="$(mktemp -d "${TMPDIR:-/tmp}/mutant-fixture.XXXXXX")" || {
+  echo "test_ci_mutant_shards: mktemp failed; cannot create the fixture root" >&2
+  exit 1
+}
+[[ -n "$FIXTURE" ]] || {
+  echo "test_ci_mutant_shards: the fixture root is empty; aborting" >&2
+  exit 1
+}
 trap '[[ -n ${KEEP_FIXTURE:-} ]] || rm -rf "$FIXTURE"' EXIT
 build_fixture "$FIXTURE"
 

@@ -94,3 +94,33 @@ Dependencia: #2251 (merged, 1477 medidos / 96 shards).
   (S8). T4: ci_fast_gate.sh lane_ci adds the dynamic-shards harness trigger (same
   pattern as its neighbors, B52 respected). Actionlint+shellcheck with repo ignore
   lists green; ci_fast_gate.sh (ci lane): PASS=10 FAIL=0 SKIP=13, GREEN.
+- 2026-10-23 — T5: PR abierto: #2295 (`chore(ci): size the PR mutant matrix from a
+  measured count`, base main, head feat/mutant-shards, 2 commits f7e54161+4c451fe9,
+  610 insertions / 80 deletions). Closes #2285, label type:chore. Puertas verificadas:
+  issue status:approved, branch convencional, CHANGELOG/docs intactos, identidad de
+  worktree OK (feat-mutant-shards==feat/mutant-shards).
+- 2026-10-23 — RDD review del candidate #2295: approved (lenses risk/resilience/
+  reliability, lineage review-d5a3de31075d19a5, autoridad quemada con
+  acknowledge-approved). HALLAZGOS TODOS ADVISORY (nada bloqueante): R1-1 SUGGESTION
+  (helper ejecuta bash en el PR gate; superficie ya acotada por persist-credentials
+  false y sin interpolación de eventos), R3-1/R4 WARNING (stderr de `cargo mutants
+  --list` descartado en el path fail-closed; se pierde el WARN/ERROR del binario),
+  R3-2/R4 WARNING (mktemp con padre fijo /tmp/opencode inexistente en runners),
+  R3-3 SUGGESTION (rc 6 sin probe), R3-4 SUGGESTION (count sin validación pre-
+  aritmética), R4-fixture WARNING (=mktemp), R4-diag WARNING (=stderr),
+  R4-budget WARNING (8 mutantes/shard + timeout 45min es el margen más justo:
+  ~36min+instalación vs 45min; recalibrar tras medir base-build/per-mutante).
+- 2026-10-23 — CI de #2295: Repo guards/CI Gate FAILURE con "Fast gate semantics
+  harness: 67 ok, 2 fail" (B52/B53). Causa raíz DOBLE, verificada con
+  repro local: (a) el fixture B52/B53 provee no-ops para los harness del lane CI
+  (el caso prueba la FORMA del lane, no sus semánticas) y `test_ci_mutant_shards.sh`
+  no estaba registrado → el harness REAL corría bajo un `cargo` stub; (b) en el
+  runner ese mismo harness real fallaba por el mktemp con padre fijo. Fix:
+  registro en la lista de no-ops de `scripts/test_ci_fast_gate.sh` + raíz portable
+  (`mktemp -d "${TMPDIR:-/tmp}/..."` con abort limpio) en el propio harness.
+  Verificación local: `test_ci_mutant_shards.sh` 24/24 (también con TMPDIR no
+  estándar), `test_ci_fast_gate.sh` 69 ok 0 fail (antes 67/2), `ci_fast_gate.sh`
+  FULL: PASS=10 FAIL=0 SKIP=13 GREEN, shellcheck 0. Los advisories R3-1/R4-diag
+  se corrieron también (relevo del stderr del binario en el path fail-closed,
+  probe manual confirma el WARN/ERROR con el hunk); el resto queda como trabajo
+  aparte (R4-budget → recalibrar MUTANT_SHARD_SIZE tras medir).

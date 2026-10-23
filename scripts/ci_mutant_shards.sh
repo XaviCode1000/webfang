@@ -101,16 +101,29 @@ cmd_shards() {
   [[ -n "$diff_file" && -f "$diff_file" ]] \
     || die "shards expects an existing coverage-ready diff file, got '${diff_file}'"
   shift
-  local list_json=""
+  local list_json="" mutants_stderr=""
+  # Temp side channel for the tool's stderr: in a command substitution stdout
+  # and stderr need separate handles. If mktemp fails, degrade to dropping the
+  # detail (never to failing the count path).
+  mutants_stderr="$(mktemp "${TMPDIR:-/tmp}/mutants-list-stderr.XXXXXX" 2>/dev/null)" || true
+  [[ -n "$mutants_stderr" ]] || mutants_stderr=/dev/null
   # `|| { }` (not `if !`): inside a negated condition bash overwrites $? with the
   # negation's result (0) — the same envelope-capture lesson as gh's stdout.
-  list_json="$(cargo mutants --list --json --in-diff "$diff_file" "$@" 2>/dev/null)" || {
+  list_json="$(cargo mutants --list --json --in-diff "$diff_file" "$@" 2>"$mutants_stderr")" || {
     # #2285/docs: exit 5 = the diff's new side does not match this tree
     # (advanced-base mismatch, foreign tree); exit 6 = not a diff at all.
     echo "error: cargo mutants --list --in-diff exited with code $? — " \
       "refusing to size the matrix from it (#2285: an --in-diff mismatch is fail-closed)" >&2
+    # Relay the binary's own diagnostics (#2295 native review, R3-1/R4): the
+    # WARN/ERROR detail naming the mismatching hunk/file is what triage in CI
+    # needs; a bare "exited with code 5" would force a manual rerun.
+    if [[ "$mutants_stderr" != /dev/null && -s "$mutants_stderr" ]]; then
+      sed 's/^/  | /' "$mutants_stderr" >&2
+    fi
+    [[ "$mutants_stderr" != /dev/null ]] && rm -f "$mutants_stderr"
     exit 1
   }
+  [[ "$mutants_stderr" != /dev/null ]] && rm -f "$mutants_stderr"
   local count
   count="$(printf '%s' "$list_json" | jq 'length' 2>/dev/null)" \
     || die "cannot parse the mutant list JSON emitted by cargo mutants"
