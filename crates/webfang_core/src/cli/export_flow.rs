@@ -93,6 +93,28 @@ fn warn_unreadable_resume_state(record_store: &Option<crate::infrastructure::exp
     }
 }
 
+/// Build the [`export_factory::ResumeContext`] the blocking export runs with:
+/// the store to resume into, the `--resume` gate, and the run's cancellation
+/// token (#2244 decision A) — the token is what makes a cancelled export DRAIN
+/// instead of running to completion.
+///
+/// Called INSIDE `spawn_blocking`, on data the closure already owns: the token
+/// argument is always the closure-local clone, never a borrow of the async
+/// stack (the `'static` trap documented on `ExportConfig::cancel`).
+fn resume_context<'a>(
+    record_store: Option<&'a crate::infrastructure::export::RecordStore>,
+    resume: bool,
+    cancel: Option<&'a tokio_util::sync::CancellationToken>,
+) -> Option<export_factory::ResumeContext<'a>> {
+    record_store.map(|store| {
+        let ctx = export_factory::ResumeContext::new(store).with_resume(resume);
+        match cancel {
+            Some(token) => ctx.observing_cancel(token),
+            None => ctx,
+        }
+    })
+}
+
 /// Standard export path (backward compatible).
 ///
 /// Issue #1814 (slice B, AC4): `process_results` is sync filesystem I/O plus a
@@ -124,13 +146,7 @@ async fn run_standard_export(config: ExportConfig<'_>) -> Result<Vec<String>, Cl
     let span = tracing::Span::current();
     let handle = tokio::task::spawn_blocking(move || {
         let _span_guard = span.enter();
-        let ctx = record_store.as_ref().map(|store| {
-            let ctx = export_factory::ResumeContext::new(store).with_resume(resume);
-            match cancel.as_ref() {
-                Some(token) => ctx.observing_cancel(token),
-                None => ctx,
-            }
-        });
+        let ctx = resume_context(record_store.as_ref(), resume, cancel.as_ref());
         export_factory::process_results(&results, output_dir, export_format, "export", ctx.as_ref())
     });
     await_blocking_export(handle, "scrape", export_format).await
@@ -175,13 +191,7 @@ async fn run_ai_export(
     let span = tracing::Span::current();
     let handle = tokio::task::spawn_blocking(move || {
         let _span_guard = span.enter();
-        let ctx = record_store.as_ref().map(|store| {
-            let ctx = export_factory::ResumeContext::new(store).with_resume(resume);
-            match cancel.as_ref() {
-                Some(token) => ctx.observing_cancel(token),
-                None => ctx,
-            }
-        });
+        let ctx = resume_context(record_store.as_ref(), resume, cancel.as_ref());
         export_factory::process_results_with_chunks(
             &cleaned_chunks,
             output_dir,

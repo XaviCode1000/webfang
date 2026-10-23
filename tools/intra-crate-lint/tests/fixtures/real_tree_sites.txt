@@ -892,8 +892,9 @@ cli/export_flow.rs	20	use	crate::domain::DocumentChunk
 cli/export_flow.rs	22	use	crate::error::SemanticError
 cli/export_flow.rs	24	use	crate::error::ErrorClass
 cli/export_flow.rs	90	inline	crate::infrastructure::export::RecordStore
-cli/export_flow.rs	205	inline	crate::domain::exporter::ExporterError
-cli/export_flow.rs	309	inline	crate::infrastructure::observability::log_scrape_error
+cli/export_flow.rs	105	inline	crate::infrastructure::export::RecordStore
+cli/export_flow.rs	215	inline	crate::domain::exporter::ExporterError
+cli/export_flow.rs	319	inline	crate::infrastructure::observability::log_scrape_error
 cli/llm_wire.rs	18	use	crate::application::crawl_options::CrawlOptions
 cli/llm_wire.rs	19	use	crate::domain::providers::Capability
 cli/llm_wire.rs	19	use	crate::domain::providers::ProviderConfig

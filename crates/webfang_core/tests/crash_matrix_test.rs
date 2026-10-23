@@ -22,14 +22,13 @@ mod common;
 use std::path::Path;
 use std::process::ExitStatus;
 use std::time::Duration;
-#[cfg(unix)]
-use std::time::Instant;
 
-use common::cli_harness::{mock_sitemap, BehavioralTest};
+use common::cli_harness::{
+    mock_sitemap, send_signal, spawn_webfang_with, wait_exit, wait_for_page_fetches,
+    BehavioralTest, PAGE_DELAY,
+};
 use tempfile::TempDir;
 use wiremock::matchers::{method, path};
-#[cfg(unix)]
-use wiremock::MockServer;
 use wiremock::{Mock, ResponseTemplate};
 
 use webfang_core::cli::crash_points::{
@@ -46,21 +45,6 @@ const DOMAIN: &str = "127.0.0.1";
 
 /// The exact input URLs the fixture site advertises.
 const PAGES: [&str; 2] = ["/page1", "/page2"];
-
-/// Per-page response delay for the `during_cancel_drain` row: slows the
-/// crawl enough that the SIGINT always lands mid-run (the
-/// `signal_lifecycle_test` pattern — the signal moment is pinned by
-/// wiremock's request log, the delay only widens the window).
-#[cfg(unix)]
-const PAGE_DELAY: Duration = Duration::from_millis(200);
-
-/// Poll interval while waiting for request counts and child exit.
-#[cfg(unix)]
-const POLL: Duration = Duration::from_millis(50);
-
-/// How long the signalled child may take to die before the test fails.
-#[cfg(unix)]
-const EXIT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Mount two distinct pages plus a sitemap listing exactly those URLs.
 /// Distinct bodies keep every `checksum_sha256` unique so invariant (b)
@@ -196,168 +180,25 @@ fn assert_store_records_complete(state_dir: &Path) {
     }
 }
 
-/// Count GETs to real content pages (anything that is not `/robots.txt` and
-/// not the sitemap) — the deterministic signal trigger for the
-/// `during_cancel_drain` row (the `signal_lifecycle_test` pattern).
-#[cfg(unix)]
-async fn count_page_fetches(server: &MockServer) -> usize {
-    server
-        .received_requests()
-        .await
-        .expect("request log")
-        .iter()
-        .filter(|r| {
-            let p = r.url.path();
-            p != "/robots.txt" && !p.ends_with("sitemap.xml")
-        })
-        .count()
-}
-
-/// Poll until the server has seen at least `k` page fetches (deterministic
-/// signal trigger), bounded by [`EXIT_TIMEOUT`].
-#[cfg(unix)]
-async fn wait_for_page_fetches(server: &MockServer, k: usize) {
-    let deadline = Instant::now() + EXIT_TIMEOUT;
-    loop {
-        if count_page_fetches(server).await >= k {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "server never reached {k} page fetches — crawl stalled"
-        );
-        tokio::time::sleep(POLL).await;
-    }
-}
-
-/// Spawn the real binary as a bare `std::process::Command` with piped
-/// stderr and the crash point armed, replicating the harness's hermetic env
-/// (no `WEBFANG_*`/AI-model poisoning, fresh `XDG_CACHE_HOME`) — needed
-/// because the row must hold the child handle to deliver the SIGINT
-/// (the `signal_lifecycle_test::spawn_webfang` pattern).
-#[cfg(unix)]
-fn spawn_crash_armed_child(args: &[String], cache_dir: &Path, point: &str) -> std::process::Child {
-    use std::process::Stdio;
-
-    let mut c = std::process::Command::new(common::cli_harness::webfang_path());
-    c.args(args).stdout(Stdio::null()).stderr(Stdio::piped());
-    for (k, _) in std::env::vars() {
-        if k.starts_with("WEBFANG_") || k == "AI_MODEL_ID" {
-            c.env_remove(&k);
-        }
-    }
-    // Hermetic config, same reason as `sanitize_env` in the shared harness:
-    // the strip above removes the developer's `WEBFANG_CONFIG`, and without a
-    // replacement the child falls back to `~/.config/webfang/config.toml`. A
-    // real file enabling `clean-ai` would route the export through the AI
-    // drain, which is exactly a path where this row's armed point must still
-    // fire; an empty file means the all-`None` defaults instead.
-    let hermetic_config = cache_dir.join("hermetic-config.toml");
-    if !hermetic_config.exists() {
-        std::fs::write(&hermetic_config, "").expect("write hermetic config.toml");
-    }
-    c.env("WEBFANG_CONFIG", &hermetic_config);
-    c.env("XDG_CACHE_HOME", cache_dir);
-    // SSRF entry-guard allowance (F-06 + F-32, #1217): the wiremock mock
-    // binds 127.0.0.1, a forbidden literal — disarm ONLY the entry layer.
-    c.env(
-        webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
-        "1",
-    );
-    // Armed AFTER the WEBFANG_* strip so the parent process can never
-    // poison the armed point.
-    c.env(webfang_core::cli::crash_points::ENV_VAR, point);
-    c.spawn().expect("spawn crash-armed child")
-}
-
-/// Send SIGINT to `child` via the system `kill` binary (the crate forbids
-/// `unsafe`, so no direct `libc::kill`; the `signal_lifecycle_test` pattern).
-#[cfg(unix)]
-fn send_sigint(child: &std::process::Child, what: &str) {
-    let status = std::process::Command::new("kill")
-        .arg("-INT")
-        .arg(child.id().to_string())
-        .status()
-        .unwrap_or_else(|e| panic!("{what}: invoking kill failed: {e}"));
+/// Attempt 2 of every row: rerun over the SAME state dir with the crash env
+/// and the signal removed, and assert invariant (d) — the resume exits 0.
+///
+/// Shared by the plain rows and by `during_cancel_drain`, which differ only in
+/// how attempt 1 killed the child.
+fn resume_run(t: &BehavioralTest, state_dir: &Path, sitemap_url: &str) {
+    let resumed = t
+        .state_dir_cmd(state_dir)
+        .arg("--use-sitemap")
+        .arg("--sitemap-url")
+        .arg(sitemap_url)
+        .arg("--quiet")
+        .output()
+        .expect("spawn resume run");
     assert!(
-        status.success(),
-        "{what}: kill -INT {} must succeed",
-        child.id()
+        resumed.status.success(),
+        "invariant (d): resume rerun must exit 0: {}",
+        String::from_utf8_lossy(&resumed.stderr)
     );
-}
-
-/// A `Child` that dies with its handle (the `signal_lifecycle_test`
-/// `KillOnDrop` pattern, minimal form): a test that panics between spawn and
-/// wait must not leak a running child — nextest would report it LEAKY and
-/// bury the real failure under process noise.
-#[cfg(unix)]
-struct KillOnDrop(std::process::Child);
-
-#[cfg(unix)]
-impl Drop for KillOnDrop {
-    fn drop(&mut self) {
-        // Disarm BEFORE signalling: a reaped child's PID is free for reuse,
-        // so an unconditional kill could SIGKILL an unrelated process.
-        if self.0.try_wait().is_ok_and(|status| status.is_some()) {
-            return;
-        }
-        let _ = self.0.kill();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while Instant::now() < deadline {
-            match self.0.try_wait() {
-                Ok(Some(_)) | Err(_) => return,
-                Ok(None) => std::thread::sleep(POLL),
-            }
-        }
-    }
-}
-
-#[cfg(unix)]
-impl std::ops::Deref for KillOnDrop {
-    type Target = std::process::Child;
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-#[cfg(unix)]
-impl std::ops::DerefMut for KillOnDrop {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-/// Wait for the signalled child to die; fail (after SIGKILL) if it exceeds
-/// [`EXIT_TIMEOUT`] — a drain death must not hang. Returns the exit status
-/// plus the captured stderr (the panic material for the SIGKILL assertion).
-#[cfg(unix)]
-fn wait_child_exit(mut child: KillOnDrop, what: &str) -> (ExitStatus, String) {
-    use std::io::Read;
-
-    let deadline = Instant::now() + EXIT_TIMEOUT;
-    loop {
-        match child.try_wait().expect("try_wait") {
-            Some(status) => {
-                // The child is reaped and its stderr write-end is closed, so
-                // draining the pipe to EOF cannot block.
-                let mut stderr = String::new();
-                child
-                    .stderr
-                    .take()
-                    .expect("stderr pipe")
-                    .read_to_string(&mut stderr)
-                    .unwrap_or_default();
-                return (status, stderr);
-            },
-            None => {
-                assert!(
-                    Instant::now() < deadline,
-                    "{what}: child did not exit within {EXIT_TIMEOUT:?} — shutdown hung"
-                );
-                std::thread::sleep(POLL);
-            },
-        }
-    }
 }
 
 /// Full matrix row: crash → resume → four global invariants.
@@ -379,19 +220,7 @@ async fn crash_row(point: &str) {
     assert_killed_by_sigkill(&crashed.status, &String::from_utf8_lossy(&crashed.stderr));
 
     // Attempt 2: same state dir, crash env REMOVED, resume gate active.
-    let resumed = t
-        .state_dir_cmd(state_dir.path())
-        .arg("--use-sitemap")
-        .arg("--sitemap-url")
-        .arg(&sitemap_url)
-        .arg("--quiet")
-        .output()
-        .expect("spawn resume run");
-    assert!(
-        resumed.status.success(),
-        "invariant (d): resume rerun must exit 0: {}",
-        String::from_utf8_lossy(&resumed.stderr)
-    );
+    resume_run(&t, state_dir.path(), &sitemap_url);
 
     assert_store_records_complete(state_dir.path());
     assert_jsonl_exactly_once(&t);
@@ -489,28 +318,25 @@ async fn crash_during_cancel_drain_sigint_drain_kills_then_recovers() {
         sitemap_url.clone(),
         "--quiet".to_string(),
     ];
-    let child = spawn_crash_armed_child(&args, cache_dir.path(), DURING_CANCEL_DRAIN);
-    let child = KillOnDrop(child);
+    let child = spawn_webfang_with(&args, cache_dir.path(), DURING_CANCEL_DRAIN, |c| {
+        // stderr is the panic material for the SIGKILL assertion; stdout is
+        // noise this row never reads.
+        c.stdout(std::process::Stdio::null());
+        // Armed AFTER the harness's `WEBFANG_*` strip, so the parent process
+        // can never poison the armed point.
+        c.env(
+            webfang_core::cli::crash_points::ENV_VAR,
+            DURING_CANCEL_DRAIN,
+        );
+    });
     wait_for_page_fetches(&t.server, 1).await;
-    send_sigint(&child, DURING_CANCEL_DRAIN);
-    let (crashed_status, crashed_stderr) = wait_child_exit(child, DURING_CANCEL_DRAIN);
+    send_signal(&child, "INT", DURING_CANCEL_DRAIN);
+    let (crashed_status, crashed_stderr) = wait_exit(child, DURING_CANCEL_DRAIN);
     assert_killed_by_sigkill(&crashed_status, &crashed_stderr);
 
     // Attempt 2: same state dir, crash env and signal REMOVED, resume gate
     // active — the same contract as every other row.
-    let resumed = t
-        .state_dir_cmd(state_dir.path())
-        .arg("--use-sitemap")
-        .arg("--sitemap-url")
-        .arg(&sitemap_url)
-        .arg("--quiet")
-        .output()
-        .expect("spawn resume run");
-    assert!(
-        resumed.status.success(),
-        "invariant (d): resume rerun must exit 0: {}",
-        String::from_utf8_lossy(&resumed.stderr)
-    );
+    resume_run(&t, state_dir.path(), &sitemap_url);
 
     assert_store_records_complete(state_dir.path());
     assert_jsonl_exactly_once(&t);

@@ -26,32 +26,14 @@
 //! trigger this crate does not have; that coverage belongs with XP-S-02
 //! (#1608), not with a cfg here.
 
+use crate::common::{
+    count_page_fetches, send_signal, spawn_webfang, wait_exit, wait_for_page_fetches, PAGE_DELAY,
+};
 use crate::BehavioralTest;
 use std::collections::BTreeMap;
-use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
 use tempfile::TempDir;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
-
-/// How long a child may take to exit after the signal before the test fails.
-const EXIT_TIMEOUT: Duration = Duration::from_secs(60);
-
-/// Upper bound on the Drop-time reap. `Child::kill` is SIGKILL on Unix and
-/// TerminateProcess on Windows — both immediate — so a child still unreaped
-/// after this window is not going to be. The bound is the point: a stuck
-/// child must not block the panic unwind that is running the cleanup and
-/// hide the assertion that caused it. Leaking a zombie beats hanging a test.
-#[cfg_attr(not(unix), allow(dead_code))]
-const REAP_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Poll interval while waiting for request counts and child exit.
-#[cfg_attr(not(unix), allow(dead_code))]
-const POLL: Duration = Duration::from_millis(50);
-
-/// Per-page response delay: slows the crawl enough that the signal always
-/// lands mid-run, without making the test slow.
-const PAGE_DELAY: Duration = Duration::from_millis(200);
 
 /// Body that clears the 50-char minimum-content guard.
 fn article_body(title: &str) -> String {
@@ -79,21 +61,6 @@ async fn mount_delayed_pages(server: &MockServer, n: usize) -> Vec<String> {
     paths
 }
 
-/// Count GETs to real content pages (anything that is not `/robots.txt` and
-/// not the sitemap) — the "page fetch" metric for every assertion here.
-async fn count_page_fetches(server: &MockServer) -> usize {
-    server
-        .received_requests()
-        .await
-        .unwrap()
-        .iter()
-        .filter(|r| {
-            let p = r.url.path();
-            p != "/robots.txt" && !p.ends_with("sitemap.xml")
-        })
-        .count()
-}
-
 /// Per-path page fetch counts (robots/sitemap excluded).
 #[cfg_attr(not(unix), allow(dead_code))]
 async fn fetches_by_path(server: &MockServer) -> BTreeMap<String, usize> {
@@ -106,145 +73,6 @@ async fn fetches_by_path(server: &MockServer) -> BTreeMap<String, usize> {
         *map.entry(p).or_insert(0) += 1;
     }
     map
-}
-
-/// Poll until the server has seen at least `k` page fetches (deterministic
-/// signal trigger), bounded by `deadline`.
-#[cfg_attr(not(unix), allow(dead_code))]
-async fn wait_for_page_fetches(server: &MockServer, k: usize) {
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        if count_page_fetches(server).await >= k {
-            return;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "server never reached {k} page fetches — crawl stalled"
-        );
-        tokio::time::sleep(POLL).await;
-    }
-}
-
-/// Send `signal` to `child` via the system `kill` binary (the crate forbids
-/// `unsafe`, so no direct `libc::kill`; the crash-matrix pattern's OS-level
-/// trigger, expressed safely).
-#[cfg_attr(not(unix), allow(dead_code))]
-fn send_signal(child: &Child, signal: &str, what: &str) {
-    let status = Command::new("kill")
-        .arg(format!("-{signal}"))
-        .arg(child.id().to_string())
-        .status()
-        .unwrap_or_else(|e| panic!("{what}: invoking kill failed: {e}"));
-    assert!(
-        status.success(),
-        "{what}: kill -{signal} {} must succeed",
-        child.id()
-    );
-}
-
-/// Wait for the child to exit on its own; fail (after SIGKILL) if it exceeds
-/// [`EXIT_TIMEOUT`] — a graceful shutdown must not hang.
-///
-/// Takes the [`KillOnDrop`] handle by value: `Deref` covers the method calls
-/// below, but a by-value argument needs the guard itself so the kill-on-drop
-/// guarantee survives this call too.
-#[cfg_attr(not(unix), allow(dead_code))]
-fn wait_exit(mut child: KillOnDrop, what: &str) -> std::process::ExitStatus {
-    let deadline = Instant::now() + EXIT_TIMEOUT;
-    loop {
-        match child.try_wait().expect("try_wait") {
-            Some(status) => return status,
-            None => {
-                assert!(
-                    Instant::now() < deadline,
-                    "{what}: child did not exit within {EXIT_TIMEOUT:?} — shutdown hung"
-                );
-                std::thread::sleep(POLL);
-            },
-        }
-    }
-}
-
-/// A `Child` that dies with its handle. `std::process::Child` has no
-/// kill-on-drop (that is `tokio::process::Command`'s), and a dropped `Child`
-/// does not reap: a crawl that is still running when an assertion panics
-/// survives the test and nextest reports it LEAKY, burying the real failure
-/// under process noise — the exact `FL+LK` shape recorded in #1631. `Deref`
-/// keeps `send_signal`/`wait_exit` reading the handle they always did.
-///
-/// The `Drop` reaps as well as kills, because a kill request alone leaves a
-/// zombie occupying the process table, and nextest's leak check looks there.
-#[cfg_attr(not(unix), allow(dead_code))]
-struct KillOnDrop(Child);
-
-impl Drop for KillOnDrop {
-    fn drop(&mut self) {
-        // Disarm BEFORE signalling. A reaped child's PID is free for reuse,
-        // and `Child::kill` targets the stored numeric PID, so an
-        // unconditional kill here could SIGKILL an unrelated process that
-        // inherited it — on a shared CI runner that is someone else's job.
-        // `try_wait` reports `Some` once the child is reaped (std caches the
-        // status), which is the only safe way to learn that.
-        if self.0.try_wait().is_ok_and(|status| status.is_some()) {
-            return;
-        }
-
-        // Known unreaped: request termination, then reap. BOUNDED, because
-        // this runs while a panic unwinds and a child that ignores the kill
-        // must not block the unwind and hide the assertion that caused it.
-        // Both results are deliberately ignored: on the happy path the kill
-        // is a no-op, and on the failure path the cleanup is best effort.
-        let _ = self.0.kill();
-        let deadline = Instant::now() + REAP_TIMEOUT;
-        while Instant::now() < deadline {
-            match self.0.try_wait() {
-                // Reaped, or unanswerable — either way, stop waiting.
-                Ok(Some(_)) | Err(_) => return,
-                Ok(None) => std::thread::sleep(POLL),
-            }
-        }
-    }
-}
-
-impl std::ops::Deref for KillOnDrop {
-    type Target = Child;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for KillOnDrop {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-/// Spawn the real binary as a bare `std::process::Command` with piped
-/// output, replicating the harness's hermetic env (no `WEBFANG_*`/AI model
-/// poisoning, fresh `XDG_CACHE_HOME`) — needed because the test must hold
-/// the child handle to deliver the signal.
-#[cfg_attr(not(unix), allow(dead_code))]
-fn spawn_webfang(args: &[String], cache_dir: &std::path::Path, what: &str) -> KillOnDrop {
-    let mut c = Command::new(crate::common::webfang_path());
-    c.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
-    for (k, _) in std::env::vars() {
-        if k.starts_with("WEBFANG_") || k == "AI_MODEL_ID" {
-            c.env_remove(&k);
-        }
-    }
-    c.env("XDG_CACHE_HOME", cache_dir);
-    // SSRF entry-guard allowance (F-06 + F-32, #1217): the wiremock mock binds
-    // 127.0.0.1, a forbidden literal — the harness disarms ONLY the entry
-    // layer for spawned binaries, exactly like `sanitize_env` does.
-    c.env(
-        webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
-        "1",
-    );
-    KillOnDrop(
-        c.spawn()
-            .unwrap_or_else(|e| panic!("{what}: spawn failed: {e}")),
-    )
 }
 
 /// Mount a sitemap listing exactly `paths` and return the sitemap URL.
@@ -386,10 +214,11 @@ async fn p85_signal_case(signal: &str, label: &'static str) {
     let child = spawn_run(label);
     wait_for_page_fetches(&t.server, 3).await;
     send_signal(&child, signal, label);
-    let status = wait_exit(child, label);
+    let (status, stderr) = wait_exit(child, label);
     assert!(
         status.success(),
-        "{label}: graceful shutdown must exit 0 (cooperative cancellation), got {status:?}"
+        "{label}: graceful shutdown must exit 0 (cooperative cancellation), got {status:?}; \
+         child stderr: {stderr}"
     );
 
     let fetched_before = fetches_by_path(&t.server).await;
@@ -447,10 +276,10 @@ async fn p85_signal_case(signal: &str, label: &'static str) {
 
     // Attempt 2: resume completes the rest without re-fetching anything.
     let resumed = spawn_run("resume run");
-    let resume_status = wait_exit(resumed, "resume run");
+    let (resume_status, resume_stderr) = wait_exit(resumed, "resume run");
     assert!(
         resume_status.success(),
-        "{label}: resume run must exit 0, got {resume_status:?}"
+        "{label}: resume run must exit 0, got {resume_status:?}; child stderr: {resume_stderr}"
     );
 
     let final_counts = fetches_by_path(&t.server).await;
@@ -587,10 +416,11 @@ async fn f39_sigint_checkpoint_frontier_is_bounded() {
     let child = spawn_webfang(&crawl_args(false), cache.path(), "signalled crawl");
     wait_for_page_fetches(&t.server, 4).await;
     send_signal(&child, "INT", "signalled crawl");
-    let status = wait_exit(child, "signalled crawl");
+    let (status, stderr) = wait_exit(child, "signalled crawl");
     assert!(
         status.success(),
-        "signalled crawl must exit 0 (cooperative cancellation), got {status:?}"
+        "signalled crawl must exit 0 (cooperative cancellation), got {status:?}; \
+         child stderr: {stderr}"
     );
 
     // The F-39 bound: the persisted frontier is capped at the run's OWN budget.
@@ -628,10 +458,10 @@ async fn f39_sigint_checkpoint_frontier_is_bounded() {
     // Attempt 2: resume must not drain a foreign frontier — every deep page is
     // fetched at most twice (once per run) and the resumed run stays bounded.
     let resumed = spawn_webfang(&crawl_args(true), cache.path(), "resumed crawl");
-    let resume_status = wait_exit(resumed, "resumed crawl");
+    let (resume_status, resume_stderr) = wait_exit(resumed, "resumed crawl");
     assert!(
         resume_status.success(),
-        "resumed crawl must exit 0, got {resume_status:?}"
+        "resumed crawl must exit 0, got {resume_status:?}; child stderr: {resume_stderr}"
     );
 
     let final_counts = fetches_by_path(&t.server).await;

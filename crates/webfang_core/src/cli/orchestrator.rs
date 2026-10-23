@@ -642,12 +642,27 @@ pub(crate) fn parse_asset_h2_profile(s: &str) -> wreq_util::Profile {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_elastic_ingestion, parse_asset_h2_profile, resolve_export_dir,
+        build_elastic_ingestion, export_phase, parse_asset_h2_profile, resolve_export_dir,
         resolve_persistence_root, run,
     };
     use crate::application::crawl_options::CrawlOptions;
     use crate::cli::error::CliExit;
     use tracing_subscriber::layer::SubscriberExt;
+
+    /// `export_phase` over an empty result slice, with no store and no cleaner
+    /// — the arrange every guard test here needs; only `opts` differs.
+    async fn export_phase_over_empty_results(opts: &CrawlOptions) -> CliExit {
+        let results: std::sync::Arc<[crate::domain::ScrapedContent]> =
+            std::sync::Arc::from(Vec::new());
+        export_phase(
+            results,
+            opts,
+            None,
+            None,
+            &tokio_util::sync::CancellationToken::new(),
+        )
+        .await
+    }
 
     // ===== discovery config tests (#653 / R2-1) =====
 
@@ -845,21 +860,10 @@ mod tests {
     )]
     #[tokio::test]
     async fn export_phase_rejects_stdout_as_output_dir() {
-        use crate::cli::orchestrator::export_phase;
-
         let mut opts = CrawlOptions::default();
         opts.export.output_dir = std::path::PathBuf::from("-");
 
-        let results: std::sync::Arc<[crate::domain::ScrapedContent]> =
-            std::sync::Arc::from(Vec::new());
-        let exit = export_phase(
-            results,
-            &opts,
-            None,
-            None,
-            &tokio_util::sync::CancellationToken::new(),
-        )
-        .await;
+        let exit = export_phase_over_empty_results(&opts).await;
 
         assert!(
             matches!(exit, CliExit::UsageError(_)),
@@ -879,7 +883,6 @@ mod tests {
     )]
     #[tokio::test]
     async fn export_phase_reports_inbox_creation_failure() {
-        use crate::cli::orchestrator::export_phase;
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = tempfile::TempDir::new().expect("tmp");
@@ -900,16 +903,7 @@ mod tests {
         opts.export.quick_save = true;
         opts.export.obsidian_vault = Some(vault.clone());
 
-        let results: std::sync::Arc<[crate::domain::ScrapedContent]> =
-            std::sync::Arc::from(Vec::new());
-        let exit = export_phase(
-            results,
-            &opts,
-            None,
-            None,
-            &tokio_util::sync::CancellationToken::new(),
-        )
-        .await;
+        let exit = export_phase_over_empty_results(&opts).await;
 
         // Restore permissions so the TempDir can clean up.
         let _ = std::fs::set_permissions(&vault, std::fs::Permissions::from_mode(0o700));
