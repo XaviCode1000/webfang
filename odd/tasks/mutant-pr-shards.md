@@ -83,3 +83,14 @@ Dependencia: #2251 (merged, 1477 medidos / 96 shards).
   diff vacío con rc 0 (INFO "Diff file is empty") y un diff sin Rust es stdout vacío con
   rc 0 → el conteo '' se normaliza a 0; el fail-closed probado con exit 5 (nuevo lado
   que no matchea el árbol, WARN+ERROR detallados del binario con diff content).
+- 2026-10-23 — T3: mutants.yml rewired. prepare runs the helper (fetch-depth: 0,
+  toolchain+cargo-mutants for the no-compilation --list, EVENT_BASE_SHA env from
+  pull_request.base.sha || merge_group.base_sha), outputs mutant_count/shard_count/
+  shards; the hot-path regex detector is DELETED (single source of truth = the
+  helper's --list read of .cargo/mutants.toml); shards matrix = fromJSON(shards),
+  if shard_count != 0, timeout 45, --shard ${k}/${SHARD_COUNT}; weekly 96 shards
+  untouched. mutant-pr aggregator unchanged (if: always(), shards success|skipped).
+  Skipped-when-empty and always-reported semantics preserved via the aggregator job
+  (S8). T4: ci_fast_gate.sh lane_ci adds the dynamic-shards harness trigger (same
+  pattern as its neighbors, B52 respected). Actionlint+shellcheck with repo ignore
+  lists green; ci_fast_gate.sh (ci lane): PASS=10 FAIL=0 SKIP=13, GREEN.
