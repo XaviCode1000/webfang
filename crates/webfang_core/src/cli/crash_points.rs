@@ -43,7 +43,9 @@ pub const WHILE_HOLDING_LOCK: &str = "while_holding_lock";
 pub const TMP_WRITTEN_PRE_RENAME: &str = "tmp_written_pre_rename";
 /// Record-store tmp PARTIALLY written (truncated artifact).
 pub const MID_STATE_FILE_WRITE: &str = "mid_state_file_write";
-/// Reserve for PR5b: during cancellation drain before final persist.
+/// During cancellation drain, before final persist (#2244 decision A): hit
+/// when a cancelled export drains after observing the run's token, before
+/// `final_persist()` writes the drained state.
 pub const DURING_CANCEL_DRAIN: &str = "during_cancel_drain";
 
 static ARMED: OnceLock<Option<(String, u32)>> = OnceLock::new();
