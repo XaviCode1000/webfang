@@ -16,7 +16,8 @@ set -euo pipefail
 #
 # Every `gh` call is served by scripts/tests/queue_metrics_fake_gh.sh from
 # mktemp fixtures; this harness never touches the network and never runs
-# cargo.
+# cargo. Both scripts are invoked through `bash` on purpose: fixture trees
+# (test_ci_fast_gate.sh B52) may copy scripts without preserving exec bits.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 METRICS="${QUEUE_METRICS:-$SCRIPT_DIR/scripts/ci_queue_metrics.sh}"
@@ -27,8 +28,8 @@ PASSED=0
 ok() { PASSED=$((PASSED + 1)); echo "OK: $1"; }
 bad() { echo "FAIL: $1"; fail=1; }
 
-[ -x "$METRICS" ] || { echo "FAIL: metrics script not found/executable at $METRICS"; exit 1; }
-[ -x "$FAKE_GH" ] || { echo "FAIL: fake gh not found/executable at $FAKE_GH"; exit 1; }
+[ -f "$METRICS" ] || { echo "FAIL: metrics script not found at $METRICS"; exit 1; }
+[ -f "$FAKE_GH" ] || { echo "FAIL: fake gh not found at $FAKE_GH"; exit 1; }
 
 FIXROOT="$(mktemp -d)"
 trap 'rm -rf "$FIXROOT"' EXIT
@@ -51,7 +52,7 @@ run_metrics() { # $1 = fixture dir; rest: extra args
 mkdir -p "$FIXROOT/bin"
 cat > "$FIXROOT/bin/gh" <<EOF
 #!/usr/bin/env bash
-exec "$FAKE_GH" "\$@"
+exec bash "$FAKE_GH" "\$@"
 EOF
 chmod +x "$FIXROOT/bin/gh"
 
