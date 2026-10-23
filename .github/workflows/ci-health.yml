@@ -88,9 +88,10 @@ concurrency:
   group: ci-health-${{ github.ref }}
   cancel-in-progress: false # never drop a tracking update mid-write
 
+# Job-level permissions only (zizmor excessive-permissions): with two jobs of
+# different needs (observe writes issues, queue-metrics only reads actions),
+# a single workflow-level grants block was overly broad for the reader job.
 permissions:
-  actions: read # listar runs y jobs de los workflows observados
-  issues: write # abrir/comentar/cerrar SOLO issues con label ci-health
   contents: read
 
 env:
@@ -152,6 +153,10 @@ jobs:
     name: Observe and reconcile tracking issues
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      actions: read # listar runs y jobs de los workflows observados
+      issues: write # abrir/comentar/cerrar SOLO issues con label ci-health
+      contents: read
     # ── SCOPE GATE (#1714) ───────────────────────────────────────────────────
     # Predicado (única fuente de verdad de la ruta evento):
     #   workflow_run -> head_branch ∈ {main, develop} ∧ event ≠ pull_request
