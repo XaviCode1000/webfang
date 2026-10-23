@@ -60,7 +60,7 @@ jobs:
   release-plz-release:
     name: Release-plz release
     runs-on: ubuntu-latest
-    if: ${{ github.repository_owner == 'XaviCode1000' }}
+    if: ${{ github.repository == 'XaviCodeDev1000/webfang' }}
     permissions:
       contents: write
     steps:
@@ -166,7 +166,7 @@ jobs:
       ${{
         always() &&
         needs.release-plz-release.result != 'cancelled' &&
-        github.repository_owner == 'XaviCode1000'
+        github.repository == 'XaviCodeDev1000/webfang'
       }}
     permissions:
       contents: write

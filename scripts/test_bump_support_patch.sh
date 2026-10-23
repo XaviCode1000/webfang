@@ -387,6 +387,40 @@ else
   fail "el rechazo monotónico mutó archivos"
 fi
 
+echo "== un componente con zero a la izquierda no puede falsear la monotonicidad =="
+FX_ZERO="$(new_fx zero_leading 2.12.10)"
+# NEGATION (#2070 ítem 1): the comparison read its components as plain bash
+# arithmetic, and bash reads a leading-zero literal as OCTAL — `09` is an
+# invalid octal literal, the arithmetic ERRORS, and the `(( ))` returns
+# non-zero, which the `if` reads as FALSE. The guard then compared NOTHING
+# and the backward bump was ACCEPTED and committed. The request below
+# (2.12.09 against CURRENT 2.12.10) is numerically backward and belongs to
+# the SAME minor, so the branch gate passes and only the monotonicity
+# comparison can refuse it. The pre-fix verdict is the whole bump ACCEPTED
+# (rc=0, version mutated), which is the symptom this case exists to pin.
+snap_files "$FX_ZERO"
+run_bump "$FX_ZERO" 2.12.09
+if [[ "$LAST_RC" -ne 0 ]]; then
+  pass "se niega a bajar 2.12.10 -> 2.12.09 (componente con zero a la izquierda)"
+else
+  fail "aceptó un patch DOWNWARD con zero a la izquierda (2.12.09 < 2.12.10) — out: $LAST_OUT"
+fi
+if grep -qF 'es anterior a la versión actual del árbol' <<<"$LAST_OUT"; then
+  pass "el rechazo es el de la MONOTONICIDAD (comparación en base 10)"
+else
+  fail "el rechazo no vino del guard de monotonicidad: $LAST_OUT"
+fi
+if grep -qF 'se commitea en' <<<"$LAST_OUT"; then
+  fail "el rechazo vino del guard de rama: la case NO alcanza la monotonicidad — $LAST_OUT"
+else
+  pass "el guard de rama no intervino: la case alcanza la comparación de semver"
+fi
+if [[ -z "$(git -C "$FX_ZERO" status --porcelain)" ]] && files_untouched "$FX_ZERO"; then
+  pass "el rechazo monotónico no muta nada"
+else
+  fail "el rechazo monotónico mutó archivos"
+fi
+
 echo "== control positivo: el bump sancionado SÍ procede y commitea =="
 FX_OK="$(new_fx positive 2.12.0)"
 NOTAG_BEFORE="$(git -C "$FX_OK" rev-list --count HEAD)"

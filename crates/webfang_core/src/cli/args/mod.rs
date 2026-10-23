@@ -45,17 +45,20 @@ pub(crate) mod test_support {
             .unwrap_or_else(|| panic!("arg `{id}` missing from {owner} command"))
     }
 
-    /// Parse a full `Args` from synthetic argv (non-hermetic: ambient
-    /// `WEBFANG_*` env fallbacks leak in — prefer [`parse_args_hermetic`]).
-    pub(crate) fn parse_args(extra: &[&str]) -> Result<crate::Args, String> {
-        let mut argv = vec!["webfang"];
-        argv.extend_from_slice(extra);
-        crate::Args::try_parse_from(argv).map_err(|e| e.to_string())
-    }
-
-    /// Parse a full `Args` with ambient clap env fallbacks cleared.
+    /// Parse a full `Args` from synthetic argv, with the ambient clap env
+    /// fallbacks cleared.
+    ///
+    /// This is the ONLY parse entry point of the crate's test surface, and
+    /// every test parse is therefore ALWAYS hermetic: a test can never
+    /// observe the ambient shell (issue #2234). The hermeticity is
+    /// structural, not a convention — there is no non-hermetic sibling left
+    /// to call by mistake.
     pub(crate) fn parse_args_hermetic(extra: &[&str]) -> Result<crate::Args, String> {
-        with_clap_env_cleared(|| parse_args(extra))
+        with_clap_env_cleared(|| {
+            let mut argv = vec!["webfang"];
+            argv.extend_from_slice(extra);
+            crate::Args::try_parse_from(argv).map_err(|e| e.to_string())
+        })
     }
 
     /// Every non-builtin clap arg must have an `OptionSpec` entry.
@@ -681,6 +684,52 @@ mod tests {
                 webfang_test_utils::env_remove(&key);
             }
         });
+    }
+
+    // ========================================================================
+    // #2234 — the crate's test parse surface must be hermetic.
+    //
+    // The bug-discovery lane poisons the environment on purpose
+    // (`WEBFANG_URL=POISON_TRASH` and friends). A test that parses through
+    // a non-hermetic helper absorbs that poison: the bare parse dies with
+    // "invalid value 'POISON_TRASH' for '--url <URL>'" on the lane while
+    // passing on a developer machine — a test that depends on the shell of
+    // whoever runs it.
+    //
+    // The env lock is NOT reentrant: `EnvGuard` holds it while alive and
+    // the parse helper takes it again, so holding a guard across the parse
+    // deadlocks. The poison is therefore set and removed with the
+    // transient helpers (`env_set` / `env_remove`), which take the lock
+    // only for the duration of the mutation.
+    // ========================================================================
+
+    #[test]
+    fn the_test_parse_surface_ignores_the_ambient_environment() {
+        // Snapshot the ambient value (if any) so the test leaves the
+        // environment exactly as it found it.
+        let original = {
+            let _lock = webfang_test_utils::env_lock();
+            std::env::var("WEBFANG_URL").ok()
+        };
+
+        webfang_test_utils::env_set("WEBFANG_URL", "POISON_TRASH");
+        // Capture the outcome BEFORE restoring the environment: the
+        // assertion runs against the parse that saw the poisoned env.
+        let parsed = test_support::parse_args_hermetic(&[]);
+        match original {
+            Some(value) => webfang_test_utils::env_set("WEBFANG_URL", &value),
+            None => webfang_test_utils::env_remove("WEBFANG_URL"),
+        }
+
+        let args = parsed.expect("bare invocation must parse despite the poisoned environment");
+        assert!(
+            args.crawler.url.is_none(),
+            "the ambient WEBFANG_URL must not reach the parsed args"
+        );
+        assert!(
+            args.positional_url.is_none(),
+            "the ambient WEBFANG_URL must not reach the positional URL slot"
+        );
     }
 
     // ========================================================================
