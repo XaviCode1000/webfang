@@ -28,8 +28,8 @@ STATE="$WORK/state"
 mkdir -p "$BIN" "$STATE"
 
 # ─── Fake gh ────────────────────────────────────────────────────────────────
-# Serves the three reads ci_metrics.sh performs: the repo identity, the
-# branch protection and the run list.
+# Serves the four reads ci_metrics.sh performs: the repo identity, the branch
+# protection, the ruleset rules and the run list.
 cat > "$BIN/gh" <<'FAKE'
 #!/usr/bin/env bash
 set -uo pipefail
@@ -55,10 +55,20 @@ case "${1:-}" in
     case "${2:-}" in
       repos/*/branches/main/protection)
         if [[ -f "$state/protection-fails" ]]; then
-          echo "gh: simulated API failure (500)" >&2
+          # Real gh prints the API error body to STDOUT while exiting nonzero:
+          # modeling only "no output" would miss the misclassification where a
+          # 404 envelope on stdout masquerades as a readable protection.
+          printf '%s\n' '{"message":"Branch not protected","status":"404"}'
           exit 9
         fi
         cat "$state/protection.json"
+        ;;
+      repos/*/rules/branches/main)
+        if [[ -f "$state/rules-fails" ]]; then
+          printf '%s\n' '{"message":"Ruleset not found","status":"404"}'
+          exit 9
+        fi
+        cat "$state/rules.json"
         ;;
       *) echo "fake gh: unhandled api ${2:-}" >&2; exit 99 ;;
     esac
@@ -138,9 +148,12 @@ run_metrics
 check "B54: contexts[]-only protection -> 2 required contexts" "2" "$(required_count)"
 
 # ─── 3. B54: an unreadable protection still fails closed ───────────────────
+# The 404 envelope arrives on STDOUT (raw gh behavior): the rc-aware read must
+# treat it as not-protection and fail closed, never as "0 required contexts".
 : > "$STATE/protection-fails"
 run_metrics
 check "B54: an unreadable protection -> exit 2" "2" "$RUN_RC"
+check_contains "B54: the reason is reported" "could not read branch protection" "$RUN_OUT"
 rm -f "$STATE/protection-fails"
 
 # ─── 4. control: a complete sample is printed as complete ──────────────────
@@ -177,6 +190,28 @@ check "B55: a non-array run list -> the sample is unknown" \
 printf '%s\n' '[]' > "$STATE/runs.json"
 run_metrics
 check "control: an empty run list -> 0 runs in window" "0" "$(window_line)"
+
+# ─── 8. B2284: a ruleset-migrated protection still reports its contexts ────
+# When classic branch protection is migrated to repository rulesets, the
+# classic endpoint answers 404 and the required contexts must be read from
+# the active required_status_checks rules instead — no fabricating, no
+# "no required contexts" snapshot on a protected branch.
+: > "$STATE/protection-fails"
+printf '%s\n' '[]' > "$STATE/runs.json"
+printf '%s\n' '[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"CI Gate"},{"context":"repo-guards"}]}},{"type":"merge_queue","parameters":{}}]' \
+  > "$STATE/rules.json"
+run_metrics
+check "B2284: ruleset-migrated protection -> exit 0" "0" "$RUN_RC"
+check "B2284: ruleset-migrated protection -> 2 required contexts" "2" "$(required_count)"
+check_contains "B2284: the contexts are listed" "- CI Gate" "$RUN_OUT"
+rm -f "$STATE/protection-fails"
+
+# ─── 9. B2284: classic AND rules both unreadable still fail closed ─────────
+: > "$STATE/protection-fails"
+: > "$STATE/rules-fails"
+run_metrics
+check "B2284: both sources unreadable -> exit 2" "2" "$RUN_RC"
+rm -f "$STATE/protection-fails" "$STATE/rules-fails"
 
 echo "test_ci_metrics: PASS=$PASS FAIL=$FAIL"
 if (( FAIL > 0 )); then

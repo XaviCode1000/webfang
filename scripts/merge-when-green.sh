@@ -532,11 +532,27 @@ repo="${repo:-$(gh repo view --json nameWithOwner --jq .nameWithOwner)}"
 protection_branch="${base_branch:-main}"
 
 # Newer protection configs use checks[].context; older ones use contexts[].
+# gh writes the API error envelope (e.g. the 404 "Branch not protected" body)
+# to STDOUT while exiting nonzero, and a `||` INSIDE the command substitution
+# would capture that envelope as if it were a context list; every read below
+# uses `|| required=""` OUTSIDE it, so a nonzero rc yields no contexts (#2284).
 required="$(gh api "repos/${repo}/branches/${protection_branch}/protection" \
-  --jq '.required_status_checks.checks[]?.context // empty' 2>/dev/null || true)"
+  --jq '.required_status_checks.checks[]?.context // empty' 2>/dev/null)" || required=""
 if [[ -z "$required" ]]; then
   required="$(gh api "repos/${repo}/branches/${protection_branch}/protection" \
-    --jq '.required_status_checks.contexts[]? // empty' 2>/dev/null || true)"
+    --jq '.required_status_checks.contexts[]? // empty' 2>/dev/null)" || required=""
+fi
+
+# Classic branch protection may be migrated to repository rulesets (the merge
+# queue configuration is ruleset-only). The classic endpoint then answers 404
+# while the same required contexts are exposed by the active rules, one item
+# per context: GET /repos/{owner}/{repo}/rules/branches/{branch} only returns
+# rules from active rulesets (#2284). An rc != 0 response (gh also writes the
+# error envelope to stdout) yields no contexts: the read must not mistake the
+# envelope for ruleset data.
+if [[ -z "$required" ]]; then
+  required="$(gh api "repos/${repo}/rules/branches/${protection_branch}" \
+    --jq '.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context // empty' 2>/dev/null)" || required=""
 fi
 
 if [[ -z "$required" ]]; then
