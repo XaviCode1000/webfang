@@ -153,9 +153,15 @@ if [[ ! "$CURRENT" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 fi
 IFS='.' read -r -a NEW_SEM <<< "$NEW_VERSION"
 IFS='.' read -r -a CUR_SEM <<< "$CURRENT"
-if (( NEW_SEM[0] < CUR_SEM[0] )) \
-   || (( NEW_SEM[0] == CUR_SEM[0] && NEW_SEM[1] < CUR_SEM[1] )) \
-   || (( NEW_SEM[0] == CUR_SEM[0] && NEW_SEM[1] == CUR_SEM[1] && NEW_SEM[2] < CUR_SEM[2] )); then
+# The comparison is NUMERIC in base 10 (`10#`), so a component with a leading
+# zero is never read as OCTAL. Plain bash arithmetic reads `09` as an invalid
+# octal literal: the arithmetic ERRORS, the `(( ))` returns non-zero, and the
+# `if` reads that as FALSE — so the guard compared NOTHING and a backward
+# bump was accepted and committed. This is the same base-10 convention
+# scripts/refresh_support_latest.sh already uses for the patch counter.
+if (( 10#${NEW_SEM[0]} < 10#${CUR_SEM[0]} )) \
+   || (( 10#${NEW_SEM[0]} == 10#${CUR_SEM[0]} && 10#${NEW_SEM[1]} < 10#${CUR_SEM[1]} )) \
+   || (( 10#${NEW_SEM[0]} == 10#${CUR_SEM[0]} && 10#${NEW_SEM[1]} == 10#${CUR_SEM[1]} && 10#${NEW_SEM[2]} < 10#${CUR_SEM[2]} )); then
   echo "bump bloqueado: v${NEW_VERSION} es anterior a la versión actual del árbol (v${CURRENT}); un patch release nunca retrocede" >&2
   exit 1
 fi
