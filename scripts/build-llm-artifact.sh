@@ -333,10 +333,16 @@ per_source_file() {
   esac
 }
 
+# One line per crate for the LLM artifact's index.
+#
+# No tool count here on purpose: the MCP tool count has ONE source
+# (`MCP_TOOL_COUNT` in `crates/webfang_mcp/src/mcp_server/mod.rs`), and a
+# number written by hand in a shell script is a SECOND source — one that
+# drifts silently. The artifact describes the crate, not its size.
 crate_description() {
   case "$1" in
   webfang_core) echo "core domain/application/infrastructure API" ;;
-  webfang_mcp) echo "MCP server (35 tools) API" ;;
+  webfang_mcp) echo "MCP server API" ;;
   webfang_test_utils) echo "shared test utilities API" ;;
   *) echo "" ;;
   esac
