@@ -189,7 +189,12 @@ jobs:
   repo-guards:
     name: Repo guards
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 20 min: warm runs finish in ~4 min, but a PR with a stale rust-cache
+    # builds the intra-crate lint tool cold and measured 10.2 min when the
+    # 10-minute wall killed it (PR #2260 run 39904199331, 2026-10-23). Per
+    # #1512 a job timeout CANCELS THE WHOLE RUN, so the budget must fit the
+    # cold path. Provisional value from #2283, recalibrated on first kill.
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
