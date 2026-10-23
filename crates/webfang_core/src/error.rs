@@ -52,10 +52,6 @@ pub enum ScraperError {
     #[error("Error de serialización: {0}")]
     Serialization(#[from] serde_json::Error),
 
-    /// YAML serialization error
-    #[error("Error de YAML: {0}")]
-    Yaml(#[from] serde_yaml::Error),
-
     /// URL parse error
     #[error("Error de parseo de URL: {0}")]
     UrlParse(#[from] url::ParseError),
@@ -414,7 +410,6 @@ impl ScraperError {
             // Row 22 (rest of the io kinds).
             Self::Io(_) => ErrorClass::PermanentFatal,
             Self::Serialization(_) => ErrorClass::InternalFatal,
-            Self::Yaml(_) => ErrorClass::InternalFatal,
             Self::UrlParse(_) => ErrorClass::InternalFatal,
             Self::Persistence(_) => ErrorClass::InternalFatal,
             Self::Ingestion(_) => ErrorClass::InternalFatal,

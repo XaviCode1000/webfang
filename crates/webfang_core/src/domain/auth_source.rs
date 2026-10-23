@@ -161,14 +161,18 @@ fn resolve_keyring(service: &str, account: &str) -> Result<ApiKey, AuthError> {
     }
     #[cfg(not(miri))]
     {
-        let entry =
-            keyring::Entry::new(service, account).map_err(|_| AuthError::KeyringUnavailable)?;
+        // El store (y la clave con la que direcciona la credencial) los
+        // decide `domain::keyring_store`: es el único lugar que sabe qué
+        // almacén hay en esta plataforma. El contrato no cambia —sin
+        // fallback, `Ok(None)` sólo para `AuthSource::None`—.
+        let entry = crate::domain::keyring_store::entry(service, account)
+            .map_err(|_| AuthError::KeyringUnavailable)?;
         match entry.get_password() {
             Ok(secret) if secret.is_empty() => Err(AuthError::Invalid(format!(
                 "credencial vacía en keyring {service}/{account}"
             ))),
             Ok(secret) => Ok(ApiKey::new(secret)),
-            Err(keyring::Error::NoEntry) => Err(AuthError::CredentialNotFound {
+            Err(keyring_core::Error::NoEntry) => Err(AuthError::CredentialNotFound {
                 service: service.to_string(),
                 account: account.to_string(),
             }),
