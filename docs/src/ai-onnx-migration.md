@@ -2,7 +2,7 @@
 
 ONNX local **ya no existe** en el producto (ADR-0004, paso 6). Esta página dice **qué cambió, a quién
 le afectó y qué hacer ahora**, en el orden de los pasos. La decisión y su secuencia están en
-[ADR 0004](https://github.com/XaviCode1000/webfang/blob/main/docs/adr/0004-onnx-local-removal.md).
+[ADR 0004](https://github.com/XaviCodeDev1000/webfang/blob/main/docs/adr/0004-onnx-local-removal.md).
 
 ## Qué cambió y cuándo
 
@@ -94,4 +94,4 @@ el ONNX de origen; desde ahí, un resurgimiento requiere un ADR nuevo — no es 
 plementado en la línea actual.
 
 Referencias: [CLI reference](cli-reference.md) ·
-[ADR 0004](https://github.com/XaviCode1000/webfang/blob/main/docs/adr/0004-onnx-local-removal.md)
+[ADR 0004](https://github.com/XaviCodeDev1000/webfang/blob/main/docs/adr/0004-onnx-local-removal.md)

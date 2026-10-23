@@ -60,12 +60,16 @@ set -euo pipefail
 
 export LC_ALL=C
 
-# The pinned identity. Pinned to the release workflow of this repository at a
-# version tag: a bundle minted by any other workflow, any other repository, or
-# any non-tag ref is a DIFFERENT identity and is rejected. Overridable so a fork
-# can verify its own releases without editing this file, but the value in force
-# is printed on every run.
-DEFAULT_IDENTITY_REGEXP='^https://github\.com/XaviCode1000/webfang/\.github/workflows/release\.yml@refs/tags/v[0-9].*$'
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+LEGACY_ALLOWLIST="$SCRIPT_DIR/release-legacy-tags.tsv"
+
+# The default identity is the CURRENT repository, derived from GITHUB_REPOSITORY
+# when Actions provides it (a fork verifies its own releases without editing
+# this file). The fallback is the canonical repository. The release gate never
+# uses the historical allowlist below; that path is explicit via --tag.
+DEFAULT_REPO="${GITHUB_REPOSITORY:-XaviCodeDev1000/webfang}"
+DEFAULT_REPO_ESCAPED="${DEFAULT_REPO//./\\.}"
+DEFAULT_IDENTITY_REGEXP="^https://github\\.com/${DEFAULT_REPO_ESCAPED}/\\.github/workflows/release\\.yml@refs/tags/v[0-9].*$"
 
 # The OIDC issuer. Pinned, not derived: a certificate from any other issuer is
 # not an Actions keyless certificate.
@@ -86,9 +90,16 @@ Each <asset> requires a sibling bundle named <asset>.sigstore.json, produced by
   cosign sign-blob --bundle <asset>.sigstore.json <asset>
 
 options:
-  --identity-regexp RE   Override the pinned certificate identity regexp.
-                         Default: the release workflow of XaviCode1000/webfang
-                         at a version tag (see the constant in this script).
+  --identity-regexp RE   Override the certificate identity regexp. When set,
+                         the default and the historical allowlist are ignored.
+                         Default: the release workflow of the current
+                         repository (GITHUB_REPOSITORY, falling back to
+                         XaviCodeDev1000/webfang) at a version tag.
+  --tag TAG              Verify a tag published before the repository
+                         migration. TAG must be listed in
+                         scripts/release-legacy-tags.tsv; new tags are
+                         rejected. Cannot be combined with --identity-regexp
+                         or RELEASE_CERT_IDENTITY_REGEXP.
   -h, --help             Print this help and exit 0 (no cosign required).
 
 environment:
@@ -103,7 +114,9 @@ exit codes:
 USAGE
 }
 
-IDENTITY_REGEXP="${RELEASE_CERT_IDENTITY_REGEXP:-$DEFAULT_IDENTITY_REGEXP}"
+IDENTITY_REGEXP=""
+IDENTITY_EXPLICIT=false
+TAG=""
 COSIGN_BIN="${COSIGN:-cosign}"
 ASSETS=()
 
@@ -119,10 +132,28 @@ while [[ $# -gt 0 ]]; do
                 exit 2
             fi
             IDENTITY_REGEXP="$2"
+            IDENTITY_EXPLICIT=true
             shift 2
             ;;
         --identity-regexp=*)
             IDENTITY_REGEXP="${1#--identity-regexp=}"
+            IDENTITY_EXPLICIT=true
+            shift
+            ;;
+        --tag)
+            if [[ $# -lt 2 || -z "$2" ]]; then
+                echo "::error::--tag requiere un valor." >&2
+                exit 2
+            fi
+            TAG="$2"
+            shift 2
+            ;;
+        --tag=*)
+            TAG="${1#--tag=}"
+            if [[ -z "$TAG" ]]; then
+                echo "::error::--tag requiere un valor." >&2
+                exit 2
+            fi
             shift
             ;;
         --)
@@ -143,6 +174,33 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ "$IDENTITY_EXPLICIT" == "true" && -z "$IDENTITY_REGEXP" ]]; then
+    echo "::error::--identity-regexp requiere un valor no vacío." >&2
+    exit 2
+fi
+
+if [[ -n "$TAG" ]]; then
+    if [[ "$IDENTITY_EXPLICIT" == "true" || -n "${RELEASE_CERT_IDENTITY_REGEXP:-}" ]]; then
+        echo "::error::--tag no se puede combinar con --identity-regexp ni con RELEASE_CERT_IDENTITY_REGEXP." >&2
+        exit 2
+    fi
+    if [[ ! -f "$LEGACY_ALLOWLIST" ]]; then
+        echo "::error::falta la allowlist histórica '$LEGACY_ALLOWLIST'; no se verifica una release histórica sin ella." >&2
+        exit 1
+    fi
+    if ! LEGACY_REPO=$(awk -F '\t' -v tag="$TAG" '$1 == tag { print $2; found=1; exit } END { if (!found) exit 1 }' "$LEGACY_ALLOWLIST"); then
+        echo "::error::el tag '$TAG' no está en la allowlist histórica; un tag nuevo no puede usar la identidad antigua." >&2
+        exit 1
+    fi
+    LEGACY_REPO_ESCAPED="${LEGACY_REPO//./\\.}"
+    IDENTITY_REGEXP="^https://github\\.com/${LEGACY_REPO_ESCAPED}/\\.github/workflows/release\\.yml@refs/tags/v[0-9].*$"
+    echo "historical tag allowlist: $TAG"
+fi
+
+if [[ -z "$IDENTITY_REGEXP" ]]; then
+    IDENTITY_REGEXP="${RELEASE_CERT_IDENTITY_REGEXP:-$DEFAULT_IDENTITY_REGEXP}"
+fi
 
 if [[ ${#ASSETS[@]} -eq 0 ]]; then
     echo "::error::no se pasó ningún asset que verificar: una verificación vacía no es una verificación correcta. Lista los assets a comprobar (o usa --help)."

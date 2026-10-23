@@ -4,9 +4,9 @@ WebFang is a **binaries-only** distribution. There is no `cargo install
 webfang` and nothing is published to crates.io — the release automation sets
 `git_only = true` and `publish = false` in `release-plz.toml`, so a
 `cargo install webfang` cannot work. Get the binary from
-[GitHub Releases](https://github.com/XaviCode1000/webfang/releases/latest).
+[GitHub Releases](https://github.com/XaviCodeDev1000/webfang/releases/latest).
 
-> [Releases](https://github.com/XaviCode1000/webfang/releases) ·
+> [Releases](https://github.com/XaviCodeDev1000/webfang/releases) ·
 > [Troubleshooting](troubleshooting.md) ·
 > [CLI Reference](cli-reference.md)
 
@@ -51,7 +51,7 @@ list as-is, so the entry stays. If you are on an Intel Mac, there is nothing
 to mis-download — see [Intel macOS](#intel-macos-unsupported).
 
 Set the version once and reuse it. Copy the tag from
-[the latest release](https://github.com/XaviCode1000/webfang/releases/latest):
+[the latest release](https://github.com/XaviCodeDev1000/webfang/releases/latest):
 
 ```bash
 {{#include ../samples/installation/01-set-release-version.sh}}
@@ -129,7 +129,7 @@ files for you (it does **not** verify them — do step 2 anyway):
 >
 > ```bash
 > gh attestation verify webfang-x86_64-unknown-linux-gnu.tar.gz \
->   --repo XaviCode1000/webfang
+>   --repo XaviCodeDev1000/webfang
 > ```
 >
 > `SHA256SUMS.txt` is the offline check and stays authoritative for integrity.
@@ -204,8 +204,8 @@ fails with exit 78 (ADR-0004 §46, corrected 2026-10-21).
 # 1. Download (PowerShell 5.1+)
 $Version = "v5.0.0"
 $Asset   = "webfang-x86_64-pc-windows-msvc.zip"
-Invoke-WebRequest "https://github.com/XaviCode1000/webfang/releases/download/$Version/$Asset" -OutFile $Asset
-Invoke-WebRequest "https://github.com/XaviCode1000/webfang/releases/download/$Version/SHA256SUMS.txt" -OutFile SHA256SUMS.txt
+Invoke-WebRequest "https://github.com/XaviCodeDev1000/webfang/releases/download/$Version/$Asset" -OutFile $Asset
+Invoke-WebRequest "https://github.com/XaviCodeDev1000/webfang/releases/download/$Version/SHA256SUMS.txt" -OutFile SHA256SUMS.txt
 
 # 2. Verify BEFORE extracting
 (Get-FileHash $Asset -Algorithm SHA256).Hash.ToLower()
@@ -275,7 +275,7 @@ is runtime-configured, not compiled in — [migration guide](ai-onnx-migration.m
 | `chromium` feature | `--js-strategy full` is rejected at preflight (it needs a Chromium downloader). The default `static` strategy and the 3-layer `hybrid` strategy are unaffected. |
 | `console` feature | `tokio-console` is not available. Tracing via `--trace-file` is. |
 | `adaptive-selectors` feature | Adaptive selector learning is off. |
-| MCP server | The `webfang` CLI exposes no MCP flag. The MCP server lives in the separate `webfang_mcp` crate (`webfang-mcp`, `webfang-mcp-stdio`), which the release build never compiles — it is reachable from source only. See the [MCP section](https://github.com/XaviCode1000/webfang#-mcp-server) in the README. |
+| MCP server | The `webfang` CLI exposes no MCP flag. The MCP server lives in the separate `webfang_mcp` crate (`webfang-mcp`, `webfang-mcp-stdio`), which the release build never compiles — it is reachable from source only. See the [MCP section](https://github.com/XaviCodeDev1000/webfang#-mcp-server) in the README. |
 
 The `mcp` feature in that build command is inert: it is empty in
 `webfang_core` and gates no shipped code — the feature that matters is the

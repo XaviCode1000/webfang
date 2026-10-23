@@ -160,7 +160,14 @@ find_harness() { # guard basename
 harness_wired() { # repo-relative harness path
   local src
   while IFS= read -r src; do
-    grep -qF -- "$1" "$src" 2>/dev/null && return 0
+    # A harness named only in a COMMENT is not wired: a step is a command
+    # line, and the same convention the guard and script references already
+    # follow applies here (full-line comments stripped, inline trailing
+    # comments survive — stripping those would need a parser, and a false
+    # "wired" claim is noise, not a hole). The reference is read through a
+    # process substitution so an early-exit SIGPIPE under `set -o pipefail`
+    # cannot turn a found reference into a missed one.
+    grep -qF -- "$1" <(grep -v '^[[:space:]]*#' "$src" 2>/dev/null) && return 0
   done < <(entry_sources)
   return 1
 }

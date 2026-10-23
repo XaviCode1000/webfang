@@ -306,7 +306,7 @@ document = {
     "name": "webfang-{}".format(workspace_version or "workspace"),
     # Deterministic AND unique-per-document: the same (name, version, commit)
     # always yields the same namespace, and two different commits never collide.
-    "documentNamespace": "https://github.com/XaviCode1000/webfang/spdx/webfang-{}-{}".format(
+    "documentNamespace": "https://github.com/XaviCodeDev1000/webfang/spdx/webfang-{}-{}".format(
         workspace_version or "workspace", commit_sha
     ),
     "creationInfo": {
@@ -315,7 +315,7 @@ document = {
         "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch)),
         "creators": [
             "Tool: generate-sbom.sh",
-            "Organization: XaviCode1000",
+            "Organization: XaviCodeDev1000",
         ],
     },
 }

@@ -672,10 +672,27 @@ cargo check && cargo clippy --all-targets --all-features -- -D warnings \
 - [ ] Worktree verified: `git branch --show-current` matches the directory
 - [ ] No `git checkout`/`switch`/`stash` during the session
 
-**Merge:** `scripts/merge-when-green.sh <PR>` (squash by default; `--merge` for batches and
-**mandatory** when the PR declares a breaking change). **Never** use `--auto` (it is not
-enabled in this repo). The detail of the guards, the batching and the exceptions:
-**obs #2309** and `docs/merge-queue-manual.md`.
+**Merge:** `scripts/merge-when-green.sh <PR> --queue` — waits for the required checks,
+enqueues, and waits for `MERGED`. The queue is the normal path to `main`; no direct merge.
+Never `--auto` or `--admin`; no strategy flag — the queue owns the merge method. `BEHIND` is
+not fatal. Batches are queue groups: same base, disjoint files
+(`scripts/ci_pr_overlap.sh`); the queue groups them and does not resolve content conflicts.
+
+**Watcher fallback:** if the script exits 4 (deadline, or an unreadable required-context
+source) while the PR is verifiably ready — `gh pr view <N> --json mergeStateStatus` reads
+`CLEAN` and every required context is reported green in the status-check rollup — verify the
+rollup, enqueue manually with a bare `gh pr merge <N>` (no strategy flag: it is the same
+enqueue the script runs) and poll `gh pr view <N> --json state` until `MERGED`. It replaces
+the waiting, never the verification: a required context that has not *reported* green is the
+#1011 false-green failure mode and is not a candidate for this fallback. Incident and
+diagnosis: query `merge-when-green context read fallback manual enqueue` in Engram. On merge
+the queue itself deletes the PR's remote branch: a fetch afterwards showing a vanished
+`origin/<branch>` is expected queue behavior; the local side is the post-merge runbook below.
+
+**Breaking change (maintainer decision):** if the queue method is squash, do not enqueue:
+squash drops the `!` and the script exits 5. Land it with a merge commit outside the queue
+(queue temporarily disabled), or switch the queue method to `MERGE` for that landing and
+switch back. Never leave the `!` only in the PR title.
 
 **Hooks and verification:** the `pre-commit` and `pre-push` consult the review gate; on a fresh
 clone you must enable the wiring with `git config core.hooksPath scripts/githooks`. To wait
