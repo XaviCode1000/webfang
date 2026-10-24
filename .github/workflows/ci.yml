@@ -1202,9 +1202,11 @@ jobs:
       # reported as such, not swallowed into a silent skip. The test is
       # `#[ignore]`d in the ordinary suite precisely so that it runs ONLY
       # where a console can exist.
-      - name: Windows console close event (a real CTRL_CLOSE_EVENT)
-        if: matrix.os == 'windows-latest'
-        run: cargo nextest run --lib --run-ignored ignored-only -E 'test(~a_real_console_close_event_reaches_the_termination_source)'
+      # #1834: a real CTRL_CLOSE_EVENT cannot be synthesized in CI —
+      # GenerateConsoleCtrlEvent only permits CTRL_C/CTRL_BREAK, and the
+      # console handler ignores both by design (they stay with tokio's
+      # ctrl_c()). The handler's registration, naming and tokio
+      # coexistence are pinned by the platform module's unit tests.
 
   # ============================================================================
   # TEST RELEASE PROVENANCE (L1) — Behavioral acceptance matrix for

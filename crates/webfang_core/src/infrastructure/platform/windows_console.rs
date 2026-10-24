@@ -381,54 +381,14 @@ mod handler {
 mod tests {
     use super::*;
 
-    /// #1834 — a REAL console close event has to reach the termination
-    /// source. Until now the Windows console handler was only ever COMPILED
-    /// by the CI lane: nobody drove a `CTRL_CLOSE_EVENT` through it, so the
-    /// whole console-control path was unproven on the platform where it
-    /// matters.
-    ///
-    /// This test drives the real thing: it installs the production handler,
-    /// asks Windows to deliver a real close event to this process group, and
-    /// asserts that the termination source receives it. The handler returns
-    /// "consumed", so the OS does not terminate the test process.
-    ///
-    /// It needs a REAL console (a console control event is delivered to the
-    /// processes attached to a console), so it is `#[ignore]`d: the parent
-    /// invokes it with `--ignored --exact` on a Windows runner that has one.
-    /// Without a console the event cannot be delivered at all, and the test
-    /// would fail for a reason that is not the code's.
-    #[cfg(windows)]
-    #[ignore = "needs a real Windows console: the parent runs it with --ignored --exact"]
-    #[tokio::test]
-    #[allow(unsafe_code)]
-    async fn a_real_console_close_event_reaches_the_termination_source() {
-        use std::time::Duration;
-
-        use windows_sys::Win32::System::Console::GenerateConsoleCtrlEvent;
-
-        // The production handler, installed the same way production installs
-        // it, so the test exercises the real registration and not a stub.
-        let source = handler::ensure_source().expect("the console source must be installed");
-        let mut events = source.subscribe();
-
-        // SAFETY: `GenerateConsoleCtrlEvent(control, group)` asks Windows to
-        // deliver a console control event; group 0 means every process
-        // attached to THIS process's console, which includes the test
-        // process itself. The call is raw FFI, so it needs the allow (the
-        // workspace denies unsafe by default).
-        let sent = unsafe { GenerateConsoleCtrlEvent(CTRL_CLOSE_EVENT, 0) };
-        assert_ne!(
-            sent, 0,
-            "Windows must accept the console close event request"
-        );
-
-        // The handler runs on an OS thread: the event arrives asynchronously.
-        let name = tokio::time::timeout(Duration::from_secs(10), events.recv())
-            .await
-            .expect("the close event must arrive within 10s")
-            .expect("the event channel must not be closed");
-        assert_eq!(name, "CTRL_CLOSE_EVENT");
-    }
+    // #1834: the end-to-end "a real CTRL_CLOSE_EVENT reaches the source"
+    // probe is NOT reproducible in CI by construction — the only console
+    // control events `GenerateConsoleCtrlEvent` may synthesize are CTRL_C
+    // and CTRL_BREAK (documented API restriction), and this handler ignores
+    // both by design (they stay with tokio's `ctrl_c()`). The handler's
+    // registration, event naming and tokio coexistence stay pinned by the
+    // unit tests below; a real close delivery needs a human closing a real
+    // console.
 
     #[test]
     fn console_events_map_to_their_own_names() {
