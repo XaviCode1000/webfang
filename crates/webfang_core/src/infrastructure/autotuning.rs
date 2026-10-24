@@ -2,7 +2,9 @@
 //!
 //! Derives pipeline sizing defaults from the host hardware:
 //! - CPU cores via the canonical budget detector seam (Rayon pool / DB pool fan-out).
-//! - RAM budget via `sys_info::mem_info()` × 0.7 (byte-weighted semaphore).
+//! - RAM budget via `sysinfo::System::total_memory()` (bytes) × 0.7 (byte-weighted
+//!   semaphore). ONE source of RAM: `sysinfo` documents the unit it returns
+//!   (bytes), which the previous `sys-info` dependency did not.
 //!
 //! Configuration resolution priority (frozen design decision #12):
 //! **CLI flag > `WEBFANG_*` env var > auto-detected default**.
@@ -22,7 +24,7 @@ use tracing::warn;
 /// Fallback CPU core count when detection fails or returns 0.
 pub const FALLBACK_CPU_CORES: usize = 4;
 
-/// Fallback RAM budget (2 GiB in bytes) when `sys_info` fails.
+/// Fallback RAM budget (2 GiB in bytes) when the RAM reading fails.
 ///
 /// Frozen: the user's task and the hardware-autotuning spec agree on 2 GiB
 /// (2_147_483_648 bytes) — NOT `8 GiB × 0.7`.
@@ -67,20 +69,34 @@ pub fn detect_cpu_cores() -> usize {
     }
 }
 
-/// Compute the RAM budget (bytes) from an optional total-RAM value in KiB.
+/// Compute the RAM budget (bytes) from an optional total-RAM reading in BYTES.
 ///
-/// - `Some(total_kib)` → `total_kib * 1024 * 0.7` (70% of total RAM, truncated).
+/// - `Some(total_bytes)` → 70 % of the total RAM, truncated.
 /// - `None` (detection failed) → [`FALLBACK_RAM_BUDGET_BYTES`] + a `tracing::warn!`.
 ///
-/// Exposed as a pure function (taking the detected value, not calling `sys_info`
+/// This is the ONLY public function that takes a reading of the system, and
+/// the unit is in the NAME: the value comes from `sysinfo::System::total_memory()`,
+/// which `sysinfo` documents as BYTES. The 70 % rule lives in the private
+/// `ram_budget_from_kib`, so the bytes→KiB conversion happens exactly once,
+/// exactly here, and no caller can hand a KiB value to a bytes parameter (the
+/// defect that `total_kib` used to hide: `sys-info` never documented its unit).
+///
+/// Exposed as a pure function (taking the detected value, not calling `sysinfo`
 /// directly) so the fallback path is unit-testable without mocking the OS.
 #[must_use]
-pub fn ram_budget_from(total_kib: Option<u64>) -> u64 {
+pub fn ram_budget_from_bytes(total_bytes: Option<u64>) -> u64 {
+    ram_budget_from_kib(total_bytes.map(|bytes| bytes / 1024))
+}
+
+/// The 70 % rule, in KiB. PRIVATE on purpose: two public functions that differ
+/// only in the unit of their argument are the shape of the defect this closes
+/// — the unit would live in the parameter name and nowhere else.
+fn ram_budget_from_kib(total_kib: Option<u64>) -> u64 {
     match total_kib {
         Some(kib) => kib.saturating_mul(1024).saturating_mul(7) / 10,
         None => {
             warn!(
-                error = "sys_info::mem_info falló",
+                error = "sysinfo::System::total_memory falló",
                 fallback_bytes = FALLBACK_RAM_BUDGET_BYTES,
                 "Usando 2 GiB como presupuesto de RAM"
             );
@@ -89,17 +105,31 @@ pub fn ram_budget_from(total_kib: Option<u64>) -> u64 {
     }
 }
 
-/// Detect the RAM budget via `sys_info::mem_info()`, falling back to 2 GiB.
+/// Detect the RAM budget via `sysinfo::System::total_memory()`, falling back
+/// to 2 GiB.
 ///
-/// The `sys_info` syscall is only available under the `persistence` feature
-/// (the SQLite path). When `persistence` is OFF the lightweight core binary
-/// has no `sys_info` dependency, so detection simply returns the 2 GiB
-/// fallback — `ram_budget_from(None)` is already unit-tested.
+/// The RAM probe is only available under the `persistence` feature (the SQLite
+/// path). When `persistence` is OFF the lightweight core binary has no RAM
+/// probe, so detection simply returns the 2 GiB fallback —
+/// `ram_budget_from_bytes(None)` is already unit-tested.
+///
+/// `sysinfo` calls `sysconf` in the constructor of `System`, which Miri cannot
+/// execute, so the reading is compiled out under Miri — the same gate as
+/// `domain::budget::detector::SystemDetector::total_ram_bytes`.
 #[must_use]
 pub fn detect_ram_budget() -> u64 {
     #[cfg(feature = "persistence")]
     {
-        ram_budget_from(sys_info::mem_info().ok().map(|m| m.total))
+        #[cfg(not(miri))]
+        let total_bytes = {
+            let mut system = sysinfo::System::new();
+            system.refresh_memory();
+            Some(system.total_memory())
+        };
+        #[cfg(miri)]
+        let total_bytes: Option<u64> = None;
+
+        ram_budget_from_bytes(total_bytes)
     }
     #[cfg(not(feature = "persistence"))]
     {
@@ -324,18 +354,50 @@ mod tests {
 
     #[test]
     fn test_ram_budget_from_none_falls_back_to_2gib() {
-        assert_eq!(ram_budget_from(None), FALLBACK_RAM_BUDGET_BYTES);
+        assert_eq!(ram_budget_from_bytes(None), FALLBACK_RAM_BUDGET_BYTES);
         assert_eq!(FALLBACK_RAM_BUDGET_BYTES, 2 * GIB);
+    }
+
+    #[test]
+    fn ram_budget_from_bytes_converts_to_kib() {
+        // 32 GiB in BYTES — the unit `sysinfo::System::total_memory()`
+        // documents ("the RAM size in bytes").
+        let total_bytes: u64 = 32 * GIB;
+        let total_kib: u64 = 32 * 1024 * 1024;
+        // 70 % of 32 GiB, truncated (the same number the KiB rule produced).
+        let expected = total_kib * 1024 * 7 / 10;
+
+        // The two halves of the contract agree: the bytes boundary and the
+        // private KiB rule produce the SAME budget.
+        assert_eq!(ram_budget_from_bytes(Some(total_bytes)), expected);
+        assert_eq!(
+            ram_budget_from_bytes(Some(total_bytes)),
+            ram_budget_from_kib(Some(total_kib))
+        );
+
+        // Truncation, not rounding: a sub-KiB remainder is dropped.
+        assert_eq!(ram_budget_from_bytes(Some(total_bytes + 1023)), expected);
+
+        // Saturation, not panic and not wrap: a value that overflows the KiB
+        // arithmetic still yields a positive budget.
+        let saturated = ram_budget_from_bytes(Some(u64::MAX));
+        assert!(saturated > 0, "saturated budget must stay positive");
+
+        // Sanity: 70 % of 32 GiB is ~22.4 GiB (> 15 GiB, < 24 GiB).
+        let result = ram_budget_from_bytes(Some(total_bytes));
+        assert!(result > 15 * GIB && result < 24 * GIB);
     }
 
     #[test]
     fn test_ram_budget_from_32gib_machine() {
         // 32 GiB total RAM = 33_554_432 KiB → 70% in bytes (truncated).
+        // The input is expressed in BYTES: the reading the system hands over.
+        let total_bytes: u64 = 32 * GIB;
         let total_kib: u64 = 32 * 1024 * 1024;
         let expected = total_kib * 1024 * 7 / 10;
-        assert_eq!(ram_budget_from(Some(total_kib)), expected);
+        assert_eq!(ram_budget_from_bytes(Some(total_bytes)), expected);
         // Sanity: 70% of 32 GiB is ~22.4 GiB (> 15 GiB, < 24 GiB).
-        let result = ram_budget_from(Some(total_kib));
+        let result = ram_budget_from_bytes(Some(total_bytes));
         assert!(result > 15 * GIB && result < 24 * GIB);
     }
 

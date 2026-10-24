@@ -31,8 +31,9 @@
 # with '#' and blank lines are ignored. A duplicated line is itself an error.
 #
 # Generated from `cargo deny check bans` on Cargo.lock at workspace version
-# 2.4.1 (2026-09-30, issue #1607).
-async-channel
+# 5.0.0 (2026-10-22, issue #1607 baseline refreshed by the L9 build-graph lote:
+# the default workspace graph no longer carries chromiumoxide, so its
+# transitive duplicates disappeared).
 base64
 block-buffer
 chacha20
@@ -42,13 +43,10 @@ cssparser
 cssparser-macros
 dashmap
 digest
-event-listener
 foldhash
 getrandom
 hashbrown
-heck
 html5ever
-linux-raw-sys
 lru
 markup5ever
 markup5ever_rcdom
@@ -57,7 +55,6 @@ rand
 rand_chacha
 rand_core
 rustc-hash
-rustix
 secrecy
 selectors
 sha2
@@ -65,7 +62,6 @@ shlex
 # socket2: tokio 1.53.3 (the RUSTSEC-2026-0386 patch) declares socket2 0.6,
 # while hyper-util and tonic still hold socket2 0.5.10 until they bump their
 # tonics (major-major behind socket2 0.6, out of scope for a lock fix).
-socket2
 syn
 tendril
 thiserror

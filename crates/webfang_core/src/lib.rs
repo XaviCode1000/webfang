@@ -144,24 +144,3 @@ pub use infrastructure::output::file_saver::{save_results, ObsidianOptions};
 
 // URL validation
 pub use domain::url_validation::validate_and_parse_url;
-
-// ============================================================================
-// Build metadata
-// ============================================================================
-
-#[doc(hidden)]
-pub(crate) mod built_info {
-    include!(concat!(env!("OUT_DIR"), "/built.rs"));
-}
-
-/// Return the extended version string including git commit and build date.
-pub fn version_string() -> String {
-    let commit = built_info::GIT_COMMIT_HASH_SHORT.unwrap_or("unknown");
-    let build = built_info::BUILT_TIME_UTC;
-    format!(
-        "webfang {} (commit: {}, build: {})",
-        env!("CARGO_PKG_VERSION"),
-        commit,
-        build
-    )
-}
