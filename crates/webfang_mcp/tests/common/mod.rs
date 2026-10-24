@@ -369,17 +369,44 @@ pub fn extract_json(body: &str) -> Option<Value> {
 /// Redact a known output directory path so insta snapshots stay stable
 /// run-to-run.
 ///
-/// Snapshots are authored on Linux and store `/` separators, so the host
-/// separator must not leak into the artifact: both the haystack and the needle
-/// are normalized to `/` before matching. Payloads that carry the path inside
-/// serialized JSON escape each separator as `\\`, so doubled backslashes
-/// collapse first.
+/// Snapshots are authored on Linux and store `/` separators, while the host may
+/// render the same path with `\`. The separators are canonicalized only inside
+/// the path that follows each `[OUT_DIR]` marker, so an unrelated backslash in
+/// the payload — a regex in a diagnostic, an escaped literal — survives intact.
+///
+/// Payloads that carry the path inside serialized JSON escape each separator as
+/// `\\`, so both the raw and the escaped needle are redacted and doubled
+/// separators collapse.
 pub fn redact_path(text: &str, dir: &std::path::Path) -> String {
+    const MARKER: &str = "[OUT_DIR]";
+
     fn to_snapshot_separators(s: &str) -> String {
         s.replace("\\\\", "/").replace('\\', "/")
     }
-    let needle = to_snapshot_separators(&dir.to_string_lossy());
-    to_snapshot_separators(text).replace(needle.as_str(), "[OUT_DIR]")
+
+    let raw = dir.to_string_lossy();
+    let escaped = raw.replace('\\', "\\\\");
+    let redacted = text
+        .replace(escaped.as_str(), MARKER)
+        .replace(raw.as_ref(), MARKER);
+
+    // Canonicalize the separators of the path that follows each marker, and
+    // nothing else: the run ends at the closing quote of a JSON string or at
+    // any whitespace, whichever comes first.
+    let mut out = String::with_capacity(redacted.len());
+    let mut rest = redacted.as_str();
+    while let Some(pos) = rest.find(MARKER) {
+        let (head, after) = rest.split_at(pos + MARKER.len());
+        out.push_str(head);
+        let end = after
+            .find(|c: char| c == '"' || c.is_whitespace())
+            .unwrap_or(after.len());
+        let (run, tail) = after.split_at(end);
+        out.push_str(&to_snapshot_separators(run));
+        rest = tail;
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Initialize an MCP session (initialize + notifications/initialized) and

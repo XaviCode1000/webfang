@@ -77,6 +77,13 @@ fn redact_path_normalizes_host_separators() {
         redact_path(json, dir),
         r#""local_path": "[OUT_DIR]/images/71a5.png""#
     );
+
+    // A backslash that is not a path separator must survive untouched.
+    let prose = r"invalid regex \d+ for C:\Users\runneradmin\AppData\Local\Temp\.tmpAbC123\x.jsonl";
+    assert_eq!(
+        redact_path(prose, dir),
+        r"invalid regex \d+ for [OUT_DIR]/x.jsonl"
+    );
 }
 
 // ============================================================================
