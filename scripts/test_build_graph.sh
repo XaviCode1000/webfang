@@ -103,7 +103,9 @@ manifest_mentions() {
     local needle="$1"
     local m
     while IFS= read -r m; do
-        if grep -qwE -- "$needle" "$m"; then
+        # A manifest DECLARING a dependency is a non-comment line: the word
+        # "built" also appears in prose comments, which are not declarations.
+        if grep -v '^[[:space:]]*#' "$m" | grep -qwE -- "$needle"; then
             return 0
         fi
     done < <(manifests)
