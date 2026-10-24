@@ -140,9 +140,9 @@ async fn download_assets_downloads_images_via_shared_downloader() {
     );
 
     // Deterministic snapshot of the full tool response. The output dir is
-    // redacted in Rust, never as an insta filter: insta compiles filters as
-    // regex, and a Windows temp path (`C:\Users\...`) is an invalid pattern
-    // (#2302).
+    // redacted in Rust, never as an insta filter: insta compiles every filter
+    // as a regex, and an unescaped Windows temp path (`C:\Users\...`) is not
+    // a valid pattern (#2302).
     insta::with_settings!({
         filters => vec![
             (r"127\.0\.0\.1:\d+", "127.0.0.1:[PORT]"),
