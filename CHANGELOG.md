@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [6.0.0] - 2026-10-24
+
+### ⚠ BREAKING CHANGES
+
+- El seam del StateStorePort se poda a los métodos con caller: se removieron `StateStorePort::load_or_default` (requerido) y `StateStorePort::load_for_export` (provisto) del trait público. Los implementadores externos del trait deben quitar `load_or_default`; los callers del método provisto deben usar `load()` y mapear el error. ([#2243](https://github.com/XaviCodeDev1000/webfang/pull/2262))
+
+### 🏗️ Architecture Improvements
+
+- El grafo deja de llevar lo que no se usa (#1799, #1797, #1796) ([#2256](https://github.com/XaviCodeDev1000/webfang/pull/2256))
+
+### 📖 Documentation
+
+- El runbook de recuperación de WAL/SQLite y la nota de obscura (#1826, #1609) ([#2254](https://github.com/XaviCodeDev1000/webfang/pull/2254))
+
+### 🔧 Fixed
+
+- Redact_path normaliza el separador del host en los snapshots de export ([#2276](https://github.com/XaviCodeDev1000/webfang/pull/2276)) ([#2303](https://github.com/XaviCodeDev1000/webfang/pull/2303))
+- Download_assets deja de pasar el path del host como regex de insta ([#2302](https://github.com/XaviCodeDev1000/webfang/pull/2302)) ([#2304](https://github.com/XaviCodeDev1000/webfang/pull/2304))
+- La familia 0.0.0.0/8 y los prefijos NAT64 no canonicos quedan denegados ([#1965](https://github.com/XaviCodeDev1000/webfang/pull/1965)) ([#2226](https://github.com/XaviCodeDev1000/webfang/pull/2226))
+- ISATAP y la forma IPv4-compatible alinean las tres rutas del guard ([#2236](https://github.com/XaviCodeDev1000/webfang/pull/2236))
+- Un JSONL no-UTF8 degrada y saltea en vez de abortar el export ([#1812](https://github.com/XaviCodeDev1000/webfang/pull/1812)) ([#2230](https://github.com/XaviCodeDev1000/webfang/pull/2230))
+- El export cancelado observa su token y no persiste estado parcial ([#2244](https://github.com/XaviCodeDev1000/webfang/pull/2244)) ([#2268](https://github.com/XaviCodeDev1000/webfang/pull/2268))
+- El veredicto Unknown de obscura nombra el mínimo esperado ([#1710](https://github.com/XaviCodeDev1000/webfang/pull/1710)) ([#2253](https://github.com/XaviCodeDev1000/webfang/pull/2253))
+- La lane de UB deja de saltarse árboles de test y tiene un guard de invariantes ([#2235](https://github.com/XaviCodeDev1000/webfang/pull/2235)) ([#2255](https://github.com/XaviCodeDev1000/webfang/pull/2255))
+- La cola del export se lee entera sin perder el final ([#2237](https://github.com/XaviCodeDev1000/webfang/pull/2237)) ([#2261](https://github.com/XaviCodeDev1000/webfang/pull/2261))
+- Los falsos verdes de test mueren con diagnóstico en vez de colgar en verde (#2066, #1816, #1834) ([#2252](https://github.com/XaviCodeDev1000/webfang/pull/2252))
+- La superficie del servidor MCP dice lo que hace (#1815, #1837, #2193) ([#2257](https://github.com/XaviCodeDev1000/webfang/pull/2257))
+
+### 🔧 Other
+
+- Los helpers de arrange se comparten y el ratchet baja a la medicion ([#1757](https://github.com/XaviCodeDev1000/webfang/pull/1757)) ([#2260](https://github.com/XaviCodeDev1000/webfang/pull/2260))
+- El export MCP expone el conteo de lineas saltadas ([#2238](https://github.com/XaviCodeDev1000/webfang/pull/2238)) ([#2259](https://github.com/XaviCodeDev1000/webfang/pull/2259))
 ## [5.0.0] - 2026-10-21
 
 
