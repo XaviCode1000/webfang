@@ -1309,6 +1309,26 @@ fn probe_obscura_version(resolved: &std::path::Path) -> Option<(u64, u64, u64)> 
         .or_else(|| parse_obscura_version(&String::from_utf8_lossy(&output.stderr)))
 }
 
+/// Spanish operator-facing text of the `Unknown` Obscura version verdict
+/// (#1710).
+///
+/// A verdict that says only "the version could not be determined" is one the
+/// operator cannot act on: the floor the guard enforces
+/// ([`MINIMUM_OBSCURA_VERSION_STR`]) is the whole point of the check, so the
+/// warning has to NAME it. The text is derived from the constant, so the
+/// message can never drift from the floor the guard actually applies.
+///
+/// The verdict itself does not change: an unreadable build stays a
+/// DEGRADATION — the crawl and the release flow do not stop. Only the
+/// CONTENT of the warning changes.
+fn unknown_obscura_version_warning() -> String {
+    format!(
+        "no se pudo determinar la versión de obscura; se esperaba al menos \
+         {MINIMUM_OBSCURA_VERSION_STR} (la sonda --version falló o su salida no es \
+         interpretable) — se continúa en modo best-effort"
+    )
+}
+
 /// Version half of the Hybrid check (#793): enforce the minimum contract on
 /// a resolved binary. An unreadable build degrades to a warning (unknown
 /// custom builds must not be hard-blocked); a parseable older version fails
@@ -1336,6 +1356,8 @@ fn check_obscura_version(binary: &str, resolved: &std::path::Path) -> Result<(),
                 strategy = "hybrid",
                 binary = %binary,
                 resolved = %resolved.display(),
+                expected_version = MINIMUM_OBSCURA_VERSION_STR,
+                user_message = %unknown_obscura_version_warning(),
                 "obscura_version_unreadable: --version probe failed or unparseable — \
                  continuing best-effort"
             );
@@ -2069,24 +2091,34 @@ mod tests {
         }
     }
 
-    /// Hybrid + obscura printing garbage on `--version`: warn-and-continue —
-    /// unknown builds are not hard-blocked.
-    #[cfg_attr(miri, ignore)] // Command::spawn unsupported by Miri (#775)
+    /// Fake `obscura` executable whose `--version` runs the given shell script,
+    /// wired into `CrawlOptions` under the Hybrid strategy: the common arrange
+    /// of the warn-degrade tests (#1710). The caller keeps the returned
+    /// `TempDir` bound while the options are in use — the fake binary lives
+    /// in it.
     #[cfg(unix)]
-    #[test]
-    fn hybrid_version_garbage_degrades_to_warning() {
+    fn hybrid_opts_with_version_script(script: &str) -> (tempfile::TempDir, CrawlOptions) {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let bin_path = tmp.path().join("obscura");
-        std::fs::write(&bin_path, "#!/bin/sh\necho \"custom build\"\n")
-            .expect("write fake obscura");
+        std::fs::write(&bin_path, script).expect("write fake obscura");
         std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755))
             .expect("chmod +x fake obscura");
 
         let mut opts = CrawlOptions::default();
         opts.network.js_strategy = JsStrategy::Hybrid;
         opts.network.obscura_binary = bin_path.to_string_lossy().into_owned();
+        (tmp, opts)
+    }
+
+    /// Hybrid + obscura printing garbage on `--version`: warn-and-continue —
+    /// unknown builds are not hard-blocked.
+    #[cfg_attr(miri, ignore)] // Command::spawn unsupported by Miri (#775)
+    #[cfg(unix)]
+    #[test]
+    fn hybrid_version_garbage_degrades_to_warning() {
+        let (_tmp, opts) = hybrid_opts_with_version_script("#!/bin/sh\necho \"custom build\"\n");
         assert!(
             check_js_dependencies_with(&["definitely-not-installed-9x4k"], false, "", &opts)
                 .is_ok(),
@@ -2099,21 +2131,50 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn hybrid_version_probe_failure_degrades_to_warning() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let bin_path = tmp.path().join("obscura");
-        std::fs::write(&bin_path, "#!/bin/sh\nexit 3\n").expect("write fake obscura");
-        std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod +x fake obscura");
-
-        let mut opts = CrawlOptions::default();
-        opts.network.js_strategy = JsStrategy::Hybrid;
-        opts.network.obscura_binary = bin_path.to_string_lossy().into_owned();
+        let (_tmp, opts) = hybrid_opts_with_version_script("#!/bin/sh\nexit 3\n");
         assert!(
             check_js_dependencies_with(&["definitely-not-installed-9x4k"], false, "", &opts)
                 .is_ok(),
             "a failing --version probe must degrade to a warning, not block"
+        );
+    }
+
+    /// #1710 — the `Unknown` verdict must NAME the expected minimum.
+    ///
+    /// A verdict that only says "the version could not be determined" is one
+    /// the operator cannot act on: the floor the guard enforces
+    /// ([`MINIMUM_OBSCURA_VERSION_STR`]) is the whole point of the check, so
+    /// the warning has to state it. The verdict itself does NOT change: it
+    /// stays `Unknown`, it stays a DEGRADATION (the preflight returns `Ok`),
+    /// and the crawl and the release flow keep going.
+    #[cfg_attr(miri, ignore)] // Command::spawn unsupported by Miri (#775)
+    #[cfg(unix)]
+    #[test]
+    fn unknown_verdict_names_the_expected_minimum() {
+        use crate::infrastructure::observability::test_log_capture::LogBuffer;
+
+        let (_tmp, opts) = hybrid_opts_with_version_script("#!/bin/sh\necho \"custom build\"\n");
+
+        let mut verdict = None;
+        let out = LogBuffer::run(|| {
+            verdict = Some(check_js_dependencies_with(
+                &["definitely-not-installed-9x4k"],
+                false,
+                "",
+                &opts,
+            ));
+        })
+        .text();
+
+        let verdict = verdict.expect("the preflight must produce a verdict");
+        assert!(
+            verdict.is_ok(),
+            "the Unknown verdict must stay a degradation, not an error: {verdict:?}"
+        );
+        assert!(
+            out.contains(MINIMUM_OBSCURA_VERSION_STR),
+            "the warning must name the expected minimum ({MINIMUM_OBSCURA_VERSION_STR}), \
+             got: {out}"
         );
     }
 

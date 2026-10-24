@@ -700,8 +700,15 @@ mod tests {
     )]
     #[tokio::test]
     async fn build_elastic_ingestion_some_when_output_vectors() {
+        // The sinks live in a per-test temp dir. A fixed path is shared by
+        // every process that runs this binary, and the JSONL sink is opened
+        // in append mode: two runs of the suite would write into the same
+        // file.
+        let tmp = tempfile::tempdir().expect("tempdir for the vector sink");
         let mut opts = CrawlOptions::default();
-        opts.elastic.output_vectors = Some("/tmp/test.jsonl".to_string());
+        opts.elastic.output_vectors =
+            Some(tmp.path().join("out.jsonl").to_string_lossy().into_owned());
+        opts.elastic.db_path = Some(tmp.path().join("vectors.db"));
         let result = build_elastic_ingestion(
             &opts,
             crate::application::container::VaultAiPorts::default(),
@@ -716,8 +723,17 @@ mod tests {
     )]
     #[tokio::test]
     async fn build_elastic_ingestion_some_when_elastic_enabled() {
+        // The vector store gets its OWN database file. The default path
+        // (`default_db_path`) is under the user's home, so every process that
+        // runs this binary opens the SAME SQLite file: the `post_create` hook
+        // that applies the WAL pragmas needs a brief exclusive lock, and two
+        // concurrent runs collide with "database is locked" instead of
+        // failing loudly. `cargo test` runs the tests of a binary in
+        // parallel threads, so the collision is inside ONE process.
+        let tmp = tempfile::tempdir().expect("tempdir for the vector store");
         let mut opts = CrawlOptions::default();
         opts.elastic.enabled = true;
+        opts.elastic.db_path = Some(tmp.path().join("vectors.db"));
         let result = build_elastic_ingestion(
             &opts,
             crate::application::container::VaultAiPorts::default(),
@@ -739,6 +755,9 @@ mod tests {
         let mut opts = CrawlOptions::default();
         opts.elastic.enabled = true;
         opts.elastic.output_vectors = Some(vec_path.to_string_lossy().into_owned());
+        // Per-test database: see the sibling test for why the default path
+        // is not safe under a parallel `cargo test`.
+        opts.elastic.db_path = Some(tmp.path().join("vectors.db"));
         let result = build_elastic_ingestion(
             &opts,
             crate::application::container::VaultAiPorts::default(),
