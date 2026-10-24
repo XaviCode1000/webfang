@@ -15,8 +15,18 @@ permissions:
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
+    paths:
+      - 'fuzz/**'
+      - 'Cargo.lock'
+      - 'crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs'
   pull_request:
+    paths:
+      - 'fuzz/**'
+      - 'Cargo.lock'
+      - 'crates/webfang_core/src/infrastructure/crawler/sitemap_parser.rs'
+  schedule:
+    - cron: "0 3 * * *" # nightly flake/surface detection
   workflow_dispatch:
 
 concurrency:
@@ -60,8 +70,8 @@ jobs:
         uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
         with:
           workspaces: fuzz
-          # PRs restore main/develop lineage; only main/develop saves (#1171)
-          save-if: ${{ github.ref == 'refs/heads/main' || github.ref == 'refs/heads/develop' }}
+          # PRs restore main lineage; only main saves (#1171)
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Build all fuzz targets
         run: cargo +nightly fuzz build

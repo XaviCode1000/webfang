@@ -95,7 +95,11 @@ case "${1:-}" in
         ;;
       view)
         case "$fields" in
-          mergeStateStatus) emit '{"mergeStateStatus":"CLEAN"}' "$jqexpr" ;;
+          # The script reads `state` and `mergeStateStatus` in ONE call (the
+          # already-merged detection, #1970). Serving only that combined
+          # projection keeps ONE reader: a regression to a single-field read
+          # fails loudly here instead of silently working.
+          state,mergeStateStatus) emit '{"state":"OPEN","mergeStateStatus":"CLEAN"}' "$jqexpr" ;;
           headRefName) emit '{"headRefName":"fixture-branch"}' "$jqexpr" ;;
           headRepositoryOwner) emit '{"headRepositoryOwner":{"login":"fork-owner"}}' "$jqexpr" ;;
           title,commits)

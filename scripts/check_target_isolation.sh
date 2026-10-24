@@ -345,7 +345,13 @@ if [[ "$ROOT_CANON" != "$MAIN_ROOT_CANON" ]]; then
   MAIN_ENVRC="$MAIN_ROOT_CANON/.envrc"
   MAIN_TARGET=""
   if [[ -f "$MAIN_ENVRC" ]]; then
-    MAIN_TARGET="$(sed -n 's/^export CARGO_TARGET_DIR=//p' "$MAIN_ENVRC" 2>/dev/null | tail -1)"
+    # Main's declaration is read with the SAME liberal parser every other
+    # tree's is read with (parse_envrc_target_decl): a rigid `sed` that
+    # demands the declaration in column 0 left MAIN_TARGET empty for an
+    # INDENTED declaration — a shape the bootstrap itself writes — and every
+    # worktree of the repo was then rejected with reason=main-unbootstrapped
+    # for a precondition the tree already met (#2070 ítem 3).
+    MAIN_TARGET="$(parse_envrc_target_decl "$MAIN_ENVRC")"
   fi
   if [[ -z "$MAIN_TARGET" ]]; then
     if [[ -f "$MAIN_ENVRC" ]]; then

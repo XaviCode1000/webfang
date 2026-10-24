@@ -1129,6 +1129,13 @@ fn commit_ai_outcomes(
             },
         }
         if session.cancelled() {
+            tracing::info!("cancellation observed; draining before final persist");
+            // Same drain-ordering kill window as the standard path (#2244):
+            // reachable only after this chunk completed its full sequence and
+            // before `final_persist()`. Armed HERE too so the point keeps its
+            // meaning under `--clean-ai` — without this the armed run would
+            // drain through the AI path and exit clean, i.e. silently green.
+            crate::cli::crash_points::hit(crate::cli::crash_points::DURING_CANCEL_DRAIN);
             break;
         }
     }

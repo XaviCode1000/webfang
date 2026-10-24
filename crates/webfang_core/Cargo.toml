@@ -43,10 +43,10 @@ toml = "0.8"
 # `ProvidersConfig` models exactly one field — so this is a correctness
 # requirement, not a nicety. Version pinned to the `toml_edit` that `toml
 # 0.8.23` already resolves (0.22.27 in Cargo.lock): this edge REUSES the copy
-# `toml` already brings, so it does not add a second one to the graph. (A
-# second copy does exist independently of this edge — 0.25.15, pulled in via
-# `proc-macro-crate` from the keyring/secret-service stack — but that one
-# predates and does not depend on this dependency.)
+# `toml` already brings, so it does not add a second one to the graph. It used
+# to: a second copy (0.25.15) came in via `proc-macro-crate`, pulled by the
+# keyring/secret-service stack, and left the lock when `keyring` 3 was
+# replaced by `keyring-core` + the per-platform stores.
 #
 # `serde` is declared explicitly because the code uses `toml_edit::ser::
 # to_document` to render a `ProviderConfig` for the splice, and `pub mod ser`
@@ -122,7 +122,7 @@ age = "0.11"
 # HTML to Markdown
 html-to-markdown-rs = { workspace = true }
 syntect = { workspace = true }
-serde_yaml = { workspace = true }
+serde_norway = { workspace = true }
 chrono = { workspace = true }
 
 # XML
@@ -143,6 +143,18 @@ pulldown-cmark = { workspace = true }
 async-compression = { workspace = true }
 
 # Security
+
+# Credential store (keyring) — the platform-independent model. The concrete
+# back end is target-specific (see the `[target.'cfg(...)'.dependencies]`
+# tables below) and `domain/keyring_store.rs` is the only place that
+# chooses it.
+#
+# WHY NOT the `keyring` 3 facade: every version of `keyring` declares the
+# secret-service back ends as OPTIONAL dependencies, and `Cargo.lock`
+# records optional dependencies too — so the unmaintained `zbus 4` chain
+# only leaves the lockfile when the `keyring` package itself leaves the
+# graph. A feature change cannot do it.
+keyring-core = { workspace = true }
 
 # Competitive Features
 crc32fast = { workspace = true }
@@ -311,14 +323,31 @@ path = "tests/harness_ssrf_arrivals.rs"
 name = "dry_run_fail_fast"
 path = "tests/dry_run_fail_fast.rs"
 
+# Credential store (keyring). `keyring` 3 is GONE: every version of it
+# declares the secret-service back ends as optional dependencies, and
+# `Cargo.lock` records optional dependencies — so the unmaintained `zbus 4`
+# chain only leaves the lock when the `keyring` package leaves the graph.
+#
+# `keyring-core` is the platform-independent model (traits + errors); the
+# store is the concrete back end, and it is chosen per platform. The store
+# that backs the credential on each platform is the SAME one `keyring` 3
+# used, and `domain/keyring_store.rs` is the only place that decides it
+# and how the credential is addressed.
+
 [target.'cfg(target_os = "linux")'.dependencies]
-keyring = { version = "3", default-features = false, features = ["linux-native", "crypto-rust"] }
+# Kernel keyutils — the same back end `keyring` 3's `linux-native` used.
+linux-keyutils-keyring-store = { workspace = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-keyring = { version = "3", default-features = false, features = ["apple-native"] }
+# The "legacy keychain" (User/login) — the same back end `keyring` 3's
+# `apple-native` used. The `protected` (data-protection) store is a
+# DIFFERENT macOS store and stays off.
+apple-native-keyring-store = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
-keyring = { version = "3", default-features = false, features = ["windows-native"] }
+# Windows Credential Manager — the same back end `keyring` 3's
+# `windows-native` used.
+windows-native-keyring-store = { workspace = true }
 
 # Win32 console API for the process-wide console-event source and the UTF-8
 # console code page (#1808 — XP-S-02 / XP-K-03). `cfg(windows)` also matches
