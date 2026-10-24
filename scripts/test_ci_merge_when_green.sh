@@ -68,12 +68,27 @@ case "${1:-}" in
       repos/*/branches/main/protection)
         # An unreadable branch protection is the B46 precondition: both
         # protection reads fail, so the script takes the watch fallback.
+        # Real gh prints the API error envelope to STDOUT while exiting
+        # nonzero: modeling stderr-only output would hide the
+        # misclassification where the envelope is captured as a required
+        # context (#2284).
         if [[ -f "$state/protection-fails" ]]; then
-          echo "gh: simulated API failure (500)" >&2
+          printf '%s\n' '{"message":"Branch not protected","status":"404"}'
           exit 9
         fi
         emit '{"required_status_checks":{"checks":[{"context":"required-a"}]}}' \
           '.required_status_checks.checks[]?.context // empty'
+        ;;
+      repos/*/rules/branches/main)
+        # A ruleset-migrated branch protection: the classic endpoint fails and
+        # the required contexts live under the active required_status_checks
+        # rules (the merge_queue knobs are ruleset-only, B2284). Same
+        # stdout-envelope hazard for the failure shape.
+        if [[ -f "$state/rules-fails" ]]; then
+          printf '%s\n' '{"message":"Ruleset not found","status":"404"}'
+          exit 9
+        fi
+        jq -r '.[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]?.context // empty' "$state/rules.json"
         ;;
       *) echo "fake gh: unhandled api ${2:-}" >&2; exit 99 ;;
     esac
@@ -103,7 +118,11 @@ case "${1:-}" in
         ;;
       view)
         case "$fields" in
-          mergeStateStatus) emit '{"mergeStateStatus":"CLEAN"}' "$jqexpr" ;;
+          # The script reads `state` and `mergeStateStatus` in ONE call (the
+          # already-merged detection, #1970). Serving only that combined
+          # projection keeps ONE reader: a regression to a single-field read
+          # fails loudly here instead of silently working.
+          state,mergeStateStatus) emit '{"state":"OPEN","mergeStateStatus":"CLEAN"}' "$jqexpr" ;;
           headRefName) emit '{"headRefName":"fixture-branch"}' "$jqexpr" ;;
           headRepositoryOwner) emit '{"headRepositoryOwner":{"login":"fork-owner"}}' "$jqexpr" ;;
           title,commits) emit '{"title":"chore: harness","commits":[]}' "$jqexpr" ;;
@@ -220,6 +239,25 @@ printf '%s\n' '[{"name":"required-a","bucket":"fail"}]' > "$STATE/checks.json"
 run_merge 99 --timeout 30 --squash
 check "control: a failed required check -> exit 2" "2" "$RUN_RC"
 check "control: nothing was merged" "" "$(merged_strategy)"
+
+# ─── 6. B2284: a ruleset-migrated protection feeds the polling wait ────────
+# The classic endpoint fails, the required contexts come from the active
+# required_status_checks rules, and the script takes the REAL polling path —
+# not the degraded `gh pr checks --watch --required` fallback that produced
+# the false GREEN in #1011.
+: > "$STATE/protection-fails"
+printf '%s\n' '[{"type":"merge_queue","parameters":{}},{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"CI Gate"}]}}]' \
+  > "$STATE/rules.json"
+printf '%s\n' '[{"name":"CI Gate","bucket":"pass"}]' > "$STATE/checks.json"
+run_merge 99 --timeout 2 --squash
+check "B2284: ruleset-migrated protection -> exit 0" "0" "$RUN_RC"
+check_contains "B2284: the required context is read from the rules" \
+  "required contexts from branch protection: CI Gate" "$RUN_OUT"
+check_absent "B2284: the 404 envelope is never captured as a context" \
+  "Branch not protected" "$RUN_OUT"
+check_absent "B2284: the degraded watcher fallback is never taken" "Falling back" "$RUN_OUT"
+check "B2284: it merged with --squash" "--squash" "$(merged_strategy)"
+rm -f "$STATE/protection-fails"
 
 echo "test_ci_merge_when_green: PASS=$PASS FAIL=$FAIL"
 if (( FAIL > 0 )); then

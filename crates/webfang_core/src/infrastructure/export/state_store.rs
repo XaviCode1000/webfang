@@ -228,10 +228,6 @@ impl StateStorePort for StateStore {
     fn load(&self) -> crate::error::Result<ExportState> {
         StateStore::load(self)
     }
-
-    fn load_or_default(&self) -> crate::error::Result<ExportState> {
-        StateStore::load_or_default(self)
-    }
 }
 
 #[cfg(test)]

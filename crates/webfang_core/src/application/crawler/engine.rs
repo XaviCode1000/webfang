@@ -104,14 +104,21 @@ impl TerminationOutcome {
     }
 }
 
-/// The single warning both shutdown authorities emit when the OS rejects the
-/// termination-source registration (#1835).
+/// The single warning EVERY shutdown authority emits when the OS rejects the
+/// termination-source registration (#1835, #2193).
 ///
-/// One definition, two call sites: the crawl engine ([`Engine`]) and the CLI
-/// shutdown guard ([`crate::cli::shutdown`]) answer a rejected registration
-/// the SAME way ([`TerminationOutcome`]), so they must also SAY the same
-/// thing — a shared string has to describe shared behaviour.
-pub(crate) const TERMINATION_REGISTRATION_REJECTED: &str =
+/// One definition, THREE call sites: the crawl engine ([`Engine`]), the CLI
+/// shutdown guard ([`crate::cli::shutdown`]) and the MCP server answer a
+/// rejected registration the SAME way (the shared `TerminationOutcome`
+/// decision), so they must also SAY the same thing — a shared string has to
+/// describe shared behaviour.
+///
+/// `pub` because the third site lives in ANOTHER crate: `webfang_mcp` cannot
+/// reach a `pub(crate)` item of `webfang_core`, so while this constant was
+/// crate-private the MCP server kept a wording of its own for the same fact —
+/// three texts for one event, and no way for a reader to tell that the other
+/// two were saying the same thing (#2193).
+pub const TERMINATION_REGISTRATION_REJECTED: &str =
     "interrupt handler registration failed — graceful shutdown will only respond to an explicit cancel";
 
 /// Grace added to the longest legitimate worker wait when bounding joins (#509).

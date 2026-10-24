@@ -36,7 +36,7 @@ jobs:
   reconcile:
     name: Reconcile releases
     runs-on: ubuntu-latest
-    if: ${{ github.repository_owner == 'XaviCode1000' }}
+    if: ${{ github.repository == 'XaviCodeDev1000/webfang' }}
     timeout-minutes: 15
     steps:
       - name: Checkout repository

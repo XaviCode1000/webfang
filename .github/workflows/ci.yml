@@ -5,11 +5,14 @@
 # Developer gets feedback in <30s (toolchain), <60s (fmt), <3min (clippy), <8min (full).
 #
 # Pipeline flow:
-#   change-scope (path-aware tier, <15s, no cargo) classifies the PR diff via
-#   scripts/ci_path_classifier.sh: docs-only/CI-only PRs skip the expensive
-#   compile/test entry points (fmt, clippy, test-core, test-full) while
-#   toolchain, repo-guards, security, and doc-quality always run. Full-scope
-#   changes (code=true OR all=true) keep the current required producers.
+#   change-scope (path-aware planner, <15s, no cargo) resolves the event's
+#   comparison SHAs and classifies the diff via scripts/ci_plan.sh: docs-only/
+#   CI-only changes skip the expensive compile/test entry points (fmt, clippy,
+#   test-core, test-full) while toolchain, repo-guards, security, and
+#   doc-quality always run. PR, merge_group and push are path-aware; missing/
+#   zero SHAs, unknown events and detector failures fall back to full scope.
+#   Full-scope changes (code=true OR all=true) keep the current required
+#   producers.
 #   toolchain (15s) → fmt (30s) → clippy (2min) → CI Gate aggregates the fast required tier
 #   repo-guards (parallel) runs dead-test detection + the other architectural
 #   guards + the MCP public-surface version-marker gate + actionlint/shellcheck
@@ -114,22 +117,32 @@ jobs:
           fi
 
   # ============================================================================
-  # TIER 0a: CHANGE SCOPE (path-aware, <15s, no cargo/cache/model work)
-  # Classifies the changed files via scripts/ci_path_classifier.sh so
-  # docs-only/CI-only PRs skip the expensive compile/test entry points
-  # (fmt, clippy, test-core, test-full). push/merge_group/schedule/dispatch
-  # always default to full scope (run_code_jobs=true + every lane true).
+  # TIER 0a: PLAN (path-aware, <15s, no cargo/cache/model work)
+  # Resolves the comparison SHAs for every event (PR base/head, merge_group
+  # base/head, push before/after; zero/missing/unknown -> full) and classifies
+  # the diff via scripts/ci_path_classifier.sh. docs-only/CI-only changes skip
+  # the expensive compile/test entry points (fmt, clippy, test-core,
+  # test-full) while toolchain, repo-guards, security, and doc-quality always
+  # run.
+  #
+  # The event does NOT decide the depth; the diff does. merge_group and push
+  # are path-aware too, so a queued docs-only or CI-only change does not buy a
+  # full test run. A missing SHA, an unknown event or any detector failure
+  # falls back to FULL scope: a bad plan must never skip a lane.
+  #
   # Downstream code jobs gate on `needs.change-scope.outputs.run_code_jobs
   # == 'true'`; the affected-area lanes gate the mcp smoke job on
-  # needs_mcp (advisory, never in `gate` needs);
-  # needs_mutation_hotpath is exposed as an output only (Phase 4 advisory —
-  # no job gates on it in this phase, to keep the change non-breaking);
-  # snapshot baselines are test expectations and keep test coverage
-  # applicable. The `gate` job explicitly allows skipped non-applicable
-  # producers only from here.
+  # needs_mcp (advisory, never in `gate` needs); needs_mutation_hotpath is
+  # exposed as an output only (Phase 4 advisory — no job gates on it in this
+  # phase); snapshot baselines are test expectations and keep test coverage
+  # applicable. `test-crossplatform` additionally gates on
+  # needs_crossplatform: Cargo.toml/Cargo.lock, build.rs, .cargo/**,
+  # rust-toolchain.toml, or a changed .rs carrying a cfg/target marker. A
+  # change without such a marker can still break Windows; that residual risk
+  # is accepted here and falls to the scheduled full-scope run (nightly).
   # ============================================================================
   change-scope:
-    name: Change scope
+    name: Plan
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -140,46 +153,32 @@ jobs:
       needs_mcp: ${{ steps.scope.outputs.needs_mcp }}
       needs_mutation_hotpath: ${{ steps.scope.outputs.needs_mutation_hotpath }}
       snapshot_changed: ${{ steps.scope.outputs.snapshot_changed }}
+      needs_crossplatform: ${{ steps.scope.outputs.needs_crossplatform }}
+      required_producers: ${{ steps.scope.outputs.required_producers }}
+      scope_reason: ${{ steps.scope.outputs.scope_reason }}
+      base_sha: ${{ steps.scope.outputs.base_sha }}
+      head_sha: ${{ steps.scope.outputs.head_sha }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: Classify changed paths
+      - name: Resolve change plan
         id: scope
         # SC-09 (issue #1607): no GitHub expression expansion inside a `run:`
         # block. The expression engine substitutes BEFORE the shell parses the
         # script, so a value carrying shell metacharacters is spliced in as
-        # code, not data.
-        # An `env:` var is handed to the shell as an argument instead, so the same
-        # bytes stay data no matter what they contain. The SHAs are empty on
-        # every non-`pull_request` event, which is exactly what the `if` below
-        # needs in order to tell those events apart.
+        # code, not data. Pass every event SHA through `env:` instead; the
+        # script treats a missing/zero value as FULL scope (fail-closed).
         env:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          if [ "$EVENT_NAME" = "pull_request" ]; then
-            bash scripts/ci_path_classifier.sh \
-              --base "$PR_BASE_SHA" \
-              --head "$PR_HEAD_SHA" \
-              --format github >> "$GITHUB_OUTPUT"
-          else
-            {
-              echo "docs_only=false"
-              echo "ci_only=false"
-              echo "code=true"
-              echo "all=true"
-              echo "affected=all"
-              echo "run_code_jobs=true"
-              echo "needs_ai=true"
-              echo "needs_mcp=true"
-              echo "needs_mutation_hotpath=true"
-              echo "snapshot_changed=true"
-            } >> "$GITHUB_OUTPUT"
-            echo "change-scope: event=$EVENT_NAME -> full scope (run_code_jobs=true, needs_ai=true, needs_mcp=true, needs_mutation_hotpath=true, snapshot_changed=true)"
-          fi
+          MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_AFTER_SHA: ${{ github.event.after }}
+        run: bash scripts/ci_plan.sh
 
   # ============================================================================
   # TIER 0b: REPO GUARDS (parallel with the compile tiers)
@@ -190,7 +189,12 @@ jobs:
   repo-guards:
     name: Repo guards
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    # 20 min: warm runs finish in ~4 min, but a PR with a stale rust-cache
+    # builds the intra-crate lint tool cold and measured 10.2 min when the
+    # 10-minute wall killed it (PR #2260 run 39904199331, 2026-10-23). Per
+    # #1512 a job timeout CANCELS THE WHOLE RUN, so the budget must fit the
+    # cold path. Provisional value from #2283, recalibrated on first kill.
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -377,6 +381,15 @@ jobs:
       # publish TOCTOU, and ruleset — with fail-closed on every drift/mismatch.
       - name: Release provenance L1 acceptance matrix
         run: bash scripts/test_release_provenance.sh
+      # Release-owner migration (#2281): current-facing release automation must
+      # target XaviCodeDev1000/webfang; the old owner survives only in the frozen
+      # historical tag allowlist, CHANGELOG.md and historical notes.
+      - name: Release owner regression guard
+        run: bash scripts/test_release_owner.sh
+      # Signature identity semantics: strict current identity by default,
+      # explicit --tag for frozen pre-migration tags, new tags rejected.
+      - name: Release signature identity semantics
+        run: bash scripts/test_verify_release_signatures.sh
       # Semantics harness for the CI Health close path (slice4-branch-guard):
       # proves on a fake gh that the shared close_mine closes exactly the
       # labeled tracking issues, skips unlabeled lookalikes visibly, treats an
@@ -413,6 +426,21 @@ jobs:
       # never reads or writes this repository.
       - name: Path classifier semantics harness
         run: bash scripts/ci_path_classifier_test.sh
+      # Planner semantics harness (#2282): pins the event -> comparison-SHA
+      # contract (PR, merge_group, push, zero/missing, schedule/dispatch,
+      # unknown) and the crossplatform table (Cargo/build.rs/.cargo/toolchain
+      # paths plus cfg/cfg_attr/cfg!/target_family/target_pointer_width/
+      # target_arch/std::os::windows/windows-sys/winapi markers). Hermetic
+      # mktemp git trees; no cargo, no network.
+      - name: CI plan semantics harness
+        run: bash scripts/test_ci_plan.sh
+      # Structural CI Gate harness (#2286): gate.needs must equal
+      # {change-scope} ∪ required_producers as emitted by scripts/ci_plan.sh,
+      # every non-advisory job must be gated or allowlisted, no gate producer
+      # may carry continue-on-error, and the gate verify step must consume the
+      # same partition. Text-parse harness, no cargo, <1s.
+      - name: CI gate structure harness
+        run: bash scripts/test_ci_gate_structure.sh
       # Semantics harness for the fast gate's lane decision (A1, A2, B45).
       # The gate decides HOW MUCH to verify, and three of the fixes that make
       # that decision fail-closed shipped with no test at all: the path
@@ -618,6 +646,27 @@ jobs:
       # network, no cargo, mktemp fixtures only.
       - name: Breaking-marker guard semantics harness
         run: bash scripts/test_merge_when_green_breaking.sh
+      # Merged-state semantics harness (#1970). `merge-when-green.sh` read only
+      # `mergeStateStatus`, and GitHub answers UNKNOWN for a CLOSED PR forever
+      # (the mergeability of a closed PR is never computed): the script used to
+      # burn its 90s UNKNOWN window and then FAIL on a PR whose merge had
+      # already happened. It now reads `state` in the same call and exits 0
+      # with "already merged". This harness pins that, plus the verdicts that
+      # must stay untouched (UNKNOWN keeps retrying, CLEAN/UNSTABLE still
+      # merge, BEHIND/BLOCKED still exit 3). Offline: fake `gh`, no network,
+      # no cargo, mktemp fixtures only.
+      - name: Merged-state semantics harness
+        run: bash scripts/test_merge_when_green_merged_state.sh
+      # Merge-queue semantics harness. `--queue` enqueues without a strategy
+      # flag, treats BEHIND as non-fatal, waits for state=MERGED, and reports
+      # ejection/timeout distinctly. Offline: fake `gh`, no network.
+      - name: Merge-queue semantics harness
+        run: bash scripts/test_merge_when_green_queue.sh
+      # merge_group ref harness: the queue ref is
+      # `refs/heads/gh-readonly-queue/<base>/pr-<n>-<sha>`, not the PR head.
+      # Also pins the `refs/heads/` strip in mutants.yml. Offline.
+      - name: merge_group ref harness
+        run: bash scripts/test_pr_validation_merge_group_ref.sh
       # Regression guard for #836: block-scalar nesting bugs in workflow YAML
       # (steps swallowed into a `run: |` block) stay valid YAML and only fail
       # at runtime post-merge (#833→#835). actionlint + shellcheck catch them
@@ -680,6 +729,12 @@ jobs:
       # Offline: no cargo, no network, no repo state touched.
       - name: Advisory policy semantics harness
         run: bash scripts/test_advisory_policy.sh
+      # Semantics harness of scripts/check_no_dead_ignores.sh (wired by
+      # indirection from the advisory-policy gate): a dead ignore fails,
+      # a live one passes, an unparsable audit report is never an empty
+      # match set. Hermetic: a stub of `cargo audit`, no network.
+      - name: Dead-ignores guard semantics harness
+        run: bash scripts/test_no_dead_ignores.sh
       # Four harnesses that shipped with NO CI entry point: the assertions
       # existed, no job ran them, and the fix they cover was revertible in
       # silence — the #1707 shape. They are cheap (a few seconds each, pure
@@ -743,6 +798,19 @@ jobs:
         run: bash scripts/test_dead_tests.sh
       - name: Archive reproducibility semantics harness
         run: bash scripts/test_archive_reproducibility.sh
+      # Semantics harness for the duplication ratchet (issue #1757, #516).
+      # The guard decides the ratchet, and until this harness nothing in CI
+      # asserted what it decides: it translated "I did not measure" into "0
+      # duplicated lines" — a report without the rust section, a corpus with
+      # zero Rust files and a non-integer count all produced a GREEN gate over
+      # an unmeasured tree. The harness drives the REAL guard over canned
+      # detector reports and asserts the DECISIONS, with a positive control per
+      # negative case. HERMETIC: the jscpd binary is STUBBED on PATH, so this
+      # job does not need the detector (it is installed in the `code-quality`
+      # job, which still runs the real ratchet against the real crates/) —
+      # this step runs no cargo and no network.
+      - name: Duplication ratchet semantics harness
+        run: bash scripts/test_duplication.sh
       - name: Guard coverage meta-guard
         run: bash scripts/test_guard_coverage.sh
       # Negation harness for the meta-guard above. Eight cases over throwaway
@@ -936,6 +1004,7 @@ jobs:
     needs: [toolchain, change-scope]
     if: ${{ needs.change-scope.outputs.run_code_jobs == 'true' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 12
     permissions:
       contents: read
     steps:
@@ -971,6 +1040,7 @@ jobs:
     needs: [change-scope]
     if: ${{ needs.change-scope.outputs.run_code_jobs == 'true' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: read
     steps:
@@ -1015,13 +1085,17 @@ jobs:
   # No rust-cache (#1171): non-gate job, compiles cold — cache pool budget,
   # tokio-console-smoke precedent.
   #
-  # DECISION (#1633): this lane STAYS GATING — deliberately NOT shielded, and
-  # the recorded reason is not "we forgot", it is the trade:
+  # DECISION (#1633, revised by #2282): this lane STAYS GATING — deliberately
+  # NOT shielded, and the recorded reason is not "we forgot", it is the trade:
   #   - it is absent from `gate`'s needs and from `notify`'s needs, so it never
   #     blocks a merge through CI Gate; the only cost of its redness is the
   #     red RUN conclusion on push/PR, and
-  #   - it never runs on `schedule` (change-scope-gated, push/PR only), so it
-  #     is not part of the Monday-red problem #1633 exists to fix, and
+  #   - it is path-gated on needs_crossplatform (Cargo.toml/Cargo.lock,
+  #     build.rs, .cargo/**, rust-toolchain.toml, or a changed .rs carrying a
+  #     cfg/target marker). A platform change without such a marker can still
+  #     break Windows; that residual risk is accepted and falls to the
+  #     scheduled full-scope run (nightly), which sets
+  #     needs_crossplatform=true, and
   #   - shielding it would buy silence, not green: the CI Health Observer
   #     branches on the RUN conclusion, not on the jobs, so `continue-on-error`
   #     removes the false alarm AND the only mechanism reporting its red jobs.
@@ -1033,9 +1107,9 @@ jobs:
   test-crossplatform:
     name: Tests (${{ matrix.os }})
     needs: [change-scope]
-    if: ${{ needs.change-scope.outputs.run_code_jobs == 'true' }}
+    if: ${{ needs.change-scope.outputs.run_code_jobs == 'true' && needs.change-scope.outputs.needs_crossplatform == 'true' }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 45
     permissions:
       contents: read
     strategy:
@@ -1100,8 +1174,9 @@ jobs:
   # ============================================================================
   tokio-console-smoke:
     name: Tokio console smoke (unstable cfg)
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     env:
       RUSTFLAGS: --cfg tokio_unstable
     permissions:
@@ -1180,6 +1255,14 @@ jobs:
   doc-quality:
     name: Documentation quality
     runs-on: ubuntu-latest
+    # 15 min: warm-cache rustdoc takes ~2 min, but a PR whose rust-cache key
+    # missed (e.g. after a large merge into main) builds the whole workspace
+    # documentation cold and can exceed 5. Per #1512, a job timeout CANCELS
+    # THE WHOLE RUN (continue-on-error absorbs failures, not cancellations),
+    # so this budget must fit the cold path, not just the warm one.
+    # Provisional value from #2283, recalibrated after the first observed
+    # cold-cache kill (PR #2260 runs, 2026-10-23).
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -1367,7 +1450,7 @@ jobs:
     name: Feature matrix
     needs: [clippy]
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -1413,6 +1496,7 @@ jobs:
     needs: [test-full, change-scope]
     if: ${{ needs.test-full.result == 'success' && needs.change-scope.outputs.run_code_jobs == 'true' && needs.change-scope.outputs.needs_mcp == 'true' }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     permissions:
       contents: read
     steps:
@@ -1760,7 +1844,7 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
-    timeout-minutes: 40
+    timeout-minutes: 30
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
     needs: [test-full]
     env:
@@ -1794,3 +1878,55 @@ jobs:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: lcov.info
           fail_ci_if_error: false
+
+  # ============================================================================
+  # FLAKE DETECTION (nightly, retries 0, REPORT-ONLY) — #2286
+  #
+  # PR and push lanes run nextest with --retries 2: a flaky test passes on
+  # TRY 2 and the lane stays green, so the flake is invisible exactly where it
+  # matters. This nightly lane runs the SAME suite (test-full's shape: all
+  # features) with ZERO retries, so every genuine flake reds a job.
+  #
+  # Report-only: job-level `continue-on-error` keeps the workflow green (the
+  # ci-health observer only tracks gate-bearing conclusions) while the red job
+  # stays visible in the run UI. Promotion of a fix is per-issue.
+  #
+  # Known flakes QUARANTINED here (excluded with nextest -E until fixed):
+  #   * non2xx_browser_page_is_honest_error_exit_69 — Chromium E2E, cold-start
+  #     timeout (TRY 1 FAIL 18.1s -> TRY 2 PASS 2.8s, #2264). The assertion
+  #     itself is correct; the browser budget is the defect. PR lanes keep
+  #     running it under --retries 2.
+  # Flipping the PR lanes to --retries 0 happens only after this lane has
+  # been clean for a sustained period (#2286, deliberate follow-up).
+  # ============================================================================
+  flake-detection:
+    name: Flake detection (retries 0, nightly)
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    continue-on-error: true # report-only: red job, green workflow (#2286)
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+      - uses: Swatinem/rust-cache@49a0bdc70d2e1b713ca9e2869b211fcce03d3c1c
+        with:
+          save-if: false # nightly-only, always cold; never evicts the PR/main cache pool
+      - uses: taiki-e/install-action@e88e69ecdb9658bd172693dcdc2c84e7f0ab6a11
+        with:
+          tool: nextest@0.9.114
+      - name: Full suite with zero retries (known flakes excluded)
+        run: |
+          cargo nextest run --all-features --retries 0 \
+            -E 'not test(non2xx_browser_page_is_honest_error_exit_69)'
+      - name: Report flake-lane result
+        if: always()
+        run: |
+          if [ "${{ job.status }}" != "success" ]; then
+            echo "::warning::flake-detection red: at least one test failed with --retries 0. Investigate before flipping PR lanes to retries 0 (#2286)."
+          else
+            echo "flake-detection green: no flake observed in this nightly run."
+          fi
