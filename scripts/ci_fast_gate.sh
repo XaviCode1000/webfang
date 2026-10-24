@@ -658,6 +658,15 @@ EOF
   else
     skip_step "ci metrics snapshot harness" "no ci_metrics files changed"
   fi
+  # The dynamic mutant-shard sizing must keep its contract: the count is
+  # measured by cargo-mutants itself, the formula is calibrated
+  # (min(16, ceil(count/8))) and untrusted diff input fails closed (#2285).
+  # Offline toy fixture + the real cargo-mutants --list, no network.
+  if grep -Eq '^(scripts/ci_mutant_shards\.sh|scripts/test_ci_mutant_shards\.sh)$' "$UNION_TMP" 2>/dev/null || [[ "$CI_HARNESS_MODE" == "always" ]]; then
+    run_step "dynamic mutant shards harness (offline)" bash scripts/test_ci_mutant_shards.sh
+  else
+    skip_step "dynamic mutant shards harness" "no ci_mutant_shards files changed"
+  fi
 }
 
 # run_pinned_lint_changed_scope: degraded local equivalent of CI's

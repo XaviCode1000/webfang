@@ -113,7 +113,7 @@ fn detect_keyring() -> bool {
     }
     #[cfg(not(miri))]
     {
-        let Ok(entry) = keyring::Entry::new("webfang-setup-probe", "detect") else {
+        let Ok(entry) = crate::domain::keyring_store::entry("webfang-setup-probe", "detect") else {
             return false;
         };
         probe_reports_operational_backend(&entry.get_password())
@@ -130,8 +130,8 @@ fn detect_keyring() -> bool {
 /// el backend NO es usable de forma fiable, y el wizard no debe
 /// recomendarlo. La versión anterior trataba "cualquier error no de
 /// plataforma" como disponible, lo que daba por bueno un backend roto.
-fn probe_reports_operational_backend(result: &Result<String, keyring::Error>) -> bool {
-    matches!(result, Ok(_) | Err(keyring::Error::NoEntry))
+fn probe_reports_operational_backend(result: &Result<String, keyring_core::Error>) -> bool {
+    matches!(result, Ok(_) | Err(keyring_core::Error::NoEntry))
 }
 
 fn detect_default_encrypted_file() -> Option<PathBuf> {
@@ -172,7 +172,7 @@ mod tests {
     fn probe_ok_or_noentry_means_backend_available() {
         assert!(probe_reports_operational_backend(&Ok("secret".into())));
         assert!(probe_reports_operational_backend(&Err(
-            keyring::Error::NoEntry
+            keyring_core::Error::NoEntry
         )));
     }
 
@@ -184,21 +184,21 @@ mod tests {
         let platform: Box<dyn std::error::Error + Send + Sync> =
             std::io::Error::other("locked keyring").into();
         assert!(!probe_reports_operational_backend(&Err(
-            keyring::Error::PlatformFailure(platform)
+            keyring_core::Error::PlatformFailure(platform)
         )));
         let access: Box<dyn std::error::Error + Send + Sync> =
             std::io::Error::other("store unreachable").into();
         assert!(!probe_reports_operational_backend(&Err(
-            keyring::Error::NoStorageAccess(access)
+            keyring_core::Error::NoStorageAccess(access)
         )));
         assert!(!probe_reports_operational_backend(&Err(
-            keyring::Error::BadEncoding(vec![0xff])
+            keyring_core::Error::BadEncoding(vec![0xff])
         )));
         assert!(!probe_reports_operational_backend(&Err(
-            keyring::Error::TooLong("service".into(), 32)
+            keyring_core::Error::TooLong("service".into(), 32)
         )));
         assert!(!probe_reports_operational_backend(&Err(
-            keyring::Error::Ambiguous(Vec::new())
+            keyring_core::Error::Ambiguous(Vec::new())
         )));
     }
 

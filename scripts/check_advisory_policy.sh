@@ -204,13 +204,15 @@ days_between() {
 
 MODE="check"
 SKIP_DUPLICATES=0
+SKIP_DEAD_IGNORES=0
 case "${1:-}" in
     "")             MODE="check" ;;
     --print-ignores) MODE="print-ignores" ;;
     --print-duplicates) MODE="print-duplicates" ;;
     --skip-duplicates) MODE="check"; SKIP_DUPLICATES=1 ;;
+    --skip-dead-ignores) MODE="check"; SKIP_DEAD_IGNORES=1 ;;
     *)
-        echo "usage: bash scripts/check_advisory_policy.sh [--print-ignores|--print-duplicates|--skip-duplicates]" >&2
+        echo "usage: bash scripts/check_advisory_policy.sh [--print-ignores|--print-duplicates|--skip-duplicates|--skip-dead-ignores]" >&2
         exit 2
         ;;
 esac
@@ -647,6 +649,31 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# Check 6a: no ignore may be DEAD (#1984)
+# ---------------------------------------------------------------------------
+# An ignore that matches nothing silences nothing today, and the day its
+# crate comes back to the graph it silences the finding without anybody
+# noticing. `paste` is the live instance: the ignore survived the crate.
+#
+# The check lives in its own script (the file was already over the repo's
+# per-file limit) and receives the DERIVED ignore list, so there is no second
+# parser of deny.toml to keep in sync.
+DEAD_IGNORE_FAIL=0
+DEAD_LOCKS=("$ROOT_LOCK")
+if [[ -f "$FUZZ_LOCK" ]]; then
+    DEAD_LOCKS+=("$FUZZ_LOCK")
+else
+    DEAD_IGNORE_FAIL=1
+fi
+if [[ "$SKIP_DEAD_IGNORES" -eq 1 ]]; then
+    echo "dead-ignore check: SKIPPED (--skip-dead-ignores passed explicitly)." >&2
+elif [[ "$DEAD_IGNORE_FAIL" -eq 0 ]]; then
+    if ! bash "$ROOT/scripts/check_no_dead_ignores.sh" "${DEAD_LOCKS[@]}" -- "${IDS[@]}"; then
+        DEAD_IGNORE_FAIL=1
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # Check 6b: the duplicate-crate ratchet
 # ---------------------------------------------------------------------------
 DUP_FAIL=0
@@ -690,7 +717,7 @@ else
     fi
 fi
 
-if [[ "$AUDIT_FAIL" -ne 0 || "$DUP_FAIL" -ne 0 ]]; then
+if [[ "$AUDIT_FAIL" -ne 0 || "$DUP_FAIL" -ne 0 || "$DEAD_IGNORE_FAIL" -ne 0 ]]; then
     exit 1
 fi
 

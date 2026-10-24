@@ -30,9 +30,10 @@
 use assert_cmd::Command;
 use insta::assert_snapshot;
 use std::path::Path;
+use std::process::{Child, ExitStatus};
 use std::time::{Duration, Instant};
 use wiremock::matchers::{method, path as wm_path};
-use wiremock::{Mock, ResponseTemplate};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Resolve the path to the `webfang` binary, building it on demand.
 ///
@@ -237,14 +238,24 @@ where
     SpawnOutcome::Overran(overruns)
 }
 
+/// The env names a spawned binary must never inherit: `WEBFANG_*` (every flag
+/// override and the crash-point arming var) plus `AI_MODEL_ID`.
+///
+/// Split from [`strip_poisoned_env`] because the signal harness spawns through
+/// `std::process::Command` rather than `assert_cmd::Command`, and the two
+/// types share no deref: the LIST is the policy and lives here once, while each
+/// caller removes it from the command type it holds.
+pub(crate) fn poisoned_env_names() -> Vec<String> {
+    std::env::vars()
+        .filter(|(k, _)| k.starts_with("WEBFANG_") || k == "AI_MODEL_ID")
+        .map(|(k, _)| k)
+        .collect()
+}
+
 /// Strip `WEBFANG_*` / `AI_MODEL_ID` from a spawned binary command so runs
 /// stay hermetic even when CI bug-discovery workflows poison the environment.
 pub(crate) fn strip_poisoned_env(cmd: &mut Command) {
-    let poisoned: Vec<String> = std::env::vars()
-        .filter(|(k, _)| k.starts_with("WEBFANG_") || k == "AI_MODEL_ID")
-        .map(|(k, _)| k)
-        .collect();
-    for key in poisoned {
+    for key in poisoned_env_names() {
         cmd.env_remove(&key);
     }
 }
@@ -337,6 +348,224 @@ pub(crate) fn hermetic_empty_config_file() -> std::path::PathBuf {
     ));
     std::fs::write(&path, "").expect("create empty hermetic config.toml");
     path
+}
+
+// ---------------------------------------------------------------------------
+// Child-process signal harness (#1292, #2244)
+// ---------------------------------------------------------------------------
+//
+// Every test that INTERRUPTS a real child needs the same five pieces: a spawn
+// carrying the harness's hermetic env, a handle that cannot leak the child, a
+// deterministic wait for the k-th page fetch, a POSIX signal without `unsafe`,
+// and a bounded wait for the exit. They used to live twice — in
+// `behavioral/cli/signal_lifecycle_test.rs` and `tests/crash_matrix_test.rs` —
+// until the duplication ratchet caught the copy (PR #2268).
+
+/// How long a child may take to exit after the signal before the test fails.
+pub(crate) const EXIT_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// Upper bound on the Drop-time reap. `Child::kill` is SIGKILL on Unix and
+/// TerminateProcess on Windows — both immediate — so a child still unreaped
+/// after this window is not going to be. The bound is the point: a stuck
+/// child must not block the panic unwind that is running the cleanup and
+/// hide the assertion that caused it. Leaking a zombie beats hanging a test.
+pub(crate) const REAP_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Poll interval while waiting for request counts and child exit.
+pub(crate) const POLL: Duration = Duration::from_millis(50);
+
+/// Per-page response delay: slows the crawl enough that a signal always
+/// lands mid-run, without making the test slow.
+pub(crate) const PAGE_DELAY: Duration = Duration::from_millis(200);
+
+/// Upper bound on the wait for the k-th page fetch: a crawl that never
+/// reaches it is stalled, and saying so is more useful than hanging.
+const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Count GETs to real content pages (anything that is not `/robots.txt` and
+/// not the sitemap) — the deterministic "page fetch" metric behind every
+/// signal assertion: the trigger is a request wiremock OBSERVED, never a
+/// sleep.
+pub(crate) async fn count_page_fetches(server: &MockServer) -> usize {
+    server
+        .received_requests()
+        .await
+        .expect("request log")
+        .iter()
+        .filter(|r| {
+            let p = r.url.path();
+            p != "/robots.txt" && !p.ends_with("sitemap.xml")
+        })
+        .count()
+}
+
+/// Poll until the server has seen at least `k` page fetches (the
+/// deterministic signal trigger), bounded by [`FETCH_TIMEOUT`].
+pub(crate) async fn wait_for_page_fetches(server: &MockServer, k: usize) {
+    let deadline = Instant::now() + FETCH_TIMEOUT;
+    loop {
+        if count_page_fetches(server).await >= k {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "server never reached {k} page fetches — crawl stalled"
+        );
+        tokio::time::sleep(POLL).await;
+    }
+}
+
+/// Send `signal` to `child` via the system `kill` binary: the crate forbids
+/// `unsafe`, so there is no `libc::kill`, and the OS-level trigger goes
+/// through `kill(1)` instead.
+pub(crate) fn send_signal(child: &Child, signal: &str, what: &str) {
+    let status = std::process::Command::new("kill")
+        .arg(format!("-{signal}"))
+        .arg(child.id().to_string())
+        .status()
+        .unwrap_or_else(|e| panic!("{what}: invoking kill failed: {e}"));
+    assert!(
+        status.success(),
+        "{what}: kill -{signal} {} must succeed",
+        child.id()
+    );
+}
+
+/// A `Child` that dies with its handle. `std::process::Child` has no
+/// kill-on-drop (that is `tokio::process::Command`'s), and a dropped `Child`
+/// does not reap: a crawl still running when an assertion panics survives the
+/// test and nextest reports it LEAKY, burying the real failure under process
+/// noise — the exact `FL+LK` shape recorded in #1631. `Deref` keeps
+/// `send_signal`/`wait_exit` reading the handle they always did.
+///
+/// The `Drop` reaps as well as kills, because a kill request alone leaves a
+/// zombie occupying the process table, and nextest's leak check looks there.
+pub(crate) struct KillOnDrop(pub Child);
+
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        // Disarm BEFORE signalling. A reaped child's PID is free for reuse,
+        // and `Child::kill` targets the stored numeric PID, so an
+        // unconditional kill here could SIGKILL an unrelated process that
+        // inherited it — on a shared CI runner that is someone else's job.
+        // `try_wait` reports `Some` once the child is reaped (std caches the
+        // status), which is the only safe way to learn that.
+        if self.0.try_wait().is_ok_and(|status| status.is_some()) {
+            return;
+        }
+
+        // Known unreaped: request termination, then reap. BOUNDED, because
+        // this runs while a panic unwinds and a child that ignores the kill
+        // must not block the unwind and hide the assertion that caused it.
+        // Both results are deliberately ignored: on the happy path the kill
+        // is a no-op, and on the failure path the cleanup is best effort.
+        let _ = self.0.kill();
+        let deadline = Instant::now() + REAP_TIMEOUT;
+        while Instant::now() < deadline {
+            match self.0.try_wait() {
+                // Reaped, or unanswerable — either way, stop waiting.
+                Ok(Some(_)) | Err(_) => return,
+                Ok(None) => std::thread::sleep(POLL),
+            }
+        }
+    }
+}
+
+impl std::ops::Deref for KillOnDrop {
+    type Target = Child;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for KillOnDrop {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+/// Spawn the real binary with piped output and the harness's hermetic env, as
+/// a bare `std::process::Command` — needed because the test must hold the
+/// child handle to deliver the signal.
+pub(crate) fn spawn_webfang(args: &[String], cache_dir: &Path, what: &str) -> KillOnDrop {
+    spawn_webfang_with(args, cache_dir, what, |_| {})
+}
+
+/// [`spawn_webfang`] plus a hook to adjust the command before spawn — for the
+/// rows that need their own stdio or an extra env var (the crash matrix arms
+/// `WEBFANG_CRASH_AT` this way, AFTER the strip, so the parent process can
+/// never poison the armed point).
+///
+/// Hermeticity matches [`sanitize_env`]: the poisoned names are stripped, the
+/// cache is per-invocation, and `WEBFANG_CONFIG` points at an empty file. The
+/// config matters for the same reason it does there — without a replacement
+/// the child falls back to the developer's `~/.config/webfang/config.toml`,
+/// and a real file enabling `clean-ai` would route the export through the AI
+/// drain, a path these tests must not depend on.
+pub(crate) fn spawn_webfang_with(
+    args: &[String],
+    cache_dir: &Path,
+    what: &str,
+    configure: impl FnOnce(&mut std::process::Command),
+) -> KillOnDrop {
+    let mut c = std::process::Command::new(webfang_path());
+    c.args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    for key in poisoned_env_names() {
+        c.env_remove(&key);
+    }
+    c.env("XDG_CACHE_HOME", cache_dir);
+    c.env("WEBFANG_CONFIG", hermetic_empty_config_file());
+    // SSRF entry-guard allowance (F-06 + F-32, #1217): the mock binds
+    // 127.0.0.1, a forbidden literal — disarm ONLY the entry layer.
+    c.env(
+        webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
+        "1",
+    );
+    configure(&mut c);
+    KillOnDrop(
+        c.spawn()
+            .unwrap_or_else(|e| panic!("{what}: spawn failed: {e}")),
+    )
+}
+
+/// Wait for the signalled child to exit; fail (after SIGKILL) if it exceeds
+/// [`EXIT_TIMEOUT`] — a shutdown must not hang. Returns the exit status plus
+/// the captured stderr, so a death by an unexpected signal can name its cause
+/// instead of leaving a bare wait status.
+///
+/// Takes the [`KillOnDrop`] handle by value: `Deref` covers the method calls
+/// below, but a by-value argument needs the guard itself so the kill-on-drop
+/// guarantee survives this call too.
+pub(crate) fn wait_exit(mut child: KillOnDrop, what: &str) -> (ExitStatus, String) {
+    use std::io::Read;
+
+    let deadline = Instant::now() + EXIT_TIMEOUT;
+    loop {
+        match child.try_wait().expect("try_wait") {
+            Some(status) => {
+                // The child is reaped and its stderr write-end is closed, so
+                // draining the pipe to EOF cannot block.
+                let mut stderr = String::new();
+                child
+                    .stderr
+                    .take()
+                    .expect("stderr pipe")
+                    .read_to_string(&mut stderr)
+                    .unwrap_or_default();
+                return (status, stderr);
+            },
+            None => {
+                assert!(
+                    Instant::now() < deadline,
+                    "{what}: child did not exit within {EXIT_TIMEOUT:?} — shutdown hung"
+                );
+                std::thread::sleep(POLL);
+            },
+        }
+    }
 }
 
 /// Mount a single catch-all page on the test's mock server.
