@@ -959,7 +959,7 @@ log_nextest_env() {
       vals+="${v}=${!v} "
     fi
   done
-  echo "fast-gate: nextest env: ${vals:-none (profile=default, width from .config/nextest.toml)}"
+  echo "fast-gate: nextest env: ${vals:-none (profile=default, width+retries from .config/nextest.toml)}"
 }
 
 targeted_cargo() {
@@ -977,7 +977,7 @@ targeted_cargo() {
     echo "fast-gate: code changed outside known crates -> workspace scope"
     run_step "cargo check (workspace, all targets+features)" cargo check --workspace --all-targets --all-features
     run_step "clippy strict (workspace)" cargo clippy --workspace --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines
-    run_step "nextest unit (workspace lib)" cargo nextest run --workspace --lib --retries 2
+    run_step "nextest unit (workspace lib)" cargo nextest run --workspace --lib
     run_rustdoc_gate auto
     return 0
   fi
@@ -1007,10 +1007,10 @@ targeted_cargo() {
   # discovers 0 tests in those subtrees and fails vacuous-green — and, worse,
   # a clippy run without it sees the gated imports as dead code.
   # shellcheck disable=SC2068
-  run_step "nextest unit (-p ${pkgs[*]} --lib, all features)" cargo nextest run $(printf -- '-p %s ' ${pkgs[@]}) --all-features --lib --retries 2
+  run_step "nextest unit (-p ${pkgs[*]} --lib, all features)" cargo nextest run $(printf -- '-p %s ' ${pkgs[@]}) --all-features --lib
   if [[ "$tests_changed" == "true" || "$crawler_changed" == "true" || "$downloader_changed" == "true" || "$cli_changed" == "true" || "$mcp_changed" == "true" ]]; then
     # shellcheck disable=SC2068
-    run_step "nextest integration (-p ${pkgs[*]} --tests, all features)" cargo nextest run $(printf -- '-p %s ' ${pkgs[@]}) --all-features --tests --retries 2
+    run_step "nextest integration (-p ${pkgs[*]} --tests, all features)" cargo nextest run $(printf -- '-p %s ' ${pkgs[@]}) --all-features --tests
   else
     skip_step "nextest integration" "no runtime-area flags (crawler/downloader/cli/mcp/tests)"
   fi
@@ -1040,7 +1040,7 @@ lane_full() {
   run_step "cargo check (workspace, all targets+features)" cargo check --workspace --all-targets --all-features
   run_step "clippy strict (workspace)" cargo clippy --workspace --all-targets --all-features -- -D warnings -W clippy::cognitive_complexity -W clippy::too_many_lines
   run_step "pre-build webfang binary" cargo build -p webfang_cli --bin webfang --all-features
-  run_step "nextest (workspace, all features)" cargo nextest run --workspace --all-features --retries 2
+  run_step "nextest (workspace, all features)" cargo nextest run --workspace --all-features
   run_rustdoc_gate always
   # Release provenance L1 behavioral tests (hermetic, no cargo needed)
   run_step "release provenance L1 tests" bash scripts/test_release_provenance.sh

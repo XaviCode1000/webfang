@@ -100,6 +100,29 @@ final-status-level = "slow"
 filter = 'test(=illegal_page_transitions_fail_to_compile)'
 slow-timeout = { period = "600s", terminate-after = 1, grace-period = "30s" }
 
+# Lane nocturna de detección de flakes (#2286; adopción en #2305 paso 4): la
+# misma suite que test-full pero con reintentos a cero, para que cada flake
+# genuino ponga el job en rojo (report-only vía continue-on-error en ci.yml).
+# Copia deliberada de [profile.ci] porque 0.9.114 no hereda perfiles: la
+# única diferencia es retries = 0. Si tocás ci, tocá esta también, hasta que
+# un bump que habilite inherits (0.9.115+) las colapse en una sola.
+[profile.flake-nightly]
+test-threads = 8
+threads-required = 1
+retries = 0
+fail-fast = false
+failure-output = "immediate-final"
+slow-timeout = { period = "120s", terminate-after = 2, grace-period = "30s" }
+global-timeout = "1h"
+default-filter = "not test(ai_integration)"
+success-output = "never"
+status-level = "fail"
+final-status-level = "slow"
+
+[[profile.flake-nightly.overrides]]
+filter = 'test(=illegal_page_transitions_fail_to_compile)'
+slow-timeout = { period = "600s", terminate-after = 1, grace-period = "30s" }
+
 [profile.dev]
 # Perfil para desarrollo iterativo (ultra-rápido)
 # Ejecuta solo lo afectado → 8-25 segundos típico
