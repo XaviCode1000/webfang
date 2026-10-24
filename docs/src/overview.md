@@ -14,7 +14,7 @@ alongside this book under `/api/<crate>/` (e.g. `/api/webfang_core/`).
 | Crate | Role |
 | :--- | :--- |
 | `webfang_core` | Domain, application, and infrastructure layers — the scraping engine (semantic cleaning via remote `EmbeddingPort` adapters included) |
-| `webfang_mcp` | MCP server (35 tools) |
+| `webfang_mcp` | MCP server (36 tools) |
 | `webfang_cli` | CLI binary (`webfang`) |
 | `webfang_test_utils` | Shared test helpers |
 

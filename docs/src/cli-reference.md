@@ -659,6 +659,70 @@ Options:
 ````
 <!-- CLI-REFERENCE:END -->
 
+## Layer 2 (Obscura): a cheap render, not an anti-WAF guarantee
+
+`--js-strategy hybrid` fetches in three layers: **L1** is `wreq` (static
+HTTP), **L2** is the `obscura` subprocess, **L3** is Chromiumoxide.
+
+**L2 is accepted as a cheap render** — webfang does **not** require
+obscura's `-stealth` build variant, so L2 carries no anti-WAF promise. That
+is the decision recorded in #1710; this section is where it lives.
+
+**What L2 does**
+
+- Runs `obscura fetch --dump html` once per page — never markdown — with no
+  cookies and no storage directory (the sessionless contract), and marks the
+  result as `text/html`.
+- Costs ~30 MB per subprocess instead of the ~200 MB + CDP that Layer 3 pays:
+  that is the whole reason it stays in the stack.
+- Escalates to Layer 3 when the page comes back empty or the subprocess
+  fails.
+
+**What L2 does not do**
+
+- It is **not** an anti-WAF guarantee. webfang never passes `-stealth`, and a
+  WAF challenge detected at any layer aborts the fetch: the router never
+  escalates against a challenge.
+
+**Version floor.** The hybrid preflight requires **obscura 0.2.5 or newer**
+(`MINIMUM_OBSCURA_VERSION` in `crates/webfang_core/src/cli/preflight.rs`).
+An older binary fails the preflight with **exit 78** (configuration error),
+naming the version it found and the version it requires. A binary whose
+`--version` probe fails or prints something unparseable is **not** blocked:
+the preflight degrades to a warning and the run continues best-effort.
+
+**Reading the L2 hit-rate.** There are no counters — the hit-rate is derived
+from the per-layer log events the hybrid router already emits. With a trace
+file, count the layer events:
+
+```bash
+webfang https://example.com --js-strategy hybrid --trace-file run.jsonl
+
+# L2 attempts
+jq -r 'select(.message | test("Layer 2 \\(Obscura\\): attempting fetch")) | .message' run.jsonl | wc -l
+# L2 hits (the render came back with content)
+jq -r 'select(.message | test("^Layer 2 returned [0-9]+ bytes$")) | .message' run.jsonl | wc -l
+# escalations to L3
+jq -r 'select(.message | test("Layer 3 \\(Chromiumoxide\\): attempting fetch")) | .message' run.jsonl | wc -l
+```
+
+The trace file records every level independently of `-v` (the file layer runs
+at TRACE level for the `webfang` target), so the layer events are in it even
+without `-vv`. The rest of the query cookbook is in
+[debugging.md](debugging.md).
+
+**The four consequences of the decision**, recorded so the promise is not
+re-invented later:
+
+1. The L2 hit-rate is **derived from the per-layer logs** — no new counters,
+   and no strict mode.
+2. The preflight's `Unknown` verdict (an unreadable `--version`) **degrades to
+   a warning** instead of failing the run: an unreadable version never
+   blocks the crawl.
+3. The floor in force is **0.2.5**. The `0.2.3` ask in #1710 is stale: the
+   upstream release moved on, and the floor follows the current stable.
+4. **#1710 stays open.** It is commented with this status, not closed.
+
 ## State directory contents
 
 Companion note to `--state-dir` (documented in the generated block above).
