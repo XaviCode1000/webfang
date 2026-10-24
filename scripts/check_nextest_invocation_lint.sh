@@ -1,17 +1,20 @@
 #!/usr/bin/env bash
 # check_nextest_invocation_lint.sh
 #
-# CI gate for one nextest-hygiene class that NO compiler or clippy lint
-# catches (issue #1784, follow-up to #1781 / #1782). #1782 removed the nine
-# duplicated `--test-threads 4` flags so `.config/nextest.toml` governs the
-# test width; a new `cargo nextest run` invocation that hardcodes a
-# thread-count flag silently kills that config again, and the duplication
-# erodes without a lint.
+# CI gate for two nextest-hygiene classes that NO compiler or clippy lint
+# catches (issue #1784, follow-up to #1781 / #1782; policy flags since
+# #2305). #1782 removed the nine duplicated `--test-threads 4` flags so
+# `.config/nextest.toml` governs the test width; a new `cargo nextest run`
+# invocation that hardcodes a thread-count flag silently kills that config
+# again, and the duplication erodes without a lint. #2305 centralized the
+# retry policy in the same file (the lanes adopt `--profile ci`, no flags),
+# so a hardcoded `--retries`/`--flaky-result` erodes it the same way.
 #
 # The gate FAILS on any thread-count flag (`-j`, `--jobs`,
-# `--test-threads`, in spaced, `=`-joined, or glued `-j4` form) on a
-# `cargo nextest run` invocation under `scripts/` + `.github/workflows/`.
-# It is silent and green otherwise.
+# `--test-threads`, in spaced, `=`-joined, or glued `-j4` form) or
+# retry-policy flag (`--retries`, `--flaky-result`, in spaced, `=`-joined,
+# or bare end-of-line form) on a `cargo nextest run` invocation under
+# `scripts/` + `.github/workflows/`. It is silent and green otherwise.
 #
 # WHAT THIS GATE IS NOT
 #
@@ -26,7 +29,7 @@
 #     The `|` in step 2 is shell syntax (pipe), unrelated to the regex
 #     alternation in step 3.
 #   * The flag pattern is a FULL-TOKEN match,
-#     `(^|[[:space:]])(-j|--jobs|--test-threads)([[:space:]=]|[0-9]|$)`,
+#     `(^|[[:space:]])(-j|--jobs|--test-threads|--retries|--flaky-result)([[:space:]=]|[0-9]|$)`,
 #     so `--json`-like flags never fire. Known limit, declared: a
 #     `-j<digit>` glued inside another combined short-flag cluster is
 #     theoretical in nextest invocations and is not covered.
@@ -36,8 +39,10 @@
 #     real code still fires (fail-closed, never fail-open).
 #   * Only `cargo nextest run` invocations are in scope. The five
 #     `--test-threads=1` lines under `cargo test -- --ignored`, Miri, and
-#     TSan are a different runner and never match; `--retries` flags,
-#     `NEXTEST_PROFILE`, and CHANGELOG.md are explicitly out of scope.
+#     TSan are a different runner and never match; `NEXTEST_PROFILE`,
+#     `NEXTEST_RETRIES` and the other env overrides (#1786), and
+#     CHANGELOG.md are explicitly out of scope — env vars are the
+#     sanctioned local override, CLI flags are not.
 #   * This script and its harness contain the banned pattern as literals,
 #     so both exclude themselves by basename (see SELF below).
 #
@@ -82,8 +87,8 @@ function basename(path,    n, parts) {
 }
 function check_segment(seg, file, lineno, logical) {
     if (seg ~ /cargo[ \t]+nextest[ \t]+run/ \
-        && seg ~ /(^|[ \t])(-j|--jobs|--test-threads)([ \t=]|[0-9]|$)/) {
-        printf "::error file=%s,line=%d::nextest thread-count flag pins the test width — .config/nextest.toml governs it (issue #1784)\n      %s\n", file, lineno, logical
+        && seg ~ /(^|[ \t])(-j|--jobs|--test-threads|--retries|--flaky-result)([ \t=]|[0-9]|$)/) {
+        printf "::error file=%s,line=%d::nextest thread-count or retry-policy flag pins what .config/nextest.toml governs (issues #1784, #2305)\n      %s\n", file, lineno, logical
         failed = 1
     }
 }
@@ -134,8 +139,8 @@ END {
 ' || rc=$?
 
 if [ "$rc" -ne 0 ]; then
-  echo "check_nextest_invocation_lint.sh: FAILED (thread-count flag on a cargo nextest run invocation)" >&2
+  echo "check_nextest_invocation_lint.sh: FAILED (thread-count or policy flag on a cargo nextest run invocation)" >&2
   exit 1
 fi
 
-echo "check_nextest_invocation_lint.sh: OK (no thread-count flags on cargo nextest run invocations)"
+echo "check_nextest_invocation_lint.sh: OK (no thread-count or policy flags on cargo nextest run invocations)"
