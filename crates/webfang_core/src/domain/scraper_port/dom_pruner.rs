@@ -11,19 +11,19 @@
 //! Note: This uses regex-based removal as scraper crate's NodeHandle API
 //! doesn't support direct DOM mutation for this use case.
 
-use once_cell::sync::Lazy;
 use regex::Regex;
+use std::sync::LazyLock;
 use tracing::{debug, instrument};
 
 /// Regex to remove elements with display:none or display: none
 #[allow(clippy::unwrap_used)] // These patterns are compile-time constants
-static DISPLAY_NONE_RE: Lazy<Regex> = Lazy::new(|| {
+static DISPLAY_NONE_RE: LazyLock<Regex> = LazyLock::new(|| {
     regex::Regex::new(r"(?is)<(?:div|span|p|section|article|footer|nav|aside|header|main|ul|ol|li)[^>]*display\s*:\s*none[^>]*>.*?</(?:div|span|p|section|article|footer|nav|aside|header|main|ul|ol|li)>").unwrap()
 });
 
 /// Regex to remove elements with visibility:hidden
 #[allow(clippy::unwrap_used)]
-static VISIBILITY_HIDDEN_RE: Lazy<Regex> = Lazy::new(|| {
+static VISIBILITY_HIDDEN_RE: LazyLock<Regex> = LazyLock::new(|| {
     regex::Regex::new(r"(?is)<(?:div|span|p|section|article|footer|nav|aside|header|main|ul|ol|li)[^>]*visibility\s*:\s*hidden[^>]*>.*?</(?:div|span|p|section|article|footer|nav|aside|header|main|ul|ol|li)>").unwrap()
 });
 
@@ -32,7 +32,7 @@ static PRUNE_TAGS: &[&str] = &["div", "span", "p", "section", "article"];
 
 /// Pre-compiled empty wrapper regex patterns
 #[allow(clippy::unwrap_used)]
-static EMPTY_WRAPPER_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
+static EMPTY_WRAPPER_PATTERNS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     PRUNE_TAGS
         .iter()
         .map(|tag| regex::Regex::new(&format!(r"(?is)<{tag}[^>]*>\s*</{tag}>")).unwrap())

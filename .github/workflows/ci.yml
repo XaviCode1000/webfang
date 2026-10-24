@@ -248,6 +248,32 @@ jobs:
       # invisible. Offline, no repo state touched.
       - name: Dependency direction gate semantics harness
         run: bash scripts/test_dependency_direction.sh
+      # Build-graph hygiene guard (issues #1799, #1797, #1796). The graph must
+      # carry ONE source of RAM (`sysinfo`, never `sys-info`, whose unit was
+      # undocumented), NO `built`/`git2`/`libgit2-sys` (they fed a function with
+      # zero call sites), NO `once_cell` in the manifests (std carries
+      # `LazyLock` since 1.80 and the MSRV is 1.88), and NO browser in the
+      # DEFAULT workspace graph (the benchmark declares its own forwarding
+      # `chromium` feature instead of forcing it onto `webfang_core`).
+      #
+      # WHY THIS STEP EXISTS: three of those four changes have NO observable
+      # behaviour — they only change the dependency graph — so without a lane
+      # that asserts the graph, the deletions would be invisible to CI and
+      # trivially revertible. The harness asserts the NEGATION (the crates are
+      # ABSENT) with a positive control per check, so it cannot go green by
+      # construction.
+      #
+      # OFFLINE / NO-CARGO: the harness RESOLVES graphs with `cargo tree
+      # --offline` and compiles NOTHING — no rustc, no linker, no build script.
+      # `cargo tree` still READS the registry sources of the packages it prints,
+      # and a cold runner has none, so the step fetches them once with
+      # `cargo fetch --locked`: ~100 MiB of .crate archives for the 658
+      # registry packages of this lockfile. It is a DOWNLOAD, not a build, and
+      # `--locked` fails loudly if the lockfile has drifted from the manifests.
+      - name: Build graph hygiene harness
+        run: |
+          cargo fetch --locked
+          bash scripts/test_build_graph.sh
       # Regression guard for #990 (ADR-0010): intra-crate Clean Architecture
       # layering `infrastructure → adapters → application → domain` (inward only).
       # Fails if `application` imports `infrastructure` etc. (see
@@ -300,6 +326,20 @@ jobs:
       # cargo, no build.
       - name: Empty test target guard semantics harness
         run: bash scripts/test_empty_test_targets.sh
+      # Semantics harness for the Miri UB lane contract (#2235): the lane
+      # must REPORT, not abort the process — a lane that aborts leaves no
+      # result to act on, which is the dead end this issue closes. The
+      # harness pins the four invariants that keep it a detector: no
+      # unjustified `--skip` in a Miri job (the skip-net of #1423 deleted a
+      # whole test tree per entry and hid the UB inside it), a written
+      # reason on every Miri gate (a gate nobody can evaluate is not a
+      # gate), the `application::` filter still inside the `Miri (core)`
+      # group, and a per-test gate on every test that drives the scrape use
+      # case (the servo_arc/lol_html UB of `application/scraper_service.rs`).
+      # Offline, pure text over the checked-out tree plus mktemp fixtures:
+      # no cargo, no Miri, no build.
+      - name: Miri lane invariants semantics harness
+        run: bash scripts/test_miri_lane_invariants.sh
       # Semantics harness for the AI-attribution trailer check wired into
       # pr-validation.yml. Proves on fixtures that the release-plz co-author
       # PASSES (a blanket ban would break the release flow), that the Claude
@@ -1608,23 +1648,39 @@ jobs:
   # ============================================================================
   # SCHEDULED: Miri (UB detection on nightly)
   #
-  # Design (three-layer defence):
-  #   1. Code level: tests that depend on btls-sys FFI (btls/wreq) or
-  #      onig-sys (syntect) use #[cfg_attr(miri, ignore)] or live in
-  #      #[cfg(not(miri))] modules. Miri cannot execute C FFI nor inline
-  #      assembly (raw-cpuid via quanta/governor).
-  #   2. CI safety net: per-submodule skips (--skip wreq_downloader /
-  #      obscura_downloader / chromiumoxide_downloader) catch any missed FFI
-  #      test, while still allowing the pure-Rust downloader modules
-  #      (resource_governor, cookie_bridge, spa_detector, hybrid_router)
-  #      to run under Miri (#515).
+  # Design (the lane is a DETECTOR: it must REPORT, not abort the process):
+  #   1. Code level: every test that needs an interpreter-hostile primitive
+  #      carries its OWN gate, with the reason written next to it:
+  #      `#[cfg_attr(miri, ignore = "<motivo>")]`. The reason names the
+  #      concrete limitation — btls-sys FFI (the wreq Client), Command::spawn
+  #      (obscura, chromiumoxide), sysinfo sysconf (resource_governor), the
+  #      servo_arc/lol_html Tree Borrows UB — never "flaky" and never a bare
+  #      "not supported". A gate nobody can evaluate is not a gate.
+  #   2. NO skip-net (#2235): the three per-submodule `--skip` flags
+  #      (wreq_downloader / obscura_downloader / chromiumoxide_downloader)
+  #      are GONE. A submodule skip deletes a whole test tree from the lane
+  #      and hides the UB living inside that tree — the skip-net of #1423
+  #      was a patch, and the acceptance criterion it carried ("4/4 green
+  #      WITHOUT the skip-net") was never met. What the skip protected is
+  #      now a per-test gate with a written reason, so the tests that do
+  #      NOT need FFI keep running under Miri instead of disappearing.
   #   3. Matrix: tests split into parallel groups so ALL failures surface
   #      in ONE run instead of blocking on the first UB.
   #   4. Sysroot cache: cargo miri setup drops from ~15min to ~2s warm.
   #   5. Tree Borrows: aliasing model that tolerates sound-in-practice patterns
   #      (ahash, dashmap, smallvec) while still detecting real UB.
   #      If a specific test fails under Tree Borrows, isolate it with
-  #      #[cfg(not(miri))] — never disable aliasing detection globally.
+  #      `#[cfg_attr(miri, ignore = "<motivo>")]` — never disable aliasing
+  #      detection globally.
+  #
+  #   The UB of `application/scraper_service.rs` (the servo_arc / lol_html
+  #   family) is attributed to a TEST, gate by gate: a lane that ABORTS
+  #   leaves no result to act on, which is the dead end #2235 closes. The
+  #   static harness `scripts/test_miri_lane_invariants.sh` (wired into
+  #   `repo-guards`) pins the four invariants that keep the lane a detector:
+  #   no unjustified skip, a written reason on every gate, the `application::`
+  #   filter still inside the core group, and a per-test gate on every test
+  #   that drives the scrape use case.
   # ============================================================================
   miri:
     name: Miri (${{ matrix.group }})
@@ -1706,13 +1762,12 @@ jobs:
           MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-disable-isolation -Zmiri-ignore-leaks -Zmiri-seed=42 -Zmiri-permissive-provenance
         run: |
           cargo miri setup
-          # Safety net (#515): skip the FFI/subprocess-heavy AND sysinfo-dependent
-          # downloader submodules explicitly instead of the whole `downloader`
-          # subtree, so the pure-Rust submodules (cookie_bridge, spa_detector)
-          # run under Miri. hybrid_router/resource_governor can't run under Miri
-          # (sysconf via sysinfo) and are gated by #[cfg(not(miri))] at test level.
+          # #2235: NO skip-net. The per-submodule `--skip` flags are gone:
+          # a submodule skip deleted a whole test tree from the lane and hid
+          # the UB inside it. The tests that genuinely need FFI/asm carry
+          # their own per-test gate with a written reason (the downloader
+          # submodules), and the tests that do not need it run under Miri.
           cargo miri test --lib -- \
-            --skip wreq_downloader --skip obscura_downloader --skip chromiumoxide_downloader \
             ${{ matrix.filter }}
 
   # ============================================================================
@@ -1770,21 +1825,25 @@ jobs:
           MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-disable-isolation -Zmiri-ignore-leaks -Zmiri-seed=42 -Zmiri-permissive-provenance
         run: |
           cargo miri setup
+          # #2235: NO skip-net — see the design block above the `miri` job.
           cargo miri test --lib -- \
-            --skip wreq_downloader --skip obscura_downloader --skip chromiumoxide_downloader \
             -- infrastructure::cpu_pool:: -- infrastructure::stream:: -- infrastructure::error:: -- infrastructure::user_agent:: -- infrastructure::bridge:: -- infrastructure::output:: -- infrastructure::config:: -- infrastructure::autotuning:: -- infrastructure::content_processing:: -- infrastructure::scraper::
 
   # ============================================================================
-  # MIRI INFRA-SLOW: crawler/obsidian/export/http/network/converter + pure-Rust
-  # downloader submodules. 120 min timeout (#1512) — see the `miri` job rationale.
+  # MIRI INFRA-SLOW: crawler/obsidian/export/http/network/converter + the
+  # downloader submodules. 120 min timeout (#1512) — see the `miri` job
+  # rationale.
   # syntax_highlight is excluded at source via #[cfg(all(test, not(miri)))];
-  # wikilinks (pure pulldown_cmark, no FFI) runs and passes under Miri. The
-  # trailing `--skip wikilinks`/`--skip syntax_highlight` flags are inert
-  # (parsed after the `--` positional filters) — kept as documentation.
-  # downloader: only pure-Rust submodules (cookie_bridge/spa_detector)
-  # — FFI (wreq, obscura, chromiumoxide) and sysinfo-dependent (hybrid_router,
-  # resource_governor) excluded via --skip / #[cfg(not(miri))] (#515).
-  # resource_governor is covered by TSan (sanitizers.yml), where sysconf works.
+  # wikilinks (pure pulldown_cmark, no FFI) runs and passes under Miri — it
+  # is already covered by the `infrastructure::converter::` filter, so it
+  # needs no flag of its own.
+  # downloader (#2235): the FFI submodules (wreq, obscura, chromiumoxide)
+  # are IN the filter again. What the per-submodule `--skip` used to hide
+  # is now a per-test gate with a written reason, so the tests of those
+  # submodules that do NOT need FFI/asm run under Miri. The sysinfo-
+  # dependent ones (hybrid_router, resource_governor) stay out of the
+  # filter; resource_governor is covered by TSan (sanitizers.yml), where
+  # sysconf works.
   # Budget (#751): memory_manager's test_handle_disk_swapping_with_swap is
   # #[cfg_attr(miri, ignore)] — it alone burned ~27 min wall, leaving the rest
   # of this job at ~30–33 min of the old 60 min timeout (knife-edge then);
@@ -1837,9 +1896,12 @@ jobs:
           MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-disable-isolation -Zmiri-ignore-leaks -Zmiri-seed=42 -Zmiri-permissive-provenance
         run: |
           cargo miri setup
+          # #2235: NO skip-net — see the design block above the `miri` job.
+          # The three FFI downloader submodules are back in the filter: their
+          # FFI/asm tests carry a per-test gate with a written reason, and
+          # the rest run under Miri.
           cargo miri test --lib -- \
-            --skip wreq_downloader --skip obscura_downloader --skip chromiumoxide_downloader \
-            -- infrastructure::crawler:: -- infrastructure::obsidian:: -- infrastructure::export:: -- infrastructure::http:: -- infrastructure::network:: -- infrastructure::converter:: -- infrastructure::downloader::cookie_bridge:: -- infrastructure::downloader::spa_detector:: --skip wikilinks --skip syntax_highlight
+            -- infrastructure::crawler:: -- infrastructure::obsidian:: -- infrastructure::export:: -- infrastructure::http:: -- infrastructure::network:: -- infrastructure::converter:: -- infrastructure::downloader::cookie_bridge:: -- infrastructure::downloader::spa_detector:: -- infrastructure::downloader::wreq_downloader:: -- infrastructure::downloader::obscura_downloader:: -- infrastructure::downloader::chromiumoxide_downloader::
 
   # ============================================================================
   # COVERAGE: PR gate + push-to-main + manual trigger

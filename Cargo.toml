@@ -69,7 +69,6 @@ sha2 = "0.10"
 rand = "0.9"
 dirs = "5"
 num_cpus = "1"
-once_cell = "1"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 
 # HTML to Markdown
@@ -98,7 +97,6 @@ console-subscriber = "0.4"
 # SQLite persistence
 rusqlite = { version = "0.31", features = ["bundled", "chrono", "uuid"] }
 deadpool-sqlite = "0.8"
-sys-info = "0.9"
 
 # Observability
 tracing-tree = "0.4"

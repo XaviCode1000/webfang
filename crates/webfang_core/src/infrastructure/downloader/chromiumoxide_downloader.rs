@@ -579,6 +579,11 @@ impl Downloader for ChromiumoxideDownloader {
     }
 }
 
+/// #2235: the `--skip chromiumoxide_downloader` of the Miri lane is GONE —
+/// a submodule skip deleted this whole test tree from the lane and hid the UB
+/// living inside it. The stub build (no `chromium` feature) is pure Rust and
+/// runs under Miri; the test that spawns a headless Chrome carries its own
+/// gate (Command::spawn is unsupported by Miri).
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -887,6 +892,10 @@ mod tests {
     /// event is inherently racy. Skips gracefully where no Chrome binary
     /// exists (bare CI).
     #[cfg(feature = "chromium")]
+    #[cfg_attr(
+        miri,
+        ignore = "chromiumoxide spawns a headless Chrome process → posix_spawnattr_init unsupported by Miri (#775)"
+    )]
     #[tokio::test]
     async fn settle_modes_capture_delayed_mutation() {
         if !chrome_present_for_e2e() {

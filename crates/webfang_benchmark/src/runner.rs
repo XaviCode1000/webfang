@@ -37,7 +37,17 @@ use webfang_core::domain::JsStrategy;
 use webfang_core::infrastructure::observability::FileTraceLayer;
 
 /// Deterministic strategy order for every benchmark invocation.
+///
+/// The browser tier (`JsStrategy::Full`) is in the list ONLY in a build that
+/// carries the `chromium` feature (#1796): measuring a tier the build cannot
+/// execute produces a report row full of errors, not a measurement.
+#[cfg(feature = "chromium")]
 const STRATEGIES: [JsStrategy; 3] = [JsStrategy::Static, JsStrategy::Hybrid, JsStrategy::Full];
+
+/// The tier set of a build WITHOUT the browser stack: the browser tier is
+/// excluded because the downloader it needs cannot be constructed here.
+#[cfg(not(feature = "chromium"))]
+const STRATEGIES: [JsStrategy; 2] = [JsStrategy::Static, JsStrategy::Hybrid];
 
 /// One completed strategy run: computed metrics ready for aggregation.
 #[derive(Debug)]

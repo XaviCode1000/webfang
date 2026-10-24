@@ -1,6 +1,6 @@
 ---
 source: crates/webfang_mcp/tests/download_assets_test.rs
-expression: tool_text(&result)
+expression: redact_path(&tool_text(&result), out.path())
 ---
 [
   {

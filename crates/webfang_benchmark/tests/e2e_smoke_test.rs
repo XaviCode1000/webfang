@@ -16,6 +16,20 @@ use webfang_benchmark::report;
 use webfang_benchmark::runner;
 use webfang_core::domain::JsStrategy;
 
+/// The tier set THIS build can actually execute.
+///
+/// The browser tier exists only in a build with the `chromium` feature
+/// (#1796): the benchmark forwards the feature to `webfang_core` and the
+/// runner measures `JsStrategy::Full` only when the browser stack is in the
+/// build. Without the feature the set is `[Static, Hybrid]`.
+#[cfg(feature = "chromium")]
+const EXPECTED_STRATEGIES: [JsStrategy; 3] =
+    [JsStrategy::Static, JsStrategy::Hybrid, JsStrategy::Full];
+
+/// The tier set of a build WITHOUT the browser stack.
+#[cfg(not(feature = "chromium"))]
+const EXPECTED_STRATEGIES: [JsStrategy; 2] = [JsStrategy::Static, JsStrategy::Hybrid];
+
 /// Full pipeline smoke: every strategy produces metrics AND a real engine
 /// summary captured from its JSONL trace (tripwire against off-thread span
 /// emission hiding required shapes).
@@ -37,7 +51,11 @@ fn full_pipeline_produces_report_and_engine_summaries() {
     let handle = rt.block_on(corpus::serve()).expect("corpus server");
     let outcomes = runner::run_all(&handle.manifest).expect("pipeline succeeds");
 
-    assert_eq!(outcomes.len(), 3, "one outcome per strategy");
+    assert_eq!(
+        outcomes.len(),
+        EXPECTED_STRATEGIES.len(),
+        "one outcome per strategy"
+    );
     let mut seen = std::collections::HashSet::new();
 
     let config = CostConfig::default();
@@ -84,11 +102,11 @@ fn full_pipeline_produces_report_and_engine_summaries() {
         metrics_all.push(m.clone());
     }
 
-    // All three strategies ran, in the deterministic order.
+    // Every strategy this build can execute ran, in the deterministic order.
     let order: Vec<JsStrategy> = outcomes.iter().map(|o| o.strategy).collect();
     assert_eq!(
         order,
-        vec![JsStrategy::Static, JsStrategy::Hybrid, JsStrategy::Full],
+        EXPECTED_STRATEGIES.to_vec(),
         "strategies must run in deterministic order"
     );
 
@@ -99,15 +117,13 @@ fn full_pipeline_produces_report_and_engine_summaries() {
         md.starts_with("# WebFang Benchmark Report"),
         "not Markdown-titled"
     );
-    for strategy in ["Static", "Hybrid", "Full"] {
-        assert!(
-            md.contains(strategy),
-            "report missing strategy row {strategy}"
-        );
+    for strategy in EXPECTED_STRATEGIES {
+        let row = format!("{strategy:?}");
+        assert!(md.contains(&row), "report missing strategy row {row}");
     }
     let labels = md.matches("simulated challenge corpus").count();
     assert!(
-        labels >= 3,
+        labels >= 2 * EXPECTED_STRATEGIES.len(),
         "tier labels missing from report rows ({labels})"
     );
     // Verbatim assumptions survive the full pipeline (AC-4.1).

@@ -55,8 +55,8 @@ unmaintained = "all"
 unsound = "all"
 yanked = "deny"
 # Kept at "warn" ON PURPOSE, and deliberately not "deny". cargo-deny's
-# advisory-not-detected diagnostics are known to drift from cargo-audit's: four
-# ids below (RUSTSEC-2026-0183/0184/0221/0253) are reported as not-detected by
+# advisory-not-detected diagnostics are known to drift from cargo-audit's: two
+# ids below (RUSTSEC-2026-0221/0253) are reported as not-detected by
 # cargo-deny while cargo-audit matches them against the same lock. Promoting
 # this to an error would turn `cargo deny check` red and regress a positive
 # control, so the drift surfaces as a warning and is reconciled instead by the
@@ -76,6 +76,10 @@ unused-ignored-advisory = "warn"
 #   - RUSTSEC-2026-0097 (tonic), RUSTSEC-2026-0002 (lru), RUSTSEC-2026-0183
 #     and RUSTSEC-2026-0184 (git2): crates are still locked, but the RustSec
 #     DB criteria no longer match these IDs against them (advisories revised).
+#     The two git2 ids were re-added later and are now purged AGAIN, for a
+#     different reason: the `built` build-dependency that was their only path
+#     into the graph is gone (issue #1797), so git2 is no longer in either
+#     lockfile and the justification they carried is void.
 # RE-ADD PROTOCOL: if the DB revises an advisory so that a purged ID matches
 # the current lock again, `cargo deny` fails loudly and the ignore is re-added
 # here with fresh justification — never left purge-listed. Live instance:
@@ -147,22 +151,6 @@ ignore = [
     # Tracking: https://rustsec.org/advisories/RUSTSEC-2026-0221
     # Expires: 2027-03-20
     { id = "RUSTSEC-2026-0221", reason = "event-listener 5.4.1 unsound; !Send tags can cross thread boundaries via StackSlot, transitive via async-lock/async-process <- async-std <- chromiumoxide 0.7 and never used directly in webfang code" },
-
-    # RUSTSEC-2026-0183 (git2 0.20.4, severity: unsound)
-    # Potential UB when calling Remote::list(). Via `built` (build-dependency
-    # of webfang_core for compile-time version info): build-time only, the
-    # Remote API is never called.
-    # Tracking: https://rustsec.org/advisories/RUSTSEC-2026-0183
-    # Expires: 2027-03-20
-    { id = "RUSTSEC-2026-0183", reason = "git2 0.20.4 unsound; potential UB when calling Remote::list(), reachable only through the built build-dependency of webfang_core, which never calls the Remote API" },
-
-    # RUSTSEC-2026-0184 (git2 0.20.4, severity: unsound)
-    # Potential UB with Signature from a buffer-created BlameHunk. Same
-    # build-time-only path as RUSTSEC-2026-0183 (via `built`); the Blame API
-    # is never called.
-    # Tracking: https://rustsec.org/advisories/RUSTSEC-2026-0184
-    # Expires: 2027-03-20
-    { id = "RUSTSEC-2026-0184", reason = "git2 0.20.4 unsound; potential UB with Signature from a buffer-created BlameHunk, same build-time-only path as RUSTSEC-2026-0183 and the Blame API is never called" },
 
     # RUSTSEC-2026-0253 (lru 0.16.4 + 0.18.1, severity: unsound)
     # Potential use-after-free on panic inside `LruCache::pop()`. Via
