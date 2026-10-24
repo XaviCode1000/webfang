@@ -552,8 +552,11 @@ EOF
   # cargo, <1s — cheap enough that it is never skipped once triggered.
   # Mirrors the `repo-guards` step of the same
   # harness in .github/workflows/ci.yml.
-  if grep -Eq '^(scripts/ci_path_classifier\.sh|scripts/ci_path_classifier_test\.sh)$' "$UNION_TMP" 2>/dev/null || [[ "$CI_HARNESS_MODE" == "always" ]]; then
+  if grep -Eq '^(scripts/ci_path_classifier\.sh|scripts/ci_path_classifier_test\.sh|scripts/ci_plan\.sh|scripts/ci_crossplatform_scope\.sh|scripts/test_ci_plan\.sh|scripts/test_ci_gate_structure\.sh|scripts/ci_queue_metrics\.sh|scripts/test_ci_queue_metrics\.sh|scripts/tests/queue_metrics_fake_gh\.sh|\.github/workflows/ci-health\.yml)$' "$UNION_TMP" 2>/dev/null || [[ "$CI_HARNESS_MODE" == "always" ]]; then
     run_step "path classifier harness semantics (offline)" bash scripts/ci_path_classifier_test.sh
+    run_step "CI plan semantics harness (offline)" bash scripts/test_ci_plan.sh
+    run_step "CI gate structure harness (offline, #2286)" bash scripts/test_ci_gate_structure.sh
+    run_step "queue metrics semantics harness (offline, #2284)" bash scripts/test_ci_queue_metrics.sh
   else
     skip_step "path classifier harness semantics" "no path classifier files changed"
   fi
@@ -654,6 +657,15 @@ EOF
     run_step "ci metrics snapshot harness (offline)" bash scripts/test_ci_metrics.sh
   else
     skip_step "ci metrics snapshot harness" "no ci_metrics files changed"
+  fi
+  # The dynamic mutant-shard sizing must keep its contract: the count is
+  # measured by cargo-mutants itself, the formula is calibrated
+  # (min(16, ceil(count/8))) and untrusted diff input fails closed (#2285).
+  # Offline toy fixture + the real cargo-mutants --list, no network.
+  if grep -Eq '^(scripts/ci_mutant_shards\.sh|scripts/test_ci_mutant_shards\.sh)$' "$UNION_TMP" 2>/dev/null || [[ "$CI_HARNESS_MODE" == "always" ]]; then
+    run_step "dynamic mutant shards harness (offline)" bash scripts/test_ci_mutant_shards.sh
+  else
+    skip_step "dynamic mutant shards harness" "no ci_mutant_shards files changed"
   fi
 }
 
@@ -887,6 +899,20 @@ lane_fmt_and_guards() {
   # Release provenance L1 acceptance matrix (hermetic mktemp fixtures, no network).
   run_guard "release provenance L1 acceptance matrix" scripts/test_release_provenance.sh \
     bash scripts/test_release_provenance.sh
+  # Release-owner migration (#2281): stale-owner guard + historical tag policy.
+  run_guard "release owner regression guard" scripts/test_release_owner.sh \
+    bash scripts/test_release_owner.sh
+  run_guard "release signature identity semantics" scripts/test_verify_release_signatures.sh \
+    bash scripts/test_verify_release_signatures.sh
+  # CI planner semantics (#2282): event -> comparison-SHA contract and the
+  # crossplatform table. Hermetic mktemp git trees; no cargo, no network.
+  run_guard "CI plan semantics harness (#2282)" scripts/test_ci_plan.sh \
+    bash scripts/test_ci_plan.sh
+  # CI gate structure (#2286): gate.needs must equal {change-scope} ∪
+  # required_producers, every non-advisory job gated or allowlisted, no
+  # continue-on-error on gate producers. Text-parse, no cargo, <1s.
+  run_guard "CI gate structure harness (#2286)" scripts/test_ci_gate_structure.sh \
+    bash scripts/test_ci_gate_structure.sh
   # Degraded lint + audit guards (changed-scope / cached-only, never download).
   run_pinned_lint_changed_scope
   run_zizmor_cached_only

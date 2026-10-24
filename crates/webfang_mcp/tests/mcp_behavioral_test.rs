@@ -24,39 +24,19 @@ use webfang_mcp::mcp_server::server::ServerOptions;
 use webfang_mcp::mcp_server::state::McpState;
 
 // Canonical HTML page fixtures, shared across the MCP test binaries (#1371).
-// Imported by name, not `use common::*`: this file keeps its own local
-// server harness (`start_test_server`, the session-seeded
-// `start_seeded_server`, `init_ssrf_disabled`, `redact_path`, `RelTempDir`)
-// — server-bootstrap dedup belongs to the arrange-helpers slice, not this
-// one. The JSON-RPC client (`mcp_request`, `extract_json`, `init_session`,
-// `call_tool`, `tool_text`, `is_tool_error`) is shared via `common`.
+// Imported by name, not `use common::*`: this file keeps its own
+// cleaner-wired server prologue (`start_test_server_with_cleaner`) — a glob
+// would collide with it. The JSON-RPC client (`mcp_request`, `extract_json`,
+// `init_session`, `call_tool`, `tool_text`, `is_tool_error`), the server
+// bootstrap (`start_test_server`, `start_seeded_server`,
+// `init_ssrf_disabled`) and the arrange helpers (`redact_path`,
+// `RelTempDir`) are shared via `common` (#1757, S2).
 mod common;
 use common::{
-    call_tool, extract_json, init_session, is_tool_error, mcp_request, mount_page_200,
-    mount_page_200_expect, tool_text,
+    call_tool, extract_json, init_session, init_ssrf_disabled, is_tool_error, mcp_request,
+    mount_page_200, mount_page_200_expect, redact_path, start_seeded_server, start_test_server,
+    tool_text, RelTempDir,
 };
-
-/// Initialize SSRF disable flag for tests (idempotent).
-fn init_ssrf_disabled() {
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        // Process-wide, permanent setup (no restore-on-drop): `env_set`
-        // acquires ENV_LOCK itself, so each mutation stays serialized under
-        // the workspace ENV_LOCK invariant (issue #1126) without a manual
-        // `env_lock` binding.
-        // Both SSRF layers are lifted: the MCP entry validator and the
-        // shared core literal-IP entry guard (F-06 + F-32, #1217), since
-        // every tool under test fetches wiremock loopback literals.
-        webfang_test_utils::env_set(
-            webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
-            "1",
-        );
-        webfang_test_utils::env_set(
-            webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
-            "1",
-        );
-    });
-}
 
 /// JSON-RPC standard error code for "Method not found" (JSON-RPC 2.0 spec).
 const JSONRPC_METHOD_NOT_FOUND: i64 = -32601;
@@ -76,167 +56,6 @@ fn parse_jsonrpc_error_code(body: &str) -> Option<i64> {
 
     let parsed: Value = serde_json::from_str(json_str).ok()?;
     parsed.get("error")?.get("code")?.as_i64()
-}
-
-/// Start a test MCP server on a random port and return the base URL.
-async fn start_test_server() -> (String, tokio::task::JoinHandle<()>) {
-    // Disable SSRF before building the router
-    init_ssrf_disabled();
-
-    let config = Config::default();
-    let container = Container::new(config.crawler, config.scraper)
-        .await
-        .expect("container creation failed");
-    let state = McpState::new(container);
-    let app = build_mcp_router(
-        state,
-        &ServerOptions {
-            // #1611 G-18: anonymous operation is an explicit opt-in now,
-            // and this suite is one of the places that makes it.
-            allow_anonymous: true,
-            ..Default::default()
-        },
-    );
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr: SocketAddr = listener.local_addr().unwrap();
-    let base_url = format!("http://{addr}");
-
-    let handle = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-
-    // Wait for the server to accept TCP connections instead of a fixed sleep.
-    for _ in 0..20 {
-        if tokio::net::TcpStream::connect(&addr).await.is_ok() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-
-    (base_url, handle)
-}
-
-// ============================================================================
-// Export-tool helpers (issue #343 slice 1 — real export wiring)
-// ============================================================================
-
-/// Redact a known output directory path so insta snapshots stay stable
-/// run-to-run. Local helper: webfang_core's `tests/common` redactor is NOT
-/// importable from webfang_mcp (dependency direction is mcp → core).
-fn redact_path(text: &str, dir: &std::path::Path) -> String {
-    text.replace(dir.to_string_lossy().as_ref(), "[OUT_DIR]")
-}
-
-/// Start a test MCP server whose session-owned results buffer is pre-seeded
-/// with `n` `ScrapedContent` items — the same buffer a finished `crawl_site`
-/// run leaves behind (#1290 re-pointed the export tools from the legacy
-/// repository read to the session).
-///
-/// Returns `(base_url, server_handle, container_tmp)`. The container temp dir
-/// is returned so tests can locate exports that default to the container's
-/// configured `output_dir` (e.g. `process_export_pipeline`).
-async fn start_seeded_server(n: usize) -> (String, tokio::task::JoinHandle<()>, tempfile::TempDir) {
-    use webfang_core::domain::config::ScraperConfig;
-    use webfang_core::domain::{CrawlerConfig, ScrapedContent, ValidUrl};
-
-    let container_tmp = tempfile::TempDir::new().expect("create container temp dir");
-    let crawler_config =
-        CrawlerConfig::new(url::Url::parse("https://seed.example.com").expect("valid seed URL"));
-    let scraper_config = ScraperConfig {
-        output_dir: container_tmp.path().to_path_buf(),
-        ..Default::default()
-    };
-    let container = Container::new(crawler_config, scraper_config)
-        .await
-        .expect("container creation failed");
-
-    // The pipeline's write target is the container's configured output_dir;
-    // process_export_pipeline enforces the export-root gate at request time
-    // (XP-P-08/G-9, issue #1608), so the fixture declares the container temp
-    // dir as a root — the shape of a deployment whose --export-roots covers
-    // the configured output directory.
-    let state =
-        McpState::new(container).with_export_roots(vec![container_tmp.path().to_path_buf()]);
-    for i in 0..n {
-        let url_str = format!("https://seed.example.com/page/{i}");
-        let url = url::Url::parse(&url_str).expect("valid seeded URL");
-        let content = ScrapedContent {
-            title: format!("Seed Title {i}"),
-            content: format!("Seed body content number {i} for export testing."),
-            url: ValidUrl::try_from_url(url).expect("seeded fixture is a plain https URL"),
-            excerpt: None,
-            author: None,
-            date: None,
-            html: None,
-            assets: vec![],
-            correlation_id: None,
-            quality_hint: None,
-        };
-        // In-memory session seed: no background writer to wait for (the
-        // repository path's flush-poll is gone with its read source).
-        state
-            .session_results
-            .lock()
-            .expect("fresh session lock is never poisoned")
-            .push(content);
-    }
-    let app = build_mcp_router(
-        state,
-        &ServerOptions {
-            // #1611 G-18: anonymous operation is an explicit opt-in now,
-            // and this suite is one of the places that makes it.
-            allow_anonymous: true,
-            ..Default::default()
-        },
-    );
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr: SocketAddr = listener.local_addr().unwrap();
-    let base_url = format!("http://{addr}");
-
-    let handle = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-
-    for _ in 0..20 {
-        if tokio::net::TcpStream::connect(&addr).await.is_ok() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-
-    (base_url, handle, container_tmp)
-}
-
-/// A relative temporary directory that deletes itself on drop.
-///
-/// `tempfile::TempDir` always returns an absolute path (it joins with
-/// `env::current_dir`), which the MCP `require_safe_path` validator rejects.
-/// These tests need a *relative* output dir, so we manage one manually.
-struct RelTempDir {
-    path: std::path::PathBuf,
-}
-
-impl RelTempDir {
-    fn new(prefix: &str) -> Self {
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let name = format!("{prefix}-{}-{}", std::process::id(), n);
-        let path = std::path::PathBuf::from(name);
-        std::fs::create_dir_all(&path).expect("create relative temp dir");
-        RelTempDir { path }
-    }
-
-    fn path(&self) -> &std::path::Path {
-        &self.path
-    }
-}
-
-impl Drop for RelTempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
 }
 
 // ============================================================================

@@ -733,8 +733,7 @@ mod spec_parity_tests {
     use super::*;
     use crate::cli::args::test_support::{
         assert_defaults, assert_help, assert_long_short_alias_env_heading, assert_structural_one,
-        assert_structural_shape, assert_surface_covered_except, collect_args, parse_args,
-        parse_args_hermetic,
+        assert_structural_shape, assert_surface_covered_except, collect_args, parse_args_hermetic,
     };
     use crate::domain::options_spec as spec;
     use clap::Args as _;
@@ -806,8 +805,7 @@ mod spec_parity_tests {
     fn representative_values_parse_identically_through_clap() {
         // Defaults (hermetic: ambient WEBFANG_* must not leak into the
         // bare parse — issue #926).
-        let defaults = crate::cli::args::test_support::with_clap_env_cleared(|| parse_args(&[]))
-            .expect("bare invocation must parse");
+        let defaults = parse_args_hermetic(&[]).expect("bare invocation must parse");
         assert_eq!(defaults.crawler.selector, "body");
         assert_eq!(defaults.crawler.delay_ms, 1000);
         assert_eq!(defaults.crawler.max_pages, 10);
@@ -1277,19 +1275,19 @@ mod spec_parity_tests {
 
     #[test]
     fn out_of_bounds_and_malformed_inputs_error_exactly_as_before() {
-        let err = parse_args(&["--max-pages", "0"]).expect_err("zero pages rejected");
+        let err = parse_args_hermetic(&["--max-pages", "0"]).expect_err("zero pages rejected");
         assert!(
             err.contains("--max-pages debe ser >= 1 (0 no deja páginas para scrapear)"),
             "got: {err}"
         );
 
-        let err = parse_args(&["--max-pages", "abc"]).expect_err("text rejected");
+        let err = parse_args_hermetic(&["--max-pages", "abc"]).expect_err("text rejected");
         assert!(
             err.contains("'abc' no es un número válido para --max-pages"),
             "got: {err}"
         );
 
-        let err = parse_args(&["--timeout-secs", "0"]).expect_err("zero timeout rejected");
+        let err = parse_args_hermetic(&["--timeout-secs", "0"]).expect_err("zero timeout rejected");
         assert!(
             err.contains(
                 "--timeout-secs debe ser >= 1 (0 hace que cada request falle al instante)"
@@ -1297,14 +1295,15 @@ mod spec_parity_tests {
             "got: {err}"
         );
 
-        let err = parse_args(&["--timeout-secs", "9x"]).expect_err("malformed timeout rejected");
+        let err =
+            parse_args_hermetic(&["--timeout-secs", "9x"]).expect_err("malformed timeout rejected");
         assert!(
             err.contains("'9x' no es un número válido para --timeout-secs"),
             "got: {err}"
         );
 
-        let err =
-            parse_args(&["--download-concurrency", "0"]).expect_err("zero concurrency rejected");
+        let err = parse_args_hermetic(&["--download-concurrency", "0"])
+            .expect_err("zero concurrency rejected");
         assert!(
             err.contains(
                 "--download-concurrency debe ser >= 1 (0 causa un deadlock / hang infinito)"
@@ -1312,7 +1311,7 @@ mod spec_parity_tests {
             "got: {err}"
         );
 
-        let err = parse_args(&["--download-concurrency", "muchas"])
+        let err = parse_args_hermetic(&["--download-concurrency", "muchas"])
             .expect_err("malformed concurrency rejected");
         assert!(
             err.contains("'muchas' no es un número válido para --download-concurrency"),
@@ -1325,8 +1324,8 @@ mod spec_parity_tests {
     /// `--timeout-secs` (0-second timeout fails every asset instantly).
     #[test]
     fn download_timeout_zero_and_malformed_error_like_timeout_secs() {
-        let err =
-            parse_args(&["--download-timeout", "0"]).expect_err("zero download timeout rejected");
+        let err = parse_args_hermetic(&["--download-timeout", "0"])
+            .expect_err("zero download timeout rejected");
         assert!(
             err.contains(
                 "--download-timeout debe ser >= 1 (0 hace que cada descarga de assets falle al instante)"
@@ -1334,7 +1333,7 @@ mod spec_parity_tests {
             "got: {err}"
         );
 
-        let err = parse_args(&["--download-timeout", "fast"])
+        let err = parse_args_hermetic(&["--download-timeout", "fast"])
             .expect_err("malformed download timeout rejected");
         assert!(
             err.contains("'fast' no es un número válido para --download-timeout"),
@@ -1347,7 +1346,8 @@ mod spec_parity_tests {
     /// boundary (flag and `WEBFANG_CONCURRENCY` share the parser).
     #[test]
     fn parse_concurrency_rejects_zero_with_spanish_error() {
-        let err = parse_args(&["--concurrency", "0"]).expect_err("zero concurrency rejected");
+        let err =
+            parse_args_hermetic(&["--concurrency", "0"]).expect_err("zero concurrency rejected");
         assert!(
             err.contains("--concurrency debe ser >= 1 (usa 'auto' para autodetectar)"),
             "got: {err}"

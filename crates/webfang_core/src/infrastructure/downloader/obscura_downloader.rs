@@ -14,7 +14,16 @@
 //! (#787): a value carrying a path separator is invoked exactly as given
 //! (absolute or relative path); a bare name is resolved from `PATH` by the
 //! OS. The default is the bare name `obscura`. Hybrid preflight enforces a
-//! minimum binary version of 0.2.0 (REQ-OBS-02, cli/preflight.rs).
+//! minimum binary version of 0.2.5 (REQ-OBS-02, cli/preflight.rs).
+//!
+//! **What Layer 2 is — a cheap render, not an anti-WAF guarantee (#1710).**
+//! L2 renders a page far cheaper than the Chromiumoxide Layer 3 (~30 MB per
+//! subprocess against ~200 MB + CDP). That is the whole claim: it is NOT an
+//! anti-WAF guarantee. webfang never passes obscura's `-stealth` variant, and
+//! a WAF challenge surfaced at any layer aborts the escalation instead of
+//! being retried against it (see `hybrid_router.rs`). The L2-vs-L3 hit-rate
+//! is derived from the per-layer log events the router already emits — there
+//! are no layer counters, and no strict mode.
 //!
 //! **Sessionless contract (REQ-OBS-03):** Layer 2 injects no cookies and keeps
 //! no storage directory (`--storage-dir` is deliberately not wired — see

@@ -4,6 +4,11 @@
 //! live MCP server previously duplicated ~70 lines of bootstrap (container +
 //! state + axum serve + session helpers). This module centralizes that setup.
 //!
+//! It also owns the arrange helpers that used to be copied per test file
+//! (#1757, S2): the relative temp dir (`RelTempDir`), the JSONL export
+//! normalizer (`normalized_records`), the recursive file walk (`walk_dir`)
+//! and the CLI binary resolver (`webfang_binary`).
+//!
 //! Include it with `mod common;` (or `mod common; use common::*;`) at the top of
 //! a test file, then call `common::start_test_server()` and friends. The helpers
 //! are intentionally `pub` but only a subset is used by any given binary, so the
@@ -81,8 +86,16 @@ pub fn arm_wiremock_hatches() {
 }
 
 /// Initialize SSRF disable flags for tests (idempotent).
-fn init_ssrf_disabled() {
-    arm_wiremock_hatches();
+///
+/// Once per process: the hatches are armed PERMANENTLY, so priming them
+/// twice would only re-acquire the non-reentrant `ENV_LOCK` — and that
+/// deadlocks when the caller already holds an `EnvGuard` (the #1224 nesting
+/// invariant). The per-file copies this helper replaces carried the same
+/// `Once`, and the priming order ("prime BEFORE taking the guard") is the
+/// caller's, unchanged.
+pub fn init_ssrf_disabled() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(arm_wiremock_hatches);
 }
 
 /// Bind `app` to a random 127.0.0.1 port, serve it, and wait until it accepts
@@ -173,13 +186,18 @@ pub async fn start_server(
     serve_on_random_port(app).await
 }
 
-/// Start a test MCP server whose crawl-result repository is pre-seeded with
-/// `n` `ScrapedContent` items.
+/// Start a test MCP server whose SESSION-owned results buffer is pre-seeded
+/// with `n` `ScrapedContent` items.
 ///
 /// Returns `(base_url, server_handle, container_tmp)`. The container temp dir
 /// is returned so the caller keeps it alive (the append-only repository log
 /// lives inside it) and so tests can locate exports that default to the
 /// container's configured `output_dir` (e.g. `process_export_pipeline`).
+///
+/// The seed goes into the SESSION buffer — the source the export tools read
+/// (re-pointed from the legacy repository read in #1290), so a fixture that
+/// seeded the repository would hand the exporter an empty session. It is
+/// in-memory: no background writer to wait for.
 pub async fn start_seeded_server(
     n: usize,
 ) -> (String, tokio::task::JoinHandle<()>, tempfile::TempDir) {
@@ -197,10 +215,14 @@ pub async fn start_seeded_server(
         .await
         .expect("container creation failed");
 
-    // Seed the crawl-result repository with n items and wait for indexing.
-    let repo = container
-        .crawl_result_repository()
-        .expect("container must wire a crawl result repository");
+    // The pipeline's write target is the container's configured output_dir;
+    // process_export_pipeline enforces the export-root gate at request time
+    // (XP-P-08/G-9, issue #1608), so the fixture declares the container temp
+    // dir as a root — the shape of a deployment whose --export-roots covers
+    // the configured output directory.
+    let state =
+        McpState::new(container).with_export_roots(vec![container_tmp.path().to_path_buf()]);
+
     for i in 0..n {
         let url_str = format!("https://seed.example.com/page/{i}");
         let url = url::Url::parse(&url_str).expect("valid seeded URL");
@@ -216,26 +238,12 @@ pub async fn start_seeded_server(
             correlation_id: None,
             quality_hint: None,
         };
-        repo.save(&content).expect("save seeded content");
+        state
+            .session_results
+            .lock()
+            .expect("fresh session lock is never poisoned")
+            .push(content);
     }
-    // Poll until the background writer has indexed every seeded URL.
-    for i in 0..n {
-        let url_str = format!("https://seed.example.com/page/{i}");
-        for _ in 0..80 {
-            if repo.find_by_url(&url_str).expect("find_by_url").is_some() {
-                break;
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        }
-    }
-
-    // The pipeline's write target is the container's configured output_dir;
-    // process_export_pipeline enforces the export-root gate at request time
-    // (XP-P-08/G-9, issue #1608), so the fixture declares the container temp
-    // dir as a root — the shape of a deployment whose --export-roots covers
-    // the configured output directory.
-    let state =
-        McpState::new(container).with_export_roots(vec![container_tmp.path().to_path_buf()]);
 
     // Disable BOTH SSRF hatches for tests (uses 127.0.0.1 for wiremock).
     // Permanent set serialized under ENV_LOCK by `env_set` — see
@@ -596,4 +604,117 @@ pub async fn mount_page_200_expect(
 pub fn unwrap_untrusted(text: &str) -> &str {
     webfang_mcp::mcp_server::provenance::payload_of(text)
         .expect("expected a provenance-enveloped (untrusted_text) result; local results and errors carry no envelope")
+}
+
+// ========================================================================
+// Shared arrange helpers (#1757, S2) — one copy of each
+// ========================================================================
+
+/// A relative temporary directory that deletes itself on drop.
+///
+/// `tempfile::TempDir` always returns an absolute path (it joins with
+/// `env::current_dir`), which the MCP `require_safe_path` validator rejects.
+/// These tests need a *relative* output dir, so we manage one manually.
+pub struct RelTempDir {
+    path: std::path::PathBuf,
+}
+
+impl RelTempDir {
+    /// Create a relative temp dir named after `prefix`, the process id and a
+    /// per-process counter (unique per directory, so two suites in the same
+    /// process never collide).
+    pub fn new(prefix: &str) -> Self {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let name = format!("{prefix}-{}-{}", std::process::id(), n);
+        let path = std::path::PathBuf::from(name);
+        std::fs::create_dir_all(&path).expect("create relative temp dir");
+        RelTempDir { path }
+    }
+
+    /// The relative path of this directory.
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for RelTempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
+/// Read a JSONL export into timestamp-redacted records sorted by url.
+///
+/// `timestamp_utc` is the only per-run field of the shared record shape;
+/// everything else (checksum, word count, metadata version, content) must
+/// match across surfaces byte-for-byte. The sort key falls back to
+/// `failed_url` for the failure records, so a mixed export still has a
+/// deterministic order.
+pub fn normalized_records(path: &std::path::Path) -> Vec<Value> {
+    let text =
+        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+    let mut records: Vec<Value> = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| {
+            let mut v: Value = serde_json::from_str(l).expect("export line must be JSON");
+            if let Some(obj) = v.as_object_mut() {
+                if obj.contains_key("timestamp_utc") {
+                    obj.insert(
+                        "timestamp_utc".to_string(),
+                        Value::String("[TIMESTAMP]".to_string()),
+                    );
+                }
+            }
+            v
+        })
+        .collect();
+    records.sort_by(|a, b| {
+        a.get("url")
+            .or_else(|| a.get("failed_url"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .cmp(
+                b.get("url")
+                    .or_else(|| b.get("failed_url"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default(),
+            )
+    });
+    records
+}
+
+/// Minimal recursive file walk (the workspace ships no `walkdir` dep).
+pub fn walk_dir(root: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let mut files = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    files
+}
+
+/// Resolve the `webfang` CLI binary.
+///
+/// Delegates to the canonical harness helper
+/// (`webfang_test_utils::webfang_path()`): it resolves `CARGO_TARGET_DIR` /
+/// the workspace root and BUILDS the binary on demand. The per-file copies
+/// this replaces probed a `target/` cargo never populates in this virtual
+/// workspace (the shape of the bug #1366) and panicked instead of building.
+/// `webfang_test_utils` is a dev-dependency of this crate, so this adds no
+/// dependency.
+pub fn webfang_binary() -> std::path::PathBuf {
+    webfang_test_utils::webfang_path()
 }

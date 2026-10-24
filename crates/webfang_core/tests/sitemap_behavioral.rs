@@ -6,10 +6,16 @@
 //! Following contract-based-test-audit: observable behavior only, wiremock for HTTP.
 //! Following the task spec: valid sitemap, malformed XML, large sitemap (1000+ URLs).
 
-use webfang_core::domain::CorrelationId;
 use webfang_test_utils::EnvGuard;
-use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{MockServer, ResponseTemplate};
+
+// The serve→parse arrange is shared with the other two sitemap test binaries
+// of this crate (`sitemap_integration.rs`, `orchestrator_unit_tests.rs`): it
+// lives in the crate's shared test module, not inside a single binary
+// (#1757, S1).
+#[path = "common/mod.rs"]
+mod common;
+use common::sitemap_arrange::serve_and_parse;
 
 // One-layer entry disarmer for the loopback mock (#1382/#1369), canonical in
 // `EnvGuard::entry_guard_off` since #1396: these behavioral tests pin the
@@ -29,22 +35,16 @@ async fn sitemap_valid_discovers_all_urls() {
     <url><loc>https://example.com/page3</loc></url>
 </urlset>"#;
 
-    Mock::given(method("GET"))
-        .and(path("/sitemap.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(xml)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-
-    let parser = webfang_core::infrastructure::crawler::SitemapParser::new().unwrap();
-    let url = format!("{}/sitemap.xml", mock.uri());
-    let urls = parser
-        .parse_from_url(&url, &CorrelationId::new())
-        .await
-        .unwrap();
+    let urls = serve_and_parse(
+        &mock,
+        "/sitemap.xml",
+        ResponseTemplate::new(200)
+            .set_body_string(xml)
+            .insert_header("content-type", "application/xml"),
+        "/sitemap.xml",
+    )
+    .await
+    .unwrap();
 
     assert_eq!(urls.len(), 3, "should discover 3 URLs from valid sitemap");
     let strings: Vec<String> = urls.iter().map(|u| u.url.to_string()).collect();
@@ -61,19 +61,16 @@ async fn sitemap_malformed_xml_graceful_degradation() {
 
     // Null bytes — not valid XML
     let bad_xml = vec![0x00, 0x00, 0x00, 0x3C, 0x00];
-    Mock::given(method("GET"))
-        .and(path("/bad-sitemap"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_bytes(bad_xml)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
 
-    let parser = webfang_core::infrastructure::crawler::SitemapParser::new().unwrap();
-    let url = format!("{}/bad-sitemap", mock.uri());
-    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
+    let result = serve_and_parse(
+        &mock,
+        "/bad-sitemap",
+        ResponseTemplate::new(200)
+            .set_body_bytes(bad_xml)
+            .insert_header("content-type", "application/xml"),
+        "/bad-sitemap",
+    )
+    .await;
 
     assert!(
         result.is_err(),
@@ -93,19 +90,15 @@ async fn sitemap_partially_malformed_xml() {
     <!-- Missing closing tags -->
 </urlset>"#;
 
-    Mock::given(method("GET"))
-        .and(path("/partial-sitemap"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(partial_xml)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-
-    let parser = webfang_core::infrastructure::crawler::SitemapParser::new().unwrap();
-    let url = format!("{}/partial-sitemap", mock.uri());
-    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
+    let result = serve_and_parse(
+        &mock,
+        "/partial-sitemap",
+        ResponseTemplate::new(200)
+            .set_body_string(partial_xml)
+            .insert_header("content-type", "application/xml"),
+        "/partial-sitemap",
+    )
+    .await;
 
     // Should either parse what it can or return an error — never panic
     match result {
@@ -134,24 +127,17 @@ async fn sitemap_large_1000_plus_urls() {
     }
     xml.push_str("</urlset>");
 
-    Mock::given(method("GET"))
-        .and(path("/big-sitemap.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(&xml)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-
-    let parser = webfang_core::infrastructure::crawler::SitemapParser::new().unwrap();
-    let url = format!("{}/big-sitemap.xml", mock.uri());
-
     let start = std::time::Instant::now();
-    let urls = parser
-        .parse_from_url(&url, &CorrelationId::new())
-        .await
-        .unwrap();
+    let urls = serve_and_parse(
+        &mock,
+        "/big-sitemap.xml",
+        ResponseTemplate::new(200)
+            .set_body_string(&xml)
+            .insert_header("content-type", "application/xml"),
+        "/big-sitemap.xml",
+    )
+    .await
+    .unwrap();
     let elapsed = start.elapsed();
 
     assert_eq!(urls.len(), 1500, "should extract all 1500 URLs");
@@ -172,19 +158,15 @@ async fn sitemap_empty_returns_error() {
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 </urlset>"#;
 
-    Mock::given(method("GET"))
-        .and(path("/empty.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(empty_xml)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-
-    let parser = webfang_core::infrastructure::crawler::SitemapParser::new().unwrap();
-    let url = format!("{}/empty.xml", mock.uri());
-    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
+    let result = serve_and_parse(
+        &mock,
+        "/empty.xml",
+        ResponseTemplate::new(200)
+            .set_body_string(empty_xml)
+            .insert_header("content-type", "application/xml"),
+        "/empty.xml",
+    )
+    .await;
 
     assert!(
         matches!(
@@ -208,22 +190,16 @@ async fn sitemap_deduplicates_urls() {
     <url><loc>https://example.com/page2</loc></url>
 </urlset>"#;
 
-    Mock::given(method("GET"))
-        .and(path("/sitemap.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(xml)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-
-    let parser = webfang_core::infrastructure::crawler::SitemapParser::new().unwrap();
-    let url = format!("{}/sitemap.xml", mock.uri());
-    let urls = parser
-        .parse_from_url(&url, &CorrelationId::new())
-        .await
-        .unwrap();
+    let urls = serve_and_parse(
+        &mock,
+        "/sitemap.xml",
+        ResponseTemplate::new(200)
+            .set_body_string(xml)
+            .insert_header("content-type", "application/xml"),
+        "/sitemap.xml",
+    )
+    .await
+    .unwrap();
 
     assert_eq!(urls.len(), 2, "duplicates should be deduplicated");
 }
@@ -245,22 +221,16 @@ async fn sitemap_with_namespaces() {
     </url>
 </urlset>"#;
 
-    Mock::given(method("GET"))
-        .and(path("/sitemap.xml"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string(xml)
-                .insert_header("content-type", "application/xml"),
-        )
-        .mount(&mock)
-        .await;
-
-    let parser = webfang_core::infrastructure::crawler::SitemapParser::new().unwrap();
-    let url = format!("{}/sitemap.xml", mock.uri());
-    let urls = parser
-        .parse_from_url(&url, &CorrelationId::new())
-        .await
-        .unwrap();
+    let urls = serve_and_parse(
+        &mock,
+        "/sitemap.xml",
+        ResponseTemplate::new(200)
+            .set_body_string(xml)
+            .insert_header("content-type", "application/xml"),
+        "/sitemap.xml",
+    )
+    .await
+    .unwrap();
 
     assert!(
         !urls.is_empty(),
@@ -275,19 +245,15 @@ async fn sitemap_non_xml_content_type_returns_error() {
     let _entry_off = EnvGuard::entry_guard_off();
     let mock = MockServer::start().await;
 
-    Mock::given(method("GET"))
-        .and(path("/feed"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_string("<html><body>Not a sitemap</body></html>")
-                .insert_header("content-type", "text/html"),
-        )
-        .mount(&mock)
-        .await;
-
-    let parser = webfang_core::infrastructure::crawler::SitemapParser::new().unwrap();
-    let url = format!("{}/feed", mock.uri());
-    let result = parser.parse_from_url(&url, &CorrelationId::new()).await;
+    let result = serve_and_parse(
+        &mock,
+        "/feed",
+        ResponseTemplate::new(200)
+            .set_body_string("<html><body>Not a sitemap</body></html>")
+            .insert_header("content-type", "text/html"),
+        "/feed",
+    )
+    .await;
 
     assert!(
         matches!(
