@@ -139,14 +139,19 @@ async fn download_assets_downloads_images_via_shared_downloader() {
         "asset file must exist on disk"
     );
 
-    // Deterministic snapshot of the full tool response.
+    // Deterministic snapshot of the full tool response. The output dir is
+    // redacted in Rust, never as an insta filter: insta compiles every filter
+    // as a regex, and an unescaped Windows temp path (`C:\Users\...`) is not
+    // a valid pattern (#2302).
     insta::with_settings!({
         filters => vec![
-            (out.path().to_string_lossy().as_ref(), "[OUT_DIR]"),
             (r"127\.0\.0\.1:\d+", "127.0.0.1:[PORT]"),
         ],
     }, {
-        insta::assert_snapshot!("download_assets_images_response", tool_text(&result));
+        insta::assert_snapshot!(
+            "download_assets_images_response",
+            redact_path(&tool_text(&result), out.path())
+        );
     });
 }
 
