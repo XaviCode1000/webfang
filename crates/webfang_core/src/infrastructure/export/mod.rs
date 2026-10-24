@@ -15,6 +15,9 @@ pub mod record_store;
 pub mod state_store;
 pub mod vector_exporter;
 
+#[cfg(test)]
+pub(crate) mod jsonl_fixtures;
+
 // Re-export for convenience
 pub use crate::domain::exporter::CHECKSUM_FIELD;
 pub use file_exporter::FileExporter;
