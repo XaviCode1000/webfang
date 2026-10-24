@@ -29,7 +29,7 @@ use serde_json::json;
 use wreq::Client;
 
 mod common;
-use common::{call_tool, init_session, is_tool_error, start_session_seeded_server, tool_text};
+use common::{call_tool, init_session, is_tool_error, start_seeded_server, tool_text, RelTempDir};
 
 /// The export file name the tests write.
 const EXPORT_NAME: &str = "export";
@@ -44,36 +44,6 @@ const EXPORT_NAME: &str = "export";
 const DAMAGED_EXPORT: &[u8] =
     b"{\"content\":\"ok\",\"checksum_sha256\":\"a\"}\n{\"content\":\"\xff\xfe\",\"checksum_sha256\":\"b\"}\n";
 
-/// A relative temporary directory that deletes itself on drop.
-///
-/// `tempfile::TempDir` always returns an absolute path (it joins with
-/// `env::current_dir`), which the MCP `require_safe_path` validator rejects.
-/// These tests need a *relative* output dir, so we manage one manually.
-struct RelTempDir {
-    path: std::path::PathBuf,
-}
-
-impl RelTempDir {
-    fn new(prefix: &str) -> Self {
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let name = format!("{prefix}-{}-{}", std::process::id(), n);
-        let path = std::path::PathBuf::from(name);
-        std::fs::create_dir_all(&path).expect("create relative temp dir");
-        RelTempDir { path }
-    }
-
-    fn path(&self) -> &std::path::Path {
-        &self.path
-    }
-}
-
-impl Drop for RelTempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
 /// The count of skipped lines the tool result carries, read from its
 /// structured content.
 fn skipped_count(result: &serde_json::Value) -> Option<u64> {
@@ -83,31 +53,16 @@ fn skipped_count(result: &serde_json::Value) -> Option<u64> {
         .and_then(serde_json::Value::as_u64)
 }
 
-/// #2238: an export over a JSONL file with a non-UTF-8 line reports the count
-/// of the skipped lines — the count the ERROR in the log already carried, now
-/// on the surface the client actually reads.
-#[tokio::test]
-async fn export_jsonl_reports_the_skipped_non_utf8_lines() {
-    let (base_url, _handle, _container_tmp) = start_session_seeded_server(1).await;
+/// One successful tool call over a fresh seeded server and session.
+///
+/// The arrange shared by every test in this suite: the seeded server, the
+/// session, the call, and the non-error unwrap of the tool result.
+async fn successful_tool_result(tool: &str, args: serde_json::Value) -> serde_json::Value {
+    let (base_url, _handle, _container_tmp) = start_seeded_server(1).await;
     let client = Client::new();
     let session_id = init_session(&client, &base_url).await;
 
-    let out = RelTempDir::new("wf-out-skipped");
-    std::fs::write(
-        out.path().join(format!("{EXPORT_NAME}.jsonl")),
-        DAMAGED_EXPORT,
-    )
-    .expect("seed the damaged export file");
-
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
-        "export_jsonl",
-        json!({ "output_dir": out.path().to_string_lossy(), "filename": EXPORT_NAME }),
-    )
-    .await;
-
+    let resp = call_tool(&client, &base_url, &session_id, tool, args).await;
     let result = resp
         .get("result")
         .unwrap_or_else(|| panic!("expected result, got: {resp}"))
@@ -117,6 +72,26 @@ async fn export_jsonl_reports_the_skipped_non_utf8_lines() {
         "the export must succeed: {}",
         tool_text(&result)
     );
+    result
+}
+
+/// #2238: an export over a JSONL file with a non-UTF-8 line reports the count
+/// of the skipped lines — the count the ERROR in the log already carried, now
+/// on the surface the client actually reads.
+#[tokio::test]
+async fn export_jsonl_reports_the_skipped_non_utf8_lines() {
+    let out = RelTempDir::new("wf-out-skipped");
+    std::fs::write(
+        out.path().join(format!("{EXPORT_NAME}.jsonl")),
+        DAMAGED_EXPORT,
+    )
+    .expect("seed the damaged export file");
+
+    let result = successful_tool_result(
+        "export_jsonl",
+        json!({ "output_dir": out.path().to_string_lossy(), "filename": EXPORT_NAME }),
+    )
+    .await;
 
     // The machine-readable form: a NEW structured key, `skipped_non_utf8`,
     // carrying a number.
@@ -144,29 +119,12 @@ async fn export_jsonl_reports_the_skipped_non_utf8_lines() {
 /// reads the result sees exactly what it saw before the field existed.
 #[tokio::test]
 async fn export_jsonl_without_damage_reports_zero_and_keeps_the_text() {
-    let (base_url, _handle, _container_tmp) = start_session_seeded_server(1).await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
     let out = RelTempDir::new("wf-out-clean");
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
+    let result = successful_tool_result(
         "export_jsonl",
         json!({ "output_dir": out.path().to_string_lossy(), "filename": EXPORT_NAME }),
     )
     .await;
-
-    let result = resp
-        .get("result")
-        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
-        .clone();
-    assert!(
-        !is_tool_error(&result),
-        "the export must succeed: {}",
-        tool_text(&result)
-    );
     assert_eq!(
         skipped_count(&result),
         Some(0),
@@ -188,10 +146,6 @@ async fn export_jsonl_without_damage_reports_zero_and_keeps_the_text() {
 /// `export_file` reports it too.
 #[tokio::test]
 async fn export_file_reports_the_skipped_non_utf8_lines() {
-    let (base_url, _handle, _container_tmp) = start_session_seeded_server(1).await;
-    let client = Client::new();
-    let session_id = init_session(&client, &base_url).await;
-
     let out = RelTempDir::new("wf-out-file");
     std::fs::write(
         out.path().join(format!("{EXPORT_NAME}.jsonl")),
@@ -199,10 +153,7 @@ async fn export_file_reports_the_skipped_non_utf8_lines() {
     )
     .expect("seed the damaged export file");
 
-    let resp = call_tool(
-        &client,
-        &base_url,
-        &session_id,
+    let result = successful_tool_result(
         "export_file",
         json!({
             "output_dir": out.path().to_string_lossy(),
@@ -212,16 +163,6 @@ async fn export_file_reports_the_skipped_non_utf8_lines() {
         }),
     )
     .await;
-
-    let result = resp
-        .get("result")
-        .unwrap_or_else(|| panic!("expected result, got: {resp}"))
-        .clone();
-    assert!(
-        !is_tool_error(&result),
-        "the export must succeed: {}",
-        tool_text(&result)
-    );
     assert_eq!(
         skipped_count(&result),
         Some(1),
