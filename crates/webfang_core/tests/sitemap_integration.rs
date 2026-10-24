@@ -3,11 +3,17 @@
 //! Exercises `parse_from_url` end-to-end against a wiremock `MockServer`,
 //! covering happy paths, edge cases, and error conditions per R-INT-02.
 
-use webfang_core::domain::CorrelationId;
-use webfang_core::infrastructure::crawler::{SitemapError, SitemapParser, SitemapUrl};
+use webfang_core::infrastructure::crawler::SitemapError;
 use webfang_test_utils::EnvGuard;
-use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use wiremock::{MockServer, ResponseTemplate};
+
+// The serve→parse arrange is shared with the other two sitemap test binaries
+// of this crate (`sitemap_behavioral.rs`, `orchestrator_unit_tests.rs`): it
+// lives in the crate's shared test module, not inside a single binary
+// (#1757, S1).
+#[path = "common/mod.rs"]
+mod common;
+use common::sitemap_arrange::{serve_and_parse, serve_index_and_parse, sitemap_index_with_base};
 
 const SITEMAP_XML: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
@@ -43,48 +49,6 @@ const SITEMAP_NAMESPACES: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 // the duration of the fetch. These integration tests exercise the parser's
 // fetch/parse behavior against wiremock, not the guard (pinned separately in
 // `sitemap_discovery` tests and `sitemap_ssrf_e2e_test`).
-
-/// Helper: create parser with default config (no gzip, low depth for tests)
-fn parser() -> SitemapParser {
-    SitemapParser::new().unwrap()
-}
-
-/// Shared fetch-and-parse arrange (#1889, T7 slice-14): serve a single body
-/// at `mount_path` on the caller's mock server, then run `parse_from_url`
-/// against `entry_path` on that server. Mirrors the unit-level helper shape
-/// (serve → parse → result), parameterized for the integration level instead
-/// of forked: the server lifecycle and entry-guard posture stay at the call
-/// site (index bodies embed `mock.uri()`), each test keeps its template
-/// construction and result assertions.
-async fn serve_and_parse(
-    mock: &MockServer,
-    mount_path: &str,
-    response: ResponseTemplate,
-    entry_path: &str,
-) -> Result<Vec<SitemapUrl>, SitemapError> {
-    serve_many_and_parse(mock, vec![(mount_path, response)], entry_path).await
-}
-
-/// Multi-mount variant for sitemap-index cases (index + children).
-async fn serve_many_and_parse(
-    mock: &MockServer,
-    mounts: Vec<(&str, ResponseTemplate)>,
-    entry_path: &str,
-) -> Result<Vec<SitemapUrl>, SitemapError> {
-    for (mount_path, response) in mounts {
-        Mock::given(method("GET"))
-            .and(path(mount_path))
-            .respond_with(response)
-            .mount(mock)
-            .await;
-    }
-    parser()
-        .parse_from_url(
-            &format!("{}{}", mock.uri(), entry_path),
-            &CorrelationId::new(),
-        )
-        .await
-}
 
 // ===== HAPPY PATH =====
 
@@ -264,23 +228,6 @@ async fn test_parse_sitemap_no_content_type_accepted() {
 
 // ===== SITEMAP INDEX RECURSION TESTS =====
 
-/// Helper to create a sitemap index XML with mock server base URL
-fn sitemap_index_with_base(base_url: &str) -> String {
-    format!(
-        r#"<?xml version="1.0" encoding="UTF-8"?>
-<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-    <sitemap>
-        <loc>{base_url}/sitemap1.xml</loc>
-        <lastmod>2024-01-15</lastmod>
-    </sitemap>
-    <sitemap>
-        <loc>{base_url}/sitemap2.xml</loc>
-        <lastmod>2024-01-10</lastmod>
-    </sitemap>
-</sitemapindex>"#
-    )
-}
-
 /// Helper to create sitemap 1 XML
 const SITEMAP_1: &str = r#"<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
@@ -303,15 +250,11 @@ async fn test_parse_sitemap_index_recurses() {
     let base_url = mock.uri();
     let index_xml = sitemap_index_with_base(&base_url);
 
-    let urls = serve_many_and_parse(
+    let urls = serve_index_and_parse(
         &mock,
+        "/sitemap-index.xml",
+        &index_xml,
         vec![
-            (
-                "/sitemap-index.xml",
-                ResponseTemplate::new(200)
-                    .set_body_string(index_xml)
-                    .insert_header("content-type", "application/xml"),
-            ),
             (
                 "/sitemap1.xml",
                 ResponseTemplate::new(200)
@@ -325,7 +268,6 @@ async fn test_parse_sitemap_index_recurses() {
                     .insert_header("content-type", "application/xml"),
             ),
         ],
-        "/sitemap-index.xml",
     )
     .await
     .unwrap();
@@ -350,15 +292,11 @@ async fn test_sitemap_index_partial_failure_continues() {
     let base_url = mock.uri();
     let index_xml = sitemap_index_with_base(&base_url);
 
-    let urls = serve_many_and_parse(
+    let urls = serve_index_and_parse(
         &mock,
+        "/sitemap-index.xml",
+        &index_xml,
         vec![
-            (
-                "/sitemap-index.xml",
-                ResponseTemplate::new(200)
-                    .set_body_string(index_xml)
-                    .insert_header("content-type", "application/xml"),
-            ),
             ("/sitemap1.xml", ResponseTemplate::new(404)),
             (
                 "/sitemap2.xml",
@@ -367,7 +305,6 @@ async fn test_sitemap_index_partial_failure_continues() {
                     .insert_header("content-type", "application/xml"),
             ),
         ],
-        "/sitemap-index.xml",
     )
     .await
     .unwrap();
@@ -391,19 +328,14 @@ async fn test_sitemap_index_all_children_failed() {
     let base_url = mock.uri();
     let index_xml = sitemap_index_with_base(&base_url);
 
-    let result = serve_many_and_parse(
+    let result = serve_index_and_parse(
         &mock,
+        "/sitemap-index.xml",
+        &index_xml,
         vec![
-            (
-                "/sitemap-index.xml",
-                ResponseTemplate::new(200)
-                    .set_body_string(index_xml)
-                    .insert_header("content-type", "application/xml"),
-            ),
             ("/sitemap1.xml", ResponseTemplate::new(404)),
             ("/sitemap2.xml", ResponseTemplate::new(500)),
         ],
-        "/sitemap-index.xml",
     )
     .await;
 
@@ -425,15 +357,11 @@ async fn test_sitemap_index_malformed_child_included_in_error() {
     let base_url = mock.uri();
     let index_xml = sitemap_index_with_base(&base_url);
 
-    let result = serve_many_and_parse(
+    let result = serve_index_and_parse(
         &mock,
+        "/sitemap-index.xml",
+        &index_xml,
         vec![
-            (
-                "/sitemap-index.xml",
-                ResponseTemplate::new(200)
-                    .set_body_string(index_xml)
-                    .insert_header("content-type", "application/xml"),
-            ),
             (
                 "/sitemap1.xml",
                 ResponseTemplate::new(200)
@@ -442,7 +370,6 @@ async fn test_sitemap_index_malformed_child_included_in_error() {
             ),
             ("/sitemap2.xml", ResponseTemplate::new(404)),
         ],
-        "/sitemap-index.xml",
     )
     .await;
 
@@ -508,23 +435,16 @@ async fn test_sitemap_index_mutual_reference_loop_detected() {
 </sitemapindex>"#
     );
 
-    let result = serve_many_and_parse(
+    let result = serve_index_and_parse(
         &mock,
-        vec![
-            (
-                "/index-a.xml",
-                ResponseTemplate::new(200)
-                    .set_body_string(index_a)
-                    .insert_header("content-type", "application/xml"),
-            ),
-            (
-                "/index-b.xml",
-                ResponseTemplate::new(200)
-                    .set_body_string(index_b)
-                    .insert_header("content-type", "application/xml"),
-            ),
-        ],
         "/index-a.xml",
+        &index_a,
+        vec![(
+            "/index-b.xml",
+            ResponseTemplate::new(200)
+                .set_body_string(index_b)
+                .insert_header("content-type", "application/xml"),
+        )],
     )
     .await;
 
@@ -559,15 +479,11 @@ async fn test_sitemap_index_mixed_valid_and_loop() {
 </sitemapindex>"#
     );
 
-    let urls = serve_many_and_parse(
+    let urls = serve_index_and_parse(
         &mock,
+        "/mixed-index.xml",
+        &mixed_index,
         vec![
-            (
-                "/mixed-index.xml",
-                ResponseTemplate::new(200)
-                    .set_body_string(mixed_index)
-                    .insert_header("content-type", "application/xml"),
-            ),
             (
                 "/valid-child.xml",
                 ResponseTemplate::new(200)
@@ -581,7 +497,6 @@ async fn test_sitemap_index_mixed_valid_and_loop() {
                     .insert_header("content-type", "application/xml"),
             ),
         ],
-        "/mixed-index.xml",
     )
     .await
     .unwrap();
@@ -618,15 +533,11 @@ async fn test_sitemap_index_deduplicates_across_children() {
     <url><loc>https://example.com/page3</loc></url>
 </urlset>"#;
 
-    let urls = serve_many_and_parse(
+    let urls = serve_index_and_parse(
         &mock,
+        "/index-overlap.xml",
+        &index_with_overlap,
         vec![
-            (
-                "/index-overlap.xml",
-                ResponseTemplate::new(200)
-                    .set_body_string(index_with_overlap)
-                    .insert_header("content-type", "application/xml"),
-            ),
             (
                 "/sitemap-a.xml",
                 ResponseTemplate::new(200)
@@ -640,7 +551,6 @@ async fn test_sitemap_index_deduplicates_across_children() {
                     .insert_header("content-type", "application/xml"),
             ),
         ],
-        "/index-overlap.xml",
     )
     .await
     .unwrap();

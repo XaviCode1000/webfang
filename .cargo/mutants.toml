@@ -20,10 +20,17 @@
 # a second, hand-maintained copy that had already drifted.
 #
 # CI budget: the 2026-09 extension widened the mutation scope, so the weekly
-# baseline is sharded 64 ways (--shard k/64) to keep per-shard load inside the
+# baseline is sharded 96 ways (--shard k/96) to keep per-shard load inside the
 # 90-minute timeout. `.github/workflows/mutants.yml` owns the shard count and
 # the per-shard mutant estimate; keep the two in agreement. The required
 # PR-diff job mutates only in-diff functions, so typical PR cost is unchanged.
+#
+# Measured (2026-10-22, #1844): `cargo mutants --list` over THIS scope reports
+# 1477 mutants — 23.1 per shard at 64 ways, 15.4 at 96 ways. The ~20-mutant
+# per-shard draw is where 14 shards hit the 90-minute wall (#1436), so the
+# matrix moved from 64 to 96. Re-measure before trusting the number again: the
+# scope grows with every extension, and this count is a measurement, not a
+# promise.
 
 examine_globs = [
   # 2026-08 scope: the original 6 gated hot paths.

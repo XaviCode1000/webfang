@@ -4,5 +4,5 @@ authors = ["Xavi"]
 src = "src"
 
 [output.html]
-git-repository-url = "https://github.com/XaviCode1000/webfang"
+git-repository-url = "https://github.com/XaviCodeDev1000/webfang"
 default-theme = "navy"

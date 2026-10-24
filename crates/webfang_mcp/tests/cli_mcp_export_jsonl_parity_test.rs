@@ -29,26 +29,22 @@
 #![cfg(feature = "mcp")]
 
 use serde_json::{json, Value};
-use std::net::SocketAddr;
-use tokio::net::TcpListener;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 use wreq::Client;
 
-use webfang_core::di::Container;
-use webfang_core::domain::config::ScraperConfig;
-use webfang_core::domain::CrawlerConfig;
-use webfang_mcp::mcp_server::server::build_mcp_router;
-use webfang_mcp::mcp_server::server::ServerOptions;
-use webfang_mcp::mcp_server::state::McpState;
-
 // Canonical HTML page fixture, shared across the MCP test binaries (#1371).
-// Imported by name, not `use common::*`: this file keeps its own local
-// server bootstrap below. The JSON-RPC client (`call_tool`,
-// `init_session_with_name`, `tool_text`, `is_tool_error`) is shared via
-// `common` (mcp_request/extract_json live there too).
+// Imported by name, not `use common::*`: this file keeps its own
+// crawl-specific fixtures below. The JSON-RPC client (`call_tool`,
+// `init_session_with_name`, `tool_text`, `is_tool_error`), the server
+// bootstrap (`start_server`) and the arrange helpers (`RelTempDir`,
+// `webfang_binary`, `normalized_records`, `walk_dir`) are shared via
+// `common` (#1757, S2).
 mod common;
-use common::{call_tool, init_session_with_name, is_tool_error, mount_page_200, tool_text};
+use common::{
+    call_tool, init_session_with_name, is_tool_error, mount_page_200, normalized_records,
+    start_server, tool_text, walk_dir, webfang_binary, RelTempDir,
+};
 
 /// Unwrap the JSON-RPC envelope: the tool payload lives under `result`
 /// (same convention as the shared `export_coverage`/`mcp_behavioral` harness).
@@ -58,137 +54,9 @@ fn tool_result(resp: Value) -> Value {
         .unwrap_or_else(|| panic!("expected a JSON-RPC result, got: {resp}"))
 }
 
-/// A relative temporary directory that deletes itself on drop.
-///
-/// `tempfile::TempDir` always returns an absolute path (it joins with
-/// `env::current_dir`), which the MCP `require_safe_path` validator rejects.
-/// These tests need a *relative* output dir, so we manage one manually.
-struct RelTempDir {
-    path: std::path::PathBuf,
-}
-
-impl RelTempDir {
-    fn new(prefix: &str) -> Self {
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let name = format!("{prefix}-{}-{}", std::process::id(), n);
-        let path = std::path::PathBuf::from(name);
-        std::fs::create_dir_all(&path).expect("create relative temp dir");
-        RelTempDir { path }
-    }
-
-    fn path(&self) -> &std::path::Path {
-        &self.path
-    }
-}
-
-impl Drop for RelTempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
-
 // ============================================================================
 // Fixtures & normalization
 // ============================================================================
-
-/// Start an in-process MCP server with the SSRF guards disabled — the exact
-/// environment the proven multi-page crawl test
-/// (`test_crawl_site_max_depth_one_follows_internal_links`,
-/// `ssrf_guards_off`) runs under: the MCP-layer gate AND the entry-layer
-/// gate, because wiremock binds 127.0.0.1. Setup is serialized under
-/// ENV_LOCK via `Once` + `env_set` (#1126), so it stays safe even if
-/// this binary gains more tests.
-async fn start_server() -> (String, tokio::task::JoinHandle<()>, tempfile::TempDir) {
-    // Process-wide, permanent setup (no restore-on-drop): `env_set`
-    // acquires ENV_LOCK itself, so each mutation stays serialized under
-    // the workspace ENV_LOCK invariant (issue #1126) without a manual
-    // `env_lock` binding.
-    // Both SSRF layers are lifted: the MCP entry validator and the
-    // shared core literal-IP entry guard (F-06 + F-32, #1217), since
-    // every tool under test fetches wiremock loopback literals.
-    static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(|| {
-        webfang_test_utils::env_set(
-            webfang_core::domain::ssrf_guard::WEBFANG_MCP_DISABLE_SSRF_ENV,
-            "1",
-        );
-        webfang_test_utils::env_set(
-            webfang_core::domain::ssrf_guard::DISABLE_ENTRY_GUARD_ENV,
-            "1",
-        );
-    });
-
-    let container_tmp = tempfile::TempDir::new().expect("create container temp dir");
-    let crawler_config =
-        CrawlerConfig::new(url::Url::parse("https://seed.invalid").expect("valid seed URL"));
-    let scraper_config = ScraperConfig {
-        output_dir: container_tmp.path().to_path_buf(),
-        ..Default::default()
-    };
-    let container = Container::new(crawler_config, scraper_config)
-        .await
-        .expect("container creation failed");
-
-    let state = McpState::new(container);
-    let app = build_mcp_router(
-        state,
-        &ServerOptions {
-            // #1611 G-18: anonymous operation is an explicit opt-in now,
-            // and this suite is one of the places that makes it.
-            allow_anonymous: true,
-            ..Default::default()
-        },
-    );
-
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr: SocketAddr = listener.local_addr().unwrap();
-    let base_url = format!("http://{addr}");
-    let handle = tokio::spawn(async move {
-        axum::serve(listener, app).await.unwrap();
-    });
-    for _ in 0..20 {
-        if tokio::net::TcpStream::connect(&addr).await.is_ok() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    (base_url, handle, container_tmp)
-}
-
-/// Resolve the `webfang` CLI binary. In this virtual workspace the binary is
-/// built by the sibling `webfang_cli` crate, so `CARGO_BIN_EXE_*` is not set
-/// for this test binary; the active `CARGO_TARGET_DIR` (or the workspace
-/// `target/`) is the honest lookup path once the suite has been built.
-fn webfang_binary() -> std::path::PathBuf {
-    if let Ok(p) = std::env::var("CARGO_BIN_EXE_webfang") {
-        return std::path::PathBuf::from(p);
-    }
-    let name = if cfg!(windows) {
-        "webfang.exe"
-    } else {
-        "webfang"
-    };
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let workspace_root = manifest_dir
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("resolve workspace root");
-    let candidates = [
-        std::env::var("CARGO_TARGET_DIR")
-            .ok()
-            .map(std::path::PathBuf::from),
-        Some(workspace_root.join("target")),
-        Some(manifest_dir.join("target")),
-    ];
-    for candidate in candidates.into_iter().flatten() {
-        let path = candidate.join("debug").join(name);
-        if path.exists() {
-            return path;
-        }
-    }
-    panic!("webfang binary not found — build it first (cargo build -p webfang_cli)");
-}
 
 /// One wiremock page: a title, two content paragraphs (comfortably above the
 /// minimum-content guard, so the pipeline never drops a page for thin text),
@@ -205,45 +73,6 @@ fn page(marker: &str, links: &str) -> String {
          with more plain words that carry no links, no scripts, and no noise at all here.</p>"
     );
     format!("<html><head><title>Parity {marker}</title></head><body>{links}{body}</body></html>")
-}
-
-/// Read a JSONL export into timestamp-redacted records sorted by url.
-///
-/// `timestamp_utc` is the only per-run field of the shared record shape;
-/// everything else (checksum, word count, metadata version, content) must
-/// match across surfaces byte-for-byte.
-fn normalized_records(path: &std::path::Path) -> Vec<Value> {
-    let text =
-        std::fs::read_to_string(path).unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-    let mut records: Vec<Value> = text
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .map(|l| {
-            let mut v: Value = serde_json::from_str(l).expect("export line must be JSON");
-            if let Some(obj) = v.as_object_mut() {
-                if obj.contains_key("timestamp_utc") {
-                    obj.insert(
-                        "timestamp_utc".to_string(),
-                        Value::String("[TIMESTAMP]".to_string()),
-                    );
-                }
-            }
-            v
-        })
-        .collect();
-    records.sort_by(|a, b| {
-        a.get("url")
-            .or_else(|| a.get("failed_url"))
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .cmp(
-                b.get("url")
-                    .or_else(|| b.get("failed_url"))
-                    .and_then(Value::as_str)
-                    .unwrap_or_default(),
-            )
-    });
-    records
 }
 
 // ============================================================================
@@ -276,7 +105,7 @@ async fn mount_parity_site(site: &MockServer) {
 /// returning the redacted records. The server and its output dir live for
 /// the whole call; records are read before they drop.
 async fn mcp_export_records(seed: &str) -> Vec<Value> {
-    let (mcp_base, _mcp_server, _mcp_tmp) = start_server().await;
+    let (mcp_base, _mcp_server) = start_server(None).await;
     let client = Client::new();
     let session_id = init_session_with_name(&client, &mcp_base, "cli-mcp-parity-test").await;
 
@@ -366,7 +195,7 @@ fn cli_export_records(seed: &str) -> Vec<Value> {
         String::from_utf8_lossy(&cli_output.stderr),
     );
 
-    let jsonls: Vec<_> = walkdir::walk_dir(&cli_out)
+    let jsonls: Vec<_> = walk_dir(&cli_out)
         .into_iter()
         .filter(|p| p.extension().is_some_and(|e| e == "jsonl"))
         .collect();
@@ -441,29 +270,4 @@ async fn cli_vs_mcp_export_jsonl_record_parity() {
             && urls.iter().any(|u| u.ends_with("/b")),
         "every fixture page reached both exports: {urls:?}"
     );
-}
-
-mod walkdir {
-    use std::path::{Path, PathBuf};
-
-    /// Minimal recursive file walk (the workspace ships no `walkdir` dep).
-    pub fn walk_dir(root: &Path) -> Vec<PathBuf> {
-        let mut files = Vec::new();
-        let mut stack = vec![root.to_path_buf()];
-        while let Some(dir) = stack.pop() {
-            let entries = match std::fs::read_dir(&dir) {
-                Ok(entries) => entries,
-                Err(_) => continue,
-            };
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    stack.push(path);
-                } else {
-                    files.push(path);
-                }
-            }
-        }
-        files
-    }
 }

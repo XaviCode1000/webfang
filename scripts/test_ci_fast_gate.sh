@@ -307,13 +307,15 @@ make_fixture() {
   # the fixture provides a no-op for each of them: the case under test is the
   # LANE SHAPE, not the harnesses' own semantics, and a missing script would
   # fail the step for a reason that has nothing to do with the case.
-  for harness in test_ci_health_close.sh tests/test_check_compatibility.sh \
+  for harness in     test_ci_health_close.sh tests/test_check_compatibility.sh \
     tests/test_check_target_isolation.sh ci_path_classifier_test.sh \
+    test_ci_plan.sh test_ci_gate_structure.sh test_ci_queue_metrics.sh \
     test_docs_version_pins.sh test_docs_version_pins_wiring.sh \
     test_bump_docs_version_pins.sh test_apply_release_pins.sh \
     test_release_pins_wiring.sh test_declare_pending_publication.sh \
     test_mcp_surface_wiring.sh test_merge_when_green_breaking.sh \
-    test_ci_merge_when_green.sh test_apply_tag_ruleset.sh test_ci_metrics.sh; do
+    test_ci_merge_when_green.sh test_apply_tag_ruleset.sh test_ci_metrics.sh \
+    test_ci_mutant_shards.sh; do
     mkdir -p "$dir/scripts/$(dirname "$harness")"
     printf '#!/usr/bin/env bash\nexit 0\n' >"$dir/scripts/$harness"
   done

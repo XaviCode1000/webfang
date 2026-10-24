@@ -1,27 +1,38 @@
 # Mutation Testing — Hot Path Verification
 #
 # Two complementary jobs (Phase 2, issue #451):
-#   - mutants-pr:   HARD GATE on every PR that touches a gated hot path.
-#                   Mutates ONLY the lines changed in the PR diff (--in-diff),
-#                   so cost is proportional to the change. cargo-mutants exits
-#                   2 when a mutant survives -> PR is blocked.
-#                   The diff's mutants are PARTITIONED across 64 shards
-#                   (--shard k/64, --no-shuffle), like the weekly baseline:
-#                   every mutant needs a full recompile of webfang_core, so a
-#                   big diff in one job is hours and the gate could never
-#                   deliver a verdict (the job hit its 90 min timeout and the
-#                   PR stayed blocked). The required context name stays
-#                   "cargo-mutants (PR diff)": the aggregating job carries it
-#                   and always reports, even when no shard ran.
+#   - mutants-pr:   HARD GATE on every PR. Mutates ONLY the lines changed in
+#                   the PR diff (--in-diff), so cost is proportional to the
+#                   change; cargo-mutants exits 2 when a mutant survives ->
+#                   PR is blocked. The diff's mutants are PARTITIONED across
+#                   a DYNAMIC shard count (scripts/ci_mutant_shards.sh,
+#                   #2285): `cargo mutants --list --json --in-diff` measures
+#                   the diff's mutants (no compilation) and the matrix size
+#                   is min(16, ceil(count/8)) — ~8 mutants per shard keeps a
+#                   shard's wall time well under the 45-minute timeout given
+#                   the ~10-15 min BoringSSL base build, where ~20 mutants
+#                   per shard was the draw that hit the 90-minute wall
+#                   (#1436). Calibration knobs live in
+#                   scripts/ci_mutant_shards.sh (MUTANT_SHARD_SIZE,
+#                   MUTANT_SHARD_CAP); re-measure before tuning them. The
+#                   diff is built against the checked-out head's FIRST
+#                   PARENT, so an advanced base never counts other PRs' hunks
+#                   (a mismatching diff fails closed: cargo-mutants exit 5).
+#                   The required context name stays "cargo-mutants (PR
+#                   diff)": the aggregating job carries it and always
+#                   reports, even when no shard ran.
   #   - mutants-weekly: weekly baseline over the full hot-path scope, split into
-  #                   64 deterministic shards (--shard k/64, --no-shuffle). The
-  #                   shards partition the ~600 hot-path mutants (~9-10 per shard,
-  #                   half the old per-shard draw — at that size 14 shards hit the
-  #                   90-minute wall, #1436) so each job finishes well inside the
-  #                   timeout. Report-only. #1825 widened the scope
-  #                   (export_factory.rs + adapters/**), so the per-shard draw
-  #                   rises accordingly; if the weekly wall is hit again,
-  #                   rebalance the shard count before assuming a regression.
+  #                   96 deterministic shards (--shard k/96, --no-shuffle). The
+  #                   shards partition the 1477 hot-path mutants MEASURED on
+  #                   2026-10-22 with `cargo mutants --list` over the current
+  #                   scope — ~15.4 per shard, under the ~20-mutant per-shard draw
+  #                   at which 14 shards hit the 90-minute wall (#1436), so each
+  #                   job finishes well inside the timeout. Report-only.
+  #                   The previous 64-way split drew ~23.1 mutants per shard —
+  #                   ABOVE that wall draw — so #1844 rebalanced the matrix from
+  #                   64 to 96. The ~600 figure this header carried was an
+  #                   estimate inherited from before #1825 widened the scope
+  #                   (export_factory.rs + adapters/**): it was never measured.
 #   - report:        aggregates shard outcomes.json into a single summary.
 #
 # Fixed in this version (was broken):
@@ -70,13 +81,12 @@ jobs:
   # Runs on pull_request AND merge_group: the required check must be reported
   # on the merge group too, or the queue blocks. Never on schedule (no base_ref).
   #
-  # The diff's mutants are PARTITIONED across 64 shards — the same partition
-  # the weekly baseline uses below. Every mutant needs a full recompile of
-  # webfang_core, so a big diff (the export slice touched ~2k lines) produces
-  # hundreds of mutants: in a single job that is hours, far past the 90 min
-  # timeout, so the gate could NEVER deliver a verdict (the job was cancelled
-  # and the PR stayed blocked). Sharded, each shard owns a slice of the
-  # diff's mutants and the gate finishes in minutes.
+  # The diff's mutant count is MEASURED (scripts/ci_mutant_shards.sh) and the
+  # matrix is sized from it (#2285): a docs-only PR worth of hunks gives 0
+  # mutants and an empty matrix, a two-function PR runs one shard, a monster
+  # diff (the export slice touched ~2k lines) caps at 16. Every mutant needs
+  # a full recompile of webfang_core, and the gate holds around the
+  # 45-minute per-shard timeout below.
   # ---------------------------------------------------------------------------
   mutants-pr-prepare:
     if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
@@ -84,7 +94,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     outputs:
-      changed: ${{ steps.hotpath.outputs.changed }}
+      mutant_count: ${{ steps.matrix.outputs.mutant_count }}
+      shard_count: ${{ steps.matrix.outputs.shard_count }}
       shards: ${{ steps.matrix.outputs.shards }}
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
@@ -92,62 +103,42 @@ jobs:
           fetch-depth: 0
 
           persist-credentials: false
-      - name: Generate PR diff
+
+      - name: Install stable toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+
+      - name: Install cargo-mutants
+        uses: taiki-e/install-action@94c31af3204a9f15ab40b35ad084410b905bbc73
+        with:
+          tool: cargo-mutants@27.1.0
+
+      - name: Build the explicit-base diff
         env:
-          BASE_REF: ${{ github.base_ref || github.event.merge_group.base_ref }}
-        run: |
-          # merge_group carries its own base_ref; fall back to main when absent.
-          BASE="${BASE_REF}"
-          [ -z "$BASE" ] && BASE="main"
-          git diff "origin/$BASE"...HEAD > git.diff
+          # Intent cross-check only (see ci_mutant_shards.sh): the base of
+          # record is the checked-out head's first parent, so an advanced
+          # base never leaks other PRs' hunks into the count.
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        # The checked-out HEAD is the PR's merge branch (pull_request:
+        # refs/pull/N/merge; merge_group: the merge-group branch), whose
+        # first parent carries exactly this PR's changes.
+        run: bash scripts/ci_mutant_shards.sh prepare-diff
 
-      # Always reported check: when the diff touches no gated hot path,
-      # the job short-circuits to SUCCESS instead of silently not running.
-      - name: Check for hot-path changes
-        id: hotpath
-        run: |
-          # The detector is DERIVED from `.cargo/mutants.toml` `examine_globs`
-          # (#1235, F-40): that file is the single source of the scope policy,
-          # and the previous hand-written regex had drifted from it AND was
-          # anchored to `^crates/` — a pattern that matches nothing in `git
-          # diff` output (real path lines are `+++ b/crates/...`), so the
-          # required check reported SUCCESS for EVERY PR, including ones
-          # touching the gated scope. The derivation extracts each glob,
-          # strips the src/ prefix (the in-diff path form), escapes dots,
-          # and anchors each alternative to `^+++ b/`. `**` tails become `.*`.
-          SCOPE=$(sed -n '/^examine_globs/,/^]/p' .cargo/mutants.toml \
-            | grep -oE '"[^"]+"' | tr -d '"')
-          if [ -z "$SCOPE" ]; then
-            echo "::error::could not derive hot-path scope from .cargo/mutants.toml examine_globs"
-            exit 1
-          fi
-          PATTERN=$(printf '%s\n' "$SCOPE" \
-            | sed -e 's|^crates/webfang_core/src/||' \
-                  -e 's|\.|\\.|g' \
-            | sed -e 's|\*\*$|.*|' \
-                  -e 's|^|\\+\\+\\+ b/crates/webfang_core/src/|' \
-                  -e '/[.][*]$/!s/$/$/' \
-            | paste -sd '|' -)
-          echo "Hot-path detector pattern: $PATTERN"
-          if grep -qE "$PATTERN" git.diff; then
-            echo "changed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      # An EMPTY shard list means "no gated hot path in this diff": the
-      # matrix expands to nothing, so no runner is spent on a PR that has
-      # nothing to mutate.
-      - name: Build the shard list
+      # Measured single-source scoping (#2285): the mutant count arrives from
+      # cargo-mutants itself (reading .cargo/mutants.toml examine_globs), not
+      # from a second hand-written scope detector. An empty diff or a diff
+      # touching no gated file yields count 0 and an empty matrix, so no
+      # runner is spent on a PR that has nothing to mutate.
+      - name: Measure the diff's mutants and size the matrix
         id: matrix
         run: |
-          if [ "${{ steps.hotpath.outputs.changed }}" = "true" ]; then
-            echo "shards=[$(seq -s, 1 64)]" >> "$GITHUB_OUTPUT"
-          else
-            echo "shards=[]" >> "$GITHUB_OUTPUT"
-          fi
+          sizing="$(bash scripts/ci_mutant_shards.sh shards git.diff -p webfang_core)"
+          {
+            printf 'mutant_count=%s\n' "$(printf '%s\n' "$sizing" | sed -n 's/^mutant_count=//p' | head -1)"
+            printf 'shard_count=%s\n' "$(printf '%s\n' "$sizing" | sed -n 's/^shard_count=//p' | head -1)"
+            printf 'shards=%s\n' "$(printf '%s\n' "$sizing" | sed -n 's/^shards=//p' | head -1)"
+          } >> "$GITHUB_OUTPUT"
 
-      # The diff travels to the shards as an artifact: 64 full-history
+      # The diff travels to the shards as an artifact: many full-history
       # checkouts would be wasteful, and the shards only need the diff.
       - name: Upload the diff
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4
@@ -157,10 +148,10 @@ jobs:
 
   mutants-pr-shards:
     needs: mutants-pr-prepare
-    if: needs.mutants-pr-prepare.outputs.changed == 'true'
-    name: "cargo-mutants (PR diff shard ${{ matrix.shard }}/64)"
+    if: needs.mutants-pr-prepare.outputs.shard_count != '0'
+    name: "cargo-mutants (PR diff shard ${{ matrix.shard }})"
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -186,18 +177,21 @@ jobs:
         with:
           tool: cargo-mutants@27.1.0
 
-      # NO rust-cache here (cf. the weekly shards' note): 64 shards writing
+      # NO rust-cache here (cf. the weekly shards' note): a big matrix writing
       # multi-GB cache entries would evict the CI/PR caches.
       - name: Run mutation testing (shard)
         # A surviving mutant (exit 2) must not abort the shard: the report
         # job below aggregates every shard's outcome. --no-shuffle keeps the
-        # k/64 partition deterministic (no overlap, no gaps).
+        # k/N partition deterministic (no overlap, no gaps): N comes from the
+        # measured count, so the size of the partition and the matrix agree.
         continue-on-error: true
+        env:
+          SHARD_COUNT: ${{ needs.mutants-pr-prepare.outputs.shard_count }}
         run: |
           cargo mutants -p webfang_core \
             --in-diff git.diff \
             --no-shuffle \
-            --shard ${{ matrix.shard }}/64 \
+            --shard ${{ matrix.shard }}/${SHARD_COUNT} \
             --baseline=skip \
             --timeout=300 \
             --in-place \
@@ -250,18 +244,18 @@ jobs:
           echo "PR diff: no surviving mutants."
 
   # ---------------------------------------------------------------------------
-  # WEEKLY BASELINE — full hot-path scope as 64 deterministic shards.
+  # WEEKLY BASELINE — full hot-path scope as 96 deterministic shards.
   # Survivors are reported, never blocking.
   # ---------------------------------------------------------------------------
   mutants-weekly:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
-    name: "cargo-mutants (shard ${{ matrix.shard }}/64)"
+    name: "cargo-mutants (shard ${{ matrix.shard }}/96)"
     runs-on: ubuntu-latest
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67, 68, 69, 70, 71, 72, 73, 74, 75, 76, 77, 78, 79, 80, 81, 82, 83, 84, 85, 86, 87, 88, 89, 90, 91, 92, 93, 94, 95, 96]
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
         with:
@@ -280,7 +274,7 @@ jobs:
 
       # NOTE: deliberately NO Swatinem/rust-cache here (cf. benches.yml:55-60).
       # Weekly baseline is low-frequency (Mon 03:00 UTC + dispatch), heavy
-      # (64 shards), and non-blocking (report-only): a fresh multi-GB cache
+      # (96 shards), and non-blocking (report-only): a fresh multi-GB cache
       # entry per shard would evict CI/PR caches toward the 10 GB eviction
       # limit. Cold compile (~10-15 min incl. BoringSSL) fits comfortably in
       # the 90 min timeout below. mutants-pr KEEPS its cache step (gated on
@@ -288,13 +282,13 @@ jobs:
 
       - name: Run mutation testing (shard)
         # Survivors (exit 2) must not abort the shard: the report job below
-        # aggregates every shard's outcomes. --no-shuffle keeps the k/64
+        # aggregates every shard's outcomes. --no-shuffle keeps the k/96
         # partition deterministic (no overlap, no gaps).
         continue-on-error: true
         run: |
           cargo mutants -p webfang_core \
             --no-shuffle \
-            --shard ${{ matrix.shard }}/64 \
+            --shard ${{ matrix.shard }}/96 \
             --baseline=skip \
             --timeout=300 \
             --in-place \
@@ -304,7 +298,7 @@ jobs:
         if: always()
         run: |
           if grep -q "MISSED" mutants-output.txt; then
-            echo "::warning::Surviving mutants detected in shard ${{ matrix.shard }}/64"
+            echo "::warning::Surviving mutants detected in shard ${{ matrix.shard }}/96"
             grep "MISSED" mutants-output.txt
           fi
 

@@ -1,6 +1,7 @@
 //! MCP Server — Model Context Protocol bridge for AI agents
 //!
-//! Exposes 36 scraper tools across 9 categories via Streamable HTTP.
+//! Exposes the scraper tools across 9 categories via Streamable HTTP — the
+//! exact number is [`MCP_TOOL_COUNT`], the one place that figure lives.
 //! Architecture:
 //! - `state.rs` — McpState with embedded Container + per-category semaphores
 //! - `server.rs` — Axum router + StreamableHttpService setup
@@ -55,6 +56,20 @@ use std::sync::Arc;
 use webfang_core::di::ContainerExt;
 
 pub use state::McpState;
+
+/// The exact number of tools this server advertises.
+///
+/// ONE source for the figure (#1817): the registry is assembled by
+/// [`handlers::build_tool_router`], and every place that has to agree with
+/// that number — the server's own assertion, the stdio handshake, the
+/// provenance gate — reads it from HERE. A number written twice is a number
+/// that drifts, and two numbers that must coincide are exactly the pair that
+/// does.
+///
+/// The env-gated panic probe (`WEBFANG_MCP_TEST_PANIC_TOOL`, #1626 PC-3) is
+/// NOT part of this count: it exists only when an operator sets that switch,
+/// and the registry it extends is not the production one.
+pub const MCP_TOOL_COUNT: usize = 36;
 
 /// Build a Container — fast container construction, no model resolution
 /// happens here (#759).
@@ -163,8 +178,8 @@ pub fn default_dom_inspector() -> Arc<dyn webfang_core::domain::DomInspectorPort
 /// Main MCP handler struct.
 ///
 /// Holds the application state and combined tool router.
-/// All 36 tools are registered via `#[tool]` attributes
-/// in the handler submodules.
+/// All the tools are registered via `#[tool]` attributes
+/// in the handler submodules — [`MCP_TOOL_COUNT`] of them.
 #[derive(Clone)]
 pub struct McpHandler {
     /// Shared application state (DI container + semaphores)

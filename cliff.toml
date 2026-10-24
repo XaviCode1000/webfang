@@ -70,5 +70,5 @@ commit_parsers = [
 
 # PR merge commits on main have titles like `feat: x (#1234)`; link the PR.
 commit_preprocessors = [
-  { pattern = " \\(#(\\d+)\\)", replace = " ([#$1](https://github.com/XaviCode1000/webfang/pull/$1))" },
+  { pattern = " \\(#(\\d+)\\)", replace = " ([#$1](https://github.com/XaviCodeDev1000/webfang/pull/$1))" },
 ]
