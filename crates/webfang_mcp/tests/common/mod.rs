@@ -368,8 +368,18 @@ pub fn extract_json(body: &str) -> Option<Value> {
 
 /// Redact a known output directory path so insta snapshots stay stable
 /// run-to-run.
+///
+/// Snapshots are authored on Linux and store `/` separators, so the host
+/// separator must not leak into the artifact: both the haystack and the needle
+/// are normalized to `/` before matching. Payloads that carry the path inside
+/// serialized JSON escape each separator as `\\`, so doubled backslashes
+/// collapse first.
 pub fn redact_path(text: &str, dir: &std::path::Path) -> String {
-    text.replace(dir.to_string_lossy().as_ref(), "[OUT_DIR]")
+    fn to_snapshot_separators(s: &str) -> String {
+        s.replace("\\\\", "/").replace('\\', "/")
+    }
+    let needle = to_snapshot_separators(&dir.to_string_lossy());
+    to_snapshot_separators(text).replace(needle.as_str(), "[OUT_DIR]")
 }
 
 /// Initialize an MCP session (initialize + notifications/initialized) and
