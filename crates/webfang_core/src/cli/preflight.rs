@@ -2091,24 +2091,35 @@ mod tests {
         }
     }
 
-    /// Hybrid + obscura printing garbage on `--version`: warn-and-continue —
-    /// unknown builds are not hard-blocked.
-    #[cfg_attr(miri, ignore)] // Command::spawn unsupported by Miri (#775)
+    /// Fake `obscura` executable whose `--version` runs the given shell script,
+    /// wired into `CrawlOptions` under the Hybrid strategy: the common arrange
+    /// of the warn-degrade tests (#1710). The caller keeps the returned
+    /// `TempDir` bound while the options are in use — the fake binary lives
+    /// in it.
     #[cfg(unix)]
-    #[test]
-    fn hybrid_version_garbage_degrades_to_warning() {
+    fn hybrid_opts_with_version_script(script: &str) -> (tempfile::TempDir, CrawlOptions) {
         use std::os::unix::fs::PermissionsExt;
 
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let bin_path = tmp.path().join("obscura");
-        std::fs::write(&bin_path, "#!/bin/sh\necho \"custom build\"\n")
-            .expect("write fake obscura");
+        std::fs::write(&bin_path, script).expect("write fake obscura");
         std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755))
             .expect("chmod +x fake obscura");
 
         let mut opts = CrawlOptions::default();
         opts.network.js_strategy = JsStrategy::Hybrid;
         opts.network.obscura_binary = bin_path.to_string_lossy().into_owned();
+        (tmp, opts)
+    }
+
+    /// Hybrid + obscura printing garbage on `--version`: warn-and-continue —
+    /// unknown builds are not hard-blocked.
+    #[cfg_attr(miri, ignore)] // Command::spawn unsupported by Miri (#775)
+    #[cfg(unix)]
+    #[test]
+    fn hybrid_version_garbage_degrades_to_warning() {
+        let (_tmp, opts) =
+            hybrid_opts_with_version_script("#!/bin/sh\necho \"custom build\"\n");
         assert!(
             check_js_dependencies_with(&["definitely-not-installed-9x4k"], false, "", &opts)
                 .is_ok(),
@@ -2121,17 +2132,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn hybrid_version_probe_failure_degrades_to_warning() {
-        use std::os::unix::fs::PermissionsExt;
-
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let bin_path = tmp.path().join("obscura");
-        std::fs::write(&bin_path, "#!/bin/sh\nexit 3\n").expect("write fake obscura");
-        std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod +x fake obscura");
-
-        let mut opts = CrawlOptions::default();
-        opts.network.js_strategy = JsStrategy::Hybrid;
-        opts.network.obscura_binary = bin_path.to_string_lossy().into_owned();
+        let (_tmp, opts) = hybrid_opts_with_version_script("#!/bin/sh\nexit 3\n");
         assert!(
             check_js_dependencies_with(&["definitely-not-installed-9x4k"], false, "", &opts)
                 .is_ok(),
@@ -2151,20 +2152,10 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn unknown_verdict_names_the_expected_minimum() {
-        use std::os::unix::fs::PermissionsExt;
-
         use crate::infrastructure::observability::test_log_capture::LogBuffer;
 
-        let tmp = tempfile::TempDir::new().expect("tempdir");
-        let bin_path = tmp.path().join("obscura");
-        std::fs::write(&bin_path, "#!/bin/sh\necho \"custom build\"\n")
-            .expect("write fake obscura");
-        std::fs::set_permissions(&bin_path, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod +x fake obscura");
-
-        let mut opts = CrawlOptions::default();
-        opts.network.js_strategy = JsStrategy::Hybrid;
-        opts.network.obscura_binary = bin_path.to_string_lossy().into_owned();
+        let (_tmp, opts) =
+            hybrid_opts_with_version_script("#!/bin/sh\necho \"custom build\"\n");
 
         let mut verdict = None;
         let out = LogBuffer::run(|| {
