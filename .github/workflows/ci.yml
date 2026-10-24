@@ -17,7 +17,10 @@
 #   repo-guards (parallel) runs dead-test detection + the other architectural
 #   guards + the MCP public-surface version-marker gate + actionlint/shellcheck
 #   lint; gate still blocks merge on it.
-#   test-core runs: unit tests (--lib) then integration/behavioral tests (--test '*')
+#   test-core runs: unit + integration/behavioral tests in ONE invocation
+#   (--tests: the lib unit tests, the binaries' unit tests and the
+#   integration targets selected BY KIND, so a feature-gated target whose
+#   feature is off is skipped instead of failing the lane)
 #   test-full runs: all features enabled (full workspace compile + test, NO AI inference)
 #   security runs in parallel with tests (no Rust compile)
 #   feature-matrix runs after clippy (cargo-hack --each-feature, catches broken feature combos)
@@ -312,6 +315,17 @@ jobs:
       # file+test-name survive line drift. Runs the guard against fixtures only.
       - name: Ignored-test guard semantics harness
         run: bash scripts/test_ignored_guard.sh
+      # Semantics harness for the empty-test-target guard (#1852). A declared
+      # test target whose gate names a feature that is NOT in the package
+      # default is BUILT by cargo and contains ZERO tests: the run reports
+      # green and the file looks covered. That is how 151 tests of
+      # `webfang_mcp` stopped running without anybody noticing. The guard
+      # fails when such a target is not declared with `required-features`;
+      # the harness proves the guard can still fail, over mktemp fixtures.
+      # Offline, pure text over the checked-out tree plus mktemp fixtures: no
+      # cargo, no build.
+      - name: Empty test target guard semantics harness
+        run: bash scripts/test_empty_test_targets.sh
       # Semantics harness for the Miri UB lane contract (#2235): the lane
       # must REPORT, not abort the process — a lane that aborts leaves no
       # result to act on, which is the dead end this issue closes. The
@@ -1052,10 +1066,22 @@ jobs:
           tool: nextest@0.9.114
       - name: Pre-build test binary
         run: cargo build -p webfang_cli --bin webfang
-      - name: Unit tests (lib)
-        run: cargo nextest run --lib --retries 2
-      - name: Integration tests
-        run: cargo nextest run --test '*' --retries 2
+      # ONE invocation for the whole default-feature surface: the lib unit
+      # tests, the binaries' unit tests and the integration/behavioral
+      # targets.
+      #
+      # WHY NOT `--test '*'`: that glob makes cargo NAME every test target
+      # explicitly, and a target declared with `required-features` whose
+      # feature is off is then a HARD ERROR ("target `sqlite_integration` in
+      # package `webfang_core` requires the features: `persistence`"). The
+      # #1852 declarations put four targets of `webfang_core` in exactly that
+      # shape, so the glob stopped being a selection and became a failure.
+      # `--tests` selects the same targets BY KIND, and cargo SKIPS the ones
+      # whose features are off: the four gated targets (`persistence`,
+      # `console`, `adaptive-selectors`) run in the `Tests (all features)`
+      # lane, which is where their coverage lives.
+      - name: Unit + integration tests
+        run: cargo nextest run --tests --retries 2
 
   # ============================================================================
   # TIER 4: TEST FULL (4-6 minutes)
@@ -1158,10 +1184,29 @@ jobs:
           tool: nextest@0.9.114
       - name: Pre-build test binary
         run: cargo build -p webfang_cli --bin webfang
-      - name: Unit tests (lib)
-        run: cargo nextest run --lib --retries 2
-      - name: Integration tests
-        run: cargo nextest run --test '*' --retries 2
+      # ONE invocation for the whole default-feature surface: the lib unit
+      # tests, the binaries' unit tests and the integration/behavioral
+      # targets. `--tests` selects the targets BY KIND, so cargo SKIPS the
+      # ones whose `required-features` are off instead of failing on them
+      # (see the same comment in `test-core`).
+      - name: Unit + integration tests
+        run: cargo nextest run --tests --retries 2
+      # #1834: the Windows console-control path was only ever COMPILED by this
+      # lane, never EXERCISED — nobody drove a real CTRL_CLOSE_EVENT through
+      # the handler, so the whole console path was unproven on the platform
+      # where it matters. This step runs the ignored test that does exactly
+      # that, HERE, on the Windows runner, where a console exists.
+      #
+      # If the runner's process had NO console, the event could not be
+      # delivered and the test would fail: that is a platform fact and it is
+      # reported as such, not swallowed into a silent skip. The test is
+      # `#[ignore]`d in the ordinary suite precisely so that it runs ONLY
+      # where a console can exist.
+      # #1834: a real CTRL_CLOSE_EVENT cannot be synthesized in CI —
+      # GenerateConsoleCtrlEvent only permits CTRL_C/CTRL_BREAK, and the
+      # console handler ignores both by design (they stay with tokio's
+      # ctrl_c()). The handler's registration, naming and tokio
+      # coexistence are pinned by the platform module's unit tests.
 
   # ============================================================================
   # TEST RELEASE PROVENANCE (L1) — Behavioral acceptance matrix for

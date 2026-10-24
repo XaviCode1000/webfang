@@ -208,3 +208,64 @@ async fn test_concurrent_writes_via_pool() {
         assert!(exists.is_some(), "resource {hash} should exist");
     }
 }
+
+// ===== STORE INTEGRITY (#1828) =====
+
+/// #1828 — the rows survive a reopen, and SQLite itself says the database is
+/// `ok`.
+///
+/// The acceptance criterion of the issue is that the repository has NO
+/// `PRAGMA integrity_check` anywhere: a corrupted store is discovered by the
+/// USER, not by the tool. This test pins the invariant on a REAL file
+/// database (not a memory pool, where there is nothing to corrupt): write
+/// rows, drop the pool (the file is closed), reopen the same file, and ask
+/// SQLite two things — that the database is intact, and that the rows are
+/// still there.
+#[tokio::test]
+async fn test_sqlite_rows_pass_integrity_check_after_reopen() {
+    let tmp = TempDir::new().unwrap();
+    let db_path = tmp.path().join("integrity.db");
+
+    {
+        let pool = create_pool(&db_path, 1).unwrap();
+        setup_schema(&pool).await.unwrap();
+        let repo = SqliteVectorRepository::new(pool);
+        for idx in 0..3 {
+            repo.save_resource(
+                &format!("https://example.com/page{idx}"),
+                &format!("Page {idx}"),
+                &format!("hash_{idx}"),
+                1024,
+            )
+            .await
+            .unwrap();
+        }
+    } // the pool is dropped here: the file is closed and the rows are on disk
+
+    let pool = create_pool(&db_path, 1).unwrap();
+    let conn = pool.get().await.unwrap();
+    let integrity: String = conn
+        .interact(|c| c.query_row("PRAGMA integrity_check", [], |row| row.get(0)))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        integrity, "ok",
+        "SQLite must report the reopened store as intact"
+    );
+    drop(conn);
+
+    // The rows survived the reopen: the store is not merely intact, it is the
+    // SAME store.
+    setup_schema(&pool).await.unwrap();
+    let repo = SqliteVectorRepository::new(pool);
+    for idx in 0..3 {
+        assert_eq!(
+            repo.resource_exists_by_hash(&format!("hash_{idx}"))
+                .await
+                .unwrap(),
+            Some(format!("https://example.com/page{idx}")),
+            "row {idx} must survive the reopen"
+        );
+    }
+}

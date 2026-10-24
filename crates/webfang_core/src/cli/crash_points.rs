@@ -112,6 +112,19 @@ pub fn hit(name: &str) {
 // one legitimate use of unsafe here; the workspace forbids unsafe elsewhere.
 #[allow(unsafe_code)]
 fn kill_self() -> ! {
+    // The kernel DISCARDS a `SIGKILL` sent from INSIDE its own PID namespace
+    // to that namespace's init (the PID-1 special case): `kill()` returns 0
+    // and the signal NEVER arrives. Sending it and waiting for it IS the
+    // hang, so the detection comes BEFORE the signal: the only observable
+    // sign is the pid, and in that environment `getpid() == 1` (#2066).
+    // SAFETY: `getpid()` takes no arguments and touches no memory: it
+    // returns the calling process's own pid, which is always a valid pid.
+    if unsafe { libc::getpid() } == 1 {
+        die_diagnostically(
+            "SIGKILL was discarded: this process is the init of its PID namespace, \
+             and the kernel drops a signal sent to it",
+        );
+    }
     // SAFETY: `getpid()` always returns the calling process's own valid pid;
     // `SIGKILL` cannot be caught, blocked, or ignored, so `kill` never
     // returns on success. Using `getpid()` instead of converting
@@ -125,11 +138,10 @@ fn kill_self() -> ! {
         // This branch — a seccomp filter or a PID-namespace block — is the
         // only legitimate reason to abort, and it names its errno so a death
         // by `SIGABRT` is diagnosable from `child_stderr` alone.
-        tracing::error!(
-            error = %std::io::Error::last_os_error(),
-            "crash-injection harness: SIGKILL was refused; terminating with abort"
-        );
-        std::process::abort();
+        die_diagnostically(&format!(
+            "SIGKILL was refused: {}",
+            std::io::Error::last_os_error()
+        ));
     }
     // `kill` returned 0: the signal is PENDING, not yet delivered — it is taken
     // when this thread next returns to a point where signals can be handled.
@@ -146,6 +158,21 @@ fn kill_self() -> ! {
         // simply re-enter the wait.
         unsafe { libc::pause() };
     }
+}
+
+/// The ONE diagnostic death path of the crash-injection harness: a structured
+/// error that NAMES what happened, and then abort.
+///
+/// Both branches — the refused `kill` and the discarded one — go through it,
+/// so a single test covers both. A path that only one branch used would
+/// leave the other one uncovered, which is how the discarded case stayed
+/// invisible until #2066.
+fn die_diagnostically(reason: &str) -> ! {
+    tracing::error!(
+        error = reason,
+        "crash-injection harness: terminating with abort"
+    );
+    std::process::abort();
 }
 
 #[cfg(not(unix))]

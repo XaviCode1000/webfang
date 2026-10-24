@@ -10,6 +10,24 @@ repository.workspace = true
 homepage.workspace = true
 
 [features]
+# #1852 (lote L8): `mcp` is in the DEFAULT set.
+#
+# The 22 integration-test files of this crate are gated on
+# `#![cfg(feature = "mcp")]`. With the feature out of the default set,
+# `cargo nextest run -p webfang_mcp` (no flags) BUILT those 22 targets and
+# ran ZERO tests in them: the run reported green while 151 tests never ran.
+# That is the false green this issue is about, in this crate.
+#
+# Putting the feature in the default costs no build and no dependency: on the
+# core side `mcp` is an empty marker (`webfang_core/mcp = []`, which gates no
+# production site), and the tests it unblocks are the ones this package exists
+# to prove.
+#
+# The guard `scripts/check_empty_test_targets.sh` is what keeps this from
+# coming back: a gated target whose feature is NOT in the default has to be
+# declared with `required-features`, and these targets are deliberately not
+# declared that way — they RUN by default now.
+default = ["mcp"]
 mcp = ["webfang_core/mcp"]
 # Vault search (#433). The local ONNX embedding adapter is gone (ADR-0004
 # paso 6): the embedding endpoint is remote and resolved by

@@ -381,6 +381,15 @@ mod handler {
 mod tests {
     use super::*;
 
+    // #1834: the end-to-end "a real CTRL_CLOSE_EVENT reaches the source"
+    // probe is NOT reproducible in CI by construction — the only console
+    // control events `GenerateConsoleCtrlEvent` may synthesize are CTRL_C
+    // and CTRL_BREAK (documented API restriction), and this handler ignores
+    // both by design (they stay with tokio's `ctrl_c()`). The handler's
+    // registration, event naming and tokio coexistence stay pinned by the
+    // unit tests below; a real close delivery needs a human closing a real
+    // console.
+
     #[test]
     fn console_events_map_to_their_own_names() {
         assert_eq!(

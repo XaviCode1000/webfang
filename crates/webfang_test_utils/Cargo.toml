@@ -7,7 +7,14 @@ publish = false
 
 [dependencies]
 regex = { workspace = true }
-webfang_core = { workspace = true }
+# #1852 (lote L8, decision D8 del plan): `default-features = false`.
+#
+# The core's default set is EMPTY today, so this changes nothing observable —
+# and that is the point: it is IMMUNIZATION. If the core's default ever grows
+# a feature again, this crate's harness keeps building the core WITHOUT it,
+# so the harness never silently depends on a feature the product does not
+# enable by default.
+webfang_core = { workspace = true, default-features = false }
 
 [lints]
 workspace = true

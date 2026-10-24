@@ -318,6 +318,45 @@ path = "tests/harness_ssrf_arrivals.rs"
 name = "dry_run_fail_fast"
 path = "tests/dry_run_fail_fast.rs"
 
+# ---------------------------------------------------------------------------
+# Targets gated on a feature that is NOT in the default feature set (#1852,
+# lote L8). Without a declaration, cargo DISCOVERS these files, BUILDS a
+# target out of each one, and that target contains NO test: the run reports
+# green and the file looks covered. `required-features` is cargo's own
+# declaration for a conditional target: with it, the target is not built at
+# all unless the feature is on, so the emptiness is explicit instead of
+# silent.
+#
+# The guard `scripts/check_empty_test_targets.sh` fails when a gated target
+# has no such declaration (or when the declaration does not cover the gate),
+# so this cannot come back through another door.
+# ---------------------------------------------------------------------------
+[[test]]
+name = "sqlite_integration"
+path = "tests/sqlite_integration.rs"
+required-features = ["persistence"]
+
+[[test]]
+name = "stress_test"
+path = "tests/stress_test.rs"
+required-features = ["console"]
+
+# The gate of this one is `#![cfg(all(feature = "console", tokio_unstable))]`
+# and `tokio_unstable` is a CFG, not a cargo feature: the workspace never
+# enables it, so this target is empty in EVERY build, even with
+# `--all-features`. The declaration makes that explicit, but it does not make
+# the test run: doing that means touching tokio's `tokio_unstable` feature (a
+# dependency change) or deleting the file (an owner decision). Recorded, not
+# resolved.
+[[test]]
+name = "tokio_console_smoke_test"
+path = "tests/tokio_console_smoke_test.rs"
+required-features = ["console"]
+
+[[test]]
+name = "adaptive_selector_integration"
+path = "tests/adaptive_selector_integration.rs"
+required-features = ["adaptive-selectors"]
 # Credential store (keyring). `keyring` 3 is GONE: every version of it
 # declares the secret-service back ends as optional dependencies, and
 # `Cargo.lock` records optional dependencies — so the unmaintained `zbus 4`

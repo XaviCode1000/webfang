@@ -156,12 +156,26 @@ wall-clock race), giving true crash semantics: no Drop impls, no cleanup.
 | 1 | `pre_first_persist` | discovery done, nothing saved |
 | 2 | `mid_fetch` | response received, unprocessed |
 | 3 | `post_fetch_pre_extract` | fetched+cleaned, extraction pending |
-| 4 | `mid_jsonl_line` | half a line flushed (torn tail) |
-| 5 | `post_flush_pre_commit` | flush ack received, EXPORTED not saved |
-| 6 | `while_holding_lock` | killed inside store save txn |
-| 7 | `tmp_written_pre_rename` | tmp complete, rename pending |
-| 8 | `mid_state_file_write` | tmp PARTIAL (truncated artifact) |
-| 9 | `during_cancel_drain` | cancelled mid-drain, pre-final-persist |
+| 4 | `mid_extraction` | HTML cleaned + selector applied, content build pending |
+| 5 | `post_extraction_pre_pipeline` | content built, nothing persisted yet |
+| 6 | `mid_jsonl_line` | half a line flushed (torn tail) |
+| 7 | `post_flush_pre_commit` | flush ack received, EXPORTED not saved |
+| 8 | `while_holding_lock` | killed inside store save txn |
+| 9 | `tmp_written_pre_rename` | tmp complete, rename pending |
+| 10 | `mid_state_file_write` | tmp PARTIAL (truncated artifact) |
+
+There is an **eleventh armed point with no matrix row**: `during_cancel_drain`
+(the cancel-drain window, before the final persist). The point is armed in
+production (`application/export_factory.rs`), but the branch that would reach
+it **does not run yet**: the export session only observes a cancellation token
+when `ResumeContext::observing_cancel` is called, and in production nobody
+calls it (only the tests of `export_factory` do) — so the session's
+`cancelled()` is always false and the drain branch never runs.
+
+That wiring is **approved** (#2244, decision A: the CLI's export flow delivers
+its cancellation token to the `ResumeContext`), so the point is not
+impossible — it has simply **not been reached yet**. Its matrix row lands with
+that change: advertising it before then would be a row that cannot pass yet.
 
 The matrix lives in `crates/webfang_core/tests/crash_matrix_test.rs`: each
 row kills a real CLI child at the pinned point, reruns with `--resume`, and
@@ -174,6 +188,36 @@ Run it with:
 ```bash
 cargo nextest run --test crash_matrix_test
 ```
+
+### The discarded-SIGKILL row and the machines that cannot create a PID namespace
+
+`crash_point_never_hangs_when_sigkill_is_discarded` is the row that proves the
+discarded-SIGKILL path cannot hang (#2066). Its child has to be the INIT of a
+**PID namespace** — the only way to get `getpid() == 1` without being the real
+init of the machine — and the only unprivileged way to get a PID namespace is a
+**user namespace**.
+
+The GitHub-hosted runners refuse the user namespace (their AppArmor profile
+answers `unshare: write failed /proc/self/uid_map: Operation not permitted`),
+so there the test **SKIPS with the reason written out** on stderr. It never
+hangs and never fails for that reason: a red that reports a platform fact says
+nothing about the defect, and a silent skip would be exactly the false green
+this row exists to prevent. The remediation for a machine that *should* allow
+it is `sysctl -w kernel.unprivileged_userns_clone=1` (or running the test as
+root).
+
+**Who verifies this row:** a Linux host that allows unprivileged user
+namespaces — the crash-matrix lane is run by hand there:
+
+```bash
+# on a Linux host with unprivileged user namespaces enabled
+cargo nextest run --test crash_matrix_test \
+  -E 'test(=crash_point_never_hangs_when_sigkill_is_discarded)'
+```
+
+Every OTHER row of the matrix runs in the ordinary CI lane
+(`cargo nextest run --test crash_matrix_test`): only the discarded-SIGKILL row
+needs the namespace.
 
 ---
 
