@@ -716,8 +716,12 @@ mod tests {
     )]
     #[tokio::test]
     async fn build_elastic_ingestion_some_when_elastic_enabled() {
+        let dir = tempfile::TempDir::new().expect("tempdir for the isolated crawl db");
         let mut opts = CrawlOptions::default();
         opts.elastic.enabled = true;
+        // No db_path here would resolve to the real `~/.webfang/crawl.db`:
+        // a test pool must never touch the user's actual crawl database.
+        opts.elastic.db_path = Some(dir.path().join("crawl.db"));
         let result = build_elastic_ingestion(
             &opts,
             crate::application::container::VaultAiPorts::default(),
@@ -738,6 +742,8 @@ mod tests {
         let vec_path = tmp.path().join("out.jsonl");
         let mut opts = CrawlOptions::default();
         opts.elastic.enabled = true;
+        // Isolated db: the default would resolve to the real `~/.webfang/crawl.db`.
+        opts.elastic.db_path = Some(tmp.path().join("crawl.db"));
         opts.elastic.output_vectors = Some(vec_path.to_string_lossy().into_owned());
         let result = build_elastic_ingestion(
             &opts,
