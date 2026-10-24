@@ -29,7 +29,7 @@ and its one-line fix; the full verified commands are in
 | A hash does not match `SHA256SUMS.txt` | Truncated/partial download, or the file is not from this release | Re-download the archive; do not run the binary |
 | No binary for your platform (Intel Mac) | `x86_64-apple-darwin` is not built (the original reason was the ONNX prebuilt; the target list was not extended after the ONNX removal) | Nothing to download; see [Intel macOS](installation.md#intel-macos-unsupported) |
 | `--js-strategy full` or SQLite resume absent | `chromium` / `persistence` are not in the release build | Expected; see [what is not in the release binary](installation.md#what-is-not-in-the-release-binary) |
-| No `webfang-mcp` binary | MCP lives in a separate crate the release never compiles | Run it from source; see the [MCP section](https://github.com/XaviCode1000/webfang#-mcp-server) |
+| No `webfang-mcp` binary | MCP lives in a separate crate the release never compiles | Run it from source; see the [MCP section](https://github.com/XaviCodeDev1000/webfang#-mcp-server) |
 
 If a binary fails with something *not* in this table, verify the checksum
 first — it separates "my download is damaged" from "this is a real bug"

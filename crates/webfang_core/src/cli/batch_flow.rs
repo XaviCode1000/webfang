@@ -121,6 +121,11 @@ pub(crate) async fn run_batch(
         &opts,
         state_store.as_deref(),
         ai_cleaner,
+        // The RUN's token (#2244 decision A), received from `run()` where
+        // `ShutdownGuard::install()` owns it: it already drives the crawls
+        // above, and now the export observes that same one. The batch flow
+        // does not mint a token of its own.
+        cancel,
     )
     .await;
 

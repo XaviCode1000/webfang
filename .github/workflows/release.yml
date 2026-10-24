@@ -527,7 +527,7 @@ jobs:
   #
   # The consequence, stated honestly: the signing identity is a WORKFLOW PATH,
   # not a person. A consumer verifies
-  #   https://github.com/XaviCode1000/webfang/.github/workflows/release.yml@refs/tags/vX.Y.Z
+  #   https://github.com/XaviCodeDev1000/webfang/.github/workflows/release.yml@refs/tags/vX.Y.Z
   # — which is a real, checkable boundary, and is pinned by the
   # --certificate-identity-regexp in scripts/verify-release-signatures.sh.
   #
@@ -665,7 +665,7 @@ jobs:
           # sees the identity that is being trusted. It is the release workflow
           # of this repository at a VERSION TAG — not a branch, not another
           # workflow, not another repository.
-          RELEASE_CERT_IDENTITY_REGEXP: '^https://github\.com/XaviCode1000/webfang/\.github/workflows/release\.yml@refs/tags/v[0-9].*$'
+          RELEASE_CERT_IDENTITY_REGEXP: '^https://github\.com/${{ github.repository }}/\.github/workflows/release\.yml@refs/tags/v[0-9].*$'
         run: |
           set -euo pipefail
           # Audit B7: verify the REQUIRED inventory explicitly — the glob that
@@ -711,7 +711,7 @@ jobs:
       - name: Create release with provenance attestation
         env:
           GH_TOKEN: ${{ github.token }}
-          CHANGELOG_URL: https://github.com/XaviCode1000/webfang/blob/main/CHANGELOG.md
+          CHANGELOG_URL: https://github.com/XaviCodeDev1000/webfang/blob/main/CHANGELOG.md
           TAG: ${{ needs.preflight.outputs.tag }}
           VALIDATED_COMMIT: ${{ needs.preflight.outputs.validated_commit }}
           EXPECTED_LINE: ${{ needs.preflight.outputs.expected_line }}
@@ -758,7 +758,7 @@ jobs:
             echo "Requires Rust 1.88, a C/C++ compiler, and **\`cmake\`**. The HTTP client \`wreq\` → \`btls\` → \`btls-sys\` (formerly \`boring2\`/\`boring-sys2\`) compiles BoringSSL from C++ on first build, and without \`cmake\` the failure surfaces deep inside a build script with an error that never mentions the real cause."
             echo ""
             echo '```bash'
-            echo "git clone https://github.com/XaviCode1000/webfang"
+            echo "git clone https://github.com/XaviCodeDev1000/webfang"
             echo "cd webfang"
             echo 'cargo build --release --locked --features "mcp" -p webfang_cli'
             echo '```'
@@ -782,7 +782,7 @@ jobs:
             echo "Select-String -Path SHA256SUMS.txt -Pattern pc-windows-msvc"
             echo '```'
             echo ""
-            echo "Full install and uninstall guide, including every on-disk root a run leaves behind: <https://github.com/XaviCode1000/webfang/blob/main/docs/src/installation.md>"
+            echo "Full install and uninstall guide, including every on-disk root a run leaves behind: <https://github.com/XaviCodeDev1000/webfang/blob/main/docs/src/installation.md>"
             echo ""
             echo "## Provenance Attestation (L1)"
             echo ""

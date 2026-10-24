@@ -30,6 +30,7 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 use tracing::info;
 
+use webfang_core::application::crawler::engine::TERMINATION_REGISTRATION_REJECTED;
 use webfang_core::infrastructure::platform::first_termination_event;
 
 use super::auth::{validate_auth, AuthState};
@@ -1052,9 +1053,12 @@ async fn shutdown_signal(token: CancellationToken) {
             token.cancel();
         },
         None => {
-            tracing::warn!(
-                "interrupt handler unavailable — server will keep running and rely on an explicit cancel()"
-            );
+            // #2193: the SAME shared warning the crawl engine and the CLI
+            // shutdown guard emit for a rejected registration. The MCP server
+            // is the THIRD shutdown authority, and the rejection is one fact
+            // with one wording — three texts for one event is how a reader
+            // loses track of what the process just said.
+            tracing::warn!(authority = "mcp", "{}", TERMINATION_REGISTRATION_REJECTED);
             // Without a working Ctrl+C handler, wait on the token directly so the
             // server can still be torn down via an explicit cancel().
             token.cancelled().await;
@@ -1067,6 +1071,7 @@ mod tests {
     use super::panic_containment::{JSONRPC_INTERNAL_ERROR, PANIC_HTTP_ERROR};
     use super::*;
     use crate::mcp_server::render_panic_payload;
+    use crate::mcp_server::MCP_TOOL_COUNT;
     use webfang_core::config::Config;
     use webfang_core::di::{Container, ContainerExt};
 
@@ -1145,9 +1150,13 @@ mod tests {
     async fn test_handler_builds_with_all_tools() {
         let handler = test_handler().await;
         let tools = handler.tool_router.list_all();
-        assert!(
-            tools.len() >= 35,
-            "Expected at least 35 tools, got {}",
+        // The EXACT count, not a floor (#1817): "at least 35" let the registry
+        // drift in either direction without failing, and the figure is read
+        // from the one place that owns it.
+        assert_eq!(
+            tools.len(),
+            MCP_TOOL_COUNT,
+            "the server must advertise exactly {MCP_TOOL_COUNT} tools, got {}",
             tools.len()
         );
 

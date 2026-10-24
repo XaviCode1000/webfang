@@ -10,6 +10,12 @@
 //! nice" — it is: **a tool description may not advertise a control the tool's
 //! own input schema does not have.** That is SD-06 exactly, and it is
 //! mechanically checkable, so it does not depend on a reviewer noticing.
+//!
+//! The last section extends the same idea from CONTROLS to MODES (#1815): a
+//! description may not advertise a way of matching that the implementation
+//! does not have either. `match_url_pattern` promised a host-only and a
+//! path-only mode; it has neither, and a caller who writes the pattern the
+//! description suggests gets `false` back.
 
 use serde_json::{json, Value};
 use webfang_mcp::mcp_server::handlers::build_tool_router;
@@ -725,4 +731,88 @@ fn numeric_bounds_are_never_looser_than_the_spec() {
             }
         }
     }
+}
+
+// ============================================================================
+// #1815 — the matcher advertises the modes it HAS, and not the ones it has not
+// ============================================================================
+
+/// The match modes `match_url_pattern` really implements.
+///
+/// The implementation (`webfang_core::domain::match_url_pattern`) compares the
+/// pattern against the WHOLE URL as one string: a pattern carrying a glob
+/// metacharacter (`*`, `?`, `[`) becomes an anchored glob over that string,
+/// and a pattern with no metacharacter is a substring test. The URL is never
+/// split into a host and a path, so there is NO host-only mode and NO
+/// path-only mode.
+///
+/// The pre-fix description promised both ("Supports path patterns (start with
+/// '/') and host patterns"), and NEITHER existed: a host pattern had to be
+/// spelled out in full, and a path pattern was compared as a substring of the
+/// whole URL rather than against the path. A description that promises a mode
+/// the tool does not have is the same defect class as a lying count (#1817):
+/// the caller writes the pattern the description suggests and gets `false`.
+const MATCHER_MODES: &[&str] = &["whole url", "substring", "glob"];
+
+/// The modes the tool does NOT have, spelled the way the pre-fix description
+/// spelled them.
+///
+/// The check is on the PHRASE, so a description that has to say "there is no
+/// host-only mode" must not use the phrase "host pattern" to say it. That is
+/// deliberate: the point of the gate is that the modes are named in ONE way,
+/// so the advertisement cannot drift back into promising one.
+const ABSENT_MATCHER_MODES: &[&str] = &["path pattern", "host pattern"];
+
+#[test]
+fn match_url_pattern_advertises_only_the_modes_it_has() {
+    let advertised = tool("match_url_pattern");
+    let lowered = advertised.description.to_lowercase();
+
+    for absent in ABSENT_MATCHER_MODES {
+        assert!(
+            !lowered.contains(absent),
+            "match_url_pattern advertises `{absent}`, a mode the implementation \
+             does not have: the URL is never split, so the pattern is compared \
+             against the whole URL string: {:?}",
+            advertised.description
+        );
+    }
+
+    for present in MATCHER_MODES {
+        assert!(
+            lowered.contains(present),
+            "the corrected description must state the mode the tool really has \
+             (`{present}`): {:?}",
+            advertised.description
+        );
+    }
+}
+
+/// The description is only honest if the implementation behaves the way the
+/// description says. These are the modes it names: the whole URL (exact and
+/// glob) and the substring form.
+#[test]
+fn the_modes_match_url_pattern_advertises_are_the_ones_it_implements() {
+    use webfang_core::domain::match_url_pattern;
+
+    // "the whole URL as a single string": an exact URL, and a glob over it.
+    assert!(match_url_pattern(
+        "https://example.com/pricing",
+        "https://example.com/pricing"
+    ));
+    assert!(match_url_pattern(
+        "https://example.com/pricing",
+        "https://example.com/*"
+    ));
+
+    // "contains it as a substring": a bare host is a SUBSTRING test, not a
+    // host-only mode — which is exactly why the description must not promise
+    // a host mode.
+    assert!(match_url_pattern(
+        "https://example.com/pricing",
+        "example.com"
+    ));
+
+    // The universal wildcard matches every URL.
+    assert!(match_url_pattern("https://example.com/pricing", "*"));
 }

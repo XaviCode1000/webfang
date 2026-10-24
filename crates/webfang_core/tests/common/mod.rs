@@ -16,6 +16,7 @@ pub mod cli_harness;
 pub mod fixture_server;
 pub mod fixtures;
 pub mod mock_http;
+pub mod sitemap_arrange;
 
 pub use fixtures::*;
 
