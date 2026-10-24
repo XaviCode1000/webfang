@@ -183,9 +183,10 @@ pub const TOOL_DOMAIN_DURATION_CAPACITY: usize = 32;
 ///
 /// The per-domain map is bounded by [`MAX_TRACKED_DOMAINS`], an ACCEPTED
 /// residual this slice does not re-open. The cross-product is not bounded by
-/// that alone: 36 tools x 500 domains is 18 000 possible cells, ~26x the
-/// per-domain map, so it needs its own stated bound. Past this many tracked
-/// cells a new `(tool, domain)` pair folds into `(tool, [`OVERFLOW_DOMAIN_KEY`])`
+/// that alone: the pinned tool count ([`crate::mcp_server::MCP_TOOL_COUNT`])
+/// x 500 domains is ~18 000 possible cells, ~26x the per-domain map, so it
+/// needs its own stated bound. Past this many tracked cells a new
+/// `(tool, domain)` pair folds into `(tool, [`OVERFLOW_DOMAIN_KEY`])`
 /// — the same overflow convention, giving at most one overflow cell per tool.
 pub const MAX_TRACKED_TOOL_DOMAIN_PAIRS: usize = 512;
 

@@ -16,37 +16,7 @@ use serde_json::json;
 use wreq::Client;
 
 mod common;
-use common::{call_tool, init_session, is_tool_error, start_seeded_server, tool_text};
-
-/// A relative temporary directory that deletes itself on drop.
-///
-/// `tempfile::TempDir` always returns an absolute path (it joins with
-/// `env::current_dir`), which the MCP `require_safe_path` validator rejects.
-/// These tests need a *relative* output dir, so we manage one manually.
-struct RelTempDir {
-    path: std::path::PathBuf,
-}
-
-impl RelTempDir {
-    fn new(prefix: &str) -> Self {
-        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let name = format!("{prefix}-{}-{}", std::process::id(), n);
-        let path = std::path::PathBuf::from(name);
-        std::fs::create_dir_all(&path).expect("create relative temp dir");
-        RelTempDir { path }
-    }
-
-    fn path(&self) -> &std::path::Path {
-        &self.path
-    }
-}
-
-impl Drop for RelTempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.path);
-    }
-}
+use common::{call_tool, init_session, is_tool_error, start_seeded_server, tool_text, RelTempDir};
 
 // ============================================================================
 // export_vector

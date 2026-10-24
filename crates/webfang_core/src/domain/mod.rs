@@ -35,6 +35,11 @@ pub mod http_config;
 pub mod http_error;
 pub mod http_port;
 pub mod js_strategy;
+/// Credential store selection — the ONLY place that decides which
+/// credential store backs the keyring on this platform and with which key
+/// the credential is addressed (D20: the key must stay byte-identical to
+/// the one `keyring` 3 used).
+pub(crate) mod keyring_store;
 pub mod link_extractor;
 pub mod llm;
 pub mod local_secret_store;

@@ -59,6 +59,10 @@ secrecy
 selectors
 sha2
 shlex
+# socket2: tokio 1.53.3 (the RUSTSEC-2026-0386 patch) declares socket2 0.6,
+# while hyper-util and tonic still hold socket2 0.5.10 until they bump their
+# tonics (major-major behind socket2 0.6, out of scope for a lock fix).
+socket2
 syn
 tendril
 thiserror
