@@ -754,6 +754,8 @@ mod tests {
         let vec_path = tmp.path().join("out.jsonl");
         let mut opts = CrawlOptions::default();
         opts.elastic.enabled = true;
+        // Isolated db: the default would resolve to the real `~/.webfang/crawl.db`.
+        opts.elastic.db_path = Some(tmp.path().join("crawl.db"));
         opts.elastic.output_vectors = Some(vec_path.to_string_lossy().into_owned());
         // Per-test database: see the sibling test for why the default path
         // is not safe under a parallel `cargo test`.
