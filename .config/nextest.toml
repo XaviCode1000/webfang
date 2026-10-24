@@ -85,9 +85,14 @@ global-timeout = "1h"
 # de no-herencia que `retries`)
 default-filter = "not test(ai_integration)"
 
-# Output detallado para debugging en CI
-success-output = "immediate"
-status-level = "all"
+# Output para CI (#2305, paso 2): el log de CI no necesita el stdout de los
+# tests que pasan ni el estado de cada skip; sí necesita los fallos en el
+# stream y, al final, el detalle de lentos y flaky ("slow" ya incluye "flaky":
+# los niveles de final-status-level son acumulativos y el valor es único —
+# "slow,flaky" no es sintaxis válida).
+success-output = "never"
+status-level = "fail"
+final-status-level = "slow"
 
 # Override del trybuild copiado de `default` (misma razón de no-herencia; la
 # medición y el criterio del techo de 600s están documentados ahí).
