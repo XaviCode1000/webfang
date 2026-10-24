@@ -2,7 +2,7 @@
 # test_nextest_invocation_lint.sh
 #
 # Semantics harness for scripts/check_nextest_invocation_lint.sh (issue
-# #1784, follow-up to #1781 / #1782).
+# #1784, follow-up to #1781 / #1782; retry-policy flags since #2305).
 #
 # The gate is a text scan, and the repo's own standard for a grep gate is
 # explicit: "Grepping for a retry loop proves none of those, and a gate
@@ -10,11 +10,14 @@
 # So this harness runs the gate against mktemp fixtures and proves, offline
 # and with no repo state touched, that:
 #
-#   1. a clean tree PASSES (plain `cargo nextest run` with `--retries`
-#      only — retries are out of scope);
+#   1. a clean tree PASSES (plain `cargo nextest run`, no flags);
 #   2. a spaced `--test-threads 4`, an `=`-joined `--test-threads=4`, a
 #      glued `-j4`, a spaced `-j 4`, and a `--jobs 4` on a
 #      `cargo nextest run` FAIL;
+#   2b. the retry-policy flags FAIL too (#2305): a spaced `--retries 2`,
+#      an `=`-joined `--retries=0`, a `--flaky-result=fail`, a bare
+#      `--retries` at end of line, one on a `\`-continuation line, and
+#      one inside a YAML `run: |` block;
 #   3. a flag on a `\`-continuation line FAILS — joining continuations
 #      before matching is load-bearing, because the flag shares no
 #      physical line with `nextest run`;
@@ -87,8 +90,8 @@ echo "check_nextest_invocation_lint semantics harness"
 assert_case clean_tree_passes PASS "scripts/run_tests.sh" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-cargo nextest run --workspace --lib --retries 2
-cargo nextest run --test '*' --retries 2
+cargo nextest run --workspace --lib
+cargo nextest run --test '*'
 EOF
 
 # --- 2. flag spellings that must FIRE ------------------------------------
@@ -117,6 +120,44 @@ assert_case jobs_flag FAILS "scripts/run_tests.sh" <<'EOF'
 cargo nextest run --lib --jobs 4
 EOF
 
+# --- 2b. retry-policy flags that must FIRE (#2305) ------------------------
+assert_case spaced_retries FAILS "scripts/run_tests.sh" <<'EOF'
+#!/usr/bin/env bash
+cargo nextest run --workspace --lib --retries 2
+EOF
+
+assert_case equals_retries FAILS "scripts/run_tests.sh" <<'EOF'
+#!/usr/bin/env bash
+cargo nextest run --all-features --retries=0
+EOF
+
+assert_case flaky_result_flag FAILS "scripts/run_tests.sh" <<'EOF'
+#!/usr/bin/env bash
+cargo nextest run --workspace --flaky-result=fail
+EOF
+
+# Bare flag at end of line: the full-token pattern's `$` boundary must
+# still fire without a value behind it.
+assert_case bare_retries_at_eol FAILS "scripts/run_tests.sh" <<'EOF'
+#!/usr/bin/env bash
+cargo nextest run --workspace --lib --retries
+EOF
+
+assert_case continuation_line_retries FAILS "scripts/run_tests.sh" <<'EOF'
+#!/usr/bin/env bash
+cargo nextest run --all-features \
+  --retries 0
+EOF
+
+assert_case yaml_run_block_retries FAILS ".github/workflows/ci.yml" <<'EOF'
+jobs:
+  flake-detection:
+    steps:
+      - name: Full suite
+        run: |
+          cargo nextest run --all-features --retries 0
+EOF
+
 # --- 3. continuation-line flag (joining is load-bearing) ------------------
 assert_case continuation_line_flag FAILS "scripts/run_tests.sh" <<'EOF'
 #!/usr/bin/env bash
@@ -131,7 +172,7 @@ jobs:
     steps:
       - name: Unit tests
         run: |
-          cargo nextest run --lib --retries 2
+          cargo nextest run --lib
           cargo nextest run --test '*' --test-threads 4
 EOF
 
@@ -185,7 +226,7 @@ EOF
 assert_case full_line_comment_passes PASS "scripts/run_tests.sh" <<'EOF'
 #!/usr/bin/env bash
 # cargo nextest run --lib --test-threads 4
-cargo nextest run --lib --retries 2
+cargo nextest run --lib
 EOF
 
 assert_case yaml_full_line_comment_passes PASS ".github/workflows/ci.yml" <<'EOF'
@@ -195,19 +236,20 @@ jobs:
       - name: Unit tests
         run: |
           # cargo nextest run --lib --test-threads 4
-          cargo nextest run --lib --retries 2
+          cargo nextest run --lib
 EOF
 
 # `--json`-like flags share a prefix with `-j` but are not a token match.
 assert_case json_like_flag_passes PASS "scripts/run_tests.sh" <<'EOF'
 #!/usr/bin/env bash
-cargo nextest run --lib --message-format=json --retries 2
+cargo nextest run --lib --message-format=json
 EOF
 
 # --- 6. baseline over the real tree (fixtures first, real tree last) ------
-# The post-#1782 tree is clean: no `cargo nextest run` invocation under
-# scripts/ + .github/workflows/ carries a thread-count flag, and the five
-# libtest/Miri/TSan `=1` lines are a different runner.
+# The post-#1782/#2305 tree is clean: no `cargo nextest run` invocation
+# under scripts/ + .github/workflows/ carries a thread-count or
+# retry-policy flag, and the five libtest/Miri/TSan `=1` lines are a
+# different runner.
 GATE_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 out="$(NEXTEST_LINT_ROOT="$GATE_ROOT" bash "$GATE" 2>&1)"; rc=$?
 if [ "$rc" -eq 0 ]; then

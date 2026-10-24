@@ -1080,8 +1080,10 @@ jobs:
       # whose features are off: the four gated targets (`persistence`,
       # `console`, `adaptive-selectors`) run in the `Tests (all features)`
       # lane, which is where their coverage lives.
+      # Retry policy lives in .config/nextest.toml [profile.ci] (#2305): no
+      # --retries flag here — the invocation lint rejects policy flags.
       - name: Unit + integration tests
-        run: cargo nextest run --tests --retries 2
+        run: cargo nextest run --tests --profile ci
 
   # ============================================================================
   # TIER 4: TEST FULL (4-6 minutes)
@@ -1117,7 +1119,8 @@ jobs:
       # consumes --ignored tests, so no model cache entry is needed here.
       - name: Pre-build test binary
         run: cargo build -p webfang_cli --bin webfang --all-features
-      - run: cargo nextest run --all-features --retries 2
+      # Retry policy lives in .config/nextest.toml [profile.ci] (#2305).
+      - run: cargo nextest run --all-features --profile ci
 
   # ============================================================================
   # TEST CROSSPLATFORM (ADVISORY SIGNAL IN PR) — XP-C-01 (#1608)
@@ -1190,7 +1193,7 @@ jobs:
       # ones whose `required-features` are off instead of failing on them
       # (see the same comment in `test-core`).
       - name: Unit + integration tests
-        run: cargo nextest run --tests --retries 2
+        run: cargo nextest run --tests --profile ci
       # #1834: the Windows console-control path was only ever COMPILED by this
       # lane, never EXERCISED — nobody drove a real CTRL_CLOSE_EVENT through
       # the handler, so the whole console path was unproven on the platform
@@ -1953,10 +1956,12 @@ jobs:
   # ============================================================================
   # FLAKE DETECTION (nightly, retries 0, REPORT-ONLY) — #2286
   #
-  # PR and push lanes run nextest with --retries 2: a flaky test passes on
-  # TRY 2 and the lane stays green, so the flake is invisible exactly where it
-  # matters. This nightly lane runs the SAME suite (test-full's shape: all
-  # features) with ZERO retries, so every genuine flake reds a job.
+  # PR and push lanes run nextest with retries 2 ([profile.ci] in
+  # .config/nextest.toml, #2305): a flaky test passes on TRY 2 and the lane
+  # stays green, so the flake is invisible exactly where it matters. This
+  # nightly lane runs the SAME suite (test-full's shape: all features) with
+  # ZERO retries ([profile.flake-nightly]: same profile minus the retry
+  # policy), so every genuine flake reds a job.
   #
   # Report-only: job-level `continue-on-error` keeps the workflow green (the
   # ci-health observer only tracks gate-bearing conclusions) while the red job
@@ -1966,8 +1971,8 @@ jobs:
   #   * non2xx_browser_page_is_honest_error_exit_69 — Chromium E2E, cold-start
   #     timeout (TRY 1 FAIL 18.1s -> TRY 2 PASS 2.8s, #2264). The assertion
   #     itself is correct; the browser budget is the defect. PR lanes keep
-  #     running it under --retries 2.
-  # Flipping the PR lanes to --retries 0 happens only after this lane has
+  #     running it under [profile.ci] retries.
+  # Flipping the PR lanes to zero retries happens only after this lane has
   # been clean for a sustained period (#2286, deliberate follow-up).
   # ============================================================================
   flake-detection:
@@ -1991,13 +1996,13 @@ jobs:
           tool: nextest@0.9.114
       - name: Full suite with zero retries (known flakes excluded)
         run: |
-          cargo nextest run --all-features --retries 0 \
+          cargo nextest run --all-features --profile flake-nightly \
             -E 'not test(non2xx_browser_page_is_honest_error_exit_69)'
       - name: Report flake-lane result
         if: always()
         run: |
           if [ "${{ job.status }}" != "success" ]; then
-            echo "::warning::flake-detection red: at least one test failed with --retries 0. Investigate before flipping PR lanes to retries 0 (#2286)."
+            echo "::warning::flake-detection red: at least one test failed with zero retries ([profile.flake-nightly]). Investigate before flipping PR lanes to zero retries (#2286)."
           else
             echo "flake-detection green: no flake observed in this nightly run."
           fi

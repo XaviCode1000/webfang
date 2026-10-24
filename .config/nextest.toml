@@ -67,7 +67,13 @@ slow-timeout = { period = "600s", terminate-after = 1, grace-period = "30s" }
 # Configuración agresiva para CI (más paralelismo)
 test-threads = 8
 threads-required = 1
-retries = 0
+# Alineado con [profile.default] (#2305, paso 1). En 0.9.114 los perfiles NO
+# heredan (`inherits` llega en 0.9.115, que sube el MSRV a Rust 1.89 — fuera de
+# alcance), así que cada clave de política compartida se copia a mano. Adoptar
+# este perfil sin la alineación habría: eliminado los reintentos (`retries = 0`),
+# corrido los tests `ai_integration` en CI (sin default-filter) y matado al
+# trybuild contra el techo de slow-timeout (120s x 2 = 240s vs 467s medidos).
+retries = { backoff = "exponential", count = 2, delay = "1s" }
 fail-fast = false
 failure-output = "immediate-final"
 
@@ -75,9 +81,47 @@ failure-output = "immediate-final"
 slow-timeout = { period = "120s", terminate-after = 2, grace-period = "30s" }
 global-timeout = "1h"
 
-# Output detallado para debugging en CI
-success-output = "immediate"
-status-level = "all"
+# Filtros: excluir tests pesados por defecto (copia de `default`, misma razón
+# de no-herencia que `retries`)
+default-filter = "not test(ai_integration)"
+
+# Output para CI (#2305, paso 2): el log de CI no necesita el stdout de los
+# tests que pasan ni el estado de cada skip; sí necesita los fallos en el
+# stream y, al final, el detalle de lentos y flaky ("slow" ya incluye "flaky":
+# los niveles de final-status-level son acumulativos y el valor es único —
+# "slow,flaky" no es sintaxis válida).
+success-output = "never"
+status-level = "fail"
+final-status-level = "slow"
+
+# Override del trybuild copiado de `default` (misma razón de no-herencia; la
+# medición y el criterio del techo de 600s están documentados ahí).
+[[profile.ci.overrides]]
+filter = 'test(=illegal_page_transitions_fail_to_compile)'
+slow-timeout = { period = "600s", terminate-after = 1, grace-period = "30s" }
+
+# Lane nocturna de detección de flakes (#2286; adopción en #2305 paso 4): la
+# misma suite que test-full pero con reintentos a cero, para que cada flake
+# genuino ponga el job en rojo (report-only vía continue-on-error en ci.yml).
+# Copia deliberada de [profile.ci] porque 0.9.114 no hereda perfiles: la
+# única diferencia es retries = 0. Si tocás ci, tocá esta también, hasta que
+# un bump que habilite inherits (0.9.115+) las colapse en una sola.
+[profile.flake-nightly]
+test-threads = 8
+threads-required = 1
+retries = 0
+fail-fast = false
+failure-output = "immediate-final"
+slow-timeout = { period = "120s", terminate-after = 2, grace-period = "30s" }
+global-timeout = "1h"
+default-filter = "not test(ai_integration)"
+success-output = "never"
+status-level = "fail"
+final-status-level = "slow"
+
+[[profile.flake-nightly.overrides]]
+filter = 'test(=illegal_page_transitions_fail_to_compile)'
+slow-timeout = { period = "600s", terminate-after = 1, grace-period = "30s" }
 
 [profile.dev]
 # Perfil para desarrollo iterativo (ultra-rápido)
