@@ -67,7 +67,13 @@ slow-timeout = { period = "600s", terminate-after = 1, grace-period = "30s" }
 # Configuración agresiva para CI (más paralelismo)
 test-threads = 8
 threads-required = 1
-retries = 0
+# Alineado con [profile.default] (#2305, paso 1). En 0.9.114 los perfiles NO
+# heredan (`inherits` llega en 0.9.115, que sube el MSRV a Rust 1.89 — fuera de
+# alcance), así que cada clave de política compartida se copia a mano. Adoptar
+# este perfil sin la alineación habría: eliminado los reintentos (`retries = 0`),
+# corrido los tests `ai_integration` en CI (sin default-filter) y matado al
+# trybuild contra el techo de slow-timeout (120s x 2 = 240s vs 467s medidos).
+retries = { backoff = "exponential", count = 2, delay = "1s" }
 fail-fast = false
 failure-output = "immediate-final"
 
@@ -75,9 +81,19 @@ failure-output = "immediate-final"
 slow-timeout = { period = "120s", terminate-after = 2, grace-period = "30s" }
 global-timeout = "1h"
 
+# Filtros: excluir tests pesados por defecto (copia de `default`, misma razón
+# de no-herencia que `retries`)
+default-filter = "not test(ai_integration)"
+
 # Output detallado para debugging en CI
 success-output = "immediate"
 status-level = "all"
+
+# Override del trybuild copiado de `default` (misma razón de no-herencia; la
+# medición y el criterio del techo de 600s están documentados ahí).
+[[profile.ci.overrides]]
+filter = 'test(=illegal_page_transitions_fail_to_compile)'
+slow-timeout = { period = "600s", terminate-after = 1, grace-period = "30s" }
 
 [profile.dev]
 # Perfil para desarrollo iterativo (ultra-rápido)
