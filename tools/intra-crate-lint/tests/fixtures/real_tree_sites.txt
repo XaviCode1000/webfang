@@ -1408,7 +1408,7 @@ infrastructure/downloader/mod.rs	26	use	crate::domain::downloader_port::Cookie
 infrastructure/downloader/mod.rs	26	use	crate::domain::downloader_port::DownloadError
 infrastructure/downloader/mod.rs	26	use	crate::domain::downloader_port::Downloader
 infrastructure/downloader/mod.rs	26	use	crate::domain::downloader_port::FetchedPage
-infrastructure/downloader/obscura_downloader.rs	54	use	crate::domain::downloader_factory::DEFAULT_OBSCURA_BINARY
+infrastructure/downloader/obscura_downloader.rs	63	use	crate::domain::downloader_factory::DEFAULT_OBSCURA_BINARY
 infrastructure/downloader/resource_governor.rs	49	inline	crate::domain::budget::derivation::RamThresholds::DEFAULT_WARNING_PERCENT
 infrastructure/downloader/resource_governor.rs	54	inline	crate::domain::budget::derivation::RamThresholds::DEFAULT_CRITICAL_PERCENT
 infrastructure/downloader/resource_governor.rs	196	inline	crate::domain::budget::derivation::derive_max_instances
