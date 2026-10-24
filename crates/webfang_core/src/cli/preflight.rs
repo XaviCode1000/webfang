@@ -2118,8 +2118,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn hybrid_version_garbage_degrades_to_warning() {
-        let (_tmp, opts) =
-            hybrid_opts_with_version_script("#!/bin/sh\necho \"custom build\"\n");
+        let (_tmp, opts) = hybrid_opts_with_version_script("#!/bin/sh\necho \"custom build\"\n");
         assert!(
             check_js_dependencies_with(&["definitely-not-installed-9x4k"], false, "", &opts)
                 .is_ok(),
@@ -2154,8 +2153,7 @@ mod tests {
     fn unknown_verdict_names_the_expected_minimum() {
         use crate::infrastructure::observability::test_log_capture::LogBuffer;
 
-        let (_tmp, opts) =
-            hybrid_opts_with_version_script("#!/bin/sh\necho \"custom build\"\n");
+        let (_tmp, opts) = hybrid_opts_with_version_script("#!/bin/sh\necho \"custom build\"\n");
 
         let mut verdict = None;
         let out = LogBuffer::run(|| {
