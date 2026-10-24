@@ -58,6 +58,34 @@ fn parse_jsonrpc_error_code(body: &str) -> Option<i64> {
     parsed.get("error")?.get("code")?.as_i64()
 }
 
+/// `redact_path` must yield host-independent text: snapshots are authored on
+/// Linux with `/` separators, and Windows renders the same path with `\`.
+/// Covers the plain-text message form and the JSON-escaped form a serialized
+/// payload carries (`\\`).
+#[test]
+fn redact_path_normalizes_host_separators() {
+    let dir = std::path::Path::new(r"C:\Users\runneradmin\AppData\Local\Temp\.tmpAbC123");
+
+    let plain = r"Exportación completada: 1 documentos → C:\Users\runneradmin\AppData\Local\Temp\.tmpAbC123\export.jsonl";
+    assert_eq!(
+        redact_path(plain, dir),
+        "Exportación completada: 1 documentos → [OUT_DIR]/export.jsonl"
+    );
+
+    let json = r#""local_path": "C:\\Users\\runneradmin\\AppData\\Local\\Temp\\.tmpAbC123\\images\\71a5.png""#;
+    assert_eq!(
+        redact_path(json, dir),
+        r#""local_path": "[OUT_DIR]/images/71a5.png""#
+    );
+
+    // A backslash that is not a path separator must survive untouched.
+    let prose = r"invalid regex \d+ for C:\Users\runneradmin\AppData\Local\Temp\.tmpAbC123\x.jsonl";
+    assert_eq!(
+        redact_path(prose, dir),
+        r"invalid regex \d+ for [OUT_DIR]/x.jsonl"
+    );
+}
+
 // ============================================================================
 // 1. Initialize request — returns server info
 // ============================================================================
