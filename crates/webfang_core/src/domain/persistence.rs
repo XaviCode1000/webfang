@@ -28,7 +28,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::entities::ExportState;
 use crate::domain::error::ErrorClass;
-use crate::domain::exporter::{ExportResult, ExporterError};
 use crate::domain::page_state::{PageStatus, PersistedRecord, MIGRATED_V1_RUN_ID};
 
 /// Input for [`PersistenceMode::from_config`].
@@ -439,15 +438,21 @@ pub trait RecordStorePort: Send + Sync {
 /// `cli` constructs the concrete
 /// `infrastructure::export::state_store::StateStore` through
 /// `application::container::build_state_store`; `cli` consumes it
-/// through this port only. Seam covers the four state-file methods in live
-/// use (`get_state_path`, `load`, `save`, `load_or_default`);
+/// through this port only.
+///
+/// The live production surface of this port is
+/// [`get_state_path`](Self::get_state_path) alone: `record_store_bridge`
+/// (`cli::scrape_flow`) reads the state path to derive the directory and the
+/// domain of the v2 record store. [`load`](Self::load) is still declared but
+/// has no production caller — a candidate for a follow-up slice.
 /// `mark_processed`/`is_processed` are excluded — zero production callers.
+///
 /// Object safe: call sites hold `&dyn StateStorePort` or
 /// `Arc<dyn StateStorePort>`.
 ///
-/// Errors surface as [`crate::error::ScraperError`]; [`load_for_export`](Self::load_for_export)
-/// maps them into [`ExporterError::StateStore`] via `?` (the variant's first
-/// honest use, #1097).
+/// Resume filtering does not flow through this port: it flows through the v2
+/// seam [`RecordStorePort::load_or_init`]. Errors surface as
+/// [`crate::error::ScraperError`].
 pub trait StateStorePort: Send + Sync {
     /// Full path to the domain state JSON file.
     fn get_state_path(&self) -> PathBuf;
@@ -457,25 +462,6 @@ pub trait StateStorePort: Send + Sync {
     /// # Errors
     /// [`crate::error::ScraperError`] if the file is missing or unparsable.
     fn load(&self) -> crate::error::Result<ExportState>;
-
-    /// Load existing state or return a fresh one when absent or stale-versioned.
-    ///
-    /// # Errors
-    /// [`crate::error::ScraperError`] on corrupt JSON or non-NotFound I/O.
-    fn load_or_default(&self) -> crate::error::Result<ExportState>;
-
-    /// Load state into the exporter error domain.
-    ///
-    /// Provided convenience so export callers propagate store failures with
-    /// `?` as [`ExporterError::StateStore`] instead of matching on
-    /// [`crate::error::ScraperError`] at every site.
-    ///
-    /// # Errors
-    /// [`ExporterError::StateStore`] when the underlying [`load`](Self::load)
-    /// fails.
-    fn load_for_export(&self) -> ExportResult<ExportState> {
-        self.load().map_err(ExporterError::StateStore)
-    }
 }
 
 #[cfg(test)]
