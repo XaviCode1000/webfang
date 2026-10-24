@@ -320,17 +320,8 @@ fn writer_loop(
 
 #[cfg(test)]
 mod tests {
+    use super::super::jsonl_fixtures::{terminated, valid_line};
     use super::*;
-
-    fn valid_line(n: u32) -> String {
-        format!(r#"{{"n":{n},"checksum_sha256":"hash-{n}"}}"#)
-    }
-
-    fn terminated(line: &str) -> Vec<u8> {
-        let mut bytes = line.as_bytes().to_vec();
-        bytes.push(b'\n');
-        bytes
-    }
 
     // ------------------------------------------------------------------
     // Open-time scan: the hash index, the clean file and the stray siblings.

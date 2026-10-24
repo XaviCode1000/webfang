@@ -156,21 +156,14 @@ pub(crate) fn read_range(path: &Path, offset: u64, len: u64) -> io::Result<Vec<u
 mod tests {
     use super::super::JsonlSession;
     use super::{read_tail_window, recover_torn_tail, MAX_TAIL_WINDOW_BYTES, TAIL_WINDOW_BYTES};
+    use crate::infrastructure::export::jsonl_fixtures::{
+        seed_unterminated, terminated, valid_line,
+    };
     use std::collections::HashSet;
     use std::fs;
     use std::fs::File;
     use std::io::{Read, Write};
     use std::path::Path;
-
-    fn valid_line(n: u32) -> String {
-        format!(r#"{{"n":{n},"checksum_sha256":"hash-{n}"}}"#)
-    }
-
-    fn terminated(line: &str) -> Vec<u8> {
-        let mut bytes = line.as_bytes().to_vec();
-        bytes.push(b'\n');
-        bytes
-    }
 
     // ------------------------------------------------------------------
     // Torn-tail recovery (SC: crash mid-write leaves half-written line)
@@ -351,8 +344,8 @@ mod tests {
     async fn torn_tail_beyond_the_window_cap_fails_without_destroying_anything() {
         let dir = tempfile::TempDir::new().expect("temp dir");
         let path = dir.path().join("beyond-cap.jsonl");
-        let content = vec![b'x'; (MAX_TAIL_WINDOW_BYTES + 1) as usize];
-        fs::write(&path, &content).expect("seed oversized unterminated file");
+        let content = seed_unterminated(&path, (MAX_TAIL_WINDOW_BYTES + 1) as usize)
+            .expect("seed oversized unterminated file");
 
         let error = JsonlSession::open(&path).expect_err("recovery must refuse a blind cut");
 
