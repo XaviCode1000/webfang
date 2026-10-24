@@ -7,8 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [5.0.1] - 2026-10-24
+## [6.0.0] - 2026-10-24
 
+### ⚠ BREAKING CHANGES
+
+- El seam del StateStorePort se poda a los métodos con caller: se removieron `StateStorePort::load_or_default` (requerido) y `StateStorePort::load_for_export` (provisto) del trait público. Los implementadores externos del trait deben quitar `load_or_default`; los callers del método provisto deben usar `load()` y mapear el error. ([#2243](https://github.com/XaviCodeDev1000/webfang/pull/2262))
 
 ### 🏗️ Architecture Improvements
 
